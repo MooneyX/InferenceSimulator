@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KV Cache 存储调度建模平台</title>
+
+
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar"><div class="brand"><span>KV Cache</span> 存储调度建模平台</div></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="nav-section">
+    <div class="nav-title">建模模块</div>
+    <button class="nav-item active" data-tab="tab-params">
+      <span class="nav-icon">⚙️</span> 基础参数
+    </button>
+    <button class="nav-item" data-tab="tab-storage">
+      <span class="nav-icon">💾</span> 存储结构
+    </button>
+    <button class="nav-item" data-tab="tab-schedule">
+      <span class="nav-icon">📋</span> 策略仿真
+    </button>
+    <button class="nav-item" data-tab="tab-cross">
+      <span class="nav-icon">🔀</span> 交叉分析
+    </button>
+  </div>
+</aside>
+
+<!-- Main Content -->
+<div class="main-content">
+<section class="card" id="serverTasks">
+  <h2>服务器计算任务</h2>
+  <p class="subtitle">完整仿真在服务器独立进程执行；页面保留解析估算和图表。关闭页面后任务继续，可回来下载输入与结果。暂不支持远程 JavaScript 策略。</p>
+  <div class="form-row">
+    <div><input id="serverAccessKey" type="password" autocomplete="off" placeholder="服务器访问密钥（仅受保护服务需要）" aria-label="服务器访问密钥"></div>
+    <button class="btn btn-sm" id="serverConnect">连接服务</button>
+    <button class="btn btn-sm" id="serverRefresh">刷新任务</button>
+  </div>
+  <p id="serverStatus" role="status">正在连接服务器...</p>
+  <div id="serverTaskList"></div>
+</section>
+
+<!-- ====== TAB 1: 基础参数 ====== -->
+<div class="tab-panel active" id="tab-params">
+  <div class="card">
+    <h2><span>模型与硬件</span> 参数配置</h2>
+    <p class="subtitle">模型架构（GQA/MLA/MoE）、权重与KV精度分离、算力与带宽、三级存储</p>
+
+    <!-- 参数快速导入导出（2026-08-12） -->
+    <div style="display:flex;gap:8px;align-items:center;margin:10px 0 14px;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="exportParams()" title="收集本页全部输入参数为 JSON，填入右侧框并复制到剪贴板">📤 导出参数</button>
+      <button class="btn btn-sm" onclick="importParamsFromBox()" title="解析右侧 JSON 并写回全部输入参数，自动刷新计算">📥 导入参数</button>
+      <input id="paramsIo" placeholder="参数 JSON 在此粘贴/生成" style="flex:1;min-width:220px;font-family:monospace;font-size:.7rem;padding:4px 8px">
+      <span id="paramsIoNote" style="font-size:.7rem;color:var(--accent);white-space:nowrap"></span>
+    </div>
+
+    <div class="row2">
+      <!-- Model -->
+      <div>
+        <h3 style="font-size:.82rem;color:var(--accent);margin-bottom:8px">📐 模型参数</h3>
+        <div class="preset-bar" id="modelPresets"></div>
+        <div class="form-row">
+          <div><label>注意力类型</label><select id="pAttnType">
+            <option value="gqa" selected>MHA / GQA</option>
+            <option value="mla">MLA (DeepSeek)</option>
+          </select></div>
+          <div><label>层数</label><input type="number" id="pLayers" value="80" min="1"></div>
+          <div><label>KV头数</label><input type="number" id="pKvHeads" value="8" min="1"></div>
+          <div><label>头维度</label><input type="number" id="pHeadDim" value="128" min="1"></div>
+        </div>
+        <div class="form-row" id="mlaFields" style="margin-top:6px;display:none">
+          <div><label>KV LoRA Rank</label><input type="number" id="pKvLora" value="512" min="1"></div>
+          <div><label>RoPE 维度</label><input type="number" id="pRopeDim" value="64" min="1"></div>
+          <div><label>隐藏维度</label><input type="number" id="pHidden" value="8192" min="1"></div>
+        </div>
+        <div class="form-row" id="mlaFields2" style="margin-top:6px;display:none">
+          <div><label>QK nope维度(0=用头维度)</label><input type="number" id="pQkNope" value="0" min="0" step="1" oninput="applyEstimatedParams()" title="MLA 解压式 prefill 的 QK non-RoPE 维度 qk_nope_head_dim。&#10;prefill 走解压式 MHA 时 QK 总维度 = qk_nope + RoPE维度(DS-V3: 128+64=192)。&#10;0 = 回退用「头维度」(DS-V3 两者恰好都是 128)。仅影响 prefill 的位置斜率 b。"></div>
+          <div><label>V头维度(0=用头维度)</label><input type="number" id="pVHeadDim" value="0" min="0" step="1" oninput="applyEstimatedParams()" title="MLA 解压式 prefill 的 v_head_dim。&#10;解压式 MHA 的 PV 阶段维度(DS-V3 = 128)。0 = 回退用「头维度」。仅影响 prefill 的位置斜率 b。"></div>
+          <div><label>prefill注意力路径</label><select id="pMlaPrefillPath" onchange="applyEstimatedParams()" title="MLA 的 prefill 与 decode 走不同 kernel, 计算量差 3.4×(2026-08-20 修正)。&#10;• 解压式MHA(默认, 推荐): sglang MHA_CHUNKED_KV / MHA_ONE_SHOT——kv_b_proj 把压缩 latent 解压为全秩 K/V 再做标准 MHA。QK维=nope+rope=192, PV维=vHead=128。常规 prefill(纯新请求 + 长前缀命中)主路径。&#10;• 吸收式MLA: sglang MLA 分支——W_UK 吸收进 Q 侧, KV 保持压缩。QK维=kvLora+rope=576, PV维=kvLora=512。短前缀/投机解码/CP 场景, 计算量是解压式的 3.4×。&#10;decode 恒为吸收式, 不受此开关影响。">
+            <option value="mha" selected>解压式 MHA(sglang 主路径)</option>
+            <option value="absorb">吸收式 MLA(短前缀/投机/CP)</option>
+          </select></div>
+        </div>
+        <div class="form-row" style="margin-top:6px">
+          <div><label>词表大小</label><input type="number" id="pVocab" value="128000" min="1" step="1000"></div>
+          <div><label>Q头数(0=自动)</label><input type="number" id="pQHeads" value="0" min="0" step="1" oninput="applyEstimatedParams()" title="attention 的 query head 数, 用于推导 prefill 位置斜率 b 的计算量(2026-08-19 Roofline 改造新增)。&#10;0=自动: GQA 按 hidden/headDim 推导(等价于 4×layers×hidden, 与是否填写无关); MLA 按 hidden/headDim 近似。&#10;MLA 必须显式填写: DeepSeek-V3 有 128 个 head, 而 hidden/headDim = 7168/128 = 56, 自动推导会低估 attention 计算量 2.3×。DS-V3/V2 = 128, V2-Lite = 16。"></div>
+        </div>
+        <!-- 稀疏注意力(2026-08-20 新增; 2026-08-20 从 prefill 参数区迁到此处):
+             DS-V3.2 Indexer / V4 NSA。这是**模型架构属性**(是否内置稀疏选择器), 不是
+             调度/框架配置 ⇒ 应随模型预设走, 故放在模型参数区并由 applyModel 自动勾选。 -->
+        <div class="form-row" style="margin-top:6px">
+          <div style="display:flex;align-items:center;gap:6px;padding-top:18px" title="稀疏注意力(DeepSeek V3.2 Indexer / V4 NSA): 每个 query 只对 top-k 个最相关的历史 KV 做 attention, 而非全部历史。&#10;效果: 位置成本 b 在 pos>topk 后**不再增长**——长上下文 prefill 从 O(L²) 转为 O(L·topk)。&#10;但 Indexer(选择器)本身仍需扫描全部历史 KV 打分, 这部分仍随位置线性增长(斜率 b_idx, 自动推导)。&#10;⚠️ 若忽略 b_idx 会得出'长上下文成本恒定'的错误结论: 稀疏是把 O(L²)的大系数换成 O(L²)小系数 + O(L·topk)大系数, 不是消掉二次项。"><input type="checkbox" id="pSparseAttn" style="width:auto" onchange="toggleSparseFields();applyEstimatedParams()"><label style="margin:0;font-size:.75rem" for="pSparseAttn">稀疏注意力(V3.2 Indexer/V4 NSA)</label></div>
+          <div id="sparseF1" style="display:none"><label>top-k</label><input type="number" id="pSparseTopk" value="2048" min="1" step="128" oninput="applyEstimatedParams()" title="每个 query 实际参与 attention 的 KV 数量上限(DeepSeek V3.2-Exp index_topk = 2048)。&#10;pos ≤ topk 时与稠密同价; pos > topk 后每 token 的 attention 成本恒定 = b×topk。"></div>
+          <div id="sparseF2" style="display:none"><label>Indexer头数</label><input type="number" id="pIdxHeads" value="64" min="1" step="1" oninput="applyEstimatedParams()" title="Indexer 的打分头数 index_n_heads(V3.2 = 64)。用于推导 b_idx。"></div>
+          <div id="sparseF3" style="display:none"><label>Indexer头维度</label><input type="number" id="pIdxHeadDim" value="128" min="1" step="1" oninput="applyEstimatedParams()" title="Indexer 的头维度 index_head_dim(V3.2 = 128)。用于推导 b_idx。"></div>
+          <div id="sparseF4" style="display:none"><label>Indexer斜率b_idx(μs/tok²)</label><input type="number" id="pPrefillBIdx" value="0" min="0" step="0.000001" title="Indexer 扫描全历史打分的位置斜率(自动推导, 可手动覆盖)。&#10;τ(pos) = a + b×min(pos,topk) + b_idx×pos"></div>
+        </div>
+        <div class="form-row" style="margin-top:6px">
+          <div><label>KV精度</label><select id="pDtype">
+            <option value="2">BF16 / FP16 (2B)</option>
+            <option value="1" selected>FP8 (1B)</option>
+            <option value="0.5">INT4 (0.5B)</option>
+          </select></div>
+          <div><label>权重精度</label><select id="pWeightDtype">
+            <option value="2">BF16 / FP16 (2B)</option>
+            <option value="1" selected>FP8 (1B)</option>
+            <option value="0.5">INT4 (0.5B)</option>
+          </select></div>
+          <div><label>总参数覆盖(B,0=自动)</label><input type="number" id="pParamsB" value="0" min="0" step="0.1"></div>
+          <div><label>激活参数覆盖(B)</label><input type="number" id="pActB" value="0" min="0" step="0.1"></div>
+        </div>
+      </div>
+      <!-- Hardware -->
+      <div>
+        <h3 style="font-size:.82rem;color:var(--accent2);margin-bottom:8px">🖥️ 硬件配置</h3>
+        <div class="preset-bar" id="hwPresets">
+          <button class="preset-tag active" data-hw="h20x8">H20×8</button>
+          <button class="preset-tag" data-hw="h100x8">H100×8</button>
+          <button class="preset-tag" data-hw="a100x8">A100×8</button>
+          <button class="preset-tag" data-hw="b200x8">B200×8</button>
+          <button class="preset-tag" data-hw="b300x8" title="NVIDIA HGX/DGX B300 (Blackwell Ultra): 288GB HBM3E/卡 × 8 = 2.3TB 显存池, HBM 8TB/s, NVLink5 1.8TB/s, PCIe Gen6 256GB/s。&#10;算力填 BF16/FP16 dense 2250 TFLOPS —— 与 B200 相同(Blackwell Ultra 的提升在显存容量与 NVFP4/attention, BF16 与 FP8 未变)。&#10;⇒ 在本仿真中 B300 vs B200 的差异体现在 KV 容量: 每卡多 96GB, 8 卡多 768GB, 对长上下文与高前缀命中场景收益显著。">B300×8</button>
+          <span style="display:inline-block;width:1px;height:14px;background:var(--border);margin:0 4px;vertical-align:middle" title="以下为国产 AI 芯片"></span>
+          <button class="preset-tag" data-hw="a950pr8" title="华为昇腾 950PR ×8 (2026Q1, Atlas 350 标卡) —— 面向推理 Prefill 与推荐场景。&#10;自研 HBM HiBL 1.0: 128GB/卡 × 8 = 1TB 显存池, 带宽 1.6TB/s(四款国产卡里最低——prefill 算力密集, 对带宽不敏感)。&#10;灵衢(UB)互联 2TB/s。&#10;⚠️ 算力口径: 官方公布 FP8 = 1 PFLOPS, 而本预设 tflops 字段统一按 BF16 填(与 NVIDIA 各卡可比), 故折算为 500 TFLOPS。若负载确实跑 FP8, 请手动改成 1000。">昇腾950PR×8</button>
+          <button class="preset-tag" data-hw="a950dt8" title="华为昇腾 950DT ×8 (2026Q4) —— 面向推理 Decode 与训练。&#10;自研 HBM HiZQ 2.0: 144GB/卡 × 8 = 1.15TB 显存池, 带宽 4TB/s(是 950PR 的 2.5×)。&#10;⇒ PR 与 DT 的核心区别就在带宽: decode 是访存密集型, 所以 DT 把带宽拉到 4TB/s。&#10;算力与互联同 950PR。&#10;⚠️ 部分媒体把 PR/DT 的显存参数写反了, 此处以华为全联接大会 2025 官方口径为准。">昇腾950DT×8</button>
+          <button class="preset-tag" data-hw="klxp800x8" title="昆仑芯 P800 ×8 (百度, 昆仑芯三代 XPU-P, 2024 量产) —— 96GB HBM3/卡 × 8 = 768GB, 带宽 2.4TB/s。&#10;FP16/BF16 345 TFLOPS(官方称约为 H20 的 2.3×), 400W, OAM 模组, 节点内 XPU Link。&#10;⇒ 单机 8 卡即可跑 DS-V3/R1 671B 满血版(768GB 刚好装下 FP8 权重), 这是它最常被引用的卖点。&#10;算力口径为 FP16, 与 NVIDIA 各卡直接可比。">昆仑芯P800×8</button>
+          <button class="preset-tag" data-hw="klxp900x32" title="昆仑芯 P900 天池超节点 ×32 (2026) —— 四款国产卡里唯一的超节点形态。&#10;单柜 32 卡全互联, 显存池 3072GB ⇒ 每卡 96GB; 卡间 400GB/s, 时延 1.5μs。&#10;GPU 数默认给 32(而非 8): 百度官方 DS-R1 部署方案正是 32 卡占满一个 P900 做 Decode(TP1+EP32)。&#10;⚠️ 单卡算力与显存带宽官方均未公布, 690 TFLOPS 与 4.8TB/s 是按 P800 的 2× 估算, 不确定性较大 —— 做定量结论前请自行校准。">昆仑芯P900×32</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <div><label>GPU数</label><input type="number" id="pGpuCount" value="8" min="1"></div>
+          <div><label>HBM/GPU(GB)</label><input type="number" id="pHbm" value="96" min="1"></div>
+          <div><label>HBM带宽(TB/s)</label><input type="number" id="pHbmBW" value="4" min="0.1" step="0.1"></div>
+          <div><label>GPU算力(TFLOPS)</label><input type="number" id="pTflops" value="148" min="1"></div>
+          <div><label>TP并行度</label><input type="number" id="pTpSize" value="8" min="1" max="64"></div>
+          <div><label>NVLink(GB/s)</label><input type="number" id="pNvlinkBW" value="900" min="1"></div>
+          <div><label>PCIe/C2C(GB/s)</label><input type="number" id="pPcieBW" value="64" min="1"></div>
+          <div><label title="⚠️ 研究性假设, 非 sglang 机制: sglang 的 host pool 直接复用 device KV 的 dtype(memory_pool_host.py), 下沉不做量化。此项用于评估「若未来引入下沉量化」的容量/带宽收益上限, 默认保持 1(= sglang 现状)。">下沉层量化比<span style="color:#fbbf24;font-size:.65rem"> ⚠研究项</span></label><select id="pTierQuant">
+            <option value="1" selected>与HBM同精度(sglang 现状)</option>
+            <option value="0.5">减半 (如FP8→INT4)</option>
+            <option value="0.25">1/4 (如BF16→INT4)</option>
+          </select></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px">
+          <div><label>DRAM容量(GB)</label><input type="number" id="pDram" value="1024" min="1"></div>
+          <div><label>DRAM带宽(GB/s)</label><input type="number" id="pDramBW" value="400" min="1" title="DRAM 介质自身读写带宽。GPU 读 L2 中 KV 受 PCIe/C2C 与 DRAM 介质带宽较小者限制（有效=min）；默认介质≫链路故由 PCIe 决定，仅当介质带宽<链路时才成为瓶颈"></div>
+          <div><label>SSD容量(TB)</label><input type="number" id="pSsd" value="20" min="1"></div>
+          <div><label>SSD带宽(GB/s)</label><input type="number" id="pSsdBW" value="50" min="0.1" title="L3/SSD 有效带宽(含拉取调度开销): sglang mooncake page1≈1.05, page64≈27"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span>推理负载</span> 配置</h2>
+    <p class="subtitle">选择合成负载或数据集 Replay，共用模型、硬件、系统设置和策略；切换来源不会执行仿真或清空最近一次结果。</p>
+    <div class="form-row" style="margin-bottom:10px">
+      <div><label for="workloadSource">负载来源</label><select id="workloadSource">
+        <option value="synthetic" selected>合成负载</option>
+        <option value="replay">数据集 Replay</option>
+      </select></div>
+    </div>
+    <div id="syntheticPanel">
+      <p class="subtitle">请求特征（可选长尾分布）、请求规模、多轮会话复用与可复现随机种子 · 仿真请求数 N = 请求数</p>
+      <div class="row2">
+        <div>
+          <div class="form-row">
+            <div><label id="lblConcurrency">请求数</label><input type="number" id="pConcurrency" value="32" min="1" title="仿真请求总数(1:1 直接对应)。峰值并发由 QPS×延迟(Little 定律)自然形成; 需求推导的 KV 容量/批大小按'请求数=峰值并发'保守估算。&#10;单批Prefill基准模式下: 此值 = 单批 batch 规模(全部请求 t=0 同时进 prefill), 是该模式下唯一决定 batch 的旋钮"></div>
+            <div><label>平均输入长度(tok)</label><input type="number" id="pInputLen" value="4096" min="1"></div>
+            <div><label>平均输出长度(tok)</label><input type="number" id="pOutputLen" value="1024" min="1"></div>
+          </div>
+          <div class="form-row" style="margin-top:6px">
+            <div><label>到达率QPS</label><input type="number" id="pQps" value="8" min="0" step="0.001" title="请求到达率。低 qps(如 0.001)表示近乎串行无并发; 注意配合仿真窗口上限——qps 太低时窗口内到达的请求数会很少, 统计样本不足"></div>
+            <div><label>到达分布</label><select id="pArrivalDist">
+              <option value="poisson" selected>泊松(有突发)</option>
+              <option value="uniform">均匀(等间隔)</option>
+            </select></div>
+            <div><label>长度分布</label><select id="pLenDist">
+              <option value="uniform" selected>均匀 (0.5~1.5×)</option>
+              <option value="lognormal">对数正态 (长尾)</option>
+              <option value="fixed">严格固定 (=均值)</option>
+            </select></div>
+            <div><label>随机种子</label><input type="number" id="pSeed" value="42" min="0"></div>
+          </div>
+        </div>
+        <div>
+          <div class="form-row">
+            <div><label>仿真窗口上限(秒)</label><input type="number" id="pSimMaxTime" value="1200" min="60" step="60" title="仿真窗口 = min(排水估计, 此上限)。排水估计已含 KV 下沉减速(与引擎同口径)。重负载(长输入/高并发)下窗口触顶会截断, 完成请求数<总请求数, TTFT/P99 基于不完整样本——截断时结果会显示警示与实际排水建议值, 调大此值即可跑完全部请求"></div>
+            <div><label>多轮复用比例(%)</label><input type="number" id="pMultiTurn" value="0" min="0" max="100"></div>
+          </div>
+          <div class="form-row" style="margin-top:6px">
+            <div><label>前缀命中比例(%)</label><div style="display:flex;align-items:center;gap:8px"><input type="range" id="pPrefixHit" value="40" min="0" max="100" style="flex:1" title="入组请求的前缀命中比例: 共享前缀长度 = 平均输入×此值, 命中请求跳过对应比例的前缀 prefill (h=99 → 命中请求跳过 ~99% prefill)"><input type="number" id="pPrefixHitNum" value="40" min="0" max="100" style="width:62px;padding:4px 6px;font-size:.78rem" title="与滑块双向同步: 直接输入数值或拖动滑块均可"><span id="pPrefixHitVal" style="font-size:.75rem;color:var(--accent)">%</span></div></div>
+            <div><label>L2预热命中率(%)</label><input type="range" id="pPrefixWarmL2" value="0" min="0" max="100" style="width:100%" title="双层预热(2026-08-28): 嵌套语义, ≤前缀命中比例。前缀的该比例段放入 L2(DRAM), 剩余命中段放 L3(SSD)。例: 命中95% + L2命中15% ⇒ 前缀前15%在DRAM(命中免费), 15%~95%在SSD(付拉取时间)。0(默认)=全部命中段在L3, 与原行为逐位一致。需勾选「前缀预热」生效"><span id="pPrefixWarmL2Val" style="font-size:.75rem;color:var(--accent)">0%</span></div>
+            <div style="display:flex;align-items:center;gap:6px;padding-top:18px"><input type="checkbox" id="pPrefixWarm" style="width:auto"><label style="margin:0;font-size:.75rem" for="pPrefixWarm">前缀预热(L3常驻, HiCache)</label></div>
+            <div style="display:flex;align-items:center;gap:6px;padding-top:18px" title="单批 prefill 微基准(2026-08-19): 隔离观察 batchsize 对 prefill 计算/传输时间占比的影响——①全部请求 t=0 同时到达(忽略 qps/到达分布) ②跳过准入容量与槽位门控, 所有请求立即进入 prefill(并发=请求数, 即单批 batch) ③prefill 完成即结束, 不进 decode(TPOT/延迟口径无意义, 多轮失效)。&#10;⚠️ batch 规模由「并发请求数」决定, 不是 Max Batch Size ——后者只作用于 decode, 而单批模式不跑 decode(勾选后会置灰提示)。&#10;用法: 并发请求数=batch 规模; 敏感性面板选「并发请求数」扫描 × L3聚合带宽对比 × L3拉取时间占比指标, 即可得到 batch-占比曲线(queue≈0 受控)"><input type="checkbox" id="pSingleBatch" style="width:auto" onchange="toggleSingleBatchHints()"><label style="margin:0;font-size:.75rem" for="pSingleBatch">单批Prefill基准(无排队/无decode)</label></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <section id="replayPanel" aria-labelledby="replayTitle" hidden>
+      <h3 id="replayTitle">真实数据集 Replay</h3>
+      <p class="subtitle">上传已构建的 UTF-8 bundle v1 JSON，使用当前模型、硬件、batch 和 DSL 策略在服务器运行。上传后不会自动执行，请使用结果区的运行当前策略按钮。</p>
+      <div class="form-row">
+        <div><label for="replayFile">Replay bundle（单个 .json，最多 8 MiB）</label><input id="replayFile" type="file" accept=".json,application/json"></div>
+      </div>
+      <p id="replayFileInfo">尚未选择文件；可选择仓库 data/replay/sample.json。</p>
+      <div class="form-row">
+        <div><label for="replayQps">目标 QPS</label><input id="replayQps" type="number" step="any" value="5"></div>
+        <div><label for="replaySeed">seed（uint32，允许 0）</label><input id="replaySeed" type="number" min="0" max="4294967295" step="1" value="42"></div>
+        <div><label for="replayDuration">投放时长 T（秒）</label><input id="replayDuration" type="number" step="any" value="2"></div>
+        <div><label for="replayWarmup">暖机时长 W（秒）</label><input id="replayWarmup" type="number" min="0" step="any" value="0"></div>
+        <div><label for="replayDrain">排空上限 D（秒）</label><input id="replayDrain" type="number" min="0" step="any" value="600"></div>
+      </div>
+      <p class="subtitle">仅支持 DSL；物理页为 64 的正整数因子或倍数，支持多实例或单实例物理 P/D 分离（二者不可叠加）。支持分层缓存、容量恢复和 none / best_effort / timeout / race 预取；到达模型固定 closed，超级块关闭。</p>
+      <p class="subtitle">[0,T) 按泊松过程投放 session，T 后继续已投放 session，最迟 T+D 停止；并非把模板池完整回放一遍。同 bundle、seed 和投放参数固定 session 计划，completion 后继的实际到达仍受策略执行影响。输出身份 unmapped，完成依赖为推断所得；小页共享保守，输入/输出尾页分别取整，稳定性和理想缓存未评估。</p>
+      <p class="subtitle">支持当前/全部策略、目标 QPS 与硬件/策略扫描和交叉分析；不支持输入长度、前缀命中、预热、请求数等合成生成维度。配置导出仅含实验设置和 bundle 摘要，导入后需重选核验数据，不是独立可复现包。上传内容不持久化；文件、任务体、请求数、墙钟、页数及结果预算保持服务端限制，超限明确失败。</p>
+      <p id="replayStatus" role="status" aria-live="polite">请选择 Replay bundle。</p>
+    </section>
+    <h3 style="font-size:.82rem;color:var(--accent);margin:14px 0 8px">共享推理与系统设置</h3>
+    <p class="subtitle">以下设置供两种负载共用，切换负载来源不会修改这些配置。</p>
+    <div class="row2">
+      <div>
+        <div class="form-row">
+          <div><label>MFU(%)</label><input type="number" id="pMfu" value="50" min="0" max="100" placeholder="留空=自动判瓶颈" oninput="applyEstimatedParams()" title="算子时间合成口径(2026-08-19 改为 Roofline, 不再计算+访存求和):&#10;• 填值(如50): 计算瓶颈假设——prefill 时间 = FLOPs ÷ (峰值算力×MFU), 完全忽略访存(访存被计算 overlap)。attention 的 KV 读也不计时。&#10;• 留空: 自动逐项 Roofline 判定——计算侧按峰值算力, 访存侧按 HBM 带宽(KV 读按 chunk 摊薄, flash-attention 语义), 每项取较慢者(max), 不求和。&#10;两种模式下 TP 通信固定延迟都单独相加(无法 overlap)。decode 始终走 max(访存, 算力) 的 Roofline, MFU 只影响其中的算力项。"></div>
+          <div><label id="lblMaxBatch">Max Batch Size</label><input type="number" id="pMaxBatch" value="8" min="1" onchange="syncMaxBatchFromInput()" title="与 DSL 的 BATCH: max(N) 双向同步(2026-08-14): 改这里自动更新 DSL 的 BATCH 行(仿真唯一生效来源); 改 DSL 也会回填这里"></div>
+          <div><label>Block Size (PageAttn)</label><input type="number" id="pBlockSize" value="16" min="1"></div>
+        </div>
+        <div class="form-row" style="margin-top:6px">
+          <div style="display:flex;align-items:center;gap:6px;padding-top:18px" title="两档对应 sglang HiCache 的两种真实时序:&#10;勾选(默认)=并发重复预取: sglang 的 prefetch_from_storage 按 rid 独立发起、无跨请求单飞去重 —— 同前缀的**并发**请求各自从 L3 重读一份(前缀尚未插入 host radix tree, 谁也命中不了谁)。&#10;不勾选=完成后 host 命中: 第一个请求拉完即插入 host tree, 后续请求直接命中不再读 L3(前缀在请求间持续驻留快层的理想口径)。&#10;sglang 真实行为介于两者之间(并发期重复 + 完成后命中), 此开关用于把两种极端分开量化。"><input type="checkbox" id="pFetchRepull" checked style="width:auto"><label style="margin:0;font-size:.75rem" for="pFetchRepull">Prefill 每请求重复拉取(并发重复预取)</label></div>
+          <div style="display:flex;align-items:center;gap:6px;padding-top:18px"><span style="font-size:.72rem;color:var(--accent);line-height:1.5" title="prefill 按 token 预算组波次执行(sglang chunked-prefill): 每波总 token ≤ Prefill token预算, 长请求按 Prefill Chunk 切分跨波, 整波算完才组下一波, 筹备波的 L3 拉取与执行波计算重叠(overlap 事件循环); 准入无请求数槽位上限。&#10;四档预取策略全部走此路径 —— sglang 里它们共用同一条 chunked-prefill 代码路径。&#10;2026-09-03: 原「波次组批」开关与「连续流体模型」对照基线已删除 —— sglang 只有 chunked-prefill 一种组批方式。">组批: 波次(sglang chunked-prefill)</span></div>
+        </div>
+        <div class="form-row" style="margin-top:6px">
+          <div><label>Prefill位置成本a(μs/tok)</label><input type="number" id="pPrefillA" value="79.5" min="0" step="0.1" title="位置感知 prefill: τ_rec(i)=a+b·i。a=固定项。推导值见右侧按钮: 权重读/chunk + 算力/mfu + TP通信"></div>
+          <div><label>Prefill斜率b(μs/tok²)</label><input type="number" id="pPrefillB" value="0.00533" min="0" step="0.0001" title="attention 累计项斜率。推导公式: b = kv/token ÷ HBM聚合带宽 (物理确定, 无需实测)"></div>
+          <div><label>L3拉取固定延迟(μs)</label><input type="number" id="pFetchFixedUs" value="0" min="0" step="1" title="简化传输模型: 传输延迟 = 传输大小/带宽 (τ_pf 每块固定开销默认置 0, 2026-08-12)。如需模拟 NVMe 每请求延迟(RPC/软件开销)可手动调大, 原推导 = NVMe单请求(100) + RPC/软件(110)"></div>
+          <div><label>Prefill Chunk(tok)</label><input type="number" id="pChunkSize" value="2048" min="16" step="16" title="chunked-prefill 波大小(框架配置, 默认 2048=sglang 默认)。用于推导 a 的权重读分摊项"></div>
+          <div><label id="lblMaxPrefillTok">Prefill token预算</label><input type="number" id="pMaxPrefillTok" value="16384" min="256" step="1024" title="sglang max_prefill_tokens(默认 16384): 每个 prefill 波次的总 token 预算; 长请求按 Prefill Chunk 切分跨波执行。波次组批(唯一路径)的核心参数。⚠️ 单批Prefill基准下预算放开为 ∞(整个 batch 一波算完), 此值无效"></div>
+        </div>
+        <div class="form-row" style="margin-top:6px">
+          <div style="flex:0 0 auto;display:flex;align-items:end"><button class="btn btn-sm" onclick="applyEstimatedParams()" title="从模型架构+硬件规格推导 a/b 的估计值并填入(无需实测)">🎯 自动估算 a/b</button><span id="estParamsNote" style="font-size:.68rem;color:var(--accent2);margin-left:8px"></span></div>
+          <div style="flex:0 0 auto;display:flex;align-items:end"><button class="btn btn-sm" onclick="toggleDerivationPanel()" title="展开逐项推导明细: 每一项的 FLOPs/访存字节/计算时间/访存时间/算术强度/瓶颈判定与代入值。公式与引擎计算同源(不是手写文案)">🔬 推导明细</button></div>
+        </div>
+        <div id="derivPanel" style="display:none;margin-top:8px"></div>
+      </div>
+      <div>
+        <div class="form-row" style="margin-top:6px">
+          <div><label>推理引擎</label><span style="font-size:.75rem;color:var(--accent);line-height:1.7">sglang（默认, 2026-08-12 起固定）<br>RadixAttention 渐进前缀</span></div>
+          <div><label>前缀缓存</label><span style="font-size:.75rem;color:var(--accent);line-height:1.7" title="2026-09-02: 原「整段哈希(vLLM 兼容)」档已删 —— 引擎已固定 sglang, 其 RadixAttention 是前缀树渐进匹配(match_prefix 逐块命中, 部分前缀也能复用), 不存在 vLLM 式「整段 block hash 全命中才复用」的语义。">RadixAttention 前缀树·渐进<br>(逐块渐进命中)</span></div>
+          <div><label>PD分离</label><select id="pPdSep" onchange="togglePdPanel()" title="关(混合批): sglang 默认(enable_mixed_chunk=False), prefill 波与 decode pass 交替占用同一套 GPU。&#10;真分离(双资源池): 从现有 GPU 总数中划出 P 节点, P/D 各自独立算力+独立 KV 池, prefill 完成后 KV 经互联网络传到 D 节点才能 decode(传输计入 TTFT)。&#10;2026-09-02: 原「近似(同卡免竞争)」档已删 —— 它只取消算力竞争折扣却仍共用一套资源/KV 池, 在 sglang 中无对应部署形态(要么混合批, 要么 PD 真分离)。">
+            <option value="0" selected>关(混合批)</option>
+            <option value="2">真分离(双资源池)</option>
+          </select></div>
+          <div><label>分层KV缓存</label><select id="pTieredKv">
+            <option value="1" selected>开(DRAM/SSD)</option>
+            <option value="0">关(仅HBM)</option>
+          </select></div>
+        </div>
+        <!-- 真分离(pPdSep=2)专属参数: 默认隐藏, 选中真分离时显示 -->
+        <div class="form-row" id="pdPanel" style="margin-top:6px;display:none">
+          <div><label>P节点GPU数</label><input type="number" id="pPdPrefillGpus" value="2" min="1" title="从 GPU 总数中划给 prefill 节点的卡数, 余下的归 decode 节点(P:D 配比)。&#10;例: 总数 8 + 此处 2 ⇒ P=2卡 / D=6卡。&#10;注意: P 节点的 prefill a/b 会按 P 的卡数自动重算(不复用输入框按总卡数拟合的值)。"></div>
+          <div><label>PD互联带宽(GB/s)</label><input type="number" id="pPdLinkBW" value="400" min="1" title="P→D 传输 KV 的网络带宽(RDMA/IB), 与 NVLink/PCIe 解耦。默认 400GB/s。"></div>
+          <div><label>互联利用率</label><input type="number" id="pPdLinkUtil" value="0.7" min="0.05" max="1" step="0.05" title="互联带宽的有效利用率(协议开销/拥塞后的实际可用比例), 默认 0.7。"></div>
+          <div><label>KV传输量口径</label><select id="pPdKvComp">
+            <option value="1" selected>按attention类型(MLA压缩)</option>
+            <option value="0">全量kvPerToken</option>
+          </select></div>
+        </div>
+        <!-- 多实例 + Router(S2, 2026-08-20): 实例数 >1 时从 GPU 总数切分, 与 PD 真分离互斥 -->
+        <div class="form-row" style="margin-top:6px">
+          <div><label>实例数</label><input type="number" id="pInstances" value="1" min="1" onchange="togglePdPanel()" title="部署几个独立推理实例(每个实例 = 一台机器: 独立算力/HBM/KV池/队列/PCIe/NVMe)。&#10;资源从 GPU 总数切分: 8 卡 + 实例数 2 ⇒ 每实例 4 卡; DRAM/SSD/PCIe/NVMe 带宽按实例数均分(总量守恒)。&#10;1 = 单实例(默认, 与历史口径完全一致)。&#10;⚠️ 实例数 >1 时 PD 真分离自动降级为混合批(两者都切分 GPU, 叠加语义歧义大)。"></div>
+          <div><label>路由策略</label><select id="pRoutePolicy" title="请求到达时如何选实例(仅实例数>1 时生效)。决策只用当前可观测量, 不读未来。&#10;对齐 sgl-router(sgl-model-gateway/src/policies/)的实现集。&#10;轮询: 严格均分请求数, 最简单。&#10;随机两选优: 随机抽2个取较空者——只需2个采样即可把最大负载从 O(log n) 降到 O(log log n), 开销远低于全局扫描, sgl-router 的生产实现。&#10;前缀哈希: 同前缀恒定落同实例, 缓存亲和最优但热前缀会造成负载倾斜(对应 prefix_hash)。&#10;随机: 最差缓存亲和的对照基线。&#10;注: DSL 里写 ROUTE: xxx 会覆盖此处选择。">
+            <option value="round_robin" selected>轮询(round robin)</option>
+            <option value="power_of_two">随机两选优(power of two)</option>
+            <option value="hash_prefix">前缀哈希(缓存亲和)</option>
+            <option value="random">随机(对照基线)</option>
+          </select></div>
+          <div><label>前缀缓存亲和</label><label style="font-weight:400;font-size:.75rem;display:flex;align-items:center;gap:4px;margin-top:4px" title="仅实例数>1 时生效。&#10;关(默认): 前缀池全局一份——所有实例共享前缀缓存(相当于有全局共享 KV 存储), 前缀命中率是**保证值**, 与历史全部结论口径一致。&#10;开: 前缀池按实例隔离——命中要求'同前缀曾被路由到同一实例'。于是前缀命中率变成**理想上限**, 实际命中由路由质量决定: hash_prefix 能保住, 随机/轮询会塌陷到约 上限÷实例数。&#10;⚠️ 开启会改变命中率语义, 历史结论不可直接对比。"><input type="checkbox" id="pPrefixAffinity" onchange="recalcAll()"> 按实例隔离前缀池</label></div>
+        </div>
+        <!-- EP(专家并行)部署参数(2026-08-31): 与多实例/PD 并列的部署旋钮。详见 reports/EP多实例并行支持_修改设计_20260831.md -->
+        <div class="form-row" style="margin-top:6px">
+          <div><label>EP组大小</label><input type="number" id="pEpSize" value="1" min="1" onchange="recalcAll()" title="专家并行组大小(仅 MoE 模型生效), 1=不开 EP(默认, 与历史口径逐位一致)。&#10;物理效应: ①专家权重按 EP 域分片 ⇒ 每卡权重=dense全量/TP + 专家/EP, 释放 KV 容量;&#10;②每个 MoE 层 dispatch+combine 两次 AllToAll(NVLink), 计入 prefill a 项与 decode 通信;&#10;③EP>1 隐含 DP-attention 形态 ⇒ L2 读复制消失, PCIe 聚合带宽按 gpus×单卡 计(介质 DRAM 封顶)。&#10;约束: 1 ≤ EP ≤ 实例卡数(超出自动 clamp); 一阶段只支持实例内 EP(NVLink 域), 无跨机拓扑。"></div>
+          <div><label>MoE层数</label><input type="number" id="pMoeLayers" value="0" min="0" onchange="recalcAll()" title="MoE 层数(模型预设自动填入): 0=非MoE/全部 dense(EP 不生效)。&#10;DS-V3/V3.2=58(61层中前3层dense) · Kimi-K2=60 · GLM-5.1=75 · Qwen3-30B-A3B=48。"></div>
+          <div><label>稠密参数(B)</label><input type="number" id="pDenseB" value="0" min="0" step="0.1" onchange="recalcAll()" title="dense(非专家)参数量, 单位 B(模型预设自动填入): embed + dense 层 + 各层 attention/shared expert。&#10;0=未填 ⇒ 全部参数按 dense 处理(EP 只加通信, 无容量收益)。&#10;DS-V3=17 · Kimi-K2=12 · GLM-5.1=18 · Qwen3-30B-A3B=1.5(按官方 config 核算, 见 models 注释)。"></div>
+          <div><label>A2A系数</label><input type="number" id="pA2aFactor" value="1" min="0.1" step="0.1" onchange="recalcAll()" title="AllToAll 实现差异系数: 1=DeepEP 按 rank 去重(默认, 理想均衡); 最坏 ≈ topk(逐 expert 重复发送)。&#10;也可兼作 expert 负载倾斜的 derating 旋钮(>1 放大通信时间)。"></div>
+        </div>
+      </div>
+    </div>
+    <button class="btn" onclick="recalcAll()" style="margin-top:12px">🔄 重新计算全部</button>
+  </div>
+
+  <!-- Strategy Input (与模型/硬件/负载同级的输入参数，位于输出区之前) -->
+  <div class="card">
+    <h2><span>策略输入</span> 调度策略定义</h2>
+    <p class="subtitle" id="strategySubtitle">与模型/硬件/负载同级的输入参数 · DSL模式：规则语言描述。点击"JS"切换为编程模式获得完全自由度</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <div class="preset-bar" id="strategyPresets" style="margin-bottom:0">
+        <span class="preset-label" style="font-size:.72rem;color:var(--text-dim)">预设:</span>
+      </div>
+      <div style="display:flex;gap:2px;background:var(--surface2);border-radius:6px;padding:2px;margin-left:auto">
+        <button id="modeDsl" class="mode-btn active" onclick="switchMode('dsl')">DSL</button>
+        <button id="modeJs" class="mode-btn" onclick="switchMode('js')">JavaScript</button>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-bottom:8px;align-items:center">
+      <div><label>L3 预取策略 (sglang HiCache)</label><select id="sPrefetchPolicy" onchange="setPrefetchPolicy(this.value)" style="width:auto">
+        <option value="wait_complete" selected>wait_complete（等 KV 拉齐再算）</option>
+        <option value="timeout">timeout（等拉齐但设超时上限, 超时则未拉尾部重算 — sglang 默认）</option>
+        <option value="best_effort">best_effort（排队期从前往后尽力拉取, 准入即止, 未拉尾部重算）</option>
+        <option value="suffix_race">suffix_race（前缀: GPU前向计算 + L3后向预取, 相遇即停, 再算非复用后缀）</option>
+      </select></div>
+      <span style="font-size:.7rem;color:var(--text-dim)" title="拉取方向依据 hiradix_cache.py:1778-1782 —— reverse 默认值 `self.prefetch_stop_policy == &quot;suffix_race&quot;`, 即只有 suffix_race 从后往前(tail-first, 要与 GPU 前向计算相遇); wc/best_effort/timeout 都是从前往后(head-first), 因为它们经 radix 前缀树的连续插入路径消费, 而前缀树只能从根连续延伸。">选择后自动写入 DSL 的 PREFETCH 行（wait_complete→none）；除 suffix_race 外均为 head-first 拉取</span>
+    </div>
+    <div class="form-row" style="margin-bottom:8px;align-items:center">
+      <div><label>timeout 基线(秒)</label><input type="number" id="pPfTimeoutBase" value="1" min="0" step="0.5" style="width:90px" title="对齐 sglang 的 prefetch_timeout_base(hicache_storage_backend_extra_config 默认 1.0 秒)。超时判据: now - 预取起点 > base + 页数 × 每页增量"></div>
+      <div><label>timeout 每页增量(秒)</label><input type="number" id="pPfTimeoutPerPage" value="0.25" min="0" step="0.05" style="width:90px" title="对齐 sglang 的 prefetch_timeout_per_ki_token(默认 0.25 秒/页, 页 = block size)。仅 timeout 策略生效"></div>
+      <span style="font-size:.7rem;color:var(--text-dim)">仅 timeout 策略生效；公式对齐 hiradix_cache.py 的 _prefetch_timeout_check_linear_func</span>
+    </div>
+    <div class="form-row" style="margin-bottom:8px;align-items:center">
+      <span style="font-size:.7rem;color:var(--text-dim)" title="以下两条已于 2026-09-02 硬编码为 sglang 唯一语义, 不再提供开关:&#10;① 到达即拉: sglang 在 _add_request_to_queue() 里就调 _prefetch_kvcache(req), 预取由 cache_controller 独立线程推进, 与调度循环完全并发 —— 不存在「准入才开始拉取」的分支。&#10;② 跳过未就绪: get_new_batch_prefill 扫 waiting_queue 时 `if not prefetch_done: continue`, 未就绪请求根本进不了 batch, 后方已就绪请求直接超车 —— 不存在「整波等拉齐」的队头阻塞。&#10;原两个开关的 OFF 档均为历史 A/B 回归口径, 无对应真实机制, 已删除。">
+        ⓘ 预取起点与就绪判定已固定为 sglang 语义：<b>请求到达即异步预取</b>（与排队/前序计算并发） + <b>组批跳过未就绪请求</b>（就绪者超车）
+      </span>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-bottom:10px">
+      <div style="flex:1">
+        <textarea id="sDsl" spellcheck="false" oninput="syncPrefetchSelect()" style="width:100%;height:180px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;color:var(--text);font-family:'SF Mono','Fira Code',monospace;font-size:.73rem;line-height:1.6;resize:vertical;outline:none"
+          placeholder="ADMIT: always&#10;EVICT: lru from hbm when 85% -> dram&#10;PREFETCH: none&#10;BATCH: continuous max(8)&#10;PLACE: hbm_first"></textarea>
+        <div id="sDslError" style="font-size:.65rem;color:var(--accent4);min-height:16px;margin-top:2px"></div>
+      </div>
+      <div id="strategyRef" style="width:250px;flex-shrink:0;font-size:.65rem;color:var(--text-dim);line-height:1.7;background:var(--surface2);border-radius:6px;padding:8px 10px;max-height:180px;overflow-y:auto">
+        <b style="color:var(--accent)">DSL 语法参考</b><br>
+        <code>ADMIT: always</code><br>
+        <code>EVICT: lru from hbm when 85% -> dram</code><br>
+        <code>PREFETCH: none | best_effort</code><br>
+        <code>&nbsp;&nbsp;| timeout | race</code><br>
+        <code>BATCH: continuous max(8)</code><br>
+        <code>PLACE: hbm_first</code>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div style="max-width:280px"><label>策略名称</label><input type="text" id="sName" placeholder="自动生成"></div>
+      <div style="display:flex;align-items:end;gap:6px"><button class="btn" onclick="saveStrategy()">💾 保存策略</button></div>
+    </div>
+    <div id="savedStrategiesList" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card" id="quickResults">
+    <h2><span>快速概要</span></h2>
+    <div id="feasibilityBox"></div>
+    <div class="result-grid" id="quickResultGrid"></div>
+    <div class="formula-box" id="formulaQuick"></div>
+  </div>
+
+  <!-- L2/L3 Resource Demand -->
+  <div class="card" id="tierDemandCard">
+    <h2><span>L2 (DRAM) / L3 (SSD)</span> 资源需求估算</h2>
+    <p class="subtitle">当前场景下 KV 溢出 HBM 后所需的 L2/L3 容量与带宽 · 水注法容量 + Roofline 稳态带宽 · 分层KV缓存: <span id="tieredKvStatus" style="color:var(--accent2)">开</span></p>
+    <div class="result-grid" id="tierDemandGrid"></div>
+    <div class="row2" style="margin-top:10px">
+      <div><div id="chartTierDemandBW" style="width:100%;min-height:230px;height:28vh;max-height:280px"></div></div>
+      <div><div id="chartTierDemandCap" style="width:100%;min-height:230px;height:28vh;max-height:280px"></div></div>
+    </div>
+    <div class="formula-box" id="formulaTierDemand"></div>
+  </div>
+
+  <!-- Simulation Results（结果区：运行入口在结果卡片内，与交叉分析/敏感性交互模式一致） -->
+  <div class="card" id="strategyResults">
+    <h2><span>策略仿真</span> 对比结果</h2>
+    <p class="subtitle">最近一次运行成功返回的结果与执行配置 · 切换负载或编辑参数、策略不会改变旧结果，运行成功后整体更新 · 合成负载相同输入复用缓存，Replay 每次提交新任务</p>
+    <div class="form-row" style="margin-bottom:8px">
+      <div style="flex:0 0 auto;display:flex;align-items:end;gap:6px"><button class="btn" onclick="applyStrategies()" title="只运行当前配置的策略，不写入保存列表">▶️ 运行当前策略</button><button class="btn btn-sm" onclick="runAllStrategies()" style="background:var(--accent2)" title="运行全部已保存策略（未保存时回退当前策略）">📋 运行全部已保存</button></div>
+      <button class="btn btn-sm" id="replayDownload" type="button" disabled>下载完整结果 JSON</button>
+    </div>
+    <div id="simulationModeNote" role="status" class="progress-note" style="margin-bottom:8px" hidden></div>
+    <div id="simulationStatus" role="status" aria-live="polite" class="progress-note" style="margin-bottom:8px"></div>
+    <div id="simulationSnapshot" class="progress-note" style="margin-bottom:8px">请先运行</div>
+    <div id="simulationDirty" role="status" aria-live="polite" class="progress-note" style="margin-bottom:8px" hidden>输入已修改，尚未重新运行</div>
+    <div id="replaySummary" hidden></div>
+    <div id="strategyMetricsGrid" class="result-grid" style="margin-bottom:16px"></div>
+    <div id="chartStrategyGantt" class="chart-tall"></div>
+    <div class="row2" style="margin-top:14px">
+      <div>
+        <h3 style="font-size:.85rem;color:var(--accent);margin-bottom:2px">passTime 分解（瓶颈归因）</h3>
+        <p class="subtitle" style="margin-bottom:4px">每次前向时间花在哪层——名义分量占比（max取大后按名义值归一化）</p>
+        <div id="chartStrategyPt" style="width:100%;min-height:220px;height:26vh;max-height:260px"></div>
+      </div>
+      <div>
+        <h3 style="font-size:.85rem;color:var(--accent2);margin-bottom:2px">L2/L3 带宽需求（P50/P99/峰值）</h3>
+        <p class="subtitle" style="margin-bottom:4px">瞬时链路速率分位数（含预取/淘汰突发）vs 配置带宽 · 需求 &gt; 配置 ⇒ 该层为瓶颈</p>
+        <div id="chartStrategyBwReq" style="width:100%;min-height:220px;height:26vh;max-height:260px"></div>
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <h3 style="font-size:.85rem;color:var(--accent3);margin-bottom:2px">L2/L3 驻留时间序列（首个策略）</h3>
+      <p class="subtitle" style="margin-bottom:4px">各层占用随时间变化——预取/淘汰波次的瞬态行为</p>
+      <div id="chartStrategyResident" style="width:100%;min-height:180px;height:22vh;max-height:220px"></div>
+    </div>
+    <div class="formula-box" id="formulaStrategyTier"></div>
+    <div class="formula-box" id="formulaStrategySim"></div>
+  </div>
+
+  <!-- Sensitivity Analysis -->
+  <!-- 2026-08-28: 面板初始即显示。原先 display:none 要靠"跑一次单次模拟"解锁(showStrategyResults),
+       但敏感性扫描与单次模拟结果**零依赖**(自包含: 自带控件/图表/导出入口) ——
+       这个门禁是初始提交的遗留, 会挡住"导入参数 → 直接扫描"的合法路径(用户实测踩到)。 -->
+  <div class="card" id="sensitivityPanel">
+    <h2><span>参数敏感性</span> 分析</h2>
+    <p class="subtitle">三参数敏感性：横轴「扫描参数」+ 颜色「对比参数」分档 + 纵轴「观察指标」；固定其他参数与随机种子（共同随机数法）。留空对比参数则单参数扫描。「扫描范围/对比档位」支持 <code>起点,终点,步长</code>（如 1,10,2 → 1,3,5,7,9）或显式逗号列表（空用参数默认档位）</p>
+    <div class="form-row" style="margin-bottom:8px">
+      <div><label>① 扫描参数(横轴)</label><select id="sSweepParam">
+        <option value="evict_threshold">淘汰触发阈值</option>
+        <option value="max_batch_size">最大Batch Size</option>
+        <option value="prefix_hit">前缀命中率</option><option value="prefix_warm_l2">L2预热命中率</option><option value="ssd_bw">L3聚合带宽</option>
+        <option value="input_len">输入长度</option><option value="qps">到达率QPS</option>
+        <option value="concurrency">并发请求数</option>
+        <option value="gpu_preset">GPU硬件</option>
+      </select></div>
+      <div><label>扫描范围(起,止,步长)</label><input id="sSweepRange" value="" placeholder="如 0,100,20" style="width:110px"></div>
+      <div><label>② 对比参数(颜色, 可空)</label><select id="sSweepCompareParam">
+        <option value="">无(单参数)</option>
+        <option value="evict_threshold">淘汰触发阈值</option>
+        <option value="max_batch_size">最大Batch Size</option>
+        <option value="prefix_hit">前缀命中率</option><option value="prefix_warm_l2">L2预热命中率</option><option value="ssd_bw">L3聚合带宽</option>
+        <option value="input_len">输入长度</option><option value="qps">到达率QPS</option>
+        <option value="concurrency">并发请求数</option>
+        <option value="gpu_preset">GPU硬件</option>
+      </select></div>
+      <div><label>对比档位(起,止,步长)</label><input id="sSweepCompare" value="" placeholder="如 0,100,20" style="width:110px"></div>
+      <div style="flex:2"><label style="text-transform:none;letter-spacing:0">③ 形状维度</label>
+        <div style="display:flex;align-items:center;gap:10px;min-height:29px;flex-wrap:wrap">
+          <select id="sShapeDim" style="width:104px" title="形状维度绑定对象(2026-08-27 开放为任意参数)。&#10;预取策略: 勾选下方 3 个策略(默认, 与历史行为一致)&#10;其他任意参数: 形状=该参数的不同档位, 档位在右侧填写&#10;⚠️ 横轴/颜色/形状必须绑不同参数, 冲突时形状自动降级为预取策略">
+            <option value="prefetch">预取策略</option>
+            <option value="gpu_preset">GPU硬件</option>
+            <option value="evict_threshold">淘汰触发阈值</option>
+            <option value="max_batch_size">最大Batch Size</option>
+            <option value="prefix_hit">前缀命中率</option><option value="prefix_warm_l2">L2预热命中率</option><option value="ssd_bw">L3聚合带宽</option>
+            <option value="input_len">输入长度</option><option value="qps">到达率QPS</option>
+            <option value="concurrency">并发请求数</option>
+          </select>
+          <span id="sShapePfBox" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <label style="margin:0;font-size:.72rem;color:var(--text-dim);white-space:nowrap;text-transform:none;letter-spacing:0"><input type="checkbox" id="sPfWait" checked style="margin-right:4px">wait_complete</label>
+            <label style="margin:0;font-size:.72rem;color:var(--text-dim);white-space:nowrap;text-transform:none;letter-spacing:0"><input type="checkbox" id="sPfBest" checked style="margin-right:4px">best_effort</label>
+            <label style="margin:0;font-size:.72rem;color:var(--text-dim);white-space:nowrap;text-transform:none;letter-spacing:0"><input type="checkbox" id="sPfTimeout" style="margin-right:4px">timeout</label>
+            <label style="margin:0;font-size:.72rem;color:var(--text-dim);white-space:nowrap;text-transform:none;letter-spacing:0"><input type="checkbox" id="sPfRace" checked style="margin-right:4px">race</label>
+          </span>
+          <input id="sShapeVals" value="h20x8,b300x8" style="width:150px;display:none" placeholder="如 h20x8,b300x8" title="形状维度的档位列表。&#10;GPU硬件: 预设 key 逗号分隔(h20x8 h100x8 a100x8 b200x8 b300x8 a950pr8 a950dt8 klxp800x8 klxp900x32)&#10;数值参数: 逗号列表(如 2048,8192,32768)或「起,止,步长」&#10;留空则用该参数的默认档位">
+        </div>
+      </div>
+      <div><label>④ 观察指标(纵轴)</label><select id="sSweepMetric">
+        <optgroup label="Replay measurement 测量窗口">
+          <option value="measurement_arrival_qps">measurement 到达QPS</option><option value="measurement_completion_qps">measurement 完成QPS</option>
+          <option value="measurement_ttft">measurement 平均TTFT(ms)</option><option value="measurement_ttft_p50">measurement TTFT P50(ms)</option><option value="measurement_ttft_p99">measurement TTFT P99(ms)</option>
+          <option value="measurement_tpot">measurement 平均TPOT(ms/tok)</option><option value="measurement_tpot_p50">measurement TPOT P50(ms/tok)</option><option value="measurement_tpot_p99">measurement TPOT P99(ms/tok)</option>
+          <option value="measurement_latency">measurement 平均延迟(ms)</option><option value="measurement_latency_p50">measurement 延迟P50(ms)</option><option value="measurement_latency_p99">measurement 延迟P99(ms)</option><option value="measurement_hit_rate">measurement 前缀命中率(%)</option>
+        </optgroup>
+        <option value="hit_rate" selected>HBM命中率(%)</option><option value="prefix_hit_rate">前缀命中率实测(%)</option><option value="latency">平均延迟(ms)</option><option value="latency_p50">延迟P50(ms)</option><option value="p99_latency">延迟P99(ms)</option>
+        <option value="ttft">平均TTFT(ms)</option><option value="ttft_p50">TTFT P50(ms)</option><option value="ttft_p99">TTFT P99(ms)</option>
+        <option value="tpot">平均TPOT(ms/tok)</option><option value="tpot_p50">TPOT P50(ms/tok)</option><option value="tpot_p99">TPOT P99(ms/tok)</option>
+        <option value="throughput">吞吐(tok/s)</option><option value="mem_util">显存利用率峰值(%)</option>
+        <option value="prefill_thr">Prefill吞吐-名义(tok/s)</option><option value="prefill_comp_thr">Prefill吞吐-GPU实算(tok/s)</option><option value="prefill_cache_amp">缓存放大倍数(名义÷实算)</option>
+        <option value="decode_thr">Decode吞吐(tok/s)</option>
+        <option value="prefill_thr_per_req">Prefill吞吐-单请求(tok/s)</option><option value="decode_thr_per_req">Decode吞吐-单请求(tok/s)</option>
+        <option value="prefill_active_s">Prefill活跃时长(s)</option><option value="decode_active_s">Decode活跃时长(s)</option>
+        <option value="prefill_overlap">Prefill并发重叠系数(×)</option><option value="decode_overlap">Decode并发重叠系数(×)</option>
+        <option value="fetch_ratio">L3拉取时间占比(%)</option>
+        <option value="compute_net">纯计算(ms)</option><option value="compute_wait">算力竞争等待(ms)</option><option value="compute_wait_ratio">算力竞争等待占比(%)</option>
+        <option value="ttft_queue">TTFT分量-排队等待(ms)</option><option value="ttft_prefillq">TTFT分量-Prefill排队(ms)</option><option value="ttft_fetch">TTFT分量-L3拉取等待(ms)</option><option value="ttft_xfer">TTFT分量-PD KV传输(ms)</option>
+        <option value="ttft_stack">📊 TTFT构成(堆叠柱)</option>
+      </select></div>
+      <div style="flex:0 0 auto;display:flex;align-items:flex-end"><button class="btn" id="btnRunSens" onclick="runSensitivity()">📈 运行敏感性分析</button></div>
+    </div>
+    <div id="sensitivityStatus" role="status" class="progress-note" hidden></div>
+    <p class="subtitle">下方保留最近一次成功扫描结果，与上方单次运行结果独立；切换输入不重新计算，失败/取消保留旧结果。Replay measurement 指标有明确前缀，吞吐和 TTFT 分解仍为全程口径。</p>
+    <div id="chartSensitivity" class="chart-container"></div>
+    <!-- 图表导出(2026-08-25): 出图后才可用, 故初始 disabled, 由 setSensExportEnabled 解锁 -->
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <span style="font-size:.73rem;color:var(--text-dim)">导出当前图表：</span>
+      <button class="btn btn-sm" id="btnSensExportPng" disabled onclick="exportSensImage('png')" title="PNG 无损位图, 2× 像素比(高清, 贴进文档/PPT 缩放后不发虚)。背景为深色以匹配平台配色。">🖼 PNG</button>
+      <button class="btn btn-sm" id="btnSensExportJpg" disabled onclick="exportSensImage('jpeg')" title="JPG 有损压缩, 体积约为 PNG 的 1/3, 适合邮件/IM 分享。&#10;注: JPEG 无透明通道, 已显式填充深色背景(否则透明区会压成纯黑)。">🖼 JPG</button>
+      <button class="btn btn-sm" id="btnSensExportHtml" disabled onclick="exportSensHtml()" title="自包含单文件 HTML —— **保留完整交互**(tooltip / 图例开关 / 区域缩放 / 另存为图片)。&#10;★★ 多次扫描一并导出: 下方勾选的**全部**扫描结果打包进同一个 HTML, 页内可切换批次。&#10;★★ 参数透视(2026-08-27): 打开即**摊开列出全部参数**, 可任意指定哪个参数当横轴/颜色/形状, 并勾选参数值筛选 —— 「颜色=命中率 形状=输入长度」与「颜色=输入长度 形状=命中率」本是同一批数据, 无需重跑即可互换。改动任一项才接管图表, 随时可「↺ 恢复原图」。&#10;⚠️ 某参数要可选, 需它在本文件数据里有 ≥2 个取值: 若两次扫描只改了某参数(如输入长度), 必须**同时勾选这两个批次**再导出, 否则它只有一个取值会显示为灰色固定值。&#10;★ 可在页内**切换纵轴指标**(全指标已烧进文件, 切换零重算; 支持 ←/→ 键)。&#10;附带: ①数据表(随指标与筛选同步刷新, 可一键复制为 TSV 粘进 Excel) ②方法说明 ③参数配置(按模型&#47;硬件&#47;负载&#47;策略分组展示, 中文标签 + 可读值, 非默认值高亮; 可切回原始 JSON 粘回平台「导入参数」复现)。&#10;图表渲染需联网加载 echarts; 离线时数据表仍完整可用。">🌐 HTML(可交互)</button>
+      <span id="sensExportNote" style="font-size:.72rem;color:var(--accent2)"></span>
+    </div>
+    <div id="sensExportRestriction" role="status" class="progress-note" hidden></div>
+    <!-- 扫描快照列表(2026-08-27): 平台同时只展示一次扫描, 但历次结果自动攒在这里,
+         勾选后可一并导出到同一个 HTML(页内切换批次 / 参数透视) -->
+    <div id="sensSnapList" style="margin-top:8px;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px"></div>
+    <div class="formula-box" id="formulaSensitivity"></div>
+  </div>
+</div>
+
+<!-- ====== TAB 2: 存储结构 ====== -->
+<div class="tab-panel" id="tab-storage">
+  <div class="card">
+    <h2><span>存储层级</span> 总览</h2>
+    <p class="subtitle">理论估算（当前编辑参数，非运行结果）· HBM → DRAM → SSD 三级存储的容量、带宽与延迟对比</p>
+    <div id="chartTierOverview" class="chart-container"></div>
+    <div class="formula-box" id="formulaTier"></div>
+  </div>
+  <div class="card">
+    <h2><span>KV Cache</span> 膨胀曲线</h2>
+    <p class="subtitle">理论估算（当前编辑参数，非运行结果）· 单请求KV Cache随序列长度增长的占用变化，多模型叠加对比（MLA模型按压缩后维度计算）</p>
+    <div id="chartKvCurve" class="chart-container"></div>
+    <div class="formula-box" id="formulaKvCurve"></div>
+  </div>
+  <div class="card">
+    <h2><span>并发容量</span> 阶梯分析</h2>
+    <p class="subtitle">理论估算（当前编辑参数，非运行结果）· 不同并发级别下的生命周期KV需求（含输出增长、块碎片、前缀共享抵扣）与三级分布</p>
+    <div id="chartConcurrency" class="chart-container"></div>
+    <div class="formula-box" id="formulaConcurrency"></div>
+  </div>
+</div>
+
+<!-- ====== TAB 3: 调度策略 ====== -->
+<div class="tab-panel" id="tab-schedule">
+  <div class="card">
+    <h2><span>请求生命周期</span> 甘特图</h2>
+    <p class="subtitle">最近一次成功运行的首个策略 · 与指标卡共用结果和执行快照 · 排队→等算力→Prefill→Decode，含跨层传输等待</p>
+    <div id="ganttPagination" hidden>
+      <button id="ganttPrev" class="btn btn-sm" type="button">上一页</button>
+      <span id="ganttPageStatus" role="status" aria-live="polite"></span>
+      <button id="ganttNext" class="btn btn-sm" type="button">下一页</button>
+    </div>
+    <div id="chartGantt" class="chart-tall"></div>
+    <h3 style="font-size:.85rem;color:var(--accent);margin:14px 0 4px">批次并发占用时间线</h3>
+    <p class="subtitle" style="margin-bottom:4px">定时采样的 Decode / Prefill 并发与排队深度，非逐事件记录</p>
+    <div class="formula-box" id="formulaBatchOcc"></div>
+    <div id="chartBatchOcc" style="width:100%;min-height:200px;height:26vh;max-height:280px"></div>
+    <div class="formula-box" id="formulaGantt"></div>
+  </div>
+  <div class="card">
+    <h2><span>Continuous Batching</span> 吞吐-延迟分析</h2>
+    <p class="subtitle">理论估算（当前编辑参数，非运行结果）· Roofline模型：批次增大先受显存带宽限制，越过拐点后受算力限制</p>
+    <div id="chartBatching" class="chart-container"></div>
+    <div class="formula-box" id="formulaBatching"></div>
+  </div>
+  <div class="card">
+    <h2><span>Prefix Sharing</span> 显存节省分析</h2>
+    <p class="subtitle">理论估算（当前编辑参数，非运行结果）· 共享前缀命中率对显存占用的影响</p>
+    <div id="chartPrefix" class="chart-container"></div>
+    <div class="formula-box" id="formulaPrefix"></div>
+  </div>
+  <div class="card">
+    <h2><span>Eviction策略</span> 命中率对比</h2>
+    <p class="subtitle">独立理论对比（当前 seed，非运行结果）· LRU / LFU / FIFO / Belady 在同一访问 trace 下的命中率曲线</p>
+    <div id="chartEviction" class="chart-container"></div>
+    <div class="formula-box" id="formulaEviction"></div>
+  </div>
+</div>
+
+<!-- ====== TAB 4: 交叉分析 ====== -->
+<div class="tab-panel" id="tab-cross">
+  <div class="card">
+    <h2><span>策略×负载</span> 延迟热力图</h2>
+    <p class="subtitle">保留最近一次成功交叉分析：合成负载横轴为并发，Replay 横轴为目标 QPS、延迟为 measurement P99；实际到达/完成 QPS 和失败/截断状态见 tooltip。与单次运行独立，失败/取消保留旧结果。</p>
+    <button class="btn" id="btnRunCross" onclick="runCrossAnalysis()" style="font-size:.85rem;margin-bottom:8px">按需运行交叉分析</button>
+    <div id="crossStatus" role="status" class="progress-note" hidden></div>
+    <div id="chartHeatmap" class="chart-tall"></div>
+    <div class="formula-box" id="formulaHeatmap"></div>
+  </div>
+  <div class="card">
+    <h2><span>策略综合对比</span> 雷达图</h2>
+    <p class="subtitle">合成负载沿用六维归一化；Replay 仅比较全程输出吞吐、measurement 完成QPS及P50/P99延迟。碎片、公平性和理想缓存不作 Replay 评分，HBM占用不等同效率。</p>
+    <div id="chartRadar" class="chart-container"></div>
+    <div class="formula-box" id="formulaRadar"></div>
+  </div>
+</div>
+
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

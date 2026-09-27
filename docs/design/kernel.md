@@ -29,6 +29,16 @@ LLM Serving 系统级：请求到达 → 调度 → prefill/decode → continuou
 - prefill 耗时 = `prefill_c1 · prompt_tokens + prefill_c2 · prompt_tokens²`（`prefill_c2` 默认 0）
 - decode 单步耗时 = `decode_d1 + decode_d2 · batch_total_tokens`
 
+### 融合批步长
+
+一个 `EngineStep` 内可同时存在新准入请求的 prefill 与在跑请求的 decode。步长取两者最大值：
+
+```
+step_time = max(Σ prefill 耗时（本步准入的全部请求）, decode 单步耗时)
+```
+
+语义：prefill 与 decode 在同一次迭代中融合执行（chunked-prefill 式），而非串行相加。`batch_total_tokens` 计入本步准入请求的 prompt token。
+
 除排队外不建模其他延迟来源（无网络、无采样开销）。
 
 ## 工作负载接口

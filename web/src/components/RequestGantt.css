@@ -1,0 +1,76 @@
+.gantt-panel {
+  padding: 24px;
+  border: 1px solid #203249;
+  border-radius: 16px;
+  background: rgb(12 25 43 / 88%);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 16%);
+}
+
+.gantt-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.gantt-heading h2 {
+  margin-bottom: 0;
+  font-size: 1.15rem;
+}
+
+.gantt-heading > p {
+  margin: 0;
+  color: #7f93ad;
+  font-size: 0.82rem;
+}
+
+.gantt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 18px 0 8px;
+  color: #a9bad0;
+  font-size: 0.78rem;
+}
+
+.gantt-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.gantt-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.gantt-chart {
+  width: 100%;
+  min-height: 360px;
+}
+
+.gantt-empty {
+  display: grid;
+  min-height: 220px;
+  margin: 16px 0 0;
+  border: 1px dashed #29405d;
+  border-radius: 12px;
+  place-items: center;
+  color: #7f93ad;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .gantt-panel {
+    padding: 18px;
+  }
+
+  .gantt-heading {
+    display: block;
+  }
+
+  .gantt-heading > p {
+    margin-top: 8px;
+  }
+}

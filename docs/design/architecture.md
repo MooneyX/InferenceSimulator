@@ -22,7 +22,11 @@ kv_cache     token 预算占用与准入判断（依赖 schemas）
 scheduler    FCFS 调度：batch 组成决策（依赖 kv_cache、perf_model）
 events       事件类型定义与事件流产出（依赖 schemas）
 engine       DES 内核：事件队列、时钟推进、EngineStep 编排（依赖以上全部）
+metrics      指标汇总：区间记录 → Metrics（依赖 schemas）
+runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、engine、metrics）
 ```
+
+`runner.simulate` 是 `core` 唯一的对外调用入口，输入输出均为 `schemas` 类型。
 
 规则：
 

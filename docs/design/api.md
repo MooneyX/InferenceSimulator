@@ -62,6 +62,13 @@ warnings:  # 如 KV 超限事件
 - 端到端吞吐（请求数 / makespan）
 - makespan（末请求完成时刻 − 首请求到达时刻）
 
+计算口径：
+
+- 分位数：线性插值（与 numpy `percentile` 默认 `linear` 方法一致），即对升序样本取位置 `(n−1)·q` 并在相邻两点间插值。
+- TPOT：逐请求 `(finish − prefill_end) / (output_len − 1)`，再对请求取算术平均；`output_len = 1` 的请求无 decode 阶段，不计入。全部请求均为 `output_len = 1` 时为 `null`。
+- 吞吐单位为 请求/秒（makespan 为 ms，换算后相除）；makespan 为 0 时吞吐无定义，为 `null`。
+- 时间类指标单位均为 ms。
+
 ## 类型同步
 
 schema 单一事实源为 `core` 中的 Pydantic 模型；FastAPI 自动生成 OpenAPI，前端用 `openapi-typescript` 生成 TS 类型。禁止双侧手写类型定义。

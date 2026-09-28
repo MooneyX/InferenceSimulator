@@ -190,7 +190,11 @@ class Metrics(_Record):
         ge=0,
         description="decode 阶段平均每 token 耗时（ms）；所有请求 output_len 均为 1 时为 None",
     )
-    throughput: float = Field(ge=0, description="请求数 / makespan（请求/秒）")
+    throughput: float | None = Field(
+        default=None,
+        ge=0,
+        description="请求数 / makespan（请求/秒）；makespan 为 0 时为 None",
+    )
     makespan: float = Field(ge=0, description="末请求完成时刻 − 首请求到达时刻（ms）")
 
 

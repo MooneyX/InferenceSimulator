@@ -12,6 +12,9 @@ build/
 # Node
 node_modules/
 web/dist/
+web/playwright-report/
+web/test-results/
+.playwright-cli/
 
 # IDE / OS
 .idea/

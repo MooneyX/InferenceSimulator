@@ -10,13 +10,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.e2e.json",
     "gen:openapi": "uv run python -m simserver.openapi_export openapi.json",
     "gen:types": "openapi-typescript openapi.json -o src/api/schema.d.ts",
     "gen:api": "npm run gen:openapi && npm run gen:types",
     "check:types": "openapi-typescript openapi.json -o src/api/schema.d.ts --check"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^26.6.3",

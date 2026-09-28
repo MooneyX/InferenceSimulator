@@ -1,4 +1,15 @@
-import * as echarts from "echarts";
+import { CustomChart, type CustomSeriesOption } from "echarts/charts";
+import {
+  DataZoomComponent,
+  GridComponent,
+  TooltipComponent,
+  type DataZoomComponentOption,
+  type GridComponentOption,
+  type TooltipComponentOption,
+} from "echarts/components";
+import * as echarts from "echarts/core";
+import type { ComposeOption } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
 import { useEffect, useMemo, useRef } from "react";
 
 import type { RequestRecord } from "../api/types";
@@ -9,6 +20,21 @@ import {
   type GanttPhase,
 } from "../gantt/model";
 import "./RequestGantt.css";
+
+type GanttChartOption = ComposeOption<
+  | CustomSeriesOption
+  | DataZoomComponentOption
+  | GridComponentOption
+  | TooltipComponentOption
+>;
+
+echarts.use([
+  CustomChart,
+  GridComponent,
+  TooltipComponent,
+  DataZoomComponent,
+  CanvasRenderer,
+]);
 
 export interface RequestGanttProps {
   requests?: readonly RequestRecord[];
@@ -66,7 +92,7 @@ function createTooltipFormatter(model: GanttModel) {
   };
 }
 
-export function createGanttOption(model: GanttModel): echarts.EChartsOption {
+export function createGanttOption(model: GanttModel): GanttChartOption {
   const phaseIndex = new Map(GANTT_PHASES.map((phase, index) => [phase, index]));
   const data = model.segments.map((segment) => [
     segment.rowIndex,

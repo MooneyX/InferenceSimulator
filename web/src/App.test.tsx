@@ -76,7 +76,7 @@ describe("App", () => {
     expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "仿真告警" })).toBeInTheDocument();
-    expect(screen.getByTestId("request-gantt")).toHaveTextContent("1 requests");
+    expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.queryByRole("heading", { name: "等待仿真结果" })).not.toBeInTheDocument();
   });
 

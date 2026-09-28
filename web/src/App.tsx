@@ -1,12 +1,16 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { simulate, SimulationApiError } from "./api/client";
 import type { SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
-import { RequestGantt } from "./components/RequestGantt";
 import { SimulationForm } from "./components/SimulationForm";
 import { WarningsPanel } from "./components/WarningsPanel";
 import "./App.css";
+
+const RequestGantt = lazy(async () => {
+  const module = await import("./components/RequestGantt");
+  return { default: module.RequestGantt };
+});
 
 interface PresentationError {
   message: string;
@@ -91,7 +95,16 @@ export default function App() {
           <>
             <MetricsPanel metrics={result.metrics} />
             <WarningsPanel warnings={result.warnings} />
-            <RequestGantt requests={result.requests} />
+            <Suspense
+              fallback={
+                <section className="simulation-status" role="status">
+                  <span className="status-indicator" aria-hidden="true" />
+                  正在加载请求生命周期图…
+                </section>
+              }
+            >
+              <RequestGantt requests={result.requests} />
+            </Suspense>
           </>
         ) : null}
 

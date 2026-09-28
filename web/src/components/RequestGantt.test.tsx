@@ -10,12 +10,21 @@ const chart = vi.hoisted(() => ({
   dispose: vi.fn(),
 }));
 const init = vi.hoisted(() => vi.fn(() => chart));
+const use = vi.hoisted(() => vi.fn());
 const clipRectByRect = vi.hoisted(() => vi.fn((shape: unknown) => shape));
 
-vi.mock("echarts", () => ({
+vi.mock("echarts/core", () => ({
   init,
+  use,
   graphic: { clipRectByRect },
 }));
+vi.mock("echarts/charts", () => ({ CustomChart: {} }));
+vi.mock("echarts/components", () => ({
+  DataZoomComponent: {},
+  GridComponent: {},
+  TooltipComponent: {},
+}));
+vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }));
 
 function request(id: number, offset = 0): RequestRecord {
   return {

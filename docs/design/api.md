@@ -55,6 +55,18 @@ requests:  # 每请求一条区间记录，供甘特图消费
 warnings:  # 如 KV 超限事件
 ```
 
+- 请求体即 `SimConfig`，响应体即 `SimResult`，服务层不另行定义数据类型。
+- 响应体字节与内核 `SimResult` 的 JSON 序列化一致：同种子两次请求的响应逐字节相同。
+
+### 错误响应
+
+| 状态码 | 场景 | 响应体 |
+|---|---|---|
+| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配） | FastAPI 默认 `HTTPValidationError` |
+| `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
+
+错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。
+
 ## Metrics 定义
 
 - TTFT（= prefill_end − arrival）：均值 / P50 / P99

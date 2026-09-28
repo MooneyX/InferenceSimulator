@@ -9,7 +9,7 @@ LLM Serving 系统级推理仿真器。离散事件仿真内核 + 前后端分�
 ```
 core/     # 仿真内核 simcore：纯 Python 包，零 IO（M1 已完成）
 server/   # FastAPI 服务层：同步仿真 API 与 OpenAPI 导出（M2 已完成）
-web/      # OpenAPI 生成的 TS 类型；React 前端在 M3 实现
+web/      # React + TypeScript + Vite + ECharts 单页前端（M3 已完成）
 docs/     # 设计文档
 ```
 
@@ -23,8 +23,12 @@ uv run ruff check . ; uv run ruff format --check .
 uv run python -m mypy
 
 cd web
-npm ci                                   # 安装类型生成工具（Node.js 22）
+npm ci                                   # 安装前端依赖（Node.js 22）
+npm test                                 # Vitest 单元与组件测试
+npm run typecheck                        # 前端与浏览器测试类型检查
+npm run build                            # Vite 生产构建
 npm run check:types                      # 检查生成的 TS 类型是否最新
+npm run test:e2e                         # Playwright：真实后端 1k 请求与移动端验收
 ```
 
 ## 启动服务
@@ -34,6 +38,15 @@ uv run uvicorn simserver.app:create_app --factory --reload
 ```
 
 服务默认监听 `http://127.0.0.1:8000`，交互式 API 文档位于 `/docs`，OpenAPI 文档位于 `/openapi.json`。
+
+另开一个终端启动前端：
+
+```powershell
+cd web
+npm run dev
+```
+
+前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面支持完整 synthetic 配置、指标与告警展示，以及可缩放平移的 Canvas 请求甘特图。
 
 调用 `POST /api/simulate`：
 

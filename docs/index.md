@@ -19,7 +19,7 @@
 | 内核 | `simcore.simulate(SimConfig) -> SimResult` | M1 已完成 |
 | 服务层 | `simserver.app:create_app`；`POST /api/simulate` | M2 已完成 |
 | API 类型 | `web/openapi.json`；`web/src/api/schema.d.ts` | M2 已完成，运行 `npm run gen:api` 更新 |
-| 前端应用 | `web/` | M3 规划中 |
+| 前端应用 | `web/src/App.tsx`；`web/src/components/RequestGantt.tsx` | M3 已完成 |
 
 运行、调用 API 与类型生成命令见仓库根目录 [README.md](../README.md)。
 

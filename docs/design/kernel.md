@@ -16,11 +16,19 @@ LLM Serving 系统级：请求到达 → 调度 → prefill/decode → continuou
 
 **约束**：性能模型的步长计算必须是纯函数（无全局状态依赖），为后续内核替换（如 Rust）预留。
 
+### 请求生命周期
+
+- 准入步：执行 prefill，`prefill_start` = 步起点，`prefill_end` = 步终点，同时产出首 token。
+- 其后每个 decode 步产出 1 token，全部 `output_len` 个 token 产出后完成；`output_len = 1` 的请求在准入步结束即完成。
+- batch = 全部 KV 驻留请求。完成请求在步末释放，故每步开始时驻留请求均处于 decode 阶段。
+
 ## 调度与 KV cache 语义
 
 - 调度策略：FCFS，受 `max_batch_size` 与 KV 预算双重约束。
 - KV 占用：token 预算制（`kv_token_budget`）。prefill 占用 prompt 长度额度；decode 每步逐请求 +1 token。
 - 预算耗尽：禁止新请求准入；在跑请求继续执行，不做 OOM stall。配置应保证不超限，超限事件记入 `warnings`。
+- 严格 FCFS：队头放不下时停止本步准入，不跳过队头去准入后续较小请求。
+- 超大请求强制准入：prompt 长度超过整个 `kv_token_budget` 的请求永远无法正常准入。为避免队头死锁，当 batch 为空且队头为此类请求时强制准入，并记入 `warnings`。
 
 ## 性能模型
 

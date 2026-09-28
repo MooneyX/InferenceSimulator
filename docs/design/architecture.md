@@ -27,8 +27,33 @@ events       事件类型定义与事件流产出（依赖 schemas）
 规则：
 
 - 禁止跨层反向依赖（如 `scheduler` 不得引用 `engine`）。
-- 模块间只通过 `schemas` 中的类型交换数据，不传内部对象。
+- 模块间数据交换遵循下文「数据交换边界」。
 - 每个模块可独立单测；`engine` 之外的模块不感知事件队列的存在。
+
+### 数据交换边界
+
+分两层边界：
+
+- **对外边界（`core` ↔ `server`）**：只通过 `schemas` 中的 Pydantic 类型交换数据。`schemas` 是对外契约的单一事实源，不收纳内核内部类型。
+- **内核内部模块间**：只交换不可变值对象（`frozen` dataclass 或 `schemas` 类型）。值对象由提供方模块定义并列入其 `__all__`，只允许依赖图中的下游模块引用。
+- **禁止跨模块共享可变状态**。唯一例外是依赖图中明确列出的协作者注入，须写明所有权（见下文）。
+
+内部类型归属：
+
+| 类型 | 定义于 | 使用方 | 说明 |
+|---|---|---|---|
+| `StepPlan` | `scheduler` | `engine` | 单步调度结果（值对象） |
+| `KVStats` | `kv_cache` | `engine` | 账本统计快照（值对象），由引擎转化为 `warnings` 与元信息 |
+| `Event` / `EventKind` | `events` | `engine` | 事件队列载荷与同刻全序（值对象），仅供 `engine` 使用 |
+| `EventFactory` | `events` | `engine` | 事件序号分配器，由 `engine` 实例化并独占持有 |
+| `TraceRecord`（`ArrivalTrace` / `StepTrace` / `DoneTrace`） | `events` | `engine` 产出 | 事件流记录（值对象），内核级输出，非 API 契约 |
+| `EventLog` | `events` | `engine` | 事件流容器，由 `engine` 实例化并独占持有 |
+
+协作者注入：
+
+- `KVCache`：由 `engine` 构造并持有所有权，注入 `scheduler`。`scheduler` 仅调用准入相关接口（`can_admit` / `can_ever_admit` / `reserve`，准入即提交）与只读查询（`budget` / `used` / `len`）；`advance` / `release` / `stats` 仅由 `engine` 调用。
+
+事件流的对外暴露：`TraceRecord` 属于内核输出，但 MVP 不经 API 暴露，因此不进入 `schemas`。未来开放决策溯源或播放式仿真时，在 `schemas` 中新增对应的 Pydantic 类型，由服务层边界完成转换；内核内部继续使用 dataclass，避免逐步记录的开销。
 
 ## 依赖规则
 

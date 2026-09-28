@@ -41,7 +41,10 @@ REPEATS = 5
 
 
 def bench_config(num_requests: int, seed: int = 0) -> SimConfig:
-    """基准负载：长尾 prompt + 泊松 output，负载接近饱和以产生排队与大 batch。
+    """基准负载：长尾 prompt + 泊松 output。
+
+    到达率（50 req/s）约为服务能力（约 5.6 req/s）的 9 倍，刻意过载：batch 常驻满载、
+    等待队列持续增长，覆盖最重的调度路径。
 
     固定不变——修改会使历史耗时不可比。
     """

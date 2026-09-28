@@ -59,25 +59,7 @@ h1 {
   letter-spacing: -0.04em;
 }
 
-.hero-description,
-.workspace-card p {
+.hero-description {
   color: #9fb0c6;
   line-height: 1.7;
-}
-
-.workspace-card {
-  padding: 28px;
-  border: 1px solid #203249;
-  border-radius: 16px;
-  background: rgb(12 25 43 / 88%);
-  box-shadow: 0 18px 60px rgb(0 0 0 / 24%);
-}
-
-.workspace-card h2 {
-  margin-bottom: 8px;
-  font-size: 1.1rem;
-}
-
-.workspace-card p {
-  margin-bottom: 0;
 }

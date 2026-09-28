@@ -4,11 +4,28 @@
 }
 
 .form-section {
+  min-width: 0;
   padding: 24px;
   border: 1px solid #203249;
   border-radius: 16px;
-  background: rgb(12 25 43 / 88%);
+  background: linear-gradient(145deg, rgb(14 30 51 / 94%), rgb(9 21 37 / 94%));
   box-shadow: 0 18px 60px rgb(0 0 0 / 16%);
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.form-section:hover {
+  border-color: #2d4664;
+}
+
+@media (min-width: 900px) {
+  .simulation-form {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr);
+  }
+
+  .form-section:first-child,
+  .form-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 .section-heading {
@@ -28,15 +45,6 @@
   margin: 0;
   color: #7f93ad;
   font-size: 0.82rem;
-}
-
-.section-kicker {
-  margin-bottom: 5px;
-  color: #60a5fa;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .form-grid,
@@ -70,6 +78,12 @@
   border-radius: 8px;
   color: #e5edf8;
   background: #0b1829;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.form-field input:hover:not([readonly]) {
+  border-color: #46617f;
+  background: #0d1c30;
 }
 
 .form-field input[readonly] {

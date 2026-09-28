@@ -61,6 +61,9 @@ describe("App", () => {
       screen.getByRole("heading", { level: 1, name: "推理服务仿真器" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
+    expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
+      "单 GPUSynthetic workloadFCFS 调度",
+    );
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
   });
 

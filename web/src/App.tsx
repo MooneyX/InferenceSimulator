@@ -56,6 +56,11 @@ export default function App() {
         <p className="hero-description">
           配置单 GPU 推理负载，并查看仿真指标与请求生命周期。
         </p>
+        <div className="hero-badges" aria-label="当前仿真范围">
+          <span>单 GPU</span>
+          <span>Synthetic workload</span>
+          <span>FCFS 调度</span>
+        </div>
       </header>
 
       <SimulationForm onSubmit={handleSubmit} disabled={isRunning} />

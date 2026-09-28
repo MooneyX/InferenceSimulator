@@ -7,6 +7,7 @@
   padding: 18px;
   border: 1px solid #29405d;
   border-radius: 12px;
+  background: rgb(7 17 31 / 34%);
 }
 
 .length-distribution legend {
@@ -36,6 +37,13 @@
   border-radius: 8px;
   color: #e5edf8;
   background: #0b1829;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.length-field input:hover,
+.length-field select:hover {
+  border-color: #46617f;
+  background: #0d1c30;
 }
 
 .length-field input:focus,

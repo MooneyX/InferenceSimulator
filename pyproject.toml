@@ -1,21 +1,25 @@
 [tool.uv.workspace]
-# server 在 M2 加入 members
-members = ["core"]
+members = ["core", "server"]
 
 [tool.uv.sources]
 simcore = { workspace = true }
+simserver = { workspace = true }
 
 [dependency-groups]
 dev = [
     "simcore",
+    "simserver",
     "pytest>=8.2",
     "ruff>=0.6",
     "mypy>=1.11",
+    # fastapi.testclient 依赖
+    "httpx2>=2.13",
 ]
 
 [tool.pytest.ini_options]
 # 基准测试位于 core/benchmarks，不在默认收集路径内；显式运行：pytest core/benchmarks
-testpaths = ["core/tests"]
+# 各 tests 目录无 __init__.py，测试文件名须全局唯一
+testpaths = ["core/tests", "server/tests"]
 python_files = ["test_*.py", "bench_*.py"]
 addopts = "-q"
 markers = ["benchmark: 计时基准，不进默认测试"]
@@ -23,7 +27,7 @@ markers = ["benchmark: 计时基准，不进默认测试"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["core/src", "core/tests", "core/benchmarks"]
+src = ["core/src", "core/tests", "core/benchmarks", "server/src", "server/tests"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["simcore", "simserver"]
@@ -36,4 +40,4 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["core/src", "core/tests", "core/benchmarks"]
+files = ["core/src", "core/tests", "core/benchmarks", "server/src", "server/tests"]

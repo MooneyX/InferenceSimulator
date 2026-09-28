@@ -1,0 +1,3 @@
+# 生成物固定 LF：与生成器输出逐字节一致，避免 autocrlf 检出后新鲜度校验误报
+web/openapi.json text eol=lf
+web/src/api/schema.d.ts text eol=lf

@@ -1,0 +1,52 @@
+"""openapi_export 模块单测：确定性、schema 命名与入库文档的新鲜度。"""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from simserver.openapi_export import main, render_openapi, write_openapi
+
+COMMITTED = Path(__file__).resolve().parents[2] / "web" / "openapi.json"
+
+
+def test_render_deterministic() -> None:
+    assert render_openapi() == render_openapi()
+
+
+def test_render_format() -> None:
+    text = render_openapi()
+    assert text.endswith("}\n")
+    assert "\r" not in text
+    assert "仿真" in text, "中文描述应保持原文，不转义为 \\uXXXX"
+
+
+def test_schema_names_not_split() -> None:
+    """``separate_input_output_schemas=False`` 生效：不出现 -Input / -Output 变体。"""
+    schemas: dict[str, Any] = json.loads(render_openapi())["components"]["schemas"]
+    assert {"SimConfig", "SimResult", "RequestRecord", "Metrics", "ErrorResponse"} <= set(schemas)
+    assert not [name for name in schemas if name.endswith(("-Input", "-Output"))]
+
+
+def test_write_uses_lf(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "openapi.json"
+    write_openapi(target)
+    assert target.read_bytes() == render_openapi().encode("utf-8")
+
+
+def test_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    target = tmp_path / "openapi.json"
+    assert main([str(target)]) == 0
+    assert target.is_file()
+    assert main([]) == 2
+    assert "usage" in capsys.readouterr().err
+
+
+def test_committed_openapi_up_to_date() -> None:
+    """入库的 web/openapi.json 必须与当前模型一致；失败时在 web/ 下执行 ``npm run gen:api``。"""
+    assert COMMITTED.is_file(), f"缺少 {COMMITTED}，请在 web/ 下执行 npm run gen:api"
+    # read_text 默认做通用换行转换，兼容 autocrlf 检出
+    assert COMMITTED.read_text(encoding="utf-8") == render_openapi(), (
+        "web/openapi.json 已过期，请在 web/ 下执行 npm run gen:api 并提交生成结果"
+    )

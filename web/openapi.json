@@ -1,0 +1,578 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "InferenceSimulator",
+    "summary": "LLM Serving 系统级离散事件仿真服务",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/simulate": {
+      "post": {
+        "summary": "同步执行一场仿真",
+        "description": "执行整场仿真并返回区间记录、指标与告警。\n\n- 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，\n  不阻塞事件循环。\n- 直接返回内核 ``model_dump_json`` 的字节：跳过 FastAPI 对响应模型的二次\n  校验（逐条 ``RequestRecord`` 重新校验在大规模仿真下开销可观），并保证\n  响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。",
+        "operationId": "simulate_endpoint_api_simulate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimResult"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "workload.mode=trace（预留接缝，MVP 未实现）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EngineConfig": {
+        "properties": {
+          "max_batch_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Batch Size",
+            "description": "单步 batch 内最大请求数"
+          },
+          "kv_token_budget": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Kv Token Budget",
+            "description": "KV cache token 预算总额"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "max_batch_size",
+          "kv_token_budget"
+        ],
+        "title": "EngineConfig",
+        "description": "引擎配置：batch 规模与 KV cache 预算双重约束。"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "description": "服务层错误响应体，与 FastAPI ``HTTPException`` 的默认格式一致。\n\n属于 HTTP 边界类型，仅用于 OpenAPI 登记，不进入 ``simcore.schemas``。"
+      },
+      "FixedLength": {
+        "properties": {
+          "dist": {
+            "type": "string",
+            "const": "fixed",
+            "title": "Dist",
+            "default": "fixed"
+          },
+          "value": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Value",
+            "description": "固定 token 数"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "FixedLength",
+        "description": "固定长度。"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LognormalLength": {
+        "properties": {
+          "dist": {
+            "type": "string",
+            "const": "lognormal",
+            "title": "Dist",
+            "default": "lognormal"
+          },
+          "mean": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Mean",
+            "description": "分布均值（token）"
+          },
+          "sigma": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Sigma",
+            "description": "形状参数，越大尾越长"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mean",
+          "sigma"
+        ],
+        "title": "LognormalLength",
+        "description": "对数正态分布长度，用于表达长尾负载。"
+      },
+      "Metrics": {
+        "properties": {
+          "ttft_mean": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Ttft Mean",
+            "description": "TTFT 均值（ms）"
+          },
+          "ttft_p50": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Ttft P50"
+          },
+          "ttft_p99": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Ttft P99"
+          },
+          "tpot_mean": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tpot Mean",
+            "description": "decode 阶段平均每 token 耗时（ms）；所有请求 output_len 均为 1 时为 None"
+          },
+          "throughput": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throughput",
+            "description": "请求数 / makespan（请求/秒）；makespan 为 0 时为 None"
+          },
+          "makespan": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Makespan",
+            "description": "末请求完成时刻 − 首请求到达时刻（ms）"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ttft_mean",
+          "ttft_p50",
+          "ttft_p99",
+          "makespan"
+        ],
+        "title": "Metrics",
+        "description": "全场指标。``None`` 表示该指标在本场仿真中无定义。"
+      },
+      "PerfModelConfig": {
+        "properties": {
+          "prefill_c1": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Prefill C1"
+          },
+          "prefill_c2": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Prefill C2",
+            "default": 0.0
+          },
+          "decode_d1": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Decode D1"
+          },
+          "decode_d2": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Decode D2"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "prefill_c1",
+          "decode_d1",
+          "decode_d2"
+        ],
+        "title": "PerfModelConfig",
+        "description": "性能模型系数，单位 ms。\n\n- prefill 耗时 = ``prefill_c1 * P + prefill_c2 * P**2``（P = prompt_tokens）\n- decode 单步耗时 = ``decode_d1 + decode_d2 * batch_total_tokens``"
+      },
+      "PoissonLength": {
+        "properties": {
+          "dist": {
+            "type": "string",
+            "const": "poisson",
+            "title": "Dist",
+            "default": "poisson"
+          },
+          "mean": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Mean",
+            "description": "分布均值（token）"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mean"
+        ],
+        "title": "PoissonLength",
+        "description": "泊松分布长度。"
+      },
+      "RequestRecord": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Id"
+          },
+          "arrival": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Arrival"
+          },
+          "prefill_start": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Prefill Start"
+          },
+          "prefill_end": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Prefill End",
+            "description": "= decode_start"
+          },
+          "finish": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Finish"
+          },
+          "prompt_len": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Prompt Len"
+          },
+          "output_len": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Output Len"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "arrival",
+          "prefill_start",
+          "prefill_end",
+          "finish",
+          "prompt_len",
+          "output_len"
+        ],
+        "title": "RequestRecord",
+        "description": "单请求的生命周期区间记录，供甘特图与指标汇总消费。\n\n不变式：``arrival <= prefill_start <= prefill_end <= finish``；\n``prefill_end`` 同时是 decode 阶段起点。"
+      },
+      "SimConfig": {
+        "properties": {
+          "workload": {
+            "$ref": "#/components/schemas/WorkloadConfig"
+          },
+          "engine": {
+            "$ref": "#/components/schemas/EngineConfig"
+          },
+          "perf_model": {
+            "$ref": "#/components/schemas/PerfModelConfig"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "workload",
+          "engine",
+          "perf_model"
+        ],
+        "title": "SimConfig",
+        "description": "一场仿真的完整输入。"
+      },
+      "SimMeta": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SimConfig"
+          },
+          "num_requests": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Requests"
+          },
+          "num_engine_steps": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Engine Steps",
+            "description": "引擎迭代步数"
+          },
+          "sim_start": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Sim Start",
+            "description": "首请求到达时刻（ms）"
+          },
+          "sim_end": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Sim End",
+            "description": "末请求完成时刻（ms）"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "config",
+          "num_requests",
+          "num_engine_steps",
+          "sim_start",
+          "sim_end"
+        ],
+        "title": "SimMeta",
+        "description": "配置回显与仿真规模信息。"
+      },
+      "SimResult": {
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/SimMeta"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/Metrics"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/RequestRecord"
+            },
+            "type": "array",
+            "title": "Requests"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "meta",
+          "metrics"
+        ],
+        "title": "SimResult",
+        "description": "一场仿真的完整输出，即 ``POST /api/simulate`` 的响应体。"
+      },
+      "SyntheticWorkloadConfig": {
+        "properties": {
+          "num_requests": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Requests",
+            "description": "请求总数"
+          },
+          "arrival_rate": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Arrival Rate",
+            "description": "泊松到达率（请求/秒）"
+          },
+          "prompt_len": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FixedLength"
+              },
+              {
+                "$ref": "#/components/schemas/PoissonLength"
+              },
+              {
+                "$ref": "#/components/schemas/LognormalLength"
+              }
+            ],
+            "title": "Prompt Len",
+            "discriminator": {
+              "propertyName": "dist",
+              "mapping": {
+                "fixed": "#/components/schemas/FixedLength",
+                "lognormal": "#/components/schemas/LognormalLength",
+                "poisson": "#/components/schemas/PoissonLength"
+              }
+            }
+          },
+          "output_len": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FixedLength"
+              },
+              {
+                "$ref": "#/components/schemas/PoissonLength"
+              },
+              {
+                "$ref": "#/components/schemas/LognormalLength"
+              }
+            ],
+            "title": "Output Len",
+            "discriminator": {
+              "propertyName": "dist",
+              "mapping": {
+                "fixed": "#/components/schemas/FixedLength",
+                "lognormal": "#/components/schemas/LognormalLength",
+                "poisson": "#/components/schemas/PoissonLength"
+              }
+            }
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "description": "随机种子；同种子必须逐字节可复现"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "num_requests",
+          "arrival_rate",
+          "prompt_len",
+          "output_len",
+          "seed"
+        ],
+        "title": "SyntheticWorkloadConfig",
+        "description": "合成负载参数：泊松到达 + 长度分布采样 + 固定种子。"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkloadConfig": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "synthetic",
+              "trace"
+            ],
+            "title": "Mode",
+            "default": "synthetic"
+          },
+          "synthetic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyntheticWorkloadConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WorkloadConfig",
+        "description": "负载配置。``trace`` 分支仅预留字段，MVP 不实现。"
+      }
+    }
+  }
+}

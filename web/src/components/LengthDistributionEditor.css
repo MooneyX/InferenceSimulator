@@ -1,0 +1,56 @@
+.length-distribution {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid #29405d;
+  border-radius: 12px;
+}
+
+.length-distribution legend {
+  padding: 0 8px;
+  color: #c9d8eb;
+  font-weight: 700;
+}
+
+.length-field {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.length-field label {
+  color: #adbed3;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.length-field input,
+.length-field select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid #314966;
+  border-radius: 8px;
+  color: #e5edf8;
+  background: #0b1829;
+}
+
+.length-field input:focus,
+.length-field select:focus {
+  border-color: #60a5fa;
+  outline: 2px solid rgb(96 165 250 / 22%);
+  outline-offset: 1px;
+}
+
+.length-field [aria-invalid="true"] {
+  border-color: #f87171;
+}
+
+.field-error {
+  color: #fca5a5;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}

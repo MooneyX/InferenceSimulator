@@ -84,6 +84,15 @@ def run_engine(
     return _Engine(engine, perf, arrivals, record_trace=record_trace).run()
 
 
+def _first_duplicate(ids: Iterable[int]) -> int:
+    seen: set[int] = set()
+    for request_id in ids:
+        if request_id in seen:
+            return request_id
+        seen.add(request_id)
+    raise AssertionError("未找到重复 ID")  # pragma: no cover
+
+
 class _Engine:
     """单场仿真的可变状态。一次性使用：``run`` 只能调用一次。"""
 
@@ -103,10 +112,11 @@ class _Engine:
 
         self._arrivals: dict[int, Arrival] = {}
         for arrival in arrivals:
-            if arrival.request_id in self._arrivals:
-                raise ValueError(f"request_id {arrival.request_id} 重复")
             self._arrivals[arrival.request_id] = arrival
             self._heap.append(self._factory.arrival(arrival.sim_time, arrival.request_id))
+        # 重复 ID 会在 dict 中静默覆盖：循环内不逐个查，事后一次计数比对，出错才定位
+        if len(self._arrivals) != len(self._heap):
+            raise ValueError(f"request_id 重复: {_first_duplicate(e.ref for e in self._heap)}")
         heapq.heapify(self._heap)
 
         # request_id -> 已产出 token 数；插入顺序即准入顺序，决定 decode 推进顺序

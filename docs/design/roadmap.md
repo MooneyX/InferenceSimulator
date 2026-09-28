@@ -2,11 +2,11 @@
 
 ## 里程碑
 
-| 里程碑 | 内容 | 验收线 |
-|---|---|---|
-| M1 内核 | DES 引擎 + FCFS 调度 + KV 预算 + SyntheticSource + 基准测试 | 1k 请求全场仿真 < 1s；同种子两次运行结果逐字节一致 |
-| M2 服务层 | `POST /api/simulate` + OpenAPI→TS 类型生成 | curl 一场仿真返回完整区间数据与 metrics |
-| M3 前端 | 请求甘特图（1k 请求渲染 + 缩放平移 + tooltip） | 加载 M2 响应正确渲染，hover 显示 TTFT 与各阶段时间戳 |
+| 里程碑 | 内容 | 验收线 | 状态 |
+|---|---|---|---|
+| M1 内核 | DES 引擎 + FCFS 调度 + KV 预算 + SyntheticSource + 基准测试 | 1k 请求全场仿真 < 1s；同种子两次运行结果逐字节一致 | 已完成 |
+| M2 服务层 | `POST /api/simulate` + OpenAPI→TS 类型生成 | curl 一场仿真返回完整区间数据与 metrics | 已完成 |
+| M3 前端 | 请求甘特图（1k 请求渲染 + 缩放平移 + tooltip） | 加载 M2 响应正确渲染，hover 显示 TTFT 与各阶段时间戳 | 规划中 |
 
 里程碑按 M1 → M2 → M3 顺序实施，每个独立可演示。
 

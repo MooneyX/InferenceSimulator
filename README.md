@@ -8,9 +8,9 @@ LLM Serving 系统级推理仿真器。离散事件仿真内核 + 前后端分�
 
 ```
 core/     # 仿真内核 simcore：纯 Python 包，零 IO（M1 已完成）
-server/   # FastAPI 服务层（M2，规划中）
-web/      # React + TS 前端（M3，规划中）
-docs/     # 文档
+server/   # FastAPI 服务层：同步仿真 API 与 OpenAPI 导出（M2 已完成）
+web/      # OpenAPI 生成的 TS 类型；React 前端在 M3 实现
+docs/     # 设计文档
 ```
 
 ## 开发
@@ -21,7 +21,42 @@ uv run pytest                             # 单元测试
 uv run pytest core/benchmarks -s          # 基准测试（验收线：1k 请求 < 1s、同种子逐字节一致）
 uv run ruff check . ; uv run ruff format --check .
 uv run python -m mypy
+
+cd web
+npm ci                                   # 安装类型生成工具（Node.js 22）
+npm run check:types                      # 检查生成的 TS 类型是否最新
 ```
+
+## 启动服务
+
+```powershell
+uv run uvicorn simserver.app:create_app --factory --reload
+```
+
+服务默认监听 `http://127.0.0.1:8000`，交互式 API 文档位于 `/docs`，OpenAPI 文档位于 `/openapi.json`。
+
+调用 `POST /api/simulate`：
+
+```powershell
+$body = '{"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_batch_size":32,"kv_token_budget":65536},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
+$body | Set-Content -Encoding ascii simulate-request.json
+curl.exe -X POST http://127.0.0.1:8000/api/simulate `
+  -H "Content-Type: application/json" --data-binary '@simulate-request.json'
+Remove-Item simulate-request.json
+```
+
+响应包含配置与时钟元信息 `meta`、汇总指标 `metrics`、每请求生命周期区间 `requests` 和 `warnings`。无效配置返回 `422`；尚未实现的 `workload.mode=trace` 返回 `501`。
+
+## 同步前端类型
+
+`core` 的 Pydantic 模型是 API schema 的单一事实源。修改模型或路由后重新生成并提交两个生成物：
+
+```powershell
+cd web
+npm run gen:api
+```
+
+该命令依次更新 `web/openapi.json` 与 `web/src/api/schema.d.ts`；禁止手写生成的 TS 类型。
 
 ## 使用内核
 

@@ -7,4 +7,5 @@ export type SimResult = SimulateOperation["responses"][200]["content"]["applicat
 export type HTTPValidationError = SimulateOperation["responses"][422]["content"]["application/json"];
 export type ErrorResponse = SimulateOperation["responses"][501]["content"]["application/json"];
 export type ValidationError = components["schemas"]["ValidationError"];
+export type RequestRecord = components["schemas"]["RequestRecord"];
 export type LengthDistribution = components["schemas"]["SyntheticWorkloadConfig"]["prompt_len"];

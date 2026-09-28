@@ -12,6 +12,8 @@ LLM Serving 系统级：请求到达 → 调度 → prefill/decode → continuou
 - `EngineStep`：引擎迭代步。batch 非空时自再调度下一步；batch 为空时不压事件，时钟直接跳跃到下一个 `Arrival`
 - `RequestDone`：请求完成结算
 
+同刻事件全序为 `(time, kind, seq)`：同一时刻按 `RequestDone` → `Arrival` → `EngineStep` 处理，使引擎步的准入决策能看到同刻释放的 KV 额度与同刻到达的请求；同刻同类事件按创建序号 `seq` 处理。
+
 `EngineStep` 内执行：调度决策（准入）→ 推进 batch 内所有请求的 decode → 结算完成请求。一次事件推进整个 batch，使堆操作次数 ≈ 引擎迭代数而非请求步数。
 
 **约束**：性能模型的步长计算必须是纯函数（无全局状态依赖），为后续内核替换（如 Rust）预留。

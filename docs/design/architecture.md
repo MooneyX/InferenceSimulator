@@ -20,8 +20,8 @@ perf_model   性能模型：步长纯函数（依赖 schemas）
 workload     WorkloadSource 协议 + SyntheticSource（依赖 schemas）
 kv_cache     token 预算占用与准入判断（依赖 schemas）
 scheduler    FCFS 调度：batch 组成决策（依赖 kv_cache、perf_model）
-engine       DES 内核：事件队列、时钟推进、EngineStep 编排（依赖以上全部）
 events       事件类型定义与事件流产出（依赖 schemas）
+engine       DES 内核：事件队列、时钟推进、EngineStep 编排（依赖以上全部）
 ```
 
 规则：
@@ -48,6 +48,7 @@ events       事件类型定义与事件流产出（依赖 schemas）
 | `EventFactory` | `events` | `engine` | 事件序号分配器，由 `engine` 实例化并独占持有 |
 | `TraceRecord`（`ArrivalTrace` / `StepTrace` / `DoneTrace`） | `events` | `engine` 产出 | 事件流记录（值对象），内核级输出，非 API 契约 |
 | `EventLog` | `events` | `engine` | 事件流容器，由 `engine` 实例化并独占持有 |
+| `EngineRun` | `engine` | 内核顶层入口 | 单场仿真的原始产出（值对象）：区间记录、告警、步数、时钟范围、KV 统计与事件流；`EventLog` 所有权随之移交 |
 
 协作者注入：
 

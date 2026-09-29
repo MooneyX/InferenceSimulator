@@ -10,8 +10,8 @@
 
 表单字段与 [api.md](api.md) 的 Config schema 一一对应，分组展示：
 
-- **负载（workload）**：`num_requests`、`arrival_rate`、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`。`mode` 固定 synthetic，trace 分支不在前端暴露。
-- **引擎（engine）**：`max_batch_size`、`kv_token_budget`。
+- **负载（workload）**：`num_requests`（总轮次数）、`arrival_rate`（根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.topology`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`、`session.content_seed` 和 `session.allow_cross_session_shared_prefix`。所有负载均按 session 计划生成并由模拟客户端提交；`mode` 固定 synthetic，trace 分支不在前端暴露。
+- **引擎（engine）**：`max_batch_size`、`kv_token_budget`，以及必填的 `prefix_cache.block_size_tokens`、namespace salt、固定 `lru` 策略、L1/L2/L3 容量与低层读取成本。prefix hash 和 prefix cache 始终开启，界面不提供启用开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`。
 
 规则：

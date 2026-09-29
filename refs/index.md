@@ -5,6 +5,8 @@
 | 路径 | 内容 |
 |---|---|
 | [frontend-style/](frontend-style/) | 前端视觉与布局风格参考（旧版 KV Cache 建模平台前端） |
+| [sglang/](sglang/) | SGLang 官方源码浅克隆；调研 Prefill-first、P/D 互斥、mixed chunk 和 Decode retraction |
+| [vllm/](vllm/) | vLLM 官方源码浅克隆；对比 V1 running-first、mixed batching、chunked prefill 和 preemption |
 
 ## frontend-style/
 

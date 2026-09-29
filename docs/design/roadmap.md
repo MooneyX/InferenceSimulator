@@ -26,6 +26,6 @@
 
 | 接缝 | 支撑的未来能力 |
 |---|---|
-| `WorkloadSource` 协议 + config `workload.mode` 字段 | 真实 trace replay |
+| `WorkloadGenerator.build_plan() -> WorkloadPlan` + config `workload.mode` 字段 | 将 synthetic 或真实 trace 统一解析为 session 计划并经模拟客户端重放 |
 | 内核零 IO + 步长纯函数 | 高性能内核替换（如 Rust） |
 | 内核产出完整事件流但不暴露 API | 决策溯源、实时播放式仿真 |

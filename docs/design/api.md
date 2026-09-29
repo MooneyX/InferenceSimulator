@@ -6,14 +6,37 @@
 workload:
   mode: synthetic | trace        # trace 分支 MVP 返回未实现错误
   synthetic:
-    num_requests: int
-    arrival_rate: float          # 泊松到达率（请求/秒）
-    prompt_len: LengthDist       # 见下
-    output_len: LengthDist
+    num_requests: int            # 所有 session 的总轮次数
+    arrival_rate: float          # 根 session 泊松到达率（session/秒）
+    prompt_len: LengthDist       # 每轮输入长度，见下
+    output_len: LengthDist       # 每轮输出长度
     seed: int
+    session:
+      num_sessions: int          # 根请求数，1 <= num_sessions <= num_requests
+      topology: linear
+      think_time_ms: float
+      target_ideal_prefix_hit_rate: float
+      content_seed: int | null
+      allow_cross_session_shared_prefix: false
 engine:
   max_batch_size: int
-  kv_token_budget: int           # KV cache token 预算
+  kv_token_budget: int           # 解析为 L1 block 容量
+  prefix_cache:                  # 必填且始终开启，无 enabled 字段
+    block_size_tokens: int
+    cache_salt: str | null
+    eviction_policy: lru
+    hierarchy_policy: exclusive_write_back
+    l1:
+      capacity_blocks: int
+    l2:
+      capacity_blocks: int
+      read_bandwidth_bytes_per_ms: float
+      fixed_latency_ms: float
+    l3:
+      capacity_blocks: int
+      read_bandwidth_bytes_per_ms: float
+      fixed_latency_ms: float
+    kv_bytes_per_token: int
 perf_model:
   prefill_c1: float
   prefill_c2: float              # 默认 0
@@ -32,6 +55,8 @@ sigma: float    # 仅 lognormal：形状参数，越大尾越长
 
 规则：采样结果向上取整并钳制到 ≥ 1 token。`lognormal` 用于表达长尾负载（少量超长 prompt/output 对 KV 预算与调度的冲击）。
 
+所有 synthetic workload 都生成 `WorkloadPlan` 并经模拟客户端提交。每个请求必须且只属于一个 session；单轮 session 用于表达没有后续轮次的最小 workload。`arrival_rate` 只控制根 session 到达，子请求实际到达时间由父请求完成时刻与 `think_time_ms` 决定。
+
 ## API
 
 MVP 唯一端点：
@@ -46,8 +71,10 @@ POST /api/simulate
 ```yaml
 meta:      # 配置回显、仿真时钟范围等
 metrics:   # 见下
-requests:  # 每请求一条区间记录，供甘特图消费
+requests:  # 每个 session 轮次一条区间记录，供甘特图消费
   - id: int
+    session_id: int
+    parent_request_id: int | null
     arrival: float
     prefill_start: float
     prefill_end: float           # = decode_start

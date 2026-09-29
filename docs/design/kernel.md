@@ -73,7 +73,7 @@ class WorkloadGenerator(Protocol):
     def build_plan(self) -> WorkloadPlan: ...
 ```
 
-- `SyntheticSource` 保留泊松根 session 到达、prompt/output 长度分布和固定种子能力，并增加 session 拓扑、think time、token 内容和理想复用比例构造；
+- `SyntheticSource` 保留泊松根 session 到达、prompt/output 长度分布和固定种子能力，并增加 session 拓扑、think time、token 内容和理想复用比例构造；配置的 `arrival_rate` 是所有轮次目标请求 QPS，根泊松速率为 `arrival_rate * num_sessions / num_requests`（session/秒），不保证有限场实测请求 QPS 精确达标；
 - `num_requests` 表示所有 session 的总轮次数，`num_sessions` 表示根请求数；每个请求必须且只属于一个 session；
 - 单轮 session 是最小合法 workload；
 - `WorkloadPlan` 只交给 `ClientDriver`，生成器永不接触 Engine 或 KV cache；

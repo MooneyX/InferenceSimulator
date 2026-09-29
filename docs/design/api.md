@@ -7,7 +7,7 @@ workload:
   mode: synthetic | trace        # trace 分支 MVP 返回未实现错误
   synthetic:
     num_requests: int            # 所有 session 的总轮次数
-    arrival_rate: float          # 根 session 泊松到达率（session/秒）
+    arrival_rate: float          # 所有轮次的目标请求 QPS（请求/秒），根到达率由 S/N 换算
     prompt_len: LengthDist       # 每轮输入长度，见下
     output_len: LengthDist       # 每轮输出长度
     seed: int
@@ -55,7 +55,7 @@ sigma: float    # 仅 lognormal：形状参数，越大尾越长
 
 规则：采样结果向上取整并钳制到 ≥ 1 token。`lognormal` 用于表达长尾负载（少量超长 prompt/output 对 KV 预算与调度的冲击）。
 
-所有 synthetic workload 都生成 `WorkloadPlan` 并经模拟客户端提交。每个请求必须且只属于一个 session；单轮 session 用于表达没有后续轮次的最小 workload。`arrival_rate` 只控制根 session 到达，子请求实际到达时间由父请求完成时刻与 `think_time_ms` 决定。
+所有 synthetic workload 都生成 `WorkloadPlan` 并经模拟客户端提交。每个请求必须且只属于一个 session；单轮 session 用于表达没有后续轮次的最小 workload。`num_requests=N` 为总轮数、`num_sessions=S` 为根数，用户输入的 `arrival_rate=q` 是所有轮次的目标请求 QPS（正有限数）；计划先把 `N` 轮均衡分配给 `S` 个 session，并用 `lambda_root=q*S/N`（session/秒）的泊松过程采样根到达。子请求不预定到达时刻，实际到达由父请求完成时刻与 `think_time_ms` 决定。该换算仅给出持续注入时的名义长期平均速率，有限场实测 QPS 不保证等于 `q`；默认 `S=N` 时保持旧单轮到达率口径。
 
 ## API
 
@@ -98,8 +98,8 @@ warnings:  # 如 KV 超限事件
 
 - TTFT（= prefill_end − arrival）：均值 / P50 / P99
 - TPOT（decode 阶段平均每 token 耗时）
-- 端到端吞吐（请求数 / makespan）
-- makespan（末请求完成时刻 − 首请求到达时刻）
+- 实测端到端完成吞吐（总轮次数 / makespan），与输入的目标到达 QPS 不同
+- makespan（末请求完成时刻 − 首根请求到达时刻）
 
 计算口径：
 

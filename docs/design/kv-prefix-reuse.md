@@ -1,785 +1,222 @@
-# KV 前缀复用与多级缓存设计
+# KV 前缀复用与多级缓存：分步实现指导
 
-## 1. 目标与范围
+## 1. 实施边界和交付顺序
 
-本设计为推理系统仿真器增加可控的 KV 前缀复用负载，以及 L1/L2/L3 多级 KV 缓存仿真。目标是同时回答两个不同问题：
+按下表逐步合入；每步先完成对应模块的接口与测试，再接入下一步。`PC1`、`PC2`、`PC3A` 在现有单 Engine、一次性 Prefill 引擎上实现 L1，三者全部接通后才将 `F003` 视为完成。中间步骤不作为对外可用的“缓存已启用”版本；最终所有请求均走缓存路径，不保留运行时关闭开关。
 
-1. 工作负载在无限缓存下本来具有多少可复用前缀；
-2. 给定缓存容量、层级、淘汰和调度时序后，运行时实际命中了多少前缀，以及命中来自哪一层。
-
-首期锁定以下能力：
-
-- 合成多个 session，每个 session 由具有父子关系的请求组成；
-- 请求携带输入 token 的链式 chunk hash；
-- 用户指定全局理想前缀 token 命中率；
-- 生成器在 block 粒度约束下构造最接近目标的请求集合；
-- 引擎维护 L1、L2、L3 的 chunk residency，并在请求实际准入时查询最长连续前缀；
-- 每层使用确定性 LRU，活动 L1 block 不可淘汰；
-- 区分理想命中、实际命中、分层命中、传输成本、淘汰和容量损失；
-- 同一配置与 seed 的 session、token、hash、事件、淘汰和指标完全可复现。
-
-本设计扩展 `docs/plans/feature-roadmap.md` 中 `F003` 的单 Engine、L1 prefix cache 基线。实现仍按阶段推进：先完成 session/hash 与 L1，再加入 L2/L3；不能因多级缓存尚未实现而改变 L1 的 hash、请求和指标语义。
-
-## 2. 核心设计决策
-
-### 2.1 命中率必须分为理想值与实际值
-
-用户配置的是 `target_ideal_prefix_hit_rate`，表示工作负载自身具有的可复用程度，不直接控制缓存运行时结果。
-
-- **目标理想命中率**：用户输入值；
-- **构造理想命中率**：生成器在整数 block 约束下实际构造出的值；
-- **实际命中率**：引擎在准入时，根据当时 L1/L2/L3 residency 得到的值。
-
-容量不足、排队期间淘汰和层级驱逐可以使实际命中率低于构造理想命中率。生成器不得为了补偿运行时 miss 而回看或修改引擎结果，否则 workload 与 engine 将形成反馈依赖，无法复现也无法解释。
-
-### 2.2 主要口径采用全局 token 加权平均
-
-设请求集合为 $R$，请求 $i$ 的输入长度为 $P_i$，理想可复用 token 数为 $H_i^{ideal}$，实际命中 token 数为 $H_i^{actual}$：
-
-$$
-r_{ideal}=\frac{\sum_{i\in R}H_i^{ideal}}{\sum_{i\in R}P_i}
-$$
-
-$$
-r_{actual}=\frac{\sum_{i\in R}H_i^{actual}}{\sum_{i\in R}P_i}
-$$
-
-session 根请求的 $H_i^{ideal}=0$，但其输入 token 仍进入分母。该定义反映整场仿真实际减少的 Prefill token 比例，避免将短请求和长请求等权平均。
-
-请求级“有任意命中的请求比例”和“平均请求命中率”作为辅助指标，不替代全局 token 口径。
-
-### 2.3 hash 是内容身份，不是命中结果
-
-请求生成器负责构造确定的 token 内容与链式 chunk hash。请求中的 `ideal_reuse_blocks` 表示生成器有意与父请求共享的前缀；引擎只能根据 hash 和运行时 residency 判定实际命中。
-
-不得把目标命中率直接写成请求的 `cached_tokens`，也不得根据 `session_id`、`parent_request_id` 或相同长度直接判定命中。
-
-### 2.4 session 首期是内容继承树
-
-session 内请求形成有根树；首期默认生成线性链，接口允许后续增加分支。每个非根请求引用一个已完成父请求，并从父请求最终逻辑上下文的起点复制若干完整 block，再生成唯一后缀。
-
-这是用于控制前缀共享比例的合成内容继承模型。若只复制父上下文的一部分，它表示从该 block 边界分叉出的会话分支，不承诺是自然语言意义上的完整连续对话。
-
-### 2.5 模拟客户端拥有未来请求与发送时序
-
-子请求的输入可能包含父请求生成的 output token，因此不能在仿真开始时把所有子请求及预计到达时间交给引擎。负载生成器只生成不可变 `WorkloadPlan` 并交给模拟客户端；推理引擎不读取 session 拓扑、不保存未来请求，也不根据父子关系主动创建请求。
-
-- `SimulationCoordinator` 持有唯一的 DES 时钟和事件队列；
-- 模拟客户端根据计划为根轮次登记 `ClientSend` 事件；
-- `ClientSend` 到达当前仿真时刻后，客户端才构造 `InferenceRequest` 并调用 `engine.submit(request, now_ms)`；
-- 引擎只接收当前时刻真正到达的请求，并将其加入 waiting queue；请求中不携带未来到达时间；
-- 引擎完成请求后产生通用 `RequestCompletion`，协调器将其交给客户端；
-- 客户端收到完成结果后更新 session 历史，并为子轮次登记 `send_time = finish_time + think_time_ms` 的未来 `ClientSend`；
-- `think_time_ms=0` 时沿用同刻事件全序：父请求完成与 KV release/publish 先于完成结果交付、`ClientSend`、`engine.submit` 和后续 EngineStep。
-
-未来 `ClientSend` 事件语义上归客户端所有，物理上统一存放在协调器的事件队列中；不能让客户端和引擎各自维护独立时钟或独立事件堆。客户端维护尚未发送的计划轮次、session 历史和 in-flight 请求；引擎只维护已经实际提交的 waiting/running 请求。请求提交后不得同时留在客户端 ready 状态和引擎 waiting queue 中。
-
-该交互是同一仿真进程内、基于不可变值对象的同步事件路由，不引入线程、协程、消息总线、真实网络或真实 `sleep()`。`SimulationCoordinator` 是全局时钟和全部未来事件的唯一所有者，Engine 只处理协调器在当前时刻交付的事件和请求。
-
-### 2.6 多级缓存默认采用独占式 write-back 层级
-
-首期多级策略锁定为 exclusive write-back：一个物理 KV block 同一时刻只属于一个 tier；同一 hash 仍可因同 step 重复计算而对应多个物理 block。
-
-- 新计算的 block 进入 L1；
-- L1 淘汰时向 L2 降级；
-- L2 淘汰时向 L3 降级；
-- L3 淘汰时彻底删除；
-- L2/L3 命中后提升到 L1，原层副本移除；
-- 容量为 0 的 tier 视为关闭，降级时跳过该层。
-
-该策略使总有效容量等于各层容量之和，并避免首期引入副本一致性和 write-through 写放大。后续可增加 inclusive/write-through 策略，但不得改变 hash、probe 和指标口径。
-
-## 3. 请求与 session 数据模型
-
-### 3.1 计划、运行时请求与完成结果
-
-负载生成器输出的 `WorkloadPlan` 与客户端真正提交的 `InferenceRequest` 分离。计划中的每轮至少包含：
-
-```text
-TurnPlan
-  request_id: int
-  session_id: int
-  parent_request_id: int | None
-  root_arrival_time_ms: float | None
-  think_time_ms: float | None
-  prompt_len: int
-  output_len: int
-  ideal_reuse_blocks: int
-  unique_suffix_seed: int
-  output_token_plan: TokenPlan
-```
-
-模拟客户端根据 `TurnPlan`、已完成父请求的 output token 和当前 session 历史构造：
-
-```text
-InferenceRequest
-  request_id: int
-  session_id: int
-  parent_request_id: int | None
-  input_token_ids: tuple[int, ...]
-  output_token_plan: TokenPlan
-  input_chunk_hashes: tuple[ChunkHash, ...]
-  ideal_reuse_blocks: int
-```
-
-引擎完成请求后返回：
-
-```text
-RequestCompletion
-  request_id: int
-  output_token_ids: tuple[int, ...]
-  finish_time_ms: float
-```
-
-客户端未来发送事件使用轻量唤醒值对象，不包含完整请求：
-
-```text
-ClientWakeup
-  session_id: int
-  turn_id: int
-  send_time_ms: float
-```
-
-`ClientWakeup` 只由客户端生成并交给协调器登记。它不能进入引擎，也不能被引擎解释为已经到达的请求；完整 `InferenceRequest` 只在 wakeup 触发后由客户端构造。
-
-约束：
-
-- 根轮次设置 `root_arrival_time_ms`，不设置 parent 与 think time；
-- 子轮次设置 parent 与 think time，不设置根到达时间；
-- 子请求必须在收到父请求 `RequestCompletion` 后才能构造，不能提前读取父请求 output；
-- `output_token_plan` 可以由生成器为可复现性预先确定，但客户端只能通过完成结果获得父请求的实际 `output_token_ids`；
-- `input_token_ids` 长度等于计划的 `prompt_len`，完成结果 token 数等于 `output_len`；
-- `input_chunk_hashes` 只包含完整 chunk；
-- 完整 token 序列仅为 core 内部数据，默认不经 API 回显；
-- 所有请求统一使用该 session 请求模型；单轮 workload 表示为只含一个根轮次的 session；
-- 每个请求始终生成 prefix hash，并执行 cache probe、acquire、publish 与 release，不提供关闭开关。
-
-### 3.2 workload 与模拟客户端接口
-
-负载生成器产生不可变 session workload plan：
-
-```text
-WorkloadPlan
-  turns: request_id -> TurnPlan
-  root_request_ids: tuple[int, ...]
-  children: parent_request_id -> tuple[request_id, ...]
-```
-
-计划只交给模拟客户端，不交给推理引擎。客户端采用最小同步接口：
-
-```text
-ClientDriver.initial_wakeups() -> tuple[ClientWakeup, ...]
-ClientDriver.on_request_completed(
-  completion: RequestCompletion,
-  now_ms: float,
-) -> tuple[ClientWakeup, ...]
-ClientDriver.on_wakeup(
-  wakeup: ClientWakeup,
-  now_ms: float,
-) -> tuple[InferenceRequest, ...]
-```
-
-`initial_wakeups` 返回根轮次的发送事件；`on_request_completed` 更新客户端状态，并为零个或多个子轮次返回未来发送事件；`on_wakeup` 只在 `now_ms == wakeup.send_time_ms` 时构造当前真正要提交的请求。线性 session 首期每次完成最多产生一个子 wakeup，每次 wakeup 最多提交一个请求，接口保留分支和批量客户端扩展能力。只有一个请求的 workload 表示为只含一个根轮次的 session。
-
-`SimulationCoordinator` 负责登记 `ClientWakeup`、在对应时刻调用 `on_wakeup`，并立即将返回的请求传给 `engine.submit(request, now_ms)`。引擎提交接口不接受 `arrival_time`，也不保存 `ClientWakeup`；调用发生的 `now_ms` 就是实际到达时间。这样未来请求、客户端状态与引擎 waiting queue 具有明确边界。
-
-### 3.3 token 内容生成
-
-各类随机性使用稳定派生的独立随机流：
-
-```text
-root_arrival_rng = RNG(stable_derive(seed, "root-arrival"))
-length_rng = RNG(stable_derive(seed, "turn-length"))
-content_rng = RNG(stable_derive(seed, "session-content"))
-topology_rng = RNG(stable_derive(seed, "session-topology"))
-allocation_rng = RNG(stable_derive(seed, "hit-allocation"))
-```
-
-根 session 到达、每轮长度、session 拓扑、token 内容和命中分配互不消费对方的随机流。新增其中任一维度不得改变其他维度的结果。派生函数必须跨进程稳定，不能使用 Python 内置 `hash()`。
-
-不同 session 的根 token 和所有唯一后缀通过 session/request 域隔离，避免非预期跨 session 命中。需要模拟跨 session 公共 system prompt 时，必须通过独立显式配置开启，不能由随机碰撞产生。
-
-## 4. 链式 chunk hash
-
-### 4.1 基本公式
-
-设 block size 为 $B$，缓存 namespace 为 $N$，第 $j$ 个完整 token chunk 为 $C_j$：
-
-```text
-H_0 = Digest(N, ROOT, C_0)
-H_j = Digest(N, H_(j-1), C_j)
-```
-
-`Digest` 使用 SHA-256、BLAKE2 等稳定摘要。`N` 至少包含：
-
-- 模型和权重版本；
-- tokenizer 版本；
-- KV dtype；
-- adapter/LoRA；
-- 多模态或其他影响 KV 的输入变换；
-- 用户配置的 `cache_salt`。
-
-只 hash 当前 chunk 是错误的：相同 token chunk 位于不同历史前缀时，其 KV 不同。
-
-### 4.2 完整 block 与尾部
-
-- 只有完整 block 进入共享索引；
-- partial tail 由活动请求在 L1 独占持有，释放后不进入 L2/L3；
-- 子请求可复制父请求的 partial tail 作为内容，但只能命中其之前的完整 block；
-- `kv_block_size` 同时决定 hash、容量和共享粒度，不能与 workload 的 chunk size 分别配置。
-
-### 4.3 output KV 与多轮对话
-
-真实多轮对话的子请求通常包含父请求的输入和输出。为使这些 token 可复用，合成 workload 必须预先生成确定的 `output_token_ids`，引擎按实际 decode 进度建立对应 KV：
-
-- 每形成一个完整 block，step 完成后发布其 hash；
-- 未完成 decode 的 token 不得提前发布；
-- 父请求完成后，完整 output block 可继续驻留并被子请求命中；
-- output partial tail 不跨请求共享。
-
-这扩展了 `F003` 仅复用 prompt block 的基线，但不要求仿真真实 token 采样概率。
-
-### 4.4 全 prompt 命中
-
-prefix cache 保存 KV，不保存下一 token logits。需要区分：
-
-- `matched_cache_tokens`：通过完整 block hash 找到物理 KV 的 token 数；
-- `reused_prefill_tokens`：实际跳过 Prefill 计算的 token 数，也是本文主要命中率的分子。
-
-即使所有输入 block 都匹配，请求仍至少执行最后一个输入 token 对应的计算：
-
-$$
-H_i^{reused}=\min(H_i^{matched}, P_i-1)
-$$
-
-已有物理 block 不重复分配。合成 session 为每个子请求保留至少一个唯一新 token，因此理想命中构造继续满足：
-
-$$
-H_i^{ideal}=B K_i \le B\left\lfloor\frac{P_i-1}{B}\right\rfloor
-$$
-
-引擎仍须正确处理外部 trace 中“完整输入逐 block 匹配”的情况，并分别记录 matched 与 reused token。
-
-## 5. 理想命中率构造
-
-### 5.1 可行容量
-
-对每个非根请求 $i$，设父请求完成后的逻辑上下文长度为 $L_{parent(i)}$。其最多可有意复用的 block 数为：
-
-$$
-M_i=\left\lfloor\frac{\min(L_{parent(i)}, P_i-1)}{B}\right\rfloor
-$$
-
-根请求的 $M_i=0$。令：
-
-$$
-D=\sum_i P_i,\quad M=\sum_i M_i
-$$
-
-则当前 session 形状和长度下，可构造的最大理想命中率为：
-
-$$
-r_{max}=\frac{B\cdot M}{D}
-$$
-
-若用户目标大于 $r_{max}$，生成器必须返回明确的不可行错误，并给出 `r_max`。不得静默截断为最大值。上层可调整 session 数、每 session 请求数、输入长度或 output 长度后重试。
-
-### 5.2 block 量化
-
-任意有限 workload 的命中 token 只能以 block 为单位变化。目标总命中 block 数取：
-
-$$
-K^*=\operatorname*{argmin}_{K\in\{0,1,\ldots,M\}}
-\left|\frac{B\cdot K}{D}-r_{target}\right|
-$$
-
-距离相同时选择较小的 $K$，避免构造结果超过用户目标。构造误差为：
-
-$$
-\epsilon=\left|\frac{B\cdot K^*}{D}-r_{target}\right|
-$$
-
-结果必须回显 `target`、`achieved` 和 `quantization_error`。只要目标可行，理论量化误差不超过 $B/(2D)$。
-
-### 5.3 将目标分配到请求
-
-为避免把所有复用集中到少数早期请求，按候选容量比例分配：
-
-1. 对每个非根请求计算理想份额 $q_i=K^*M_i/M$；
-2. 初值 $K_i=\lfloor q_i\rfloor$；
-3. 按小数余量从大到小分配剩余 block；
-4. 余量相同按由 `allocation_rng` 生成的稳定请求顺序打破平局；
-5. 保证 $0\le K_i\le M_i$ 且 $\sum_i K_i=K^*$。
-
-`ideal_reuse_blocks=K_i`，理想命中 token 为 $H_i^{ideal}=B K_i$。
-
-### 5.4 构造恰好为 `K_i` 的公共前缀
-
-对请求 $i$：
-
-1. 复制父请求最终上下文的前 $B K_i$ 个 token；
-2. 若 $K_i<M_i$，保证位置 $B K_i$ 的 token 与父请求不同；
-3. 其余输入使用 request 域隔离的唯一 token 流填充；
-4. 重新从根计算整条输入 hash 链。
-
-由于 hash 包含父 hash，第一个差异 block 之后的所有 hash 都不同，因此该请求与父请求恰好共享前 $K_i$ 个完整 block。唯一内容生成还应保证它不会意外命中其他 session 或其他分支。
-
-## 6. L1/L2/L3 缓存模型
-
-### 6.1 层级语义
-
-| 层级 | 抽象介质 | 可保存内容 | 命中后的动作 |
+| 顺序 | 阶段 | 交付物 | 依赖 |
 |---|---|---|---|
-| L1 | GPU HBM | active、evictable 完整 block；活动 partial block | 直接建立共享引用 |
-| L2 | Host DRAM | inactive 完整 block | 计入 H2D 传输并提升至 L1 |
-| L3 | 本地/远程存储 | inactive 完整 block | 计入 L3 read 与 H2D 传输并提升至 L1 |
+| 1 | PC1-A：配置、计划、内容和 hash | 可复现的 session `WorkloadPlan` 与理想命中分配 | 无 |
+| 2 | PC1-B：客户端和统一事件时钟 | 到时构造请求、完成后再发送子轮次 | 1 |
+| 3 | PC2：L1 paged block manager | 独立可测的 snapshot/probe/原子 acquire/publish/release | 1 |
+| 4 | PC3A-A：调度、引擎和性能接入 | L1 命中真实减少一次性 Prefill | 2、3 |
+| 5 | PC3A-B：指标和产品接口 | 请求/全场口径、API/前端展示及回归 | 4 |
+| 独立扩展 | KV3：L2/L3 扩展 | 独占式 write-back、restore 成本与分层指标 | 5；不阻塞 `F001` |
+| 后续 | `F001.CB4` / `F002` | chunked prefill/retraction；解析性能模型 | `F001` 依赖 5，`F002` 的端到端接入依赖 `F001` |
 
-三层只模拟对调度、容量和时延有影响的元数据与字节数，不保存真实 KV tensor。
+当前落点为 `core/src/simcore/`：`schemas.py`、`workload.py`、`events.py`、`engine.py`、`scheduler.py`、`kv_cache.py`、`perf_model.py`、`metrics.py`、`runner.py`；新增 `prefix_hash.py`、`client.py`、`coordinator.py`。保持 `runner.simulate(SimConfig) -> SimResult` 和 `POST /api/simulate` 为对外入口。`kv_cache` 独占可变 KV 状态，`coordinator` 独占时钟/事件堆，`client` 独占 session 历史；三者不能互相代管。
 
-L1 容量与正在执行请求的 KV 共用，不能另建一套 prefix cache 预算。L2/L3 分别拥有独立容量。
+### 所有步骤共用的口径
 
-### 6.2 block 状态
+- `arrival_rate` 是用户输入的**所有轮次请求的目标 QPS**（请求/秒），不是根 session 的到达率或实际完成吞吐；仅用于在构造 `WorkloadPlan` 时换算根到达过程，不根据引擎结果反馈调参。有限场仿真的实际到达 QPS/完成吞吐不保证等于目标。
+- `target_ideal_prefix_hit_rate` 属于 workload；`constructed_ideal_prefix_hit_rate` 由内容构造决定；`actual_prefix_hit_rate` 仅由请求实际准入时的缓存驻留决定，不反馈给生成器。全局比率统一为 `sum(hit_tokens) / sum(prompt_len)`，包括理想命中为 0 的根请求。
+- `matched_cache_tokens` 是 hash 命中的完整 block token 数；`actual_hit_tokens = reused_prefill_tokens = min(matched_cache_tokens, prompt_len - 1)`。即使整个输入的 KV 都命中，也要计算最后一个输入 token 以获得 logits；已命中的物理 block 不重复分配。
+- block size `B` 同时决定 hash、内容复用与 KV 物理分配粒度；partial block 可由活动请求持有但不跨请求共享。单轮 workload 表示为仅含根轮次的 session。
+- 同配置、seed 和性能参数必须复现计划、token、hash、事件、淘汰和结果；避免依赖 Python 内置 `hash()` 与无序容器遍历。
 
-```text
-KVBlock
-  block_id
-  content_hash
-  valid_tokens
-  tier: L1 | L2 | L3
-  state: ACTIVE | EVICTABLE
-  ref_count
-  last_access_seq
-  owner_generation
-```
+## 2. PC1-A：配置、计划、内容与 hash
 
-约束：
+### `schemas.py`：先冻结数据契约
 
-- `ACTIVE` 只允许位于 L1，且 `ref_count > 0`；
-- L1 `EVICTABLE` 与所有 L2/L3 block 的 `ref_count=0`；
-- partial block 不进入 `hash_index`，也不进入 L2/L3；
-- `owner_generation` 防止物理 block 复用后旧引用误命中；
-- 一个 hash 可以映射到多个 block，以容纳同 step 重复计算；
-- 每个物理 block 同一时刻只计入一个 tier 的容量。
-
-### 6.3 索引与目录
-
-`HierarchicalKVCache` 至少维护：
+将 session 参数置于 `SyntheticWorkloadConfig` 下；在 `EngineConfig` 下增加 prefix cache 输入配置，解析后内部始终有 `prefix_cache`，无 `enabled` 字段。`num_requests=N` 为总轮次数，`num_sessions=S` 为根请求数，要求 `1 <= S <= N`，`arrival_rate=q` 为所有轮次请求的目标到达 QPS（有限正数，单位请求/秒）；保持字段名兼容旧请求。旧请求缺少新字段时默认 `num_sessions=num_requests`、`target_ideal_prefix_hit_rate=0`、`think_time_ms=0`、`block_size_tokens=1`（保证任何现有正数 `kv_token_budget` 可解析），L2/L3 容量为 0；显式配置较大 `B` 可模拟实际块粒度。入口兼容现有 `kv_token_budget`：`l1.capacity_blocks = floor(kv_token_budget / B)`，不得同时维护独立的第二套 L1 预算；`B >= 1`，解析后容量不足以放下一个 block 时明确报配置错误。L2/L3 在本阶段不启用，KV3 才激活。
 
 ```text
-blocks: block_id -> KVBlock
-request_blocks: request_id -> ordered BlockRef list
-hash_index: chunk_hash -> ordered block_id collection
-tier_free: tier -> free block collection
-tier_lru: tier -> evictable block ordering
-epoch: monotonic cache version
-access_seq: monotonic committed-access sequence
-```
-
-`hash_index` 是全局目录，查询结果包含实际 tier。每层的容量、resident、free、active、evictable 和峰值分别统计。
-
-### 6.4 最长连续前缀查询
-
-请求准入时从输入的第一个完整 block 开始逐个查询：
-
-1. 对同一 hash 优先选择 L1，其次 L2、L3；
-2. 同层多个候选按确定性 block ID 规则选择；
-3. 任一层均不存在时立即停止；
-4. 不允许跳过 miss 后继续命中后续 block；
-5. 返回每个命中 block 的来源 tier；
-6. `probe` 只读，不刷新 LRU、不提升、不分配、不淘汰。
-
-连续命中 block 数乘以 $B$ 得到 `matched_cache_tokens`；再按“至少计算一个输入 token”规则得到 `reused_prefill_tokens`。后文未特别说明时，`actual_hit_tokens` 指后者。
-
-### 6.5 step 级原子事务
-
-同一 EngineStep 的候选请求必须基于同一 `CacheSnapshot` 规划，随后以一个 `CacheTransaction` 原子提交：
-
-```text
-snapshot() -> CacheSnapshot
-probe(snapshot, request_hashes) -> PrefixProbe
-prepare_batch(snapshot, probes, allocations) -> CacheTransaction
-commit(transaction) -> BatchCacheResult
-publish(request_id, completed_hashes)
-release(request_id)
-```
-
-事务需要：
-
-- 为 L1 命中增加共享引用；
-- 对 L2/L3 命中去重并安排一次物理提升；
-- 为实际 miss 分配 L1 block；
-- 为获得空间执行确定性降级和淘汰；
-- 同一低层 block 被多个请求命中时只传输一次、建立多个 L1 引用；
-- 全部成功后统一更新 LRU、引用、索引和 epoch；
-- 失败时不留下部分提升、部分引用或被错误刷新的 LRU。
-
-step 内新计算并在末尾发布的 hash 对本 step 其他请求不可见。该约束避免请求遍历顺序改变同批命中结果。
-
-### 6.6 LRU 与层级驱逐
-
-每层独立维护 LRU，排序键为：
-
-```text
-(last_access_seq, block_id)
-```
-
-规则：
-
-- 只有成功提交的 acquire/hit 才刷新访问序号；
-- probe、miss、未准入候选和失败事务不刷新；
-- L1 active block 不进入淘汰候选；
-- L1 victim 降级到下一个启用层，并作为该层最新驻留项；
-- 下层空间不足时先递归驱逐其 LRU victim；
-- L3 victim 被删除，并同步清理 hash 反向索引；
-- lower-tier hit 提升到 L1 时原层位置释放；
-- 所有选择只依赖稳定序号和 ID，不依赖 set/dict 的未定义遍历顺序。
-
-### 6.7 容量失败
-
-启用层级 KV cache 后，容量是硬约束：
-
-- active block 不得为接纳新请求而淘汰；
-- 无法通过驱逐 inactive block 获得足够 L1 空间时，本次准入失败；
-- 若单请求即使在空 L1 中也无法容纳其活动 KV，返回明确的不可执行/OOM 结果；
-- 不沿用当前 `KVCache` 的“强制准入并允许物理超限”行为；
-- prefix cache 始终参与容量管理，不存在绕过 block manager 的 token 账本路径。
-
-## 7. 时序与性能成本
-
-### 7.1 客户端发送与请求准入流程
-
-```text
-WorkloadGenerator 生成不可变 WorkloadPlan
-    ↓
-ClientDriver.initial_wakeups() 返回根 ClientWakeup
-    ↓
-SimulationCoordinator 登记 ClientSend 事件
-    ↓
-全局时钟推进到 wakeup.send_time
-    ↓
-ClientDriver.on_wakeup() 构造 InferenceRequest
-    ↓
-coordinator 调用 engine.submit(request, now)
-    ↓
-引擎此时才取得请求所有权并加入 waiting queue
-    ↓
-EngineStep：snapshot/probe → 调度 → cache commit → 执行
-    ↓
-step 结束后 publish 已完成完整 block
-    ↓
-RequestDone：release 引用；完整 block 转为 L1 evictable
-    ↓
-RequestCompletion 经 coordinator 交付 ClientDriver
-    ↓
-客户端更新 output 历史并返回子 ClientWakeup
-    ↓
-coordinator 登记 send_time = finish_time + think_time 的 ClientSend
-```
-
-客户端完成回调只更新自身状态并安排未来 wakeup，不把未来请求或预计到达时间交给引擎。到达时刻真正发生后，客户端才通过 `on_wakeup` 构造请求并调用引擎提交接口。协调器拥有全局时间和事件堆；客户端拥有 `ClientSend` 的业务状态；引擎拥有提交后的 waiting/running 状态。
-
-同刻事件顺序扩展为：
-
-```text
-RequestDone / KV publish-release
-→ RequestCompletion 路由与 ClientDriver 回调
-→ ClientSend / ClientDriver.on_wakeup
-→ engine.submit / Arrival
-→ EngineStep
-```
-
-因此 `think_time_ms=0` 的子请求可以命中父请求刚转为可复用状态的 KV，同时不能在父请求完成前到达。引擎 trace 中的 `Arrival` 在 `engine.submit` 时产生，其时间等于协调器当前时间，而不是预先存储的预计到达时间。
-
-### 7.2 分层命中成本
-
-- L1 hit：不产生 Prefill 计算和层间传输；
-- L2 hit：不产生对应 Prefill 计算，产生 L2→L1 传输；
-- L3 hit：不产生对应 Prefill 计算，产生 L3 read 和到 L1 的传输；
-- miss：产生 Prefill 计算和 L1 KV 写入。
-
-首期采用可解释的串行关键路径：
-
-$$
-t_{step}=t_{cache\ lookup}+t_{restore}+t_{prefill/decode}
-$$
-
-其中：
-
-$$
-t_{restore,L2}=latency_{L2}+\frac{bytes_{L2}}{BW_{L2\rightarrow L1}}
-$$
-
-$$
-t_{restore,L3}=latency_{L3}+\frac{bytes_{L3}}{BW_{L3\rightarrow L2}}+
-latency_{L2}+\frac{bytes_{L3}}{BW_{L2\rightarrow L1}}
-$$
-
-多个请求对同一物理 block 的共享提升只计一次传输。计算与传输重叠作为后续性能模型能力，首期不隐式假设重叠。
-
-### 7.3 Prefill 工作量
-
-实际 Prefill token 数为：
-
-$$
-P_i^{compute}=P_i-H_i^{actual}
-$$
-
-但现有二次经验公式不能简单把它当成一个独立短 prompt。经验模型使用增量形式：
-
-```text
-prefill_cost(context_before=actual_hit_tokens,
-             new_prefill_tokens=P_i_compute)
-```
-
-解析性能模型后续显式消费 Query 长度、逻辑 context、历史 KV 读取、新 KV 写入和层间传输。
-
-## 8. 配置归属
-
-### 8.1 workload 配置
-
-建议在 synthetic workload 下增加：
-
-```text
-session:
-  num_sessions
-  topology: linear
-  think_time_ms
-  target_ideal_prefix_hit_rate
-  content_seed: optional
+synthetic.session:
+  num_sessions                   # 1 <= num_sessions <= num_requests
+  topology: linear              # 首期生成线性链，数据结构保留分支
+  think_time_ms                 # >= 0
+  target_ideal_prefix_hit_rate  # [0, 1]
+  content_seed: optional        # 不指定则从已有 seed 稳定派生
   allow_cross_session_shared_prefix: false
-```
 
-约束：
-
-- `1 <= num_sessions <= num_requests`；
-- 每个请求必须且只属于一个 session，每个 session 至少包含一个根轮次；
-- 请求按 session 稳定分配，首期各 session 为线性链；
-- 单轮 session 是最小合法 workload；
-- `target_ideal_prefix_hit_rate` 范围为 `[0, 1]`；
-- 目标可行性在请求长度和拓扑物化后校验；
-- `content_seed` 未配置时由已有 seed 稳定派生。
-
-目标命中率属于 workload 属性，不放入 engine cache 配置。
-
-### 8.2 engine/cache 配置
-
-建议增加：
-
-```text
 prefix_cache:
-  block_size_tokens
+  block_size_tokens             # 全场唯一 B
   cache_salt
   eviction_policy: lru
   hierarchy_policy: exclusive_write_back
-  l1:
-    capacity_blocks
-  l2:
-    capacity_blocks
-    read_bandwidth_bytes_per_ms
-    fixed_latency_ms
-  l3:
-    capacity_blocks
-    read_bandwidth_bytes_per_ms
-    fixed_latency_ms
+  l1: {capacity_blocks}         # resolved config 的唯一 L1 物理容量
+  l2: {capacity_blocks, read_bandwidth_bytes_per_ms, fixed_latency_ms}
+  l3: {capacity_blocks, read_bandwidth_bytes_per_ms, fixed_latency_ms}
   kv_bytes_per_token
 ```
 
-`prefix_cache` 是必需的 resolved config，不包含 `enabled` 字段；prefix hash、lookup 和 block manager 始终运行。`block_size_tokens` 是整场仿真的唯一 KV block size。若容量仍以现有 `kv_token_budget` 输入，由 resolved config 向下取整为 L1 block 数；不能同时保留两套独立 L1 容量。
+内部使用不可变值对象（可置于 `schemas.py` 或同层专用模型文件；对外配置/结果仍以 `schemas.py` 为单一事实源）：
 
-L2/L3 容量为 0 时关闭对应层。未提供字节级模型时可直接配置每 block 传输耗时，作为经验后端兼容路径。
+```text
+TurnPlan(request_id, session_id, parent_request_id,
+         root_arrival_time_ms | think_time_ms,
+         prompt_len, output_len, ideal_reuse_blocks,
+         unique_suffix_seed, output_token_plan)
+WorkloadPlan(turns: request_id -> TurnPlan,
+             root_request_ids, children: parent_request_id -> request_ids)
+InferenceRequest(request_id, session_id, parent_request_id,
+                 input_token_ids, output_token_plan,
+                 input_chunk_hashes, ideal_reuse_blocks)
+RequestCompletion(request_id, output_token_ids, finish_time_ms)
+ClientWakeup(session_id, turn_id, send_time_ms)
+```
 
-## 9. Trace 与指标
+根轮次只有到达时刻，子轮次只有 parent 和 think time；每个请求恰属一个 session。输入 token 数必须等于 `prompt_len`，完成后的输出 token 数必须等于 `output_len`；hash 列表只包含完整 block。完整 token/完整 hash 不经默认 API 回显。对现有仅有长度的 `Arrival` 调用方，在入口转换为单根 session 请求，使用稳定种子补齐内容；不要让它成为绕过 hash/cache 的第二条执行路径。
 
-### 9.1 请求级记录
+### `workload.py`：一次规划、到时发送
 
-每个请求至少记录：
+保留现有长度分布采样函数；生成器改为产生不可变 `WorkloadPlan`，不接触 Engine、cache 或事件队列。分别用 `stable_derive(seed, domain)` 派生根到达、轮次长度、session 拓扑、内容和命中分配的独立随机流，禁止某个维度新增采样扰动其他维度。根和各请求唯一后缀使用 session/request 域隔离，禁止随机内容偶然跨 session 命中；显式公共前缀开启时将这部分共享计入 ideal。
 
-- `session_id`、`parent_request_id`；
-- 输入/输出长度；
-- `ideal_reuse_tokens`；
-- `matched_cache_tokens`；
-- `actual_l1_hit_tokens`、`actual_l2_hit_tokens`、`actual_l3_hit_tokens`（均为实际跳过 Prefill 的 token）；
-- `actual_prefill_tokens`；
-- restore bytes/time；
-- 到达、排队、Prefill、Decode 和完成时间。
+**由目标请求 QPS 构造计划**（首期线性 session）：
 
-默认不返回 token IDs 和完整 hash 列表；调试 trace 可选择返回 hash 摘要。
+1. 令 `N=num_requests`、`S=num_sessions`、`q=arrival_rate`（请求/秒），校验 `N >= S >= 1`、`q > 0` 且有限。每个 session 至少一个根；先确定轮数 `n_s`，保证 `sum_s n_s=N`。首期均衡分配：`n_s = floor(N/S) + 1` 的 session 有 `N % S` 个，其余为 `floor(N/S)`；额外轮次给哪些 session 由拓扑独立随机流生成稳定顺序。按 session/轮次固定顺序分配 request ID，建立线性 parent/children 边。
+2. 平均每个根带来 `m=N/S` 个请求，设根的泊松到达率 `lambda_root = q/m = q*S/N`（session/秒）。例如 `N=1000`、`S=200`、`q=50` 时每 session 平均 5 轮，根速率为 10 session/秒，而不是 50 session/秒。用根到达独立随机流依次采样 `delta_j ~ Exp(lambda_root/1000)`（毫秒），令 `t_j = sum_{k=0..j} delta_k`，`j=0..S-1`；首个根同样采样间隔，不强置 `t_0=0`。把 `t_j` 写入该 session 根轮次的 `root_arrival_time_ms`，只为根轮次生成到达时刻。
+3. 用长度独立随机流确定所有轮次的 `prompt_len`、`output_len`，为子轮次只记录 `parent_request_id`、`think_time_ms`，再按下述 block 规则分配理想复用量和内容种子。计划仅包含 `S` 个已知根发送时刻及 `N-S` 个依赖父完成的轮次；不得预测子轮次的发送时刻，也不得为了追逐实测 QPS 重排、提前发送或反馈调整根到达。
 
-### 9.2 聚合指标
+该换算的含义是：若持续以此根速率注入同样平均轮数的 session，且所有轮次最终完成，则**长期平均**总请求到达率为 `lambda_root * (N/S) = q`；它不是对这一次有限仿真的精确 QPS 保证。泊松采样有波动，启动/收尾、think time、排队及处理能力会改变实际子轮次到达时刻；引擎无法完成所有轮次时更不能宣称目标达成。尤其 `S=1` 只有一次根到达采样，不能从单场验证目标 QPS；`S=N` 时 `lambda_root=q`，退化为现有单轮请求泊松到达口径。这里是按目标速率构造开放式根到达，不用 Little’s law 反推并发；Little’s law 只适合在稳定条件下检查在途请求数与吞吐/时延的关系。
 
-必须输出：
+长度/拓扑确定后，设 `P_i` 为输入长度、`L_parent(i)` 为父请求最终逻辑上下文长度：
 
-- `target_ideal_prefix_hit_rate`；
-- `constructed_ideal_prefix_hit_rate`；
-- `ideal_hit_quantization_error`；
-- `actual_prefix_hit_rate`；
-- L1/L2/L3 各自的 token hit ratio；
-- `ideal_hit_tokens - actual_hit_tokens` 的容量/时序损失；
-- 实际计算与避免计算的 Prefill token；
-- 有任意命中的请求比例、完全命中的请求比例；
-- 各层 hit、promotion、demotion、eviction block 数；
-- 各层 resident/active/evictable 峰值；
-- restore bytes/time 与估计节省的 Prefill 时间；
-- block 内部碎片。
+```text
+M_root = 0
+M_i = floor(min(L_parent(i), P_i - 1) / B)  # 子请求最多可共享的 block
+D = sum(P_i); M = sum(M_i); r_max = B * M / D
+```
 
-分层 hit token 只按 probe 时的来源 tier 归因一次。若完整输入均匹配而必须重算最后一个 token，则从最后一个匹配 block 的来源 tier 中扣除该 token：
+目标大于 `r_max` 时返回包含 `r_max` 的不可行错误，不静默截断。取 `[0, M]` 中令 `abs(B*K/D - target)` 最小的整数 `K*`，平局取较小值；`M=0` 时 `K*=0`。按 `q_i=K* M_i/M` 先取整、再按小数余量降序分配剩余 block；平局由独立分配随机流提供稳定顺序。保证 `0 <= K_i <= M_i`、`sum(K_i)=K*`，输出目标、`achieved=B*K*/D`、量化误差。
 
-$$
-H_i^{actual}=H_{i,L1}+H_{i,L2}+H_{i,L3}
-$$
+客户端构造子输入时，复制父请求完成后 `input + output` 上下文的前 `B*K_i` 个 token；若 `K_i<M_i`，下一 token 必须不同；余下用 request 域隔离的唯一 token 填充。生成器可以预定输出计划，但客户端只能在收到父请求实际完成结果后使用其 output token 构造子输入。部分继承表示从 block 边界分叉，不暗示自然语言对话完整继承。
 
-### 9.3 守恒关系
+### `prefix_hash.py`：只有内容决定身份
 
-结果必须满足：
+以稳定摘要计算完整输入及随后生成的 output 所形成的完整块：
+
+```text
+H_0 = Digest(namespace, ROOT, C_0)
+H_j = Digest(namespace, H_(j-1), C_j)
+```
+
+`namespace` 至少覆盖模型/权重、tokenizer、KV dtype、adapter/LoRA、影响 KV 的多模态变换以及 `cache_salt`；未配置的模型维度在首期使用稳定固定值，但保留隔离字段。相同 chunk 处于不同历史前缀时不得得到相同身份。不得按 session ID、父请求 ID、长度或目标命中率直接判定 cache hit。注入 hasher 的测试接缝用于验证重复 hash 对索引/引用计数的健壮性，不要求首期 token-by-token 碰撞校验。
+
+**本步完成检查**：同 seed 的计划/token/hash 完全一致；改动某一派生域不影响其他域；`sum(n_s)=N`、根数为 `S`、根间隔按 `q*S/N` 采样；`S=N` 保持单轮到达率口径，`S=1` 不断言单场实测 QPS；所有子轮次都不含预定到达时刻；命中块总量恰为 `K*`，不可行错误包含 `r_max`，无意外跨 session 前缀。
+
+## 3. PC1-B：模拟客户端、协调器与 Engine 边界
+
+### `client.py`
+
+`ClientDriver` 只持有 `WorkloadPlan`、未发送轮次、in-flight ID 和已完成父请求的逻辑上下文；不读 cache 或 Engine waiting/running 状态：
+
+```text
+initial_wakeups() -> tuple[ClientWakeup, ...]
+on_request_completed(completion, now_ms) -> tuple[ClientWakeup, ...]
+on_wakeup(wakeup, now_ms) -> tuple[InferenceRequest, ...]
+```
+
+根轮次由 `initial_wakeups` 返回；完成父请求才为其 children 登记 `finish_time_ms + think_time_ms` 的发送事件；`on_wakeup` 仅在 `now_ms == send_time_ms` 构造请求并移除 ready 状态。相同 wakeup 不可重复提交；线性链首期每次至多一个子 wakeup，但接口保留分支/批量能力。
+
+### `events.py`、`coordinator.py`、`engine.py`、`runner.py`
+
+将 `_Engine` 中的 `heapq`、`EventFactory` 和时钟推进移到 `SimulationCoordinator`；在 `events.py` 增加 `CLIENT_SEND`、完成结果路由所需事件类型与单调序号。协调器在当前时刻调用 `client.on_wakeup` 并立即 `engine.submit(request, now_ms)`；Engine 入 waiting queue 并当场记录 `Arrival`，不能预存未来请求或读取 `WorkloadPlan`。Engine 保留 step、scheduler、KV 所有权，向协调器登记未来 EngineStep/RequestDone，完成时返回通用 `RequestCompletion`。`runner.simulate` 组合 workload、client、engine、coordinator 并最终汇总结果；不在客户端引入第二套事件堆或真实 `sleep()`。
+
+同刻顺序固定为：`RequestDone + KV publish/release → completion 路由与 client 回调 → ClientSend/on_wakeup → engine.submit/Arrival → EngineStep`。若多请求同刻完成，所有完成结算先于该时刻的发送和 step；`think_time_ms=0` 的子请求可见父请求刚发布的 block。空闲期直接跳至下一事件；忙碌时不在前一步终点之前开启新 step。
+
+**本步完成检查**：子请求在父完成前既不在 Engine waiting 中，也没有引擎侧的预计到达时间；同刻事件序列稳定；旧单轮调用可通过适配器运行。PC1-B 测试可用虚拟 Engine 验证路由，不能将无缓存路径作为最终产物。
+
+## 4. PC2：L1 paged KV block manager
+
+### `kv_cache.py`：以物理块替换 token 账本
+
+现有 `KVCache` 的 `request_id -> token_count`、`force=True` 和超预算增长不能作为最终缓存实现。新增/替换为 `HierarchicalKVCache` 的 L1 模式；`KVBlock` 至少包含 `block_id`、`content_hash`、`valid_tokens`、`tier`、`state`、`ref_count`、`last_access_seq`、`owner_generation`。内部维护 `blocks`、每请求有序 `request_blocks`、`hash_index: chunk_hash -> ordered block_ids`、L1 free/evictable LRU、单调 `epoch` 和 `access_seq`。同一 hash 允许对应多个物理块；generation 防止回收位置的旧引用命中。
+
+```text
+snapshot() -> CacheSnapshot
+probe(snapshot, input_chunk_hashes) -> PrefixProbe
+prepare_batch(snapshot, probes, allocations) -> CacheTransaction
+commit(transaction) -> BatchCacheResult     # 批量原子 acquire
+publish(request_id, completed_block_hashes)
+release(request_id)
+```
+
+`probe` 从输入首块查最长连续前缀，遇 miss 停止；相同 hash 的候选按稳定 block ID 选择，返回命中位置及来源层。它必须只读，不更新 LRU 或引用。`prepare_batch` 根据同一 snapshot 预留所有候选所需空间，`commit` 原子完成引用、未命中块分配和必要驱逐；失败不留下部分分配、错误 LRU 或破坏旧索引。`publish` 仅将已算完的完整 block 加入共享索引，允许每次传一个或多个；step 内新 block 不对同 step 其他请求可见。`release` 减少引用，完整可缓存块变为 evictable，partial 块释放。
+
+L1 `ACTIVE` 引用数大于 0 且不可淘汰；`EVICTABLE` 引用数为 0，按 `(last_access_seq, block_id)` 选择 victim。只有成功提交的 acquire/hit 才刷新访问序号；probe、miss、未准入和失败事务不刷新。物理容量按 block 计算，共享块仅计一次，活动请求的逻辑 context 分别计数；分别统计有效 token、block capacity 与内部碎片。partial tail 仅活动请求独占，不进入 hash index。
+
+**硬容量与进展**：准入和 step 规划须覆盖当前输入及之后 decode 的活动 KV 增长，不能沿用旧的“空 batch 强制准入并允许超限”。对已确定的 output_len 在准入时预留最坏情况下的未来增长空间，计入保留量但不伪装成已驻留物理块；多请求批量预留须去重共享物理块并原子提交，后续增长消耗预留。单请求独占空 L1 仍无法容纳其活动上下文时明确报不可执行/OOM；暂时放不下则保持 FCFS 队头等待，不跳过。每一步保证 `resident_blocks + reserved_future_blocks <= l1_capacity_blocks`，并在释放时归还预留，避免 decode 中途超限或无限空转。
+
+**本步完成检查**：只读 probe、重复 hash、共享引用、partial tail、block ID 复用、LRU/失败回滚、容量守恒及未来增长预留均通过 cache 单元测试；不需要先接入 Engine。
+
+## 5. PC3A-A：调度、执行与经验性能模型
+
+### `scheduler.py`、`engine.py`
+
+保持现有 FCFS 和一次性 Prefill。每个 EngineStep 从 L1 取一次 `CacheSnapshot`，对候选做只读 probe，再按 `max_batch_size` 和 cache 规划结果确定本步可准入的连续队头；同 batch 候选全部基于该 snapshot，成功后一次提交事务。不能在探测阶段 `reserve`，也不能让先遍历的请求看到同 step 的新 KV。未准入候选不改变 cache。`StepPlan` 应返回逐请求 matched/reused token、逻辑 context、新分配 block、实际 Prefill 工作量和可执行准入结果；Engine 不根据目标理想命中直接跳过 token。
+
+Prefill step 结束时，按实际算完的 token 进度批量 `publish` 输入中形成的完整块；首次输出 token 在当前引擎 Prefill step 产生，后续输出 token 在 decode step 产生。仿真约定本步产出的 output token 在步末同时计入其 KV，累积成完整块即追加 hash 链并发布（包括最终 token），不在生成前发布。父请求完成、release 后，完整 output block 可命中后续子请求，partial output 不共享。`RequestCompletion` 必须返回实际生成的 `output_token_ids`。同一步重复计算出同 hash 的多个物理块不合并；到下一步再按稳定规则选取。
+
+### `perf_model.py`
+
+一次性 Prefill 的 `new_prefill_tokens = prompt_len - actual_hit_tokens`。保留历史上下文的二次成本，使用增量经验公式而不是把后缀视作独立短 prompt：
+
+```text
+prefill_cost(context_before, new_prefill_tokens)
+  = prefill_c1 * new_prefill_tokens
+  + prefill_c2 * ((context_before + new_prefill_tokens)^2 - context_before^2)
+```
+
+`context_before = actual_hit_tokens`；物理 KV 共享不缩短每个请求的 Decode 逻辑 context。L1 命中无 restore 成本；hash/lookup CPU 耗时首期取 0。维持现有 `step_time` 的 Prefill/Decode 融合规则，不能因为引入 cache 擅自将两者改为串行。
+
+**本步完成检查**：首请求 miss，发布后重复前缀 hit 并减少 Prefill；同 step 互不可见；父 output 完整块可命中而 partial 不可；全 prompt 命中仍计算一个输入 token；KV 无超限且事件时序可复现。
+
+## 6. PC3A-B：指标、服务与前端
+
+### `events.py`、`schemas.py`、`metrics.py`、`runner.py`
+
+请求记录增加 session/parent、理想复用 token、物理 matched token、实际 L1 复用 token、实际 Prefill token、逻辑 context、时间区间；step trace 记录查询、命中、分配/驱逐、步首/步末 active/evictable/free、内部碎片。`metrics.compute_metrics` 保留原 TTFT/TPOT/吞吐口径，再汇总目标/构造/量化误差/实际 token 命中率、有命中及“所有可缓存输入完整块均命中”的请求比例、实际/节省 Prefill、eviction 与峰值。可缓存完整块数为 0 的请求不计为“完全命中”。所有比率用输入 token 总数加权，不平均各请求比率。
+
+配置回显中的 `arrival_rate` 是**目标请求 QPS**，已有 `throughput` 是**实测端到端完成吞吐**（`N / ((末请求完成 - 首根到达)/1000)`，请求/秒）；两者不等同，不以吞吐校准根到达率。若未来展示实测到达 QPS，应先定义固定观测窗口，再用窗口内实际提交请求数除以窗口秒数；不能将完成吞吐或首末到达跨度的商直接视为目标达成率。
+
+L1 阶段仍以与后续层级兼容的分层字段输出：L2/L3 hit、restore、迁移均为 0。实际 hit token 仅按 probe 时来源层归因；若最后一个输入 token 必须重算，从其所在匹配块的来源层扣除该 token。至少维持：
 
 ```text
 actual_hit_tokens <= ideal_hit_tokens <= total_input_tokens
 actual_prefill_tokens + actual_hit_tokens = total_input_tokens
 L1_hit_tokens + L2_hit_tokens + L3_hit_tokens = actual_hit_tokens
-free_blocks + resident_blocks = tier_capacity_blocks
+free_blocks + resident_blocks + reserved_future_blocks = tier_capacity_blocks  # L1
 active_blocks <= L1_resident_blocks
 ```
 
-在启用显式跨 session 公共前缀后，`actual_hit_tokens <= ideal_hit_tokens` 仍须成立：生成器应把这类共享计入 ideal lineage，而不是视作偶然命中。
+若保留单独的“可用但尚未预留”与“未来已预留”账本，以上 `free_blocks` 专指可用且未预留的容量；L2/L3 没有未来预留时为 `free + resident = capacity`。显式跨 session 前缀也必须计入 ideal，不能破坏 `actual <= ideal`。
 
-## 10. 模块边界
+### `server/`、`web/`
 
-增加 `client` 与 `coordinator` 模块承接动态 session 行为和全局 DES 时间，并保持 Engine 对可变缓存的唯一所有权：
+对外结果模型经 `server/src/simserver/routes.py` 的原有 `/api/simulate` 返回，更新 `server/src/simserver/openapi_export.py` 的导出结果、`web/openapi.json`、`web/src/api/schema.d.ts`、`web/src/config/simulation.ts` 以及使用配置/指标的 UI。旧单轮请求的 `arrival_rate` 仍为请求/秒；多轮时明确标为“总请求目标 QPS”，不再解释为根 session/秒；其余旧字段保留含义与单位。新增参数提供旧请求可用的默认值，结果默认不传完整 token ID/hash。
+
+**本步完成检查**：端到端复现性、上述守恒关系、API schema 与前端类型一致；旧单轮场景继续可运行，新增 session 配置在界面可提交，理想/实际命中与容量指标可查看。
+
+## 7. KV3：在已完成的 L1 接口上扩展 L2/L3
+
+此阶段才在 `schemas.py` 激活 L2/L3 容量、带宽、固定延迟及 `kv_bytes_per_token`；容量为 0 的层关闭。沿用相同 `WorkloadPlan`、链式 hash、probe 与指标分母，不重写客户端或引擎的到达时序。独占式 write-back：新块进 L1；L1 victim 降级 L2，L2 victim 降级 L3，L3 victim 删除；低层 hit 去重提升 L1 并移除原层位置，禁用层跳过。一个物理块同刻只属于一层；每层独立 LRU，降级块成为目标层最新驻留项，目标层满时递归逐出 victim，删除时清理 hash 反向索引。
+
+`kv_cache.py` 的全局 hash directory 记录每块实际 tier；probe 从首块逐一查找，优先 L1→L2→L3，同层按稳定 block ID 选取并返回每块来源。相同低层物理块在同 batch 被多请求命中时只提升和传输一次，建立多个 L1 引用；低层命中必须先拿到 L1 空间，事务失败不得留下部分提升。`scheduler.py` 继续同 snapshot 原子规划；`engine.py` step 末发布及完成释放流程不变。
+
+`perf_model.py` 在原 Prefill/Decode 融合步长之外串行加入 restore（首期不假设与计算重叠），相同物理块共享提升只收一次：
 
 ```text
-schemas          通用不可变请求、完成结果、wakeup 与配置
-  ├─ prefix_hash 稳定 namespace、token 分块与链式 hash
-  ├─ workload    session 拓扑、理想命中分配与不可变 WorkloadPlan
-  │    ↓
-  │  client      消费计划、维护 session、产生 ClientWakeup、构造到达请求
-  └─ kv_cache    L1/L2/L3 block、目录、LRU 与原子事务
-       ↓
-     scheduler   snapshot/probe、准入与 batch cache transaction
-       ↓
-     engine      实际到达队列、step、cache 生命周期与 RequestCompletion
-
-coordinator      唯一仿真时钟与事件队列
-  client ClientWakeup → ClientSend → client.on_wakeup
-  client InferenceRequest → engine.submit(now)
-  engine RequestCompletion → client.on_request_completed
-       ↓
-metrics          理想/实际/分层命中与性能收益汇总
+t_step = t_cache_lookup + t_restore + max(t_prefill_total, t_decode)
+t_L2 = latency_L2 + bytes_L2 / BW_L2_to_L1
+t_L3 = latency_L3 + bytes_L3 / BW_L3_to_L2
+     + latency_L2 + bytes_L3 / BW_L2_to_L1
 ```
 
-边界规则：
+`metrics.py` 增加 L1/L2/L3 的 token hit ratio、promotion/demotion/eviction、驻留峰值、restore bytes/time 和理想与实际命中差。请求级分层 token 之和等于实际跳过的 Prefill token；各 tier 分别满足容量守恒。L2/L3 为 0 时应与 PC3A 的 L1 结果一致。
 
-- `workload` 只生成计划，不访问运行时 cache、Engine 或事件队列；
-- `client` 独占 session 历史、父子关系、think time、未来发送状态和 in-flight 请求，不读取 cache；
-- `coordinator` 独占全局仿真时钟和事件堆，负责路由 `ClientSend`、Engine 事件与完成结果；
-- `engine` 不持有未来 `ClientWakeup` 或尚未到达的 `InferenceRequest`，不读取 `WorkloadPlan`，不查询 children，也不解释 think time；
-- `engine.submit(request, now_ms)` 只接收当前协调器时刻真正到达的请求，并在该调用处记录 Arrival；
-- `client` 不维护已提交请求的 Engine waiting/running 状态；提交后的排队和执行归 Engine；
-- `kv_cache` 不感知仿真时间、客户端或事件队列；
-- `scheduler` 不发布未完成 block；
-- `engine` 负责 step 和 cache 生命周期，并只产出通用 `RequestCompletion`；
-- `coordinator` 是 `client` 与 `engine` 的唯一连接点，模块间只交换不可变值对象；
-- `perf_model` 只消费不可变 workload/cost 描述，不读取 cache 可变状态。
+## 8. 后续模块接入边界
 
-客户端和引擎不得分别维护可独立推进的事件堆。未来增加网络、取消、流式响应或多个服务实例时，应扩展协调器的事件类型，同时保持 Engine 只接收实际到达请求的边界。
-
-## 11. 实施阶段
-
-### KV1：session workload、模拟客户端与理想命中构造
-
-- 增加 `TurnPlan`、`WorkloadPlan`、`InferenceRequest`、`RequestCompletion` 和 `ClientWakeup`；
-- 保留原有负载生成器，由其生成不可变 session 计划并交给 `ClientDriver`；
-- 增加 `SimulationCoordinator`，将唯一仿真时钟和事件队列从 Engine 边界中提升出来；
-- 实现 `initial_wakeups`、`on_request_completed` 与 `on_wakeup`，由客户端维护未来发送状态和 session 历史；
-- `ClientSend` 到时才构造请求并调用 `engine.submit(request, now_ms)`，Engine 不保存未来请求；
-- 使用同一全局事件队列登记客户端发送和 Engine 执行事件，不增加真实等待；
-- 使用独立随机流生成输入/输出 token；
-- 实现链式 chunk hash；
-- 实现目标可行性、block 量化和比例分配；
-- 输出目标、构造值与量化误差。
-
-### KV2：L1 prefix cache
-
-- 将现有 token 账本升级为 paged block manager；
-- 实现 snapshot/probe/transaction/publish/release；
-- 实现 active pin、inactive residency 和确定性 LRU；
-- 接入实际 Prefill 工作量和 L1 命中指标。
-
-该阶段与 `F003` 的 PC1～PC3A 对齐。
-
-### KV3：L2/L3 层级
-
-- 增加全局 hash directory 与分层容量；
-- 实现 exclusive write-back 的 promotion/demotion/eviction；
-- 加入 restore 带宽、固定延迟和传输去重；
-- 输出分层命中、resident、迁移和驱逐指标。
-
-### KV4：continuous batching 集成
-
-- 在 `F001.CB4` 中按 Prefill chunk 增量 publish；
-- 命中 token 不占 Prefill token budget；
-- retraction 时正确 release，避免立即命中自身导致无进展；
-- 同 step 继续保持 snapshot 隔离。
-
-## 12. 验收要求
-
-### 12.1 workload 与 hash
-
-- 同配置和 seed 生成相同 session、父子关系、根到达、每轮长度、token 和 hash；
-- 根到达、长度、拓扑、内容和命中分配使用独立随机流，改变其中一个维度不扰动其他维度；
-- namespace、父 hash 或 chunk token 任一变化都会改变当前及后续 hash；
-- 不开启跨 session 共享时，不出现非预期跨 session 命中；
-- 构造命中 block 总数严格等于 $K^*$；
-- 构造误差符合 block 量化上界；
-- 不可行目标返回包含 `r_max` 的明确错误。
-
-### 12.2 模拟客户端与 session 时序
-
-- `WorkloadPlan` 只由模拟客户端消费，引擎不查询 session children 或 think time；
-- `SimulationCoordinator` 是唯一时钟和事件队列所有者，客户端和引擎不能各自推进时间；
-- 根轮次只由 `ClientDriver.initial_wakeups` 注册，并在 wakeup 时刻通过 `on_wakeup` 提交；
-- 子轮次只在客户端收到父请求 `RequestCompletion` 后注册，不会早于父请求完成；
-- 子 `ClientWakeup.send_time_ms` 严格等于 `finish_time_ms + think_time_ms`；
-- wakeup 触发前，引擎中不存在对应请求及其预计到达时间；
-- `engine.submit` 只接收当前时刻实际到达的请求，引擎 waiting queue 中不存在未来请求；
-- future send 通过 DES 事件调度，不调用真实 `sleep()`；
-- 请求提交后只存在于引擎 waiting/running 状态，不继续停留在客户端 ready 状态；
-- 零 think time 时，父请求发布/release 对同刻子请求可见；
-- 父请求 output 完整 block 可被子请求命中，partial tail 不可共享；
-- 分支请求只共享其声明的连续祖先前缀；
-- 相同完成结果和客户端状态产生相同的后继 `ClientWakeup` 与 `InferenceRequest`。
-
-### 12.3 cache 与 LRU
-
-- probe 完全只读；
-- 命中只返回从输入起点开始的最长连续完整 block；
-- 同 step 新发布的 block 不对同批请求可见；
-- active L1 block 永不淘汰；
-- 每层按 `(last_access_seq, block_id)` 确定性淘汰；
-- promotion/demotion/eviction 后索引和容量守恒；
-- 事务失败不留下部分状态；
-- L3 淘汰后对应 hash 不再可查；
-- 一个 hash 对应多个物理 block 时选择规则稳定。
-
-### 12.4 指标与性能
-
-- 理想命中不受缓存容量和调度顺序影响；
-- 实际命中由准入时 residency 决定；
-- L1/L2/L3 命中归因之和等于实际命中；
-- lower-tier hit 减少 Prefill，但增加对应 restore 成本；
-- shared block 的物理容量只计算一次，每个请求的逻辑 context 分别计算；
-- 全 prompt 可缓存时仍至少执行一个输入 token；
-- 相同配置、seed 和性能参数得到相同事件、淘汰、命中和结果序列。
-
-## 13. 非目标
-
-首期不实现：
-
-- hash 碰撞后的 token-by-token 二次校验；
-- partial block 跨请求 copy-on-write；
-- radix tree；
-- 跨 Engine/实例 cache-aware routing；
-- 跨仿真或 API 请求持久化 KV；
-- inclusive/write-through 副本策略；
-- 真实 KV tensor、GPU 地址或 DMA 并发；
-- 根据计算与传输成本动态绕过低层命中；
-- 自适应反向调整 workload 以强行让实际命中率等于目标值。
+- `F001.CB4` 使用同一 `snapshot/probe/commit/publish/release` 接口：命中 token 不占 Prefill token budget，按 chunk 实际完成的完整块增量发布；retraction 释放引用、形成真实容量，避免立即命中自身导致无进展；同 step 保持 snapshot 隔离。此编排不属于 PC3A 的完成条件。
+- `F002` 消费命中前缀、实际新计算 token、逻辑 context、历史 KV 读取、新 KV 写入及 restore 信息；可扩展字节级容量与解析成本，但不得改变内容 hash、命中口径或缓存所有权。
+- 本设计不实现真实 KV tensor、跨仿真持久化、跨 Engine 路由、radix tree、partial block 跨请求 copy-on-write、inclusive/write-through 策略或计算/传输重叠调度。

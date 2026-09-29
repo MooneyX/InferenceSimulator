@@ -10,7 +10,7 @@
 
 表单字段与 [api.md](api.md) 的 Config schema 一一对应，分组展示：
 
-- **负载（workload）**：`num_requests`（总轮次数）、`arrival_rate`（根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.topology`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`、`session.content_seed` 和 `session.allow_cross_session_shared_prefix`。所有负载均按 session 计划生成并由模拟客户端提交；`mode` 固定 synthetic，trace 分支不在前端暴露。
+- **负载（workload）**：`num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.topology`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`、`session.content_seed` 和 `session.allow_cross_session_shared_prefix`。所有负载均按 session 计划生成并由模拟客户端提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
 - **引擎（engine）**：`max_batch_size`、`kv_token_budget`，以及必填的 `prefix_cache.block_size_tokens`、namespace salt、固定 `lru` 策略、L1/L2/L3 容量与低层读取成本。prefix hash 和 prefix cache 始终开启，界面不提供启用开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`。
 
@@ -21,7 +21,7 @@
 
 ## 输出：指标与告警
 
-- **指标卡片**：TTFT（均值 / P50 / P99）、TPOT、端到端吞吐、makespan，以结果网格（参考样式的 `result-grid`）展示。
+- **指标卡片**：TTFT（均值 / P50 / P99）、TPOT、实测端到端完成吞吐、makespan，以结果网格（参考样式的 `result-grid`）展示；`arrival_rate` 是输入的目标到达 QPS，不把完成吞吐误标为目标达成的到达率。
 - **告警列表**：`warnings` 逐条展示（如 KV 超限事件），为空则不渲染。
 - **甘特图**：见下节。
 

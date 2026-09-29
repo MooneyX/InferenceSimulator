@@ -36,7 +36,7 @@ export interface components {
     schemas: {
         /**
          * EngineConfig
-         * @description 引擎配置：batch 规模与 KV cache 预算双重约束。
+         * @description KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。
          */
         EngineConfig: {
             /**
@@ -49,6 +49,7 @@ export interface components {
              * @description KV cache token 预算总额
              */
             kv_token_budget: number;
+            prefix_cache?: components["schemas"]["PrefixCacheConfig"];
         };
         /**
          * ErrorResponse
@@ -81,6 +82,11 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** L1CacheConfig */
+        L1CacheConfig: {
+            /** Capacity Blocks */
+            capacity_blocks: number;
+        };
         /**
          * LognormalLength
          * @description 对数正态分布长度，用于表达长尾负载。
@@ -101,6 +107,24 @@ export interface components {
              * @description 形状参数，越大尾越长
              */
             sigma: number;
+        };
+        /** LowerTierConfig */
+        LowerTierConfig: {
+            /**
+             * Capacity Blocks
+             * @default 0
+             */
+            capacity_blocks: number;
+            /**
+             * Read Bandwidth Bytes Per Ms
+             * @default 0
+             */
+            read_bandwidth_bytes_per_ms: number;
+            /**
+             * Fixed Latency Ms
+             * @default 0
+             */
+            fixed_latency_ms: number;
         };
         /**
          * Metrics
@@ -168,6 +192,64 @@ export interface components {
              */
             mean: number;
         };
+        /** PrefixCacheConfig */
+        PrefixCacheConfig: {
+            /**
+             * Block Size Tokens
+             * @default 1
+             */
+            block_size_tokens: number;
+            /**
+             * Cache Salt
+             * @default
+             */
+            cache_salt: string;
+            /**
+             * Eviction Policy
+             * @default lru
+             * @constant
+             */
+            eviction_policy: "lru";
+            /**
+             * Hierarchy Policy
+             * @default exclusive_write_back
+             * @constant
+             */
+            hierarchy_policy: "exclusive_write_back";
+            l1?: components["schemas"]["L1CacheConfig"];
+            l2?: components["schemas"]["LowerTierConfig"];
+            l3?: components["schemas"]["LowerTierConfig"];
+            /**
+             * Kv Bytes Per Token
+             * @default 1
+             */
+            kv_bytes_per_token: number;
+            /**
+             * Model Id
+             * @default default-model
+             */
+            model_id: string;
+            /**
+             * Tokenizer Id
+             * @default default-tokenizer
+             */
+            tokenizer_id: string;
+            /**
+             * Kv Dtype
+             * @default default-dtype
+             */
+            kv_dtype: string;
+            /**
+             * Adapter Id
+             * @default default-adapter
+             */
+            adapter_id: string;
+            /**
+             * Multimodal Transform Id
+             * @default default-transform
+             */
+            multimodal_transform_id: string;
+        };
         /**
          * RequestRecord
          * @description 单请求的生命周期区间记录，供甘特图与指标汇总消费。
@@ -193,6 +275,37 @@ export interface components {
             prompt_len: number;
             /** Output Len */
             output_len: number;
+        };
+        /**
+         * SessionConfig
+         * @description 线性多轮会话；未指定会话数时每个请求各自成为一个根。
+         */
+        SessionConfig: {
+            /** Num Sessions */
+            num_sessions?: number | null;
+            /**
+             * Topology
+             * @default linear
+             * @constant
+             */
+            topology: "linear";
+            /**
+             * Think Time Ms
+             * @default 0
+             */
+            think_time_ms: number;
+            /**
+             * Target Ideal Prefix Hit Rate
+             * @default 0
+             */
+            target_ideal_prefix_hit_rate: number;
+            /** Content Seed */
+            content_seed?: number | null;
+            /**
+             * Allow Cross Session Shared Prefix
+             * @default false
+             */
+            allow_cross_session_shared_prefix: boolean;
         };
         /**
          * SimConfig
@@ -241,17 +354,17 @@ export interface components {
         };
         /**
          * SyntheticWorkloadConfig
-         * @description 合成负载参数：泊松到达 + 长度分布采样 + 固定种子。
+         * @description 合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。
          */
         SyntheticWorkloadConfig: {
             /**
              * Num Requests
-             * @description 请求总数
+             * @description 全部轮次请求数
              */
             num_requests: number;
             /**
              * Arrival Rate
-             * @description 泊松到达率（请求/秒）
+             * @description 总请求目标 QPS
              */
             arrival_rate: number;
             /** Prompt Len */
@@ -263,6 +376,7 @@ export interface components {
              * @description 随机种子；同种子必须逐字节可复现
              */
             seed: number;
+            session?: components["schemas"]["SessionConfig"];
         };
         /** ValidationError */
         ValidationError: {

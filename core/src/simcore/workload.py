@@ -12,20 +12,35 @@
 
 import math
 import random
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
+from simcore.prefix_hash import cache_namespace, chunk_hashes, stable_derive
 from simcore.schemas import (
     Arrival,
     FixedLength,
+    InferenceRequest,
     LengthDist,
     LognormalLength,
     PoissonLength,
+    PrefixCacheConfig,
     SyntheticWorkloadConfig,
+    TurnPlan,
     WorkloadConfig,
+    WorkloadPlan,
 )
 
-__all__ = ["SyntheticSource", "WorkloadSource", "build_source", "sample_length"]
+__all__ = [
+    "SyntheticSource",
+    "WorkloadSource",
+    "build_input",
+    "build_plan",
+    "build_source",
+    "make_request",
+    "plan_from_arrivals",
+    "sample_length",
+]
 
 _MS_PER_SECOND = 1000.0
 
@@ -133,3 +148,191 @@ def build_source(cfg: WorkloadConfig) -> WorkloadSource:
     if cfg.synthetic is None:  # pragma: no cover - schema 层已保证
         raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
     return SyntheticSource(cfg.synthetic)
+
+
+def _unique_tokens(turn: TurnPlan, start: int, count: int) -> tuple[int, ...]:
+    """将内容域、session、request 和位置编码为不相撞的合成 token。"""
+    prefix = (
+        (turn.unique_suffix_seed << 192)
+        | ((turn.session_id + 1) << 128)
+        | ((turn.request_id + 1) << 64)
+    )
+    return tuple(prefix | (position + 1) for position in range(start, start + count))
+
+
+def build_input(
+    turn: TurnPlan,
+    block_size_tokens: int,
+    parent_context: tuple[int, ...] | None = None,
+    public_prefix: tuple[int, ...] = (),
+) -> tuple[int, ...]:
+    """到时从已完成的父上下文构造子轮次；不得预测父输出。"""
+    reused = block_size_tokens * turn.ideal_reuse_blocks
+    if turn.parent_request_id is not None:
+        if parent_context is None or len(parent_context) < reused:
+            raise ValueError("子轮次需要父请求完成后的逻辑上下文")
+        head = parent_context[:reused]
+    else:
+        head = public_prefix[:reused]
+        if reused and len(head) != reused:
+            raise ValueError("公共前缀长度不足")
+    return head + _unique_tokens(turn, len(head), turn.prompt_len - len(head))
+
+
+def make_request(
+    turn: TurnPlan,
+    cache: PrefixCacheConfig,
+    parent_context: tuple[int, ...] | None = None,
+    public_prefix: tuple[int, ...] = (),
+) -> InferenceRequest:
+    inputs = build_input(turn, cache.block_size_tokens, parent_context, public_prefix)
+    return InferenceRequest(
+        request_id=turn.request_id,
+        session_id=turn.session_id,
+        parent_request_id=turn.parent_request_id,
+        input_token_ids=inputs,
+        output_token_plan=turn.output_token_plan,
+        input_chunk_hashes=chunk_hashes(inputs, cache.block_size_tokens, cache_namespace(cache)),
+        ideal_reuse_blocks=turn.ideal_reuse_blocks,
+    )
+
+
+def build_plan(
+    cfg: SyntheticWorkloadConfig, cache: PrefixCacheConfig | None = None
+) -> WorkloadPlan:
+    """独立随机流一次规划拓扑、根到达、长度、理想命中和内容。"""
+    cache = cache or PrefixCacheConfig()
+    block_size = cache.block_size_tokens
+    sessions = cfg.session.num_sessions
+    assert sessions is not None  # schema 解析后必有 session 数
+    n = cfg.num_requests
+    topology_rng = random.Random(stable_derive(cfg.seed, "topology"))
+    arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
+    length_rng = random.Random(stable_derive(cfg.seed, "length"))
+    allocation_rng = random.Random(stable_derive(cfg.seed, "allocation"))
+    content_seed = cfg.session.content_seed
+    if content_seed is None:
+        content_seed = stable_derive(cfg.seed, "content")
+    counts = [n // sessions] * sessions
+    shuffled = list(range(sessions))
+    topology_rng.shuffle(shuffled)
+    for session_id in shuffled[: n % sessions]:
+        counts[session_id] += 1
+    turns: dict[int, TurnPlan] = {}
+    roots: list[int] = []
+    children: dict[int, tuple[int, ...]] = {}
+    clock = 0.0
+    rate_per_ms = cfg.arrival_rate * sessions / n / _MS_PER_SECOND
+    request_id = 0
+    for session_id, count in enumerate(counts):
+        clock += arrival_rng.expovariate(rate_per_ms)
+        parent_id: int | None = None
+        for index in range(count):
+            prompt_len = sample_length(cfg.prompt_len, length_rng)
+            output_len = sample_length(cfg.output_len, length_rng)
+            suffix_seed = stable_derive(content_seed, f"session:{session_id}:request:{request_id}")
+            turn = TurnPlan(
+                request_id=request_id,
+                session_id=session_id,
+                parent_request_id=parent_id,
+                root_arrival_time_ms=clock if index == 0 else None,
+                think_time_ms=None if index == 0 else cfg.session.think_time_ms,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                ideal_reuse_blocks=0,
+                unique_suffix_seed=suffix_seed,
+                output_token_plan=(),
+            )
+            turns[request_id] = replace(
+                turn, output_token_plan=_unique_tokens(turn, prompt_len, output_len)
+            )
+            if parent_id is None:
+                roots.append(request_id)
+            else:
+                children[parent_id] = (request_id,)
+            parent_id = request_id
+            request_id += 1
+
+    maxima: dict[int, int] = {}
+    for turn in turns.values():
+        if turn.parent_request_id is not None:
+            parent = turns[turn.parent_request_id]
+            maxima[turn.request_id] = min(
+                (parent.prompt_len + parent.output_len) // block_size,
+                (turn.prompt_len - 1) // block_size,
+            )
+        elif cfg.session.allow_cross_session_shared_prefix and turn.request_id != roots[0]:
+            maxima[turn.request_id] = min(
+                turns[roots[0]].prompt_len // block_size,
+                (turn.prompt_len - 1) // block_size,
+            )
+        else:
+            maxima[turn.request_id] = 0
+    total_input = sum(turn.prompt_len for turn in turns.values())
+    maximum = sum(maxima.values())
+    r_max = block_size * maximum / total_input
+    target = cfg.session.target_ideal_prefix_hit_rate
+    if target > r_max + 1e-12:
+        raise ValueError(f"理想前缀命中率不可行: target={target}, r_max={r_max}")
+    raw = target * total_input / block_size
+    lower = math.floor(raw)
+    desired = min(maximum, lower + int(raw - lower > 0.5))
+    if maximum:
+        shares = {key: desired * cap / maximum for key, cap in maxima.items()}
+        assigned = {key: math.floor(value) for key, value in shares.items()}
+        ties = list(turns)
+        allocation_rng.shuffle(ties)
+        tie_order = {key: index for index, key in enumerate(ties)}
+        ranked = sorted(turns, key=lambda key: (-(shares[key] - assigned[key]), tie_order[key]))
+        for key in ranked[: desired - sum(assigned.values())]:
+            assigned[key] += 1
+    else:
+        assigned = dict.fromkeys(turns, 0)
+    for key, count in assigned.items():
+        turns[key] = replace(turns[key], ideal_reuse_blocks=count)
+    achieved = block_size * desired / total_input
+    return WorkloadPlan(
+        turns=turns,
+        root_request_ids=tuple(roots),
+        children=children,
+        target_ideal_prefix_hit_rate=target,
+        constructed_ideal_prefix_hit_rate=achieved,
+        quantization_error=abs(achieved - target),
+        block_size_tokens=block_size,
+    )
+
+
+def plan_from_arrivals(
+    arrivals: Iterable[Arrival], cache: PrefixCacheConfig | None = None, seed: int = 0
+) -> WorkloadPlan:
+    """旧长度负载入口适配为独立根 session，补齐稳定 token 内容。"""
+    cache = cache or PrefixCacheConfig()
+    turns: dict[int, TurnPlan] = {}
+    roots: list[int] = []
+    for arrival in arrivals:
+        key = arrival.request_id
+        if key in turns:
+            raise ValueError(f"重复的 request_id: {key}")
+        turn = TurnPlan(
+            request_id=key,
+            session_id=key,
+            parent_request_id=None,
+            root_arrival_time_ms=arrival.sim_time,
+            think_time_ms=None,
+            prompt_len=arrival.prompt_len,
+            output_len=arrival.output_len,
+            ideal_reuse_blocks=0,
+            unique_suffix_seed=stable_derive(seed, f"legacy:{key}"),
+            output_token_plan=(),
+        )
+        turns[key] = replace(
+            turn, output_token_plan=_unique_tokens(turn, turn.prompt_len, turn.output_len)
+        )
+        roots.append(key)
+    roots.sort(key=lambda key: (turns[key].root_arrival_time_ms or 0, key))
+    return WorkloadPlan(
+        turns=turns,
+        root_request_ids=tuple(roots),
+        children={},
+        block_size_tokens=cache.block_size_tokens,
+    )

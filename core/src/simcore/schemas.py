@@ -8,26 +8,38 @@
 - 其余一切时间量（仿真时钟、区间端点、性能模型系数与指标）单位均为 **毫秒 (ms)**。
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "Arrival",
+    "ClientWakeup",
     "EngineConfig",
     "FixedLength",
+    "InferenceRequest",
+    "L1CacheConfig",
     "LengthDist",
     "LognormalLength",
+    "LowerTierConfig",
     "Metrics",
     "PerfModelConfig",
     "PoissonLength",
+    "PrefixCacheConfig",
+    "RequestCompletion",
     "RequestRecord",
+    "SessionConfig",
     "SimConfig",
     "SimMeta",
     "SimResult",
     "SyntheticWorkloadConfig",
+    "TurnPlan",
     "WorkloadConfig",
     "WorkloadMode",
+    "WorkloadPlan",
 ]
 
 
@@ -87,14 +99,37 @@ LengthDist = Annotated[
 WorkloadMode = Literal["synthetic", "trace"]
 
 
-class SyntheticWorkloadConfig(_Frozen):
-    """合成负载参数：泊松到达 + 长度分布采样 + 固定种子。"""
+class SessionConfig(_Frozen):
+    """线性多轮会话；未指定会话数时每个请求各自成为一个根。"""
 
-    num_requests: int = Field(ge=1, description="请求总数")
-    arrival_rate: float = Field(gt=0, description="泊松到达率（请求/秒）")
+    num_sessions: int | None = Field(default=None, ge=1)
+    topology: Literal["linear"] = "linear"
+    think_time_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, allow_inf_nan=False)
+    content_seed: int | None = Field(default=None, ge=0)
+    allow_cross_session_shared_prefix: bool = False
+
+
+class SyntheticWorkloadConfig(_Frozen):
+    """合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。"""
+
+    num_requests: int = Field(ge=1, description="全部轮次请求数")
+    arrival_rate: float = Field(gt=0, allow_inf_nan=False, description="总请求目标 QPS")
     prompt_len: LengthDist
     output_len: LengthDist
     seed: int = Field(ge=0, description="随机种子；同种子必须逐字节可复现")
+    session: SessionConfig = Field(default_factory=SessionConfig)
+
+    @model_validator(mode="after")
+    def _resolve_session(self) -> Self:
+        count = self.session.num_sessions
+        if count is None:
+            object.__setattr__(
+                self, "session", self.session.model_copy(update={"num_sessions": self.num_requests})
+            )
+        elif count > self.num_requests:
+            raise ValueError("num_sessions 不得大于 num_requests")
+        return self
 
 
 class WorkloadConfig(_Frozen):
@@ -110,11 +145,55 @@ class WorkloadConfig(_Frozen):
         return self
 
 
+class L1CacheConfig(_Frozen):
+    capacity_blocks: int = Field(ge=1)
+
+
+class LowerTierConfig(_Frozen):
+    capacity_blocks: int = Field(default=0, ge=0)
+    read_bandwidth_bytes_per_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    fixed_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class PrefixCacheConfig(_Frozen):
+    block_size_tokens: int = Field(default=1, ge=1)
+    cache_salt: str = ""
+    eviction_policy: Literal["lru"] = "lru"
+    hierarchy_policy: Literal["exclusive_write_back"] = "exclusive_write_back"
+    l1: L1CacheConfig = Field(default_factory=lambda: L1CacheConfig(capacity_blocks=1))
+    l2: LowerTierConfig = Field(default_factory=LowerTierConfig)
+    l3: LowerTierConfig = Field(default_factory=LowerTierConfig)
+    kv_bytes_per_token: int = Field(default=1, ge=1)
+    model_id: str = "default-model"
+    tokenizer_id: str = "default-tokenizer"
+    kv_dtype: str = "default-dtype"
+    adapter_id: str = "default-adapter"
+    multimodal_transform_id: str = "default-transform"
+
+
 class EngineConfig(_Frozen):
-    """引擎配置：batch 规模与 KV cache 预算双重约束。"""
+    """KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。"""
 
     max_batch_size: int = Field(ge=1, description="单步 batch 内最大请求数")
     kv_token_budget: int = Field(ge=1, description="KV cache token 预算总额")
+    prefix_cache: PrefixCacheConfig = Field(default_factory=PrefixCacheConfig)
+
+    @model_validator(mode="after")
+    def _resolve_cache(self) -> Self:
+        capacity = self.kv_token_budget // self.prefix_cache.block_size_tokens
+        if capacity < 1:
+            raise ValueError("kv_token_budget 不足以容纳一个 prefix cache block")
+        l1 = self.prefix_cache.l1
+        if "l1" in self.prefix_cache.model_fields_set and l1.capacity_blocks != capacity:
+            raise ValueError(
+                "l1.capacity_blocks 必须等于 floor(kv_token_budget / block_size_tokens)"
+            )
+        object.__setattr__(
+            self,
+            "prefix_cache",
+            self.prefix_cache.model_copy(update={"l1": L1CacheConfig(capacity_blocks=capacity)}),
+        )
+        return self
 
 
 class PerfModelConfig(_Frozen):
@@ -136,6 +215,63 @@ class SimConfig(_Frozen):
     workload: WorkloadConfig
     engine: EngineConfig
     perf_model: PerfModelConfig
+
+
+# ---------------------------------------------------------------- 内部不可变计划与消息
+
+
+@dataclass(frozen=True, slots=True)
+class TurnPlan:
+    request_id: int
+    session_id: int
+    parent_request_id: int | None
+    root_arrival_time_ms: float | None
+    think_time_ms: float | None
+    prompt_len: int
+    output_len: int
+    ideal_reuse_blocks: int
+    unique_suffix_seed: int
+    output_token_plan: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkloadPlan:
+    turns: Mapping[int, TurnPlan]
+    root_request_ids: tuple[int, ...]
+    children: Mapping[int, tuple[int, ...]]
+    target_ideal_prefix_hit_rate: float = 0.0
+    constructed_ideal_prefix_hit_rate: float = 0.0
+    quantization_error: float = 0.0
+    block_size_tokens: int = 1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "turns", MappingProxyType(dict(self.turns)))
+        object.__setattr__(self, "children", MappingProxyType(dict(self.children)))
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceRequest:
+    request_id: int
+    session_id: int
+    parent_request_id: int | None
+    input_token_ids: tuple[int, ...]
+    output_token_plan: tuple[int, ...]
+    input_chunk_hashes: tuple[str, ...]
+    ideal_reuse_blocks: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestCompletion:
+    request_id: int
+    output_token_ids: tuple[int, ...]
+    finish_time_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class ClientWakeup:
+    session_id: int
+    turn_id: int
+    send_time_ms: float
 
 
 # ---------------------------------------------------------------- 负载与结果

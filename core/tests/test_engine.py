@@ -192,7 +192,7 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
         output_len=PoissonLength(mean=30.0),
         seed=seed,
     )
-    cfg = EngineConfig(**{"max_batch_size": 16, "kv_token_budget": 8000, **engine})
+    cfg = EngineConfig.model_validate({"max_batch_size": 16, "kv_token_budget": 8000, **engine})
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
     return run_engine(cfg, perf, SyntheticSource(workload), record_trace=record_trace)
 

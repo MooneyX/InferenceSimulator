@@ -71,6 +71,9 @@
             "minimum": 1.0,
             "title": "Kv Token Budget",
             "description": "KV cache token 预算总额"
+          },
+          "prefix_cache": {
+            "$ref": "#/components/schemas/PrefixCacheConfig"
           }
         },
         "additionalProperties": false,
@@ -80,7 +83,7 @@
           "kv_token_budget"
         ],
         "title": "EngineConfig",
-        "description": "引擎配置：batch 规模与 KV cache 预算双重约束。"
+        "description": "KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。"
       },
       "ErrorResponse": {
         "properties": {
@@ -132,6 +135,21 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "L1CacheConfig": {
+        "properties": {
+          "capacity_blocks": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Capacity Blocks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capacity_blocks"
+        ],
+        "title": "L1CacheConfig"
+      },
       "LognormalLength": {
         "properties": {
           "dist": {
@@ -161,6 +179,31 @@
         ],
         "title": "LognormalLength",
         "description": "对数正态分布长度，用于表达长尾负载。"
+      },
+      "LowerTierConfig": {
+        "properties": {
+          "capacity_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Capacity Blocks",
+            "default": 0
+          },
+          "read_bandwidth_bytes_per_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Read Bandwidth Bytes Per Ms",
+            "default": 0.0
+          },
+          "fixed_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Fixed Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LowerTierConfig"
       },
       "Metrics": {
         "properties": {
@@ -281,6 +324,76 @@
         "title": "PoissonLength",
         "description": "泊松分布长度。"
       },
+      "PrefixCacheConfig": {
+        "properties": {
+          "block_size_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Block Size Tokens",
+            "default": 1
+          },
+          "cache_salt": {
+            "type": "string",
+            "title": "Cache Salt",
+            "default": ""
+          },
+          "eviction_policy": {
+            "type": "string",
+            "const": "lru",
+            "title": "Eviction Policy",
+            "default": "lru"
+          },
+          "hierarchy_policy": {
+            "type": "string",
+            "const": "exclusive_write_back",
+            "title": "Hierarchy Policy",
+            "default": "exclusive_write_back"
+          },
+          "l1": {
+            "$ref": "#/components/schemas/L1CacheConfig"
+          },
+          "l2": {
+            "$ref": "#/components/schemas/LowerTierConfig"
+          },
+          "l3": {
+            "$ref": "#/components/schemas/LowerTierConfig"
+          },
+          "kv_bytes_per_token": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Kv Bytes Per Token",
+            "default": 1
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "default": "default-model"
+          },
+          "tokenizer_id": {
+            "type": "string",
+            "title": "Tokenizer Id",
+            "default": "default-tokenizer"
+          },
+          "kv_dtype": {
+            "type": "string",
+            "title": "Kv Dtype",
+            "default": "default-dtype"
+          },
+          "adapter_id": {
+            "type": "string",
+            "title": "Adapter Id",
+            "default": "default-adapter"
+          },
+          "multimodal_transform_id": {
+            "type": "string",
+            "title": "Multimodal Transform Id",
+            "default": "default-transform"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PrefixCacheConfig"
+      },
       "RequestRecord": {
         "properties": {
           "id": {
@@ -333,6 +446,62 @@
         ],
         "title": "RequestRecord",
         "description": "单请求的生命周期区间记录，供甘特图与指标汇总消费。\n\n不变式：``arrival <= prefill_start <= prefill_end <= finish``；\n``prefill_end`` 同时是 decode 阶段起点。"
+      },
+      "SessionConfig": {
+        "properties": {
+          "num_sessions": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Sessions"
+          },
+          "topology": {
+            "type": "string",
+            "const": "linear",
+            "title": "Topology",
+            "default": "linear"
+          },
+          "think_time_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Think Time Ms",
+            "default": 0.0
+          },
+          "target_ideal_prefix_hit_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Target Ideal Prefix Hit Rate",
+            "default": 0.0
+          },
+          "content_seed": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Seed"
+          },
+          "allow_cross_session_shared_prefix": {
+            "type": "boolean",
+            "title": "Allow Cross Session Shared Prefix",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SessionConfig",
+        "description": "线性多轮会话；未指定会话数时每个请求各自成为一个根。"
       },
       "SimConfig": {
         "properties": {
@@ -435,13 +604,13 @@
             "type": "integer",
             "minimum": 1.0,
             "title": "Num Requests",
-            "description": "请求总数"
+            "description": "全部轮次请求数"
           },
           "arrival_rate": {
             "type": "number",
             "exclusiveMinimum": 0.0,
             "title": "Arrival Rate",
-            "description": "泊松到达率（请求/秒）"
+            "description": "总请求目标 QPS"
           },
           "prompt_len": {
             "oneOf": [
@@ -492,6 +661,9 @@
             "minimum": 0.0,
             "title": "Seed",
             "description": "随机种子；同种子必须逐字节可复现"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionConfig"
           }
         },
         "additionalProperties": false,
@@ -504,7 +676,7 @@
           "seed"
         ],
         "title": "SyntheticWorkloadConfig",
-        "description": "合成负载参数：泊松到达 + 长度分布采样 + 固定种子。"
+        "description": "合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。"
       },
       "ValidationError": {
         "properties": {

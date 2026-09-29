@@ -37,7 +37,9 @@ def make_config(**engine_overrides: int) -> SimConfig:
                 seed=0,
             )
         ),
-        engine=EngineConfig(**{"max_batch_size": 8, "kv_token_budget": 4096, **engine_overrides}),
+        engine=EngineConfig.model_validate(
+            {"max_batch_size": 8, "kv_token_budget": 4096, **engine_overrides}
+        ),
         perf_model=PerfModelConfig(prefill_c1=0.5, decode_d1=10.0, decode_d2=0.001),
     )
 

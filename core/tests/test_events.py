@@ -53,6 +53,15 @@ class TestOrdering:
         done = f.request_done(5.0, 2)
         assert sorted([step, arrival, done]) == [done, arrival, step]
 
+    def test_client_callbacks_precede_send_and_step(self) -> None:
+        f = EventFactory()
+        step = f.engine_step(5.0, 0)
+        send = f.client_send(5.0, 3)
+        callback = f.client_completion(5.0, 2)
+        done = f.request_done(5.0, 2)
+        assert sorted((step, send, callback, done)) == [done, callback, send, step]
+        assert f.arrival(5.0, 3).kind == send.kind
+
     def test_same_time_same_kind_by_creation(self) -> None:
         f = EventFactory()
         a = f.arrival(5.0, 9)

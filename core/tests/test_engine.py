@@ -7,7 +7,7 @@ import itertools
 
 import pytest
 
-from simcore.engine import EngineRun, run_engine
+from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
 from simcore.schemas import (
     Arrival,
@@ -18,7 +18,7 @@ from simcore.schemas import (
     RequestRecord,
     SyntheticWorkloadConfig,
 )
-from simcore.workload import SyntheticSource
+from simcore.workload import SyntheticSource, make_request, plan_from_arrivals
 
 SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
 
@@ -45,6 +45,31 @@ def interval(r: RequestRecord) -> tuple[float, float, float, float]:
 
 def steps(result: EngineRun) -> list[StepTrace]:
     return list(result.trace.steps())
+
+
+class TestImmediateEngine:
+    def test_submit_step_and_completion_return_generated_content(self) -> None:
+        config = EngineConfig(max_batch_size=1, kv_token_budget=100)
+        plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config.prefix_cache)
+        request = make_request(plan.turns[7], config.prefix_cache)
+        engine = Engine(config, SIMPLE)
+        assert not engine.has_work
+        assert not hasattr(engine, "_heap")
+        engine.submit(request, 3.0)
+        assert engine.has_work
+        with pytest.raises(ValueError, match="重复"):
+            engine.submit(request, 3.0)
+        duration, finished = engine.step(3.0, 0)
+        assert (duration, finished) == (5.0, (7,))
+        assert not engine.has_work
+        with pytest.raises(RuntimeError, match="未完成"):
+            engine.finalize()
+        completion = engine.complete(8.0, 7)
+        assert completion.output_token_ids == request.output_token_plan
+        assert completion.finish_time_ms == 8.0
+        with pytest.raises(ValueError, match="未待结算"):
+            engine.complete(8.0, 7)
+        assert interval(engine.finalize().records[0]) == (3.0, 3.0, 8.0, 8.0)
 
 
 class TestHandComputed:

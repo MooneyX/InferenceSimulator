@@ -1,18 +1,15 @@
-"""顶层入口：``simulate(SimConfig) -> SimResult``。
+"""顶层入口：计划 → 闭环客户端 → 统一事件时钟 → 引擎 → 指标。
 
-``core`` 唯一的对外调用入口，输入输出均为 ``schemas`` 类型。串联
-workload（生成到达）→ engine（执行仿真）→ metrics（汇总指标）。
-
-事件流不经对外接口暴露（见 ``docs/design/architecture.md``），故默认不记录，
-省去逐事件的记录开销；需要事件流的内核级调用方直接使用 ``engine.run_engine``。
-
-依赖层级：依赖 ``workload``、``engine``、``metrics``。
+只规划根请求到达，子轮次必须等父请求实际完成后才由客户端发送。
+事件流不经 API 暴露，默认关闭记录；旧长度 Arrival 由 ``engine.run_engine`` 适配。
 """
 
-from simcore.engine import run_engine
+from simcore.client import ClientDriver
+from simcore.coordinator import Coordinator
+from simcore.engine import Engine
 from simcore.metrics import compute_metrics
 from simcore.schemas import SimConfig, SimMeta, SimResult
-from simcore.workload import build_source
+from simcore.workload import build_plan
 
 __all__ = ["simulate"]
 
@@ -23,8 +20,14 @@ def simulate(config: SimConfig) -> SimResult:
     Raises:
         NotImplementedError: ``workload.mode='trace'``（预留接缝，MVP 不实现）。
     """
-    source = build_source(config.workload)
-    run = run_engine(config.engine, config.perf_model, source, record_trace=False)
+    if config.workload.mode == "trace":
+        raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
+    synthetic = config.workload.synthetic
+    if synthetic is None:  # pragma: no cover - schema 层已保证
+        raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
+    plan = build_plan(synthetic, config.engine.prefix_cache)
+    client = ClientDriver(plan, config.engine.prefix_cache)
+    run = Coordinator(Engine(config.engine, config.perf_model, record_trace=False), client).run()
     return SimResult(
         meta=SimMeta(
             config=config,

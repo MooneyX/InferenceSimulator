@@ -11,6 +11,7 @@ from simcore.schemas import (
     LognormalLength,
     PerfModelConfig,
     PoissonLength,
+    SessionConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
@@ -93,6 +94,33 @@ class TestReproducibility:
 
 
 class TestSmallCases:
+    @pytest.mark.parametrize("think_time_ms", [0.0, 30.0])
+    def test_followup_arrives_only_after_parent_completion(self, think_time_ms: float) -> None:
+        cfg = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=3,
+                    arrival_rate=1.0,
+                    prompt_len=FixedLength(value=10),
+                    output_len=FixedLength(value=2),
+                    seed=7,
+                    session=SessionConfig(
+                        num_sessions=1,
+                        think_time_ms=think_time_ms,
+                        target_ideal_prefix_hit_rate=0.2,
+                    ),
+                )
+            ),
+            engine=EngineConfig(max_batch_size=2, kv_token_budget=100),
+            perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
+        )
+        result = simulate(cfg)
+        assert len(result.requests) == 3
+        for parent, child in zip(result.requests, result.requests[1:], strict=False):
+            assert child.arrival == parent.finish + think_time_ms
+            assert child.prefill_start >= child.arrival
+        assert result.meta.num_engine_steps == 6
+
     def test_single_request_fixed_lengths(self) -> None:
         cfg = SimConfig(
             workload=WorkloadConfig(

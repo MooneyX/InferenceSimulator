@@ -2,16 +2,16 @@
 
 两层概念，刻意分开：
 
-- **调度事件** ``Event``：压入引擎事件队列的最小载荷，只携带排序键与引用 ID。
-  事件队列本身由 ``engine`` 持有，本模块只定义事件形态与全序。
+- **调度事件** ``Event``：压入协调器事件队列的最小载荷，只携带排序键与引用 ID。
+  事件队列本身由 ``coordinator`` 持有，本模块只定义事件形态与全序。
 - **事件流** ``TraceRecord``：引擎处理事件后产出的自描述记录，按处理顺序追加到
   ``EventLog``。内核产出完整事件流但不经 API 暴露，为决策溯源与播放式仿真预留。
 
 同刻全序（可复现性的前提）：``(time, kind, seq)``。
 
-- ``kind`` 优先级：``REQUEST_DONE`` < ``ARRIVAL`` < ``ENGINE_STEP``。
-  同一时刻先结算完成（释放 KV），再接收到达（入队），最后执行引擎步——
-  使该步的准入决策能看到同刻释放的额度与同刻到达的请求。
+- ``kind`` 优先级：``REQUEST_DONE`` < ``CLIENT_COMPLETION`` < ``CLIENT_SEND``
+  < ``ENGINE_STEP``。同一时刻先结算全部完成并释放 KV，再通知客户端，接着发送
+  已就绪的请求，最后执行引擎步，使零思考时间的子请求能看到父请求释放的资源。
 - ``seq`` 由 ``EventFactory`` 单调分配，打破同刻同类事件的平局，等价于按创建顺序。
 
 依赖层级：仅依赖 ``schemas``。
@@ -39,8 +39,10 @@ class EventKind(IntEnum):
     """事件类别。枚举值即同刻优先级，越小越先处理。"""
 
     REQUEST_DONE = 0
-    ARRIVAL = 1
-    ENGINE_STEP = 2
+    CLIENT_COMPLETION = 1
+    CLIENT_SEND = 2
+    ARRIVAL = 2  # 旧调用方的发送事件别名
+    ENGINE_STEP = 3
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -53,7 +55,8 @@ class Event:
         time: 事件触发时刻（ms）。
         kind: 事件类别。
         seq: 创建序号，由 ``EventFactory`` 分配。
-        ref: ``ARRIVAL`` / ``REQUEST_DONE`` 为 request_id；``ENGINE_STEP`` 为步序号。
+        ref: ``CLIENT_SEND`` 为 turn_id；完成/回调事件为 request_id；
+            ``ENGINE_STEP`` 为步序号。
     """
 
     time: float
@@ -76,7 +79,14 @@ class EventFactory:
         return Event(time, kind, seq, ref)
 
     def arrival(self, time: float, request_id: int) -> Event:
+        """旧单轮到达事件；映射到客户端发送的同刻优先级。"""
         return self._make(time, EventKind.ARRIVAL, request_id)
+
+    def client_completion(self, time: float, request_id: int) -> Event:
+        return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
+
+    def client_send(self, time: float, turn_id: int) -> Event:
+        return self._make(time, EventKind.CLIENT_SEND, turn_id)
 
     def engine_step(self, time: float, step_index: int) -> Event:
         return self._make(time, EventKind.ENGINE_STEP, step_index)

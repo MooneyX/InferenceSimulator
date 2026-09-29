@@ -9,6 +9,7 @@ import pytest
 
 from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
+from simcore.kv_cache import CacheOOMError
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -139,7 +140,7 @@ class TestSameTimeOrdering:
 
         若顺序颠倒，t=10 的步会看到 KV 仍被占满而无法准入，且 batch 已无 decode 工作。
         """
-        result = run([req(0, 0.0, 10, 1), req(1, 0.0, 10, 1)], budget=10)
+        result = run([req(0, 0.0, 10, 1), req(1, 0.0, 10, 1)], budget=11)
         assert [interval(r) for r in result.records] == [
             (0.0, 0.0, 10.0, 10.0),
             (0.0, 10.0, 20.0, 20.0),
@@ -160,34 +161,23 @@ class TestKVBehaviour:
         assert interval(result.records[1]) == (0.0, 18.0, 23.0, 23.0)
         assert result.warnings == ()
 
-    def test_growth_overflow_warns_once_per_episode(self) -> None:
-        result = run([req(0, 0.0, 5, 10), req(1, 0.0, 5, 10)], budget=10)
-        assert len(result.warnings) == 1
-        assert "超出预算" in result.warnings[0]
-        # 每请求 prefill 5 + 9 个 decode 步各 +1 = 14，两请求峰值 28
-        assert result.kv_stats.peak_used == 28
-        assert result.kv_stats.overflow_episodes == 1
-        assert result.kv_stats.used == 0
+    def test_future_growth_is_reserved_before_admission(self) -> None:
+        result = run([req(0, 0.0, 5, 10), req(1, 0.0, 5, 10)], budget=15)
+        assert len(result.records) == 2
+        assert result.records[1].prefill_start >= result.records[0].finish
+        assert result.cache_snapshot.resident_blocks <= result.cache_snapshot.capacity_blocks
+        assert result.cache_snapshot.reserved_future_blocks == 0
+        assert all(step.kv_overflow == 0 and not step.forced for step in steps(result))
 
-    def test_forced_admission_warns_without_duplicate_overflow(self) -> None:
-        result = run([req(0, 0.0, 15, 3)], budget=10)
-        assert len(result.warnings) == 1
-        assert "强制准入" in result.warnings[0] and "15" in result.warnings[0]
-        assert result.kv_stats.forced_admissions == 1
-        assert steps(result)[0].forced == (0,)
-
-    def test_forced_request_does_not_deadlock_queue(self) -> None:
-        result = run([req(0, 0.0, 15, 2), req(1, 1.0, 3, 1), req(2, 2.0, 30, 1)], budget=10)
-        assert len(result.records) == 3
-        assert result.kv_stats.forced_admissions == 2
-        starts = [r.prefill_start for r in result.records]
-        assert starts == sorted(starts)  # FCFS
-
-    def test_separate_overflow_episodes_warn_separately(self) -> None:
-        arrivals = [req(0, 0.0, 5, 8), req(1, 0.0, 5, 8), req(2, 500.0, 5, 8), req(3, 500.0, 5, 8)]
-        result = run(arrivals, budget=10)
-        assert len(result.warnings) == 2
-        assert result.kv_stats.overflow_episodes == 2
+    @pytest.mark.parametrize(
+        "arrivals",
+        [[req(0, 0.0, 15, 3)], [req(0, 0.0, 5, 10)]],
+    )
+    def test_request_exceeding_l1_is_rejected_without_forcing(
+        self, arrivals: list[Arrival]
+    ) -> None:
+        with pytest.raises(CacheOOMError, match="单独运行也超过"):
+            run(arrivals, budget=10)
 
 
 class TestEdgeCases:
@@ -230,7 +220,12 @@ def result() -> EngineRun:
 class TestInvariants:
     def test_all_requests_complete(self, result: EngineRun) -> None:
         assert [r.id for r in result.records] == list(range(300))
-        assert result.kv_stats.used == 0
+        assert result.cache_snapshot.active_blocks == 0
+        assert result.cache_snapshot.reserved_future_blocks == 0
+        assert (
+            result.cache_snapshot.resident_blocks + result.cache_snapshot.free_blocks
+            == result.cache_snapshot.capacity_blocks
+        )
 
     def test_batch_size_never_exceeded(self, result: EngineRun) -> None:
         assert all(s.num_decoding + len(s.admitted) <= 16 for s in steps(result))

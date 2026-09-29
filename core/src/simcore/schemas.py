@@ -303,6 +303,16 @@ class RequestRecord(_Record):
     finish: float = Field(ge=0)
     prompt_len: int = Field(ge=1)
     output_len: int = Field(ge=1)
+    session_id: int = Field(default=0, ge=0)
+    parent_request_id: int | None = Field(default=None, ge=0)
+    ideal_reuse_tokens: int = Field(default=0, ge=0)
+    matched_cache_tokens: int = Field(default=0, ge=0)
+    actual_hit_tokens: int = Field(default=0, ge=0)
+    actual_prefill_tokens: int | None = Field(default=None, ge=0)
+    logical_context_tokens: int = Field(default=0, ge=0)
+    l1_hit_tokens: int = Field(default=0, ge=0)
+    l2_hit_tokens: int = Field(default=0, ge=0)
+    l3_hit_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _check_ordering(self) -> Self:
@@ -312,6 +322,13 @@ class RequestRecord(_Record):
                 f"arrival={self.arrival} prefill_start={self.prefill_start} "
                 f"prefill_end={self.prefill_end} finish={self.finish}"
             )
+        if self.actual_prefill_tokens is not None and not (
+            self.actual_hit_tokens <= self.ideal_reuse_tokens <= self.prompt_len
+            and self.actual_prefill_tokens + self.actual_hit_tokens == self.prompt_len
+            and self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens
+            == self.actual_hit_tokens
+        ):
+            raise ValueError("请求级理想命中、分层复用与 Prefill token 不守恒")
         return self
 
 
@@ -332,6 +349,49 @@ class Metrics(_Record):
         description="请求数 / makespan（请求/秒）；makespan 为 0 时为 None",
     )
     makespan: float = Field(ge=0, description="末请求完成时刻 − 首请求到达时刻（ms）")
+    target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
+    constructed_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
+    ideal_hit_quantization_error: float = Field(default=0.0, ge=0)
+    actual_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
+    requests_with_hit_ratio: float = Field(default=0.0, ge=0, le=1)
+    requests_fully_cached_ratio: float = Field(default=0.0, ge=0, le=1)
+    total_input_tokens: int = Field(default=0, ge=0)
+    ideal_hit_tokens: int = Field(default=0, ge=0)
+    matched_cache_tokens: int = Field(default=0, ge=0)
+    actual_hit_tokens: int = Field(default=0, ge=0)
+    l1_hit_tokens: int = Field(default=0, ge=0)
+    l2_hit_tokens: int = Field(default=0, ge=0)
+    l3_hit_tokens: int = Field(default=0, ge=0)
+    restore_bytes: int = Field(default=0, ge=0)
+    restore_time_ms: float = Field(default=0.0, ge=0)
+    promotions: int = Field(default=0, ge=0)
+    demotions: int = Field(default=0, ge=0)
+    actual_prefill_tokens: int = Field(default=0, ge=0)
+    saved_prefill_tokens: int = Field(default=0, ge=0)
+    l1_evictions: int = Field(default=0, ge=0)
+    l1_peak_resident_blocks: int = Field(default=0, ge=0)
+    l1_capacity_blocks: int = Field(default=0, ge=0)
+    l1_resident_blocks: int = Field(default=0, ge=0)
+    l1_active_blocks: int = Field(default=0, ge=0)
+    l1_evictable_blocks: int = Field(default=0, ge=0)
+    l1_free_blocks: int = Field(default=0, ge=0)
+    l1_reserved_future_blocks: int = Field(default=0, ge=0)
+    l1_internal_fragmentation_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _check_cache_conservation(self) -> Self:
+        if not (
+            self.actual_hit_tokens <= self.ideal_hit_tokens <= self.total_input_tokens
+            and self.actual_prefill_tokens + self.actual_hit_tokens == self.total_input_tokens
+            and self.saved_prefill_tokens == self.actual_hit_tokens
+            and self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens
+            == self.actual_hit_tokens
+            and self.l1_free_blocks + self.l1_resident_blocks + self.l1_reserved_future_blocks
+            == self.l1_capacity_blocks
+            and self.l1_active_blocks <= self.l1_resident_blocks
+        ):
+            raise ValueError("全场前缀命中、Prefill 或 L1 物理块容量不守恒")
+        return self
 
 
 class SimMeta(_Record):

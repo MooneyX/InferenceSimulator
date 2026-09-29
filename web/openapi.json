@@ -254,6 +254,179 @@
             "minimum": 0.0,
             "title": "Makespan",
             "description": "末请求完成时刻 − 首请求到达时刻（ms）"
+          },
+          "target_ideal_prefix_hit_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Target Ideal Prefix Hit Rate",
+            "default": 0.0
+          },
+          "constructed_ideal_prefix_hit_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Constructed Ideal Prefix Hit Rate",
+            "default": 0.0
+          },
+          "ideal_hit_quantization_error": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Ideal Hit Quantization Error",
+            "default": 0.0
+          },
+          "actual_prefix_hit_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Actual Prefix Hit Rate",
+            "default": 0.0
+          },
+          "requests_with_hit_ratio": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Requests With Hit Ratio",
+            "default": 0.0
+          },
+          "requests_fully_cached_ratio": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Requests Fully Cached Ratio",
+            "default": 0.0
+          },
+          "total_input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Input Tokens",
+            "default": 0
+          },
+          "ideal_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ideal Hit Tokens",
+            "default": 0
+          },
+          "matched_cache_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Matched Cache Tokens",
+            "default": 0
+          },
+          "actual_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Actual Hit Tokens",
+            "default": 0
+          },
+          "l1_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Hit Tokens",
+            "default": 0
+          },
+          "l2_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Hit Tokens",
+            "default": 0
+          },
+          "l3_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Hit Tokens",
+            "default": 0
+          },
+          "restore_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Restore Bytes",
+            "default": 0
+          },
+          "restore_time_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Restore Time Ms",
+            "default": 0.0
+          },
+          "promotions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Promotions",
+            "default": 0
+          },
+          "demotions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Demotions",
+            "default": 0
+          },
+          "actual_prefill_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Actual Prefill Tokens",
+            "default": 0
+          },
+          "saved_prefill_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Saved Prefill Tokens",
+            "default": 0
+          },
+          "l1_evictions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Evictions",
+            "default": 0
+          },
+          "l1_peak_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Peak Resident Blocks",
+            "default": 0
+          },
+          "l1_capacity_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Capacity Blocks",
+            "default": 0
+          },
+          "l1_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Resident Blocks",
+            "default": 0
+          },
+          "l1_active_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Active Blocks",
+            "default": 0
+          },
+          "l1_evictable_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Evictable Blocks",
+            "default": 0
+          },
+          "l1_free_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Free Blocks",
+            "default": 0
+          },
+          "l1_reserved_future_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Reserved Future Blocks",
+            "default": 0
+          },
+          "l1_internal_fragmentation_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Internal Fragmentation Tokens",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -431,6 +604,78 @@
             "type": "integer",
             "minimum": 1.0,
             "title": "Output Len"
+          },
+          "session_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Session Id",
+            "default": 0
+          },
+          "parent_request_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Request Id"
+          },
+          "ideal_reuse_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ideal Reuse Tokens",
+            "default": 0
+          },
+          "matched_cache_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Matched Cache Tokens",
+            "default": 0
+          },
+          "actual_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Actual Hit Tokens",
+            "default": 0
+          },
+          "actual_prefill_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Prefill Tokens"
+          },
+          "logical_context_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Logical Context Tokens",
+            "default": 0
+          },
+          "l1_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L1 Hit Tokens",
+            "default": 0
+          },
+          "l2_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Hit Tokens",
+            "default": 0
+          },
+          "l3_hit_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Hit Tokens",
+            "default": 0
           }
         },
         "additionalProperties": false,

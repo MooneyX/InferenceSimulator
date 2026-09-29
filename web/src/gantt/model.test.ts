@@ -18,6 +18,15 @@ function request(
     finish,
     prompt_len: 16,
     output_len: 8,
+    session_id: id,
+    ideal_reuse_tokens: 0,
+    matched_cache_tokens: 0,
+    actual_hit_tokens: 0,
+    actual_prefill_tokens: 16,
+    logical_context_tokens: 24,
+    l1_hit_tokens: 0,
+    l2_hit_tokens: 0,
+    l3_hit_tokens: 0,
   };
 }
 

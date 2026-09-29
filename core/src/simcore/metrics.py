@@ -12,7 +12,8 @@
 import math
 from collections.abc import Sequence
 
-from simcore.schemas import Metrics, RequestRecord
+from simcore.kv_cache import CacheSnapshot
+from simcore.schemas import Metrics, RequestRecord, WorkloadPlan
 
 __all__ = ["compute_metrics", "percentile"]
 
@@ -45,7 +46,14 @@ def percentile(sorted_values: Sequence[float], q: float) -> float:
     return lo_value + (sorted_values[hi] - lo_value) * frac
 
 
-def compute_metrics(records: Sequence[RequestRecord]) -> Metrics:
+def compute_metrics(
+    records: Sequence[RequestRecord],
+    *,
+    plan: WorkloadPlan | None = None,
+    cache_snapshot: CacheSnapshot | None = None,
+    l1_evictions: int = 0,
+    l1_peak_resident_blocks: int = 0,
+) -> Metrics:
     """由区间记录计算全场指标。
 
     Raises:
@@ -64,6 +72,23 @@ def compute_metrics(records: Sequence[RequestRecord]) -> Metrics:
     sim_end = max(r.finish for r in records)
     makespan = sim_end - sim_start
     throughput = len(records) / (makespan / _MS_PER_SECOND) if makespan > 0 else None
+    input_tokens = sum(record.prompt_len for record in records)
+    ideal = sum(record.ideal_reuse_tokens for record in records)
+    matched = sum(record.matched_cache_tokens for record in records)
+    actual = sum(record.actual_hit_tokens for record in records)
+    prefill = sum(
+        record.actual_prefill_tokens
+        if record.actual_prefill_tokens is not None
+        else record.prompt_len - record.actual_hit_tokens
+        for record in records
+    )
+    block_size = plan.block_size_tokens if plan else 1
+    fully_cached = sum(
+        0 < (record.prompt_len // block_size) * block_size == record.matched_cache_tokens
+        for record in records
+    )
+    if actual > ideal or prefill + actual != input_tokens:
+        raise ValueError("理想/实际命中和 Prefill token 守恒不成立")
 
     return Metrics(
         ttft_mean=ttft_mean,
@@ -72,4 +97,33 @@ def compute_metrics(records: Sequence[RequestRecord]) -> Metrics:
         tpot_mean=tpot_mean,
         throughput=throughput,
         makespan=makespan,
+        target_ideal_prefix_hit_rate=plan.target_ideal_prefix_hit_rate if plan else 0.0,
+        constructed_ideal_prefix_hit_rate=(
+            plan.constructed_ideal_prefix_hit_rate if plan else ideal / input_tokens
+        ),
+        ideal_hit_quantization_error=plan.quantization_error if plan else 0.0,
+        actual_prefix_hit_rate=actual / input_tokens,
+        requests_with_hit_ratio=sum(record.actual_hit_tokens > 0 for record in records)
+        / len(records),
+        requests_fully_cached_ratio=fully_cached / len(records),
+        total_input_tokens=input_tokens,
+        ideal_hit_tokens=ideal,
+        matched_cache_tokens=matched,
+        actual_hit_tokens=actual,
+        l1_hit_tokens=sum(record.l1_hit_tokens for record in records),
+        l2_hit_tokens=sum(record.l2_hit_tokens for record in records),
+        l3_hit_tokens=sum(record.l3_hit_tokens for record in records),
+        actual_prefill_tokens=prefill,
+        saved_prefill_tokens=input_tokens - prefill,
+        l1_evictions=l1_evictions,
+        l1_peak_resident_blocks=l1_peak_resident_blocks,
+        l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
+        l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
+        l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,
+        l1_evictable_blocks=cache_snapshot.evictable_blocks if cache_snapshot else 0,
+        l1_free_blocks=cache_snapshot.free_blocks if cache_snapshot else 0,
+        l1_reserved_future_blocks=(cache_snapshot.reserved_future_blocks if cache_snapshot else 0),
+        l1_internal_fragmentation_tokens=(
+            cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
+        ),
     )

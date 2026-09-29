@@ -71,6 +71,7 @@ def test_fcfs_head_waits_without_mutating_cache() -> None:
     assert scheduler.num_waiting == 2
     assert cache.snapshot() == snapshot
     cache.release(0)
+    scheduler.on_request_released()
     admitted = scheduler.plan_step()
     assert admitted is not None
     assert admitted.admitted[0].request_id == 1

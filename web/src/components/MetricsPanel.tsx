@@ -10,7 +10,7 @@ export interface MetricsPanelProps {
 interface MetricCardProps {
   label: string;
   value: number | null | undefined;
-  unit: "ms" | "请求/秒";
+  unit: "ms" | "请求/秒" | "%" | "token" | "blocks";
   description: string;
 }
 
@@ -23,7 +23,7 @@ function formatMetric(value: number | null | undefined, unit: MetricCardProps["u
     return "未定义";
   }
 
-  return `${numberFormatter.format(value)} ${unit}`;
+  return `${numberFormatter.format(unit === "%" ? value * 100 : value)} ${unit}`;
 }
 
 function MetricCard({ label, value, unit, description }: MetricCardProps) {
@@ -82,8 +82,19 @@ export function MetricsPanel({ metrics }: MetricsPanelProps) {
           label="Makespan"
           value={metrics.makespan}
           unit="ms"
-          description="首请求到达至末请求完成的总时长"
+          description="首根请求到达至末请求完成的总时长"
         />
+        <MetricCard label="目标理想命中率" value={metrics.target_ideal_prefix_hit_rate} unit="%" description="用户设置的所有请求输入 token 加权目标" />
+        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="内容构造后按完整块量化的理想前缀" />
+        <MetricCard label="量化误差" value={metrics.ideal_hit_quantization_error} unit="%" description="构造理想命中率与目标之差" />
+        <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="真正跳过 Prefill 的输入 token 比例" />
+        <MetricCard label="有命中请求比例" value={metrics.requests_with_hit_ratio} unit="%" description="至少一个输入 token 真正复用的请求" />
+        <MetricCard label="完整块全命中请求比例" value={metrics.requests_fully_cached_ratio} unit="%" description="有完整输入块且全部物理命中的请求" />
+        <MetricCard label="实际 Prefill" value={metrics.actual_prefill_tokens} unit="token" description="本场真实计算的输入 token 数" />
+        <MetricCard label="节省 Prefill" value={metrics.saved_prefill_tokens} unit="token" description="命中而跳过的输入 token 数" />
+        <MetricCard label="L1 容量" value={metrics.l1_capacity_blocks} unit="blocks" description="由 KV token 预算与块大小推导的物理容量" />
+        <MetricCard label="L1 驱逐" value={metrics.l1_evictions} unit="blocks" description="仿真中发生的 LRU 驱逐次数" />
+        <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="blocks" description="仿真中物理块驻留的峰值" />
       </dl>
     </section>
   );

@@ -3,7 +3,7 @@
 import pytest
 
 from simcore.metrics import compute_metrics, percentile
-from simcore.schemas import RequestRecord
+from simcore.schemas import RequestRecord, WorkloadPlan
 
 
 def rec(
@@ -116,6 +116,65 @@ class TestThroughputAndMakespan:
         records = [rec(0, 5.0, 5.0, 5.0, 1), rec(1, 5.0, 5.0, 5.0, 1)]
         m = compute_metrics(records)
         assert m.makespan == 0.0 and m.throughput is None
+
+
+class TestPrefixMetrics:
+    def test_weighted_hit_rates_and_full_block_ratio(self) -> None:
+        first = RequestRecord(
+            id=0,
+            arrival=0,
+            prefill_start=0,
+            prefill_end=1,
+            finish=2,
+            prompt_len=10,
+            output_len=2,
+            ideal_reuse_tokens=0,
+            matched_cache_tokens=0,
+            actual_hit_tokens=0,
+            actual_prefill_tokens=10,
+        )
+        second = RequestRecord(
+            id=1,
+            arrival=2,
+            prefill_start=2,
+            prefill_end=3,
+            finish=4,
+            prompt_len=5,
+            output_len=2,
+            ideal_reuse_tokens=4,
+            matched_cache_tokens=4,
+            actual_hit_tokens=4,
+            actual_prefill_tokens=1,
+            l1_hit_tokens=4,
+        )
+        result = compute_metrics(
+            [first, second], plan=WorkloadPlan({}, (), {}, block_size_tokens=2)
+        )
+        assert result.total_input_tokens == 15
+        assert result.ideal_hit_tokens == 4
+        assert result.actual_prefix_hit_rate == pytest.approx(4 / 15)
+        assert result.requests_with_hit_ratio == 0.5
+        assert result.requests_fully_cached_ratio == 0.5
+        assert result.actual_prefill_tokens == 11
+        assert result.saved_prefill_tokens == result.actual_hit_tokens == result.l1_hit_tokens == 4
+        assert result.l2_hit_tokens == result.l3_hit_tokens == 0
+
+    def test_request_rejects_hit_above_ideal(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="守恒"):
+            RequestRecord(
+                id=0,
+                arrival=0,
+                prefill_start=0,
+                prefill_end=1,
+                finish=2,
+                prompt_len=4,
+                output_len=1,
+                actual_hit_tokens=1,
+                actual_prefill_tokens=3,
+                l1_hit_tokens=1,
+            )
 
 
 class TestEdgeCases:

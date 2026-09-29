@@ -12,6 +12,7 @@ from simcore.schemas import (
     LognormalLength,
     PerfModelConfig,
     PoissonLength,
+    PrefixCacheConfig,
     SessionConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
@@ -57,7 +58,15 @@ class TestEndToEnd:
         assert meta.sim_end == max(r.finish for r in result.requests)
 
     def test_metrics_consistent_with_records(self, result: SimResult) -> None:
-        assert result.metrics == compute_metrics(result.requests)
+        baseline = compute_metrics(result.requests)
+        for name in ("ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "throughput", "makespan"):
+            assert getattr(result.metrics, name) == getattr(baseline, name)
+        assert result.metrics.total_input_tokens == sum(r.prompt_len for r in result.requests)
+        assert result.metrics.actual_hit_tokens == sum(r.actual_hit_tokens for r in result.requests)
+        assert (
+            result.metrics.l1_capacity_blocks
+            == result.meta.config.engine.prefix_cache.l1.capacity_blocks
+        )
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_ttft_percentiles_ordered(self, result: SimResult) -> None:
@@ -65,6 +74,41 @@ class TestEndToEnd:
         assert 0.0 < m.ttft_p50 <= m.ttft_p99
         assert m.tpot_mean is not None and m.tpot_mean > 0
         assert m.throughput is not None and m.throughput > 0
+
+    def test_prefix_metrics_are_weighted_and_capacity_conserved(self) -> None:
+        config = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=2,
+                    arrival_rate=10,
+                    prompt_len=FixedLength(value=16),
+                    output_len=FixedLength(value=8),
+                    seed=2,
+                    session=SessionConfig(num_sessions=1, target_ideal_prefix_hit_rate=0.25),
+                )
+            ),
+            engine=EngineConfig(
+                max_batch_size=2,
+                kv_token_budget=80,
+                prefix_cache=PrefixCacheConfig(block_size_tokens=2),
+            ),
+            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+        )
+        result = simulate(config)
+        m = result.metrics
+        assert m.total_input_tokens == 32
+        assert m.target_ideal_prefix_hit_rate == m.constructed_ideal_prefix_hit_rate == 0.25
+        assert m.ideal_hit_tokens == m.actual_hit_tokens == m.l1_hit_tokens == 8
+        assert m.l2_hit_tokens == m.l3_hit_tokens == 0
+        assert m.restore_bytes == m.restore_time_ms == m.promotions == m.demotions == 0
+        assert m.actual_prefix_hit_rate == 0.25
+        assert m.actual_prefill_tokens == 24 and m.saved_prefill_tokens == 8
+        assert m.requests_with_hit_ratio == 0.5
+        assert m.l1_capacity_blocks == 40
+        assert m.l1_resident_blocks + m.l1_free_blocks + m.l1_reserved_future_blocks == 40
+        assert m.l1_active_blocks == 0
+        assert result.requests[1].parent_request_id == result.requests[0].id
+        assert result.requests[1].actual_prefill_tokens == 8
 
     def test_infeasible_request_reports_hard_oom(self) -> None:
         with pytest.raises(CacheOOMError, match="单独运行也超过"):

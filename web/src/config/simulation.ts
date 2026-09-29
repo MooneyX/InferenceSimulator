@@ -5,6 +5,9 @@ export type ConfigField =
   | "workload.synthetic"
   | "workload.synthetic.num_requests"
   | "workload.synthetic.arrival_rate"
+  | "workload.synthetic.session.num_sessions"
+  | "workload.synthetic.session.think_time_ms"
+  | "workload.synthetic.session.target_ideal_prefix_hit_rate"
   | "workload.synthetic.prompt_len.value"
   | "workload.synthetic.prompt_len.mean"
   | "workload.synthetic.prompt_len.sigma"
@@ -14,6 +17,7 @@ export type ConfigField =
   | "workload.synthetic.seed"
   | "engine.max_batch_size"
   | "engine.kv_token_budget"
+  | "engine.prefix_cache.block_size_tokens"
   | "perf_model.prefill_c1"
   | "perf_model.prefill_c2"
   | "perf_model.decode_d1"
@@ -41,11 +45,30 @@ export function createDefaultSimConfig(): SimConfig {
           mean: 128,
         },
         seed: 0,
+        session: {
+          num_sessions: 1000,
+          topology: "linear",
+          think_time_ms: 0,
+          target_ideal_prefix_hit_rate: 0,
+          allow_cross_session_shared_prefix: false,
+        },
       },
     },
     engine: {
       max_batch_size: 32,
       kv_token_budget: 65_536,
+      prefix_cache: {
+        block_size_tokens: 1,
+        cache_salt: "",
+        eviction_policy: "lru",
+        hierarchy_policy: "exclusive_write_back",
+        kv_bytes_per_token: 1,
+        model_id: "default-model",
+        tokenizer_id: "default-tokenizer",
+        kv_dtype: "default-dtype",
+        adapter_id: "default-adapter",
+        multimodal_transform_id: "default-transform",
+      },
     },
     perf_model: {
       prefill_c1: 0.05,
@@ -131,6 +154,34 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       0,
       true,
     );
+    const session = synthetic.session;
+    if (session !== undefined && session !== null) {
+      const numSessions = session.num_sessions;
+      if (numSessions !== undefined && numSessions !== null) {
+        validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", numSessions);
+        if (Number.isInteger(numSessions) && numSessions >= 1 &&
+            Number.isInteger(synthetic.num_requests) && synthetic.num_requests >= 1 &&
+            numSessions > synthetic.num_requests) {
+          errors.push({
+            field: "workload.synthetic.session.num_sessions",
+            message: "会话数量不能超过请求数量",
+          });
+        }
+      }
+      validateFiniteNumber(
+        errors,
+        "workload.synthetic.session.think_time_ms",
+        session.think_time_ms,
+        0,
+      );
+      const target = session.target_ideal_prefix_hit_rate;
+      if (!Number.isFinite(target) || target < 0 || target > 1) {
+        errors.push({
+          field: "workload.synthetic.session.target_ideal_prefix_hit_rate",
+          message: "必须是 0 到 1 之间的有限数值",
+        });
+      }
+    }
     validateLengthDistribution(
       errors,
       "workload.synthetic.prompt_len",
@@ -152,6 +203,24 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
 
   validatePositiveInteger(errors, "engine.max_batch_size", engine.max_batch_size);
   validatePositiveInteger(errors, "engine.kv_token_budget", engine.kv_token_budget);
+  const blockSize = engine.prefix_cache?.block_size_tokens ?? 1;
+  validatePositiveInteger(errors, "engine.prefix_cache.block_size_tokens", blockSize);
+  if (Number.isInteger(blockSize) && blockSize >= 1 &&
+      Number.isInteger(engine.kv_token_budget) && engine.kv_token_budget >= 1) {
+    const capacityBlocks = Math.floor(engine.kv_token_budget / blockSize);
+    if (capacityBlocks < 1) {
+      errors.push({
+        field: "engine.prefix_cache.block_size_tokens",
+        message: "块大小不能超过 KV token 预算，L1 至少要容纳一个 block",
+      });
+    } else if (engine.prefix_cache?.l1 !== undefined &&
+               engine.prefix_cache.l1.capacity_blocks !== capacityBlocks) {
+      errors.push({
+        field: "engine.kv_token_budget",
+        message: "L1 容量必须等于 floor(KV token 预算 / 块大小)",
+      });
+    }
+  }
   validateFiniteNumber(errors, "perf_model.prefill_c1", perfModel.prefill_c1, 0);
   validateFiniteNumber(errors, "perf_model.prefill_c2", perfModel.prefill_c2, 0);
   validateFiniteNumber(errors, "perf_model.decode_d1", perfModel.decode_d1, 0);

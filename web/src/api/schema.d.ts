@@ -155,6 +155,146 @@ export interface components {
              * @description 末请求完成时刻 − 首请求到达时刻（ms）
              */
             makespan: number;
+            /**
+             * Target Ideal Prefix Hit Rate
+             * @default 0
+             */
+            target_ideal_prefix_hit_rate: number;
+            /**
+             * Constructed Ideal Prefix Hit Rate
+             * @default 0
+             */
+            constructed_ideal_prefix_hit_rate: number;
+            /**
+             * Ideal Hit Quantization Error
+             * @default 0
+             */
+            ideal_hit_quantization_error: number;
+            /**
+             * Actual Prefix Hit Rate
+             * @default 0
+             */
+            actual_prefix_hit_rate: number;
+            /**
+             * Requests With Hit Ratio
+             * @default 0
+             */
+            requests_with_hit_ratio: number;
+            /**
+             * Requests Fully Cached Ratio
+             * @default 0
+             */
+            requests_fully_cached_ratio: number;
+            /**
+             * Total Input Tokens
+             * @default 0
+             */
+            total_input_tokens: number;
+            /**
+             * Ideal Hit Tokens
+             * @default 0
+             */
+            ideal_hit_tokens: number;
+            /**
+             * Matched Cache Tokens
+             * @default 0
+             */
+            matched_cache_tokens: number;
+            /**
+             * Actual Hit Tokens
+             * @default 0
+             */
+            actual_hit_tokens: number;
+            /**
+             * L1 Hit Tokens
+             * @default 0
+             */
+            l1_hit_tokens: number;
+            /**
+             * L2 Hit Tokens
+             * @default 0
+             */
+            l2_hit_tokens: number;
+            /**
+             * L3 Hit Tokens
+             * @default 0
+             */
+            l3_hit_tokens: number;
+            /**
+             * Restore Bytes
+             * @default 0
+             */
+            restore_bytes: number;
+            /**
+             * Restore Time Ms
+             * @default 0
+             */
+            restore_time_ms: number;
+            /**
+             * Promotions
+             * @default 0
+             */
+            promotions: number;
+            /**
+             * Demotions
+             * @default 0
+             */
+            demotions: number;
+            /**
+             * Actual Prefill Tokens
+             * @default 0
+             */
+            actual_prefill_tokens: number;
+            /**
+             * Saved Prefill Tokens
+             * @default 0
+             */
+            saved_prefill_tokens: number;
+            /**
+             * L1 Evictions
+             * @default 0
+             */
+            l1_evictions: number;
+            /**
+             * L1 Peak Resident Blocks
+             * @default 0
+             */
+            l1_peak_resident_blocks: number;
+            /**
+             * L1 Capacity Blocks
+             * @default 0
+             */
+            l1_capacity_blocks: number;
+            /**
+             * L1 Resident Blocks
+             * @default 0
+             */
+            l1_resident_blocks: number;
+            /**
+             * L1 Active Blocks
+             * @default 0
+             */
+            l1_active_blocks: number;
+            /**
+             * L1 Evictable Blocks
+             * @default 0
+             */
+            l1_evictable_blocks: number;
+            /**
+             * L1 Free Blocks
+             * @default 0
+             */
+            l1_free_blocks: number;
+            /**
+             * L1 Reserved Future Blocks
+             * @default 0
+             */
+            l1_reserved_future_blocks: number;
+            /**
+             * L1 Internal Fragmentation Tokens
+             * @default 0
+             */
+            l1_internal_fragmentation_tokens: number;
         };
         /**
          * PerfModelConfig
@@ -275,6 +415,50 @@ export interface components {
             prompt_len: number;
             /** Output Len */
             output_len: number;
+            /**
+             * Session Id
+             * @default 0
+             */
+            session_id: number;
+            /** Parent Request Id */
+            parent_request_id?: number | null;
+            /**
+             * Ideal Reuse Tokens
+             * @default 0
+             */
+            ideal_reuse_tokens: number;
+            /**
+             * Matched Cache Tokens
+             * @default 0
+             */
+            matched_cache_tokens: number;
+            /**
+             * Actual Hit Tokens
+             * @default 0
+             */
+            actual_hit_tokens: number;
+            /** Actual Prefill Tokens */
+            actual_prefill_tokens?: number | null;
+            /**
+             * Logical Context Tokens
+             * @default 0
+             */
+            logical_context_tokens: number;
+            /**
+             * L1 Hit Tokens
+             * @default 0
+             */
+            l1_hit_tokens: number;
+            /**
+             * L2 Hit Tokens
+             * @default 0
+             */
+            l2_hit_tokens: number;
+            /**
+             * L3 Hit Tokens
+             * @default 0
+             */
+            l3_hit_tokens: number;
         };
         /**
          * SessionConfig

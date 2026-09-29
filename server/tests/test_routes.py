@@ -46,6 +46,10 @@ class TestSuccess:
         body = response.json()
         assert set(body) == {"meta", "metrics", "requests", "warnings"}
         assert len(body["requests"]) == 100
+        assert body["metrics"]["total_input_tokens"] == sum(
+            request["prompt_len"] for request in body["requests"]
+        )
+        assert body["metrics"]["l1_capacity_blocks"] == 16_000
         assert set(body["requests"][0]) >= {
             "id",
             "arrival",
@@ -68,6 +72,26 @@ class TestSuccess:
         payload = make_payload(seed=7)
         assert client.post(URL, json=payload).content == client.post(URL, json=payload).content
 
+    def test_multi_turn_prefix_metrics_returned(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=2, budget=80)
+        payload["workload"]["synthetic"].update(
+            {
+                "prompt_len": {"dist": "fixed", "value": 16},
+                "output_len": {"dist": "fixed", "value": 8},
+                "session": {"num_sessions": 1, "target_ideal_prefix_hit_rate": 0.25},
+            }
+        )
+        payload["engine"]["prefix_cache"] = {"block_size_tokens": 2}
+        response = client.post(URL, json=payload)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["metrics"]["target_ideal_prefix_hit_rate"] == 0.25
+        assert body["metrics"]["actual_hit_tokens"] == 8
+        assert body["requests"][1]["session_id"] == 0
+        assert body["requests"][1]["parent_request_id"] == 0
+        assert "input_token_ids" not in body["requests"][1]
+        assert "input_chunk_hashes" not in body["requests"][1]
+
     def test_infeasible_cache_budget_rejected(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload(num_requests=50, budget=500))
         assert response.status_code == 422
@@ -75,6 +99,16 @@ class TestSuccess:
 
 
 class TestErrors:
+    def test_unreachable_ideal_hit_target_reports_r_max(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=2)
+        payload["workload"]["synthetic"]["session"] = {
+            "num_sessions": 2,
+            "target_ideal_prefix_hit_rate": 0.5,
+        }
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert "r_max=0" in response.json()["detail"]
+
     def test_trace_mode_not_implemented(self, client: TestClient) -> None:
         payload = make_payload()
         payload["workload"] = {"mode": "trace"}

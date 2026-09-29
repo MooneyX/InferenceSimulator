@@ -98,10 +98,11 @@ export async function simulate(
 
   if (response.status === 422) {
     const validationResponse = payload as HTTPValidationError | undefined;
-    throw new SimulationApiError("仿真配置校验失败", {
+    const detail = validationResponse?.detail;
+    throw new SimulationApiError(getErrorDetail(payload) ?? "仿真配置校验失败", {
       kind: "validation",
       status: response.status,
-      validationErrors: validationResponse?.detail ?? [],
+      validationErrors: Array.isArray(detail) ? detail : [],
     });
   }
 

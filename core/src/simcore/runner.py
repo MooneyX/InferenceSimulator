@@ -28,7 +28,7 @@ def simulate(config: SimConfig) -> SimResult:
     plan = build_plan(synthetic, config.engine.prefix_cache)
     client = ClientDriver(plan, config.engine.prefix_cache)
     run = Coordinator(
-        Engine(config.engine, config.perf_model, record_trace=False, use_prefix_cache=True),
+        Engine(config.engine, config.perf_model, record_trace=False),
         client,
     ).run()
     return SimResult(
@@ -39,7 +39,13 @@ def simulate(config: SimConfig) -> SimResult:
             sim_start=run.sim_start,
             sim_end=run.sim_end,
         ),
-        metrics=compute_metrics(run.records),
+        metrics=compute_metrics(
+            run.records,
+            plan=plan,
+            cache_snapshot=run.cache_snapshot,
+            l1_evictions=run.l1_evictions,
+            l1_peak_resident_blocks=run.l1_peak_resident_blocks,
+        ),
         requests=list(run.records),
         warnings=list(run.warnings),
     )

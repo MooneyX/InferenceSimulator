@@ -22,6 +22,7 @@ interface NumberFieldProps {
   error?: string;
   integer?: boolean;
   min?: number;
+  max?: number;
   onChange: (value: number) => void;
 }
 
@@ -37,6 +38,7 @@ function NumberField({
   error,
   integer = false,
   min = 0,
+  max,
   onChange,
 }: NumberFieldProps) {
   const errorId = `${id}-error`;
@@ -49,6 +51,7 @@ function NumberField({
         name={name}
         type="number"
         min={min}
+        max={max}
         step={integer ? 1 : "any"}
         value={inputValue(value)}
         aria-invalid={error ? true : undefined}
@@ -76,6 +79,8 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   if (synthetic === undefined || synthetic === null) {
     throw new Error("SimulationForm requires a synthetic workload configuration");
   }
+  const session = synthetic.session!;
+  const prefixCache = config.engine.prefix_cache!;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -115,7 +120,18 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
                 ...config,
                 workload: {
                   ...config.workload,
-                  synthetic: { ...synthetic, num_requests: numRequests },
+                  synthetic: {
+                    ...synthetic,
+                    num_requests: numRequests,
+                    session: {
+                      ...session,
+                      num_sessions:
+                        session.num_sessions === synthetic.num_requests &&
+                        Number.isInteger(numRequests) && numRequests >= 1
+                          ? numRequests
+                          : session.num_sessions,
+                    },
+                  },
                 },
               })
             }
@@ -123,7 +139,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <NumberField
             id="arrival-rate"
             name="workload.synthetic.arrival_rate"
-            label="到达率（请求/秒）"
+            label="总请求目标 QPS（请求/秒）"
             value={synthetic.arrival_rate}
             error={errorByField.get("workload.synthetic.arrival_rate")}
             onChange={(arrivalRate) =>
@@ -153,6 +169,91 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               })
             }
           />
+        </div>
+
+        <div className="form-grid" style={{ marginTop: 18 }}>
+          <NumberField
+            id="num-sessions"
+            name="workload.synthetic.session.num_sessions"
+            label="会话数量（根请求数）"
+            value={session.num_sessions ?? synthetic.num_requests}
+            integer
+            min={1}
+            max={synthetic.num_requests}
+            error={errorByField.get("workload.synthetic.session.num_sessions")}
+            onChange={(numSessions) =>
+              setConfig({
+                ...config,
+                workload: {
+                  ...config.workload,
+                  synthetic: { ...synthetic, session: { ...session, num_sessions: numSessions } },
+                },
+              })
+            }
+          />
+          <NumberField
+            id="think-time-ms"
+            name="workload.synthetic.session.think_time_ms"
+            label="轮次间思考时间（ms）"
+            value={session.think_time_ms}
+            error={errorByField.get("workload.synthetic.session.think_time_ms")}
+            onChange={(thinkTime) =>
+              setConfig({
+                ...config,
+                workload: {
+                  ...config.workload,
+                  synthetic: { ...synthetic, session: { ...session, think_time_ms: thinkTime } },
+                },
+              })
+            }
+          />
+          <NumberField
+            id="target-ideal-prefix-hit-rate"
+            name="workload.synthetic.session.target_ideal_prefix_hit_rate"
+            label="目标理想前缀命中率（0–1）"
+            value={session.target_ideal_prefix_hit_rate}
+            max={1}
+            error={errorByField.get("workload.synthetic.session.target_ideal_prefix_hit_rate")}
+            onChange={(targetRate) =>
+              setConfig({
+                ...config,
+                workload: {
+                  ...config.workload,
+                  synthetic: {
+                    ...synthetic,
+                    session: { ...session, target_ideal_prefix_hit_rate: targetRate },
+                  },
+                },
+              })
+            }
+          />
+          <div className="form-field">
+            <label htmlFor="cross-session-shared-prefix">
+              <input
+                id="cross-session-shared-prefix"
+                name="workload.synthetic.session.allow_cross_session_shared_prefix"
+                type="checkbox"
+                style={{ width: "auto", minHeight: "auto", padding: 0, marginRight: 8 }}
+                checked={session.allow_cross_session_shared_prefix}
+                onChange={(event) =>
+                  setConfig({
+                    ...config,
+                    workload: {
+                      ...config.workload,
+                      synthetic: {
+                        ...synthetic,
+                        session: {
+                          ...session,
+                          allow_cross_session_shared_prefix: event.currentTarget.checked,
+                        },
+                      },
+                    },
+                  })
+                }
+              />
+              允许跨会话共享公共前缀
+            </label>
+          </div>
         </div>
 
         <div className="distribution-grid">
@@ -225,7 +326,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <NumberField
             id="kv-token-budget"
             name="engine.kv_token_budget"
-            label="KV token 预算"
+            label="L1 KV token 预算"
             value={config.engine.kv_token_budget}
             integer
             min={1}
@@ -237,7 +338,33 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               })
             }
           />
+          <NumberField
+            id="block-size-tokens"
+            name="engine.prefix_cache.block_size_tokens"
+            label="Prefix cache 块大小（token）"
+            value={prefixCache.block_size_tokens}
+            integer
+            min={1}
+            error={errorByField.get("engine.prefix_cache.block_size_tokens")}
+            onChange={(blockSize) =>
+              setConfig({
+                ...config,
+                engine: {
+                  ...config.engine,
+                  prefix_cache: { ...prefixCache, block_size_tokens: blockSize },
+                },
+              })
+            }
+          />
         </div>
+        <p>
+          L1 容量由 KV token 预算换算：
+          {Number.isInteger(prefixCache.block_size_tokens) && prefixCache.block_size_tokens > 0 &&
+          Number.isInteger(config.engine.kv_token_budget) && config.engine.kv_token_budget >= 1
+            ? ` ${Math.floor(config.engine.kv_token_budget / prefixCache.block_size_tokens)} blocks`
+            : " —"}
+          （向下取整，至少 1 block）
+        </p>
       </section>
 
       <section className="form-section" aria-labelledby="performance-heading">

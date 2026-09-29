@@ -144,6 +144,18 @@ class StepTrace:
     kv_used: int
     kv_overflow: int
     finished: tuple[int, ...]
+    probes: int = 0
+    matched_cache_tokens: int = 0
+    actual_hit_tokens: int = 0
+    allocated_blocks: int = 0
+    evicted_blocks: int = 0
+    l1_active_before: int = 0
+    l1_evictable_before: int = 0
+    l1_free_before: int = 0
+    l1_active_after: int = 0
+    l1_evictable_after: int = 0
+    l1_free_after: int = 0
+    l1_internal_fragmentation_tokens: int = 0
 
     @property
     def end(self) -> float:

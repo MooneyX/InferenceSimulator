@@ -14,11 +14,30 @@ describe("createDefaultSimConfig", () => {
           prompt_len: { dist: "lognormal", mean: 512, sigma: 1 },
           output_len: { dist: "poisson", mean: 128 },
           seed: 0,
+          session: {
+            num_sessions: 1000,
+            topology: "linear",
+            think_time_ms: 0,
+            target_ideal_prefix_hit_rate: 0,
+            allow_cross_session_shared_prefix: false,
+          },
         },
       },
       engine: {
         max_batch_size: 32,
         kv_token_budget: 65_536,
+        prefix_cache: {
+          block_size_tokens: 1,
+          cache_salt: "",
+          eviction_policy: "lru",
+          hierarchy_policy: "exclusive_write_back",
+          kv_bytes_per_token: 1,
+          model_id: "default-model",
+          tokenizer_id: "default-tokenizer",
+          kv_dtype: "default-dtype",
+          adapter_id: "default-adapter",
+          multimodal_transform_id: "default-transform",
+        },
       },
       perf_model: {
         prefill_c1: 0.05,
@@ -38,12 +57,69 @@ describe("createDefaultSimConfig", () => {
     expect(first.workload.synthetic?.prompt_len).not.toBe(
       second.workload.synthetic?.prompt_len,
     );
+    expect(first.workload.synthetic?.session).not.toBe(second.workload.synthetic?.session);
+    expect(first.engine.prefix_cache).not.toBe(second.engine.prefix_cache);
   });
 });
 
 describe("validateSimConfig", () => {
   it("accepts the default configuration", () => {
     expect(validateSimConfig(createDefaultSimConfig())).toEqual([]);
+  });
+
+  it("accepts legacy requests without session or prefix cache", () => {
+    const config = createDefaultSimConfig();
+    delete config.workload.synthetic!.session;
+    delete config.engine.prefix_cache;
+    expect(validateSimConfig(config)).toEqual([]);
+  });
+
+  it("validates session boundaries and finite values", () => {
+    const config = createDefaultSimConfig();
+    const session = config.workload.synthetic!.session!;
+    config.workload.synthetic!.num_requests = 2;
+    session.num_sessions = 3;
+    session.think_time_ms = -1;
+    session.target_ideal_prefix_hit_rate = 1.1;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "workload.synthetic.session.num_sessions",
+      "workload.synthetic.session.think_time_ms",
+      "workload.synthetic.session.target_ideal_prefix_hit_rate",
+    ]);
+    session.num_sessions = 1;
+    session.think_time_ms = 0;
+    session.target_ideal_prefix_hit_rate = 1;
+    expect(validateSimConfig(config)).toEqual([]);
+    session.num_sessions = Number.NaN;
+    session.think_time_ms = Number.POSITIVE_INFINITY;
+    session.target_ideal_prefix_hit_rate = Number.NaN;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "workload.synthetic.session.num_sessions",
+      "workload.synthetic.session.think_time_ms",
+      "workload.synthetic.session.target_ideal_prefix_hit_rate",
+    ]);
+  });
+
+  it("requires a valid block size and derives one L1 budget", () => {
+    const config = createDefaultSimConfig();
+    config.engine.kv_token_budget = 9;
+    config.engine.prefix_cache!.block_size_tokens = 4;
+    expect(validateSimConfig(config)).toEqual([]);
+    config.engine.prefix_cache!.l1 = { capacity_blocks: 2 };
+    expect(validateSimConfig(config)).toEqual([]);
+    config.engine.prefix_cache!.l1.capacity_blocks = 3;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.kv_token_budget",
+    ]);
+    delete config.engine.prefix_cache!.l1;
+    config.engine.prefix_cache!.block_size_tokens = 10;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.prefix_cache.block_size_tokens",
+    ]);
+    config.engine.prefix_cache!.block_size_tokens = 0;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.prefix_cache.block_size_tokens",
+    ]);
   });
 
   it("rejects the unsupported trace mode", () => {

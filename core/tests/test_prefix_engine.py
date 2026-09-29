@@ -12,7 +12,9 @@ ENGINE = EngineConfig(max_batch_size=4, kv_token_budget=20, prefix_cache=CACHE)
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
 
 
-def request(key: int, inputs: tuple[int, ...], outputs: tuple[int, ...]) -> InferenceRequest:
+def request(
+    key: int, inputs: tuple[int, ...], outputs: tuple[int, ...], ideal: int = 0
+) -> InferenceRequest:
     return InferenceRequest(
         key,
         key,
@@ -20,14 +22,14 @@ def request(key: int, inputs: tuple[int, ...], outputs: tuple[int, ...]) -> Infe
         inputs,
         outputs,
         chunk_hashes(inputs, 2, cache_namespace(CACHE)),
-        0,
+        ideal,
     )
 
 
 def test_parent_output_full_block_reused_after_done() -> None:
-    engine = Engine(ENGINE, PERF, use_prefix_cache=True)
+    engine = Engine(ENGINE, PERF)
     parent = request(0, (1, 2), (3, 4))
-    child = request(1, (1, 2, 3, 4, 5), (6,))
+    child = request(1, (1, 2, 3, 4, 5), (6,), ideal=2)
     engine.submit(parent, 0)
     duration, done = engine.step(0, 0)
     assert duration == pytest.approx(2)
@@ -41,13 +43,22 @@ def test_parent_output_full_block_reused_after_done() -> None:
     assert child_duration == pytest.approx(1)
     assert done == (1,)
     engine.complete(2 + duration + child_duration, 1)
-    records = engine.finalize().records
+    run = engine.finalize()
+    records = run.records
     assert records[1].arrival == records[0].finish
     assert records[1].prefill_end - records[1].prefill_start == pytest.approx(1)
+    assert (records[1].ideal_reuse_tokens, records[1].matched_cache_tokens) == (4, 4)
+    assert records[1].actual_hit_tokens == records[1].l1_hit_tokens == 4
+    assert records[1].actual_prefill_tokens == 1
+    last_step = list(run.trace.steps())[-1]
+    assert last_step.probes == 1 and last_step.actual_hit_tokens == 4
+    assert last_step.allocated_blocks == 1
+    assert last_step.l1_free_after + last_step.l1_active_after + last_step.l1_evictable_after <= 10
+    assert run.cache_snapshot is not None and run.cache_snapshot.active_blocks == 0
 
 
 def test_same_step_identical_inputs_both_miss() -> None:
-    engine = Engine(ENGINE, PERF, use_prefix_cache=True)
+    engine = Engine(ENGINE, PERF)
     engine.submit(request(0, (1, 2), (3,)), 0)
     engine.submit(request(1, (1, 2), (4,)), 0)
     duration, done = engine.step(0, 0)
@@ -55,7 +66,7 @@ def test_same_step_identical_inputs_both_miss() -> None:
     assert duration == pytest.approx(4)
     engine.complete(duration, 0)
     engine.complete(duration, 1)
-    engine.submit(request(2, (1, 2), (5,)), duration)
+    engine.submit(request(2, (1, 2), (5,), ideal=1), duration)
     later, done = engine.step(duration, 1)
     assert done == (2,)
     assert later == pytest.approx(1)

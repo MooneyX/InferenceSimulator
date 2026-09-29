@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from simcore.perf_model import decode_step_time, prefill_time, step_time
+from simcore.perf_model import decode_step_time, prefill_cost, prefill_time, step_time
 from simcore.schemas import PerfModelConfig
 
 LINEAR = PerfModelConfig(prefill_c1=0.5, decode_d1=10.0, decode_d2=0.001)
@@ -44,6 +44,24 @@ class TestPrefillTime:
     def test_rejects_non_positive(self, prompt_tokens: int) -> None:
         with pytest.raises(ValueError, match="prompt_tokens"):
             prefill_time(prompt_tokens, LINEAR)
+
+
+class TestIncrementalPrefill:
+    def test_context_history_is_charged(self) -> None:
+        assert prefill_cost(80, 20, QUADRATIC) == pytest.approx(
+            QUADRATIC.prefill_c1 * 20 + QUADRATIC.prefill_c2 * (100**2 - 80**2)
+        )
+        assert prefill_cost(0, 100, QUADRATIC) == prefill_time(100, QUADRATIC)
+        assert prefill_cost(80, 20, QUADRATIC) > prefill_time(20, QUADRATIC)
+
+    def test_fused_duration_and_validation(self) -> None:
+        assert step_time([20], 100, QUADRATIC, has_decode=False, prefill_contexts=[80]) == (
+            prefill_cost(80, 20, QUADRATIC)
+        )
+        with pytest.raises(ValueError, match="数量"):
+            step_time([20], 100, QUADRATIC, prefill_contexts=[])
+        with pytest.raises(ValueError, match="context_before"):
+            prefill_cost(-1, 20, QUADRATIC)
 
 
 class TestDecodeStepTime:

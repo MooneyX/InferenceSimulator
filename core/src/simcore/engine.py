@@ -9,13 +9,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
-from simcore.kv_cache import KVCache, KVStats
-from simcore.scheduler import FCFSScheduler
+from simcore.kv_cache import HierarchicalKVCache, KVCache, KVStats
+from simcore.prefix_hash import cache_namespace, next_chunk_hash
+from simcore.scheduler import FCFSScheduler, PrefixScheduler
 from simcore.schemas import (
     Arrival,
     EngineConfig,
     InferenceRequest,
     PerfModelConfig,
+    PrefixCacheConfig,
     RequestCompletion,
     RequestRecord,
 )
@@ -78,10 +80,30 @@ class Engine:
     """维护即时请求与调度/KV 状态，不预存未来请求或持有事件队列。"""
 
     def __init__(
-        self, engine: EngineConfig, perf: PerfModelConfig, record_trace: bool = True
+        self,
+        engine: EngineConfig,
+        perf: PerfModelConfig,
+        record_trace: bool = True,
+        *,
+        use_prefix_cache: bool = False,
     ) -> None:
         self._kv = KVCache(engine.kv_token_budget)
         self._scheduler = FCFSScheduler(engine, perf, self._kv)
+        self._cache_config: PrefixCacheConfig = engine.prefix_cache
+        self._prefix_cache = (
+            HierarchicalKVCache(
+                engine.prefix_cache.l1.capacity_blocks, engine.prefix_cache.block_size_tokens
+            )
+            if use_prefix_cache
+            else None
+        )
+        self._prefix_scheduler = (
+            PrefixScheduler(engine, perf, self._prefix_cache)
+            if self._prefix_cache is not None
+            else None
+        )
+        self._namespace = cache_namespace(engine.prefix_cache)
+        self._last_hash: dict[int, str] = {}
         self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
@@ -98,7 +120,12 @@ class Engine:
     @property
     def has_work(self) -> bool:
         """是否有等待或执行中的请求（不含等待完成结算的请求）。"""
-        return bool(self._running or self._scheduler.num_waiting)
+        waiting = (
+            self._prefix_scheduler.num_waiting
+            if self._prefix_scheduler is not None
+            else self._scheduler.num_waiting
+        )
+        return bool(self._running or waiting)
 
     @property
     def num_steps(self) -> int:
@@ -114,7 +141,10 @@ class Engine:
             prompt_len=len(request.input_token_ids),
             output_len=len(request.output_token_plan),
         )
-        self._scheduler.enqueue(arrival)
+        if self._prefix_scheduler is not None:
+            self._prefix_scheduler.enqueue(request, now_ms)
+        else:
+            self._scheduler.enqueue(arrival)
         self._requests[request.request_id] = request
         self._arrivals[request.request_id] = arrival
         self._log.record(ArrivalTrace.of(arrival))
@@ -123,6 +153,8 @@ class Engine:
         """执行一步，返回步长和待在步末结算的完成 ID。"""
         if step_index != self._num_steps:
             raise ValueError(f"预期 step_index={self._num_steps}，得到 {step_index}")
+        if self._prefix_scheduler is not None:
+            return self._step_with_cache(now_ms, step_index)
         plan = self._scheduler.plan_step()
         if plan is None:  # pragma: no cover - 调度逻辑保证有工作才压步
             raise RuntimeError(f"step {step_index} @{now_ms}: 引擎步被调度但无工作")
@@ -183,12 +215,83 @@ class Engine:
         self._num_steps += 1
         return plan.duration, tuple(finished)
 
+    def _step_with_cache(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]]:
+        scheduler = self._prefix_scheduler
+        cache = self._prefix_cache
+        assert scheduler is not None and cache is not None
+        plan = scheduler.plan_step()
+        if plan is None:
+            raise RuntimeError(f"step {step_index} @{now_ms}: 引擎步被调度但无工作")
+        end = now_ms + plan.duration
+        decoding = list(self._running)
+        finished: list[int] = []
+        for request_id in decoding:
+            produced = self._running[request_id] + 1
+            self._running[request_id] = produced
+            self._publish_output(request_id, produced)
+            if produced == len(self._requests[request_id].output_token_plan):
+                finished.append(request_id)
+
+        for request, probe in zip(plan.admitted, plan.probes, strict=True):
+            request_id = request.request_id
+            self._prefill_start[request_id] = now_ms
+            self._prefill_end[request_id] = end
+            new_hashes = request.input_chunk_hashes[probe.matched_blocks :]
+            cache.publish(request_id, new_hashes)
+            self._last_hash[request_id] = (
+                request.input_chunk_hashes[-1] if request.input_chunk_hashes else "ROOT"
+            )
+            self._running[request_id] = 1
+            self._publish_output(request_id, 1)
+            if len(request.output_token_plan) == 1:
+                finished.append(request_id)
+
+        self._log.record(
+            StepTrace(
+                time=now_ms,
+                step_index=step_index,
+                duration=plan.duration,
+                admitted=tuple(request.request_id for request in plan.admitted),
+                forced=(),
+                num_decoding=plan.num_decoding,
+                batch_total_tokens=plan.batch_total_tokens,
+                kv_used=cache.logical_context_tokens,
+                kv_overflow=0,
+                finished=tuple(finished),
+            )
+        )
+        for request_id in finished:
+            del self._running[request_id]
+            self._pending_done[request_id] = end
+        self._num_steps += 1
+        return plan.duration, tuple(finished)
+
+    def _publish_output(self, request_id: int, produced: int) -> None:
+        cache = self._prefix_cache
+        assert cache is not None
+        request = self._requests[request_id]
+        cache.advance(request_id)
+        total_tokens = len(request.input_token_ids) + produced
+        block_size = self._cache_config.block_size_tokens
+        if total_tokens % block_size == 0:
+            context = request.input_token_ids + request.output_token_plan[:produced]
+            digest = next_chunk_hash(
+                self._namespace, self._last_hash[request_id], context[-block_size:]
+            )
+            cache.publish(request_id, (digest,))
+            self._last_hash[request_id] = digest
+
     def complete(self, now_ms: float, request_id: int) -> RequestCompletion:
         """在 Done 事件时释放 KV，返回本请求实际已生成的内容。"""
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
             raise ValueError(f"请求 {request_id} 未待结算或完成时刻不符")
-        released = self._kv.release(request_id)
+        if self._prefix_cache is not None:
+            released = self._prefix_cache.request_context_tokens(request_id)
+            self._prefix_cache.release(request_id)
+            del self._last_hash[request_id]
+        else:
+            released = self._kv.release(request_id)
         self._log.record(DoneTrace(now_ms, request_id, released))
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms

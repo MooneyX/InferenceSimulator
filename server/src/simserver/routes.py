@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult, simulate
+from simcore.kv_cache import CacheOOMError
 
 __all__ = ["ErrorResponse", "router"]
 
@@ -48,4 +49,6 @@ def simulate_endpoint(config: SimConfig) -> Response:
         result = simulate(config)
     except NotImplementedError as exc:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except (CacheOOMError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     return Response(content=result.model_dump_json(), media_type="application/json")

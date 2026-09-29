@@ -4,6 +4,7 @@ import pytest
 
 import simcore
 from simcore import SimConfig, SimResult, simulate
+from simcore.kv_cache import CacheOOMError
 from simcore.metrics import compute_metrics
 from simcore.schemas import (
     EngineConfig,
@@ -65,10 +66,9 @@ class TestEndToEnd:
         assert m.tpot_mean is not None and m.tpot_mean > 0
         assert m.throughput is not None and m.throughput > 0
 
-    def test_warnings_propagated(self) -> None:
-        tight = simulate(make_config(num_requests=50, budget=500))
-        assert tight.warnings
-        assert isinstance(tight.warnings, list)
+    def test_infeasible_request_reports_hard_oom(self) -> None:
+        with pytest.raises(CacheOOMError, match="单独运行也超过"):
+            simulate(make_config(num_requests=50, budget=500))
 
     def test_json_roundtrip(self, result: SimResult) -> None:
         """服务层将直接序列化该对象，必须 JSON 往返无损。"""

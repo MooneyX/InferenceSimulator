@@ -68,9 +68,10 @@ class TestSuccess:
         payload = make_payload(seed=7)
         assert client.post(URL, json=payload).content == client.post(URL, json=payload).content
 
-    def test_warnings_propagated(self, client: TestClient) -> None:
-        body = client.post(URL, json=make_payload(num_requests=50, budget=500)).json()
-        assert body["warnings"]
+    def test_infeasible_cache_budget_rejected(self, client: TestClient) -> None:
+        response = client.post(URL, json=make_payload(num_requests=50, budget=500))
+        assert response.status_code == 422
+        assert "超过 L1 容量" in response.json()["detail"]
 
 
 class TestErrors:

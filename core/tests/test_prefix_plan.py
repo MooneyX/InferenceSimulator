@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from pydantic import ValidationError
 
-from simcore.prefix_hash import cache_namespace, chunk_hashes, stable_derive
+from simcore.prefix_hash import cache_namespace, chunk_hashes, next_chunk_hash, stable_derive
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -136,6 +136,8 @@ def test_hash_chain_and_partial_tail() -> None:
         chunk_hashes((1, 2, 3, 4), 2, namespace)[1] != chunk_hashes((7, 8, 3, 4), 2, namespace)[1]
     )
     assert chunk_hashes((1, 2), 2, namespace) != chunk_hashes((1, 2), 2, b"other")
+    first = chunk_hashes((1, 2), 2, namespace)[-1]
+    assert next_chunk_hash(namespace, first, (3, 4)) == chunk_hashes((1, 2, 3, 4), 2, namespace)[-1]
     assert chunk_hashes((1, 2, 3, 4), 2, namespace, hasher=lambda _: "collision") == (
         "collision",
         "collision",

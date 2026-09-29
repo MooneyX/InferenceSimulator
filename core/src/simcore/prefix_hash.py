@@ -33,6 +33,20 @@ def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def next_chunk_hash(
+    namespace: bytes,
+    previous_hash: str,
+    block: Iterable[int],
+    *,
+    hasher: Hasher = _digest,
+) -> str:
+    """增量形成下一个完整块的身份，供输出 token 在步末发布。"""
+    payload = json.dumps(
+        [namespace.hex(), previous_hash, tuple(block)], separators=(",", ":")
+    ).encode()
+    return hasher(payload)
+
+
 def chunk_hashes(
     tokens: Iterable[int],
     block_size_tokens: int,
@@ -48,7 +62,6 @@ def chunk_hashes(
     result: list[str] = []
     for offset in range(0, len(values) - block_size_tokens + 1, block_size_tokens):
         block = values[offset : offset + block_size_tokens]
-        payload = json.dumps([namespace.hex(), previous, block], separators=(",", ":")).encode()
-        previous = hasher(payload)
+        previous = next_chunk_hash(namespace, previous, block, hasher=hasher)
         result.append(previous)
     return tuple(result)

@@ -1,12 +1,14 @@
 # KV 前缀复用与多级缓存：分步实现指导
 
+> **现行块身份约定**：合成负载不物化 token ID、也不计算链式 SHA-256；完整块 ID 由请求 ID 和连续逻辑块序号直接编码，具体规则见 [chunk-hash-encoding.md](chunk-hash-encoding.md)。本文早期的内容寻址方案已由该约定取代。
+
 ## 1. 实施边界和交付顺序
 
 按下表逐步合入；每步先完成对应模块的接口与测试，再接入下一步。`PC1`、`PC2`、`PC3A` 在现有单 Engine、一次性 Prefill 引擎上实现 L1，三者全部接通后才将 `F003` 视为完成。中间步骤不作为对外可用的“缓存已启用”版本；最终所有请求均走缓存路径，不保留运行时关闭开关。
 
 | 顺序 | 阶段 | 交付物 | 依赖 |
 |---|---|---|---|
-| 1 | PC1-A：配置、计划、内容和 hash | 可复现的 session `WorkloadPlan` 与理想命中分配 | 无 |
+| 1 | PC1-A：配置、长度计划与块身份 | 可复现的 session `WorkloadPlan` 与理想命中分配 | 无 |
 | 2 | PC1-B：客户端和统一事件时钟 | 到时构造请求、完成后再发送子轮次 | 1 |
 | 3 | PC2：L1 paged block manager | 独立可测的 snapshot/probe/原子 acquire/publish/release | 1 |
 | 4 | PC3A-A：调度、引擎和性能接入 | L1 命中真实减少一次性 Prefill | 2、3 |
@@ -19,12 +21,12 @@
 ### 所有步骤共用的口径
 
 - `arrival_rate` 是用户输入的**所有轮次请求的目标 QPS**（请求/秒），不是根 session 的到达率或实际完成吞吐；仅用于在构造 `WorkloadPlan` 时换算根到达过程，不根据引擎结果反馈调参。有限场仿真的实际到达 QPS/完成吞吐不保证等于目标。
-- `target_ideal_prefix_hit_rate` 属于 workload；`constructed_ideal_prefix_hit_rate` 由内容构造决定；`actual_prefix_hit_rate` 仅由请求实际准入时的缓存驻留决定，不反馈给生成器。全局比率统一为 `sum(hit_tokens) / sum(prompt_len)`，包括理想命中为 0 的根请求。
-- `matched_cache_tokens` 是 hash 命中的完整 block token 数；`actual_hit_tokens = reused_prefill_tokens = min(matched_cache_tokens, prompt_len - 1)`。即使整个输入的 KV 都命中，也要计算最后一个输入 token 以获得 logits；已命中的物理 block 不重复分配。
-- block size `B` 同时决定 hash、内容复用与 KV 物理分配粒度；partial block 可由活动请求持有但不跨请求共享。单轮 workload 表示为仅含根轮次的 session。
-- 同配置、seed 和性能参数必须复现计划、token、hash、事件、淘汰和结果；避免依赖 Python 内置 `hash()` 与无序容器遍历。
+- `target_ideal_prefix_hit_rate` 属于 workload；`constructed_ideal_prefix_hit_rate` 由规划的继承块数决定；`actual_prefix_hit_rate` 仅由请求实际准入时的缓存驻留决定，不反馈给生成器。全局比率统一为 `sum(hit_tokens) / sum(prompt_len)`，包括理想命中为 0 的根请求。
+- `matched_cache_tokens` 是块 ID 命中的完整 block token 数；`actual_hit_tokens = reused_prefill_tokens = min(matched_cache_tokens, prompt_len - 1)`。即使整个输入的 KV 都命中，也要计算最后一个输入 token 以获得 logits；已命中的物理 block 不重复分配。
+- block size `B` 同时决定完整块身份、前缀继承与 KV 物理分配粒度；partial block 可由活动请求持有但不跨请求共享。单轮 workload 表示为仅含根轮次的 session。
+- 同配置、seed 和性能参数必须复现计划、块 ID、事件、淘汰和结果；避免依赖 Python 内置 `hash()` 与无序容器遍历。
 
-## 2. PC1-A：配置、计划、内容与 hash
+## 2. PC1-A：配置、长度计划与直接块身份
 
 ### `schemas.py`：先冻结数据契约
 
@@ -54,18 +56,16 @@ prefix_cache:
 ```text
 TurnPlan(request_id, session_id, parent_request_id,
          root_arrival_time_ms | think_time_ms,
-         prompt_len, output_len, ideal_reuse_blocks,
-         unique_suffix_seed, output_token_plan)
+         prompt_len, output_len, ideal_reuse_blocks)
 WorkloadPlan(turns: request_id -> TurnPlan,
              root_request_ids, children: parent_request_id -> request_ids)
 InferenceRequest(request_id, session_id, parent_request_id,
-                 input_token_ids, output_token_plan,
-                 input_chunk_hashes, ideal_reuse_blocks)
-RequestCompletion(request_id, output_token_ids, finish_time_ms)
+                 prompt_len, output_len, input_chunk_ids, ideal_reuse_blocks)
+RequestCompletion(request_id, finish_time_ms)
 ClientWakeup(session_id, turn_id, send_time_ms)
 ```
 
-根轮次只有到达时刻，子轮次只有 parent 和 think time；每个请求恰属一个 session。输入 token 数必须等于 `prompt_len`，完成后的输出 token 数必须等于 `output_len`；hash 列表只包含完整 block。完整 token/完整 hash 不经默认 API 回显。对现有仅有长度的 `Arrival` 调用方，在入口转换为单根 session 请求，使用稳定种子补齐内容；不要让它成为绕过 hash/cache 的第二条执行路径。
+根轮次只有到达时刻，子轮次只有 parent 和 think time；每个请求恰属一个 session。计划中的 `prompt_len`、`output_len` 是逻辑 token 数，不对应物化的 token ID 序列；`input_chunk_ids` 仅包含 `prompt_len // B` 个完整输入块 ID，结果 API 不回显块 ID。输出按计划长度逐 token 推进，完整块 ID 由引擎在线发布、客户端在完成回调后重建；不足块仍按物理 KV 容量占用。对现有仅有长度的 `Arrival` 调用方，在入口转换为各自独立的根 session，继续走统一 cache 路径。
 
 ### `workload.py`：一次规划、到时发送
 
@@ -75,7 +75,7 @@ ClientWakeup(session_id, turn_id, send_time_ms)
 
 1. 令 `N=num_requests`、`S=num_sessions`、`q=arrival_rate`（请求/秒），校验 `N >= S >= 1`、`q > 0` 且有限。每个 session 至少一个根；先确定轮数 `n_s`，保证 `sum_s n_s=N`。首期均衡分配：`n_s = floor(N/S) + 1` 的 session 有 `N % S` 个，其余为 `floor(N/S)`；额外轮次给哪些 session 由拓扑独立随机流生成稳定顺序。按 session/轮次固定顺序分配 request ID，建立线性 parent/children 边。
 2. 平均每个根带来 `m=N/S` 个请求，设根的泊松到达率 `lambda_root = q/m = q*S/N`（session/秒）。例如 `N=1000`、`S=200`、`q=50` 时每 session 平均 5 轮，根速率为 10 session/秒，而不是 50 session/秒。用根到达独立随机流依次采样 `delta_j ~ Exp(lambda_root/1000)`（毫秒），令 `t_j = sum_{k=0..j} delta_k`，`j=0..S-1`；首个根同样采样间隔，不强置 `t_0=0`。把 `t_j` 写入该 session 根轮次的 `root_arrival_time_ms`，只为根轮次生成到达时刻。
-3. 用长度独立随机流确定所有轮次的 `prompt_len`、`output_len`，为子轮次只记录 `parent_request_id`、`think_time_ms`，再按下述 block 规则分配理想复用量和内容种子。计划仅包含 `S` 个已知根发送时刻及 `N-S` 个依赖父完成的轮次；不得预测子轮次的发送时刻，也不得为了追逐实测 QPS 重排、提前发送或反馈调整根到达。
+3. 用长度独立随机流确定所有轮次的 `prompt_len`、`output_len`，为子轮次只记录 `parent_request_id`、`think_time_ms`，再按下述 block 规则分配理想复用量；不派生内容种子或预生成输出块 ID。计划仅包含 `S` 个已知根发送时刻及 `N-S` 个依赖父完成的轮次；不得预测子轮次的发送时刻，也不得为了追逐实测 QPS 重排、提前发送或反馈调整根到达。
 
 该换算的含义是：若持续以此根速率注入同样平均轮数的 session，且所有轮次最终完成，则**长期平均**总请求到达率为 `lambda_root * (N/S) = q`；它不是对这一次有限仿真的精确 QPS 保证。泊松采样有波动，启动/收尾、think time、排队及处理能力会改变实际子轮次到达时刻；引擎无法完成所有轮次时更不能宣称目标达成。尤其 `S=1` 只有一次根到达采样，不能从单场验证目标 QPS；`S=N` 时 `lambda_root=q`，退化为现有单轮请求泊松到达口径。这里是按目标速率构造开放式根到达，不用 Little’s law 反推并发；Little’s law 只适合在稳定条件下检查在途请求数与吞吐/时延的关系。
 
@@ -89,36 +89,31 @@ D = sum(P_i); M = sum(M_i); r_max = B * M / D
 
 目标大于 `r_max` 时返回包含 `r_max` 的不可行错误，不静默截断。取 `[0, M]` 中令 `abs(B*K/D - target)` 最小的整数 `K*`，平局取较小值；`M=0` 时 `K*=0`。按 `q_i=K* M_i/M` 先取整、再按小数余量降序分配剩余 block；平局由独立分配随机流提供稳定顺序。保证 `0 <= K_i <= M_i`、`sum(K_i)=K*`，输出目标、`achieved=B*K*/D`、量化误差。
 
-客户端构造子输入时，复制父请求完成后 `input + output` 上下文的前 `B*K_i` 个 token；若 `K_i<M_i`，下一 token 必须不同；余下用 request 域隔离的唯一 token 填充。生成器可以预定输出计划，但客户端只能在收到父请求实际完成结果后使用其 output token 构造子输入。部分继承表示从 block 边界分叉，不暗示自然语言对话完整继承。
+客户端在发送子请求时，从父请求已完成的**完整块 ID 上下文**复制前 `K_i` 项；即使该块最初来自祖先，也保留原字符串。从第 `K_i` 个块起，按子请求的 `request_id` 和连续逻辑块序号直接编码；未满的父块不继承，子输入末尾未满的块也不生成 ID。客户端只有收到父请求完成回调后，才能按已知输出长度重建父请求新形成的完整块 ID，并发送子请求。部分继承表示从 block 边界分叉，不暗示自然语言对话完整继承。
 
-> **修订**：本节的链式 SHA-256 约定已由 [chunk-hash-encoding.md](chunk-hash-encoding.md) 取代——chunk hash 改为结构化字符串直接编码，不物化 token、不链式；下文保留以供追溯。
-
-### `prefix_hash.py`：只有内容决定身份
-
-以稳定摘要计算完整输入及随后生成的 output 所形成的完整块：
+### `prefix_hash.py`：直接编码完整块身份
 
 ```text
-H_0 = Digest(namespace, ROOT, C_0)
-H_j = Digest(namespace, H_(j-1), C_j)
+encode(request_id, block_index) = "chunk:{request_id}:{block_index}"
 ```
 
-`namespace` 至少覆盖模型/权重、tokenizer、KV dtype、adapter/LoRA、影响 KV 的多模态变换以及 `cache_salt`；未配置的模型维度在首期使用稳定固定值，但保留隔离字段。相同 chunk 处于不同历史前缀时不得得到相同身份。不得按 session ID、父请求 ID、长度或目标命中率直接判定 cache hit。注入 hasher 的测试接缝用于验证重复 hash 对索引/引用计数的健壮性，不要求首期 token-by-token 碰撞校验。
+新块身份只依赖本请求唯一的非负 `request_id` 和 0 基连续逻辑块序号，**不**依赖前驱块、token 序列、SHA-256 或 namespace。独立 cache 实例隔离每场仿真；若未来多场或多 namespace 共用一个 cache，须先给编码增加隔离域。同 session 的刻意共享靠原样复制父块 ID 实现，跨 session 公共前缀不支持。`stable_derive` 中的摘要仅用于拓扑、到达、长度及分配随机流；重复 ID 的缓存健壮性测试直接构造相同字符串。请求 ID 仅用于**生成**新块身份，不得按 session ID、请求 ID、长度或目标命中率直接判定 cache hit；命中仍须通过 `hash_index` 连续判等。
 
-**本步完成检查**：同 seed 的计划/token/hash 完全一致；改动某一派生域不影响其他域；`sum(n_s)=N`、根数为 `S`、根间隔按 `q*S/N` 采样；`S=N` 保持单轮到达率口径，`S=1` 不断言单场实测 QPS；所有子轮次都不含预定到达时刻；命中块总量恰为 `K*`，不可行错误包含 `r_max`，无意外跨 session 前缀。
+**本步完成检查**：同 seed 的计划、发送时的块 ID、事件、淘汰与结果完全一致；改动某一派生域不影响其他域；`sum(n_s)=N`、根数为 `S`、根间隔按 `q*S/N` 采样；`S=N` 保持单轮到达率口径，`S=1` 不断言单场实测 QPS；所有子轮次都不含预定到达时刻；命中块总量恰为 `K*`，不可行错误包含 `r_max`，无意外跨 session 前缀。
 
 ## 3. PC1-B：模拟客户端、协调器与 Engine 边界
 
 ### `client.py`
 
-`ClientDriver` 只持有 `WorkloadPlan`、未发送轮次、in-flight ID 和已完成父请求的逻辑上下文；不读 cache 或 Engine waiting/running 状态：
+`ClientDriver` 只持有 `WorkloadPlan`、待发送轮次、in-flight 请求及已完成父请求的完整块 ID 上下文；不读 cache 内容或 Engine waiting/running 状态：
 
 ```text
 initial_wakeups() -> tuple[ClientWakeup, ...]
-on_request_completed(completion, now_ms) -> tuple[ClientWakeup, ...]
-on_wakeup(wakeup, now_ms) -> tuple[InferenceRequest, ...]
+on_request_completed(completion) -> tuple[ClientWakeup, ...]
+on_wakeup(wakeup) -> InferenceRequest
 ```
 
-根轮次由 `initial_wakeups` 返回；完成父请求才为其 children 登记 `finish_time_ms + think_time_ms` 的发送事件；`on_wakeup` 仅在 `now_ms == send_time_ms` 构造请求并移除 ready 状态。相同 wakeup 不可重复提交；线性链首期每次至多一个子 wakeup，但接口保留分支/批量能力。
+根轮次由 `initial_wakeups` 返回；完成父请求才为其 children 登记 `finish_time_ms + think_time_ms` 的发送事件；`on_wakeup` 核验唤醒事件与计划发送时刻一致后构造请求并移除 ready 状态。相同 wakeup 不可重复提交；线性链首期每次至多一个子 wakeup，完成回调仍返回唤醒事件元组。
 
 ### `events.py`、`coordinator.py`、`engine.py`、`runner.py`
 
@@ -132,18 +127,19 @@ on_wakeup(wakeup, now_ms) -> tuple[InferenceRequest, ...]
 
 ### `kv_cache.py`：以物理块替换 token 账本
 
-现有 `KVCache` 的 `request_id -> token_count`、`force=True` 和超预算增长不能作为最终缓存实现。新增/替换为 `HierarchicalKVCache` 的 L1 模式；`KVBlock` 至少包含 `block_id`、`content_hash`、`valid_tokens`、`tier`、`state`、`ref_count`、`last_access_seq`、`owner_generation`。内部维护 `blocks`、每请求有序 `request_blocks`、`hash_index: chunk_hash -> ordered block_ids`、L1 free/evictable LRU、单调 `epoch` 和 `access_seq`。同一 hash 允许对应多个物理块；generation 防止回收位置的旧引用命中。
+现有 `KVCache` 的 `request_id -> token_count`、`force=True` 和超预算增长不能作为最终缓存实现。新增/替换为 `HierarchicalKVCache` 的 L1 模式；`KVBlock` 至少包含 `block_id`、`content_hash`、`valid_tokens`、`tier`、`state`、`ref_count`、`last_access_seq`、`owner_generation`。内部维护 `blocks`、每请求有序 `request_blocks`、`hash_index: chunk_id -> ordered block_ids`、L1 free/evictable LRU、单调 `epoch` 和 `access_seq`。`content_hash` / `hash_index` 是保留的内部字段名，存储的是不透明的完整块 ID，并非真实内容摘要。同一 ID 允许对应多个物理块；generation 防止回收位置的旧引用命中。
 
 ```text
 snapshot() -> CacheSnapshot
-probe(snapshot, input_chunk_hashes) -> PrefixProbe
+probe(snapshot, input_chunk_ids) -> PrefixProbe
 prepare_batch(snapshot, probes, allocations) -> CacheTransaction
 commit(transaction) -> BatchCacheResult     # 批量原子 acquire
-publish(request_id, completed_block_hashes)
+publish(request_id, completed_block_hashes) # 历史参数名；实参是完整块 ID
+advance(request_id, added_tokens=1)
 release(request_id)
 ```
 
-`probe` 从输入首块查最长连续前缀，遇 miss 停止；相同 hash 的候选按稳定 block ID 选择，返回命中位置及来源层。它必须只读，不更新 LRU 或引用。`prepare_batch` 根据同一 snapshot 预留所有候选所需空间，`commit` 原子完成引用、未命中块分配和必要驱逐；失败不留下部分分配、错误 LRU 或破坏旧索引。`publish` 仅将已算完的完整 block 加入共享索引，允许每次传一个或多个；step 内新 block 不对同 step 其他请求可见。`release` 减少引用，完整可缓存块变为 evictable，partial 块释放。
+`probe` 从输入首块查最长连续前缀，遇 miss 停止；相同 ID 的候选按稳定 block ID 选择，返回命中位置及来源层。它必须只读，不更新 LRU 或引用。`prepare_batch` 根据同一 snapshot 预留所有候选所需空间，`commit` 原子完成引用、未命中块分配和必要驱逐；失败不留下部分分配、错误 LRU 或破坏旧索引。`publish` 仅将已算完的完整 block 加入共享索引，允许每次传一个或多个；step 内新 block 不对同 step 其他请求可见。`release` 减少引用，完整可缓存块变为 evictable，partial 块释放。
 
 L1 `ACTIVE` 引用数大于 0 且不可淘汰；`EVICTABLE` 引用数为 0，按 `(last_access_seq, block_id)` 选择 victim。只有成功提交的 acquire/hit 才刷新访问序号；probe、miss、未准入和失败事务不刷新。物理容量按 block 计算，共享块仅计一次，活动请求的逻辑 context 分别计数；分别统计有效 token、block capacity 与内部碎片。partial tail 仅活动请求独占，不进入 hash index。
 
@@ -157,7 +153,7 @@ L1 `ACTIVE` 引用数大于 0 且不可淘汰；`EVICTABLE` 引用数为 0，按
 
 保持现有 FCFS 和一次性 Prefill。每个 EngineStep 从 L1 取一次 `CacheSnapshot`，对候选做只读 probe，再按 `max_batch_size` 和 cache 规划结果确定本步可准入的连续队头；同 batch 候选全部基于该 snapshot，成功后一次提交事务。不能在探测阶段 `reserve`，也不能让先遍历的请求看到同 step 的新 KV。未准入候选不改变 cache。`StepPlan` 应返回逐请求 matched/reused token、逻辑 context、新分配 block、实际 Prefill 工作量和可执行准入结果；Engine 不根据目标理想命中直接跳过 token。
 
-Prefill step 结束时，按实际算完的 token 进度批量 `publish` 输入中形成的完整块；首次输出 token 在当前引擎 Prefill step 产生，后续输出 token 在 decode step 产生。仿真约定本步产出的 output token 在步末同时计入其 KV，累积成完整块即追加 hash 链并发布（包括最终 token），不在生成前发布。父请求完成、release 后，完整 output block 可命中后续子请求，partial output 不共享。`RequestCompletion` 的内容载荷约定由 [chunk-hash-encoding.md](chunk-hash-encoding.md) 修订为不携带 token。同一步重复计算出同 hash 的多个物理块不合并；到下一步再按稳定规则选取。
+Prefill step 结束时批量 `publish` 尚未命中的完整输入块 ID；首次输出 token 在当前引擎 Prefill step 产生，后续输出 token 在 decode step 产生。仿真约定本步产出的 output token 先计入 KV，当 `(prompt_len + 已生成输出数) % B == 0` 时，在步末按 `encode(request_id, (prompt_len + 已生成输出数) // B - 1)` 发布完整块（包括最终 token 恰好填满的块），不在填满前发布。输入尾块可由输出补齐；最终不足块占用物理容量但不发布。父请求完成、release 后，完整 output block 可命中后续子请求；`RequestCompletion` 只携带请求 ID 与完成时间。同一步重复计算出同 ID 的多个物理块不合并；到下一步再按稳定规则选取。
 
 ### `perf_model.py`
 
@@ -195,13 +191,13 @@ active_blocks <= L1_resident_blocks
 
 ### `server/`、`web/`
 
-对外结果模型经 `server/src/simserver/routes.py` 的原有 `/api/simulate` 返回，更新 `server/src/simserver/openapi_export.py` 的导出结果、`web/openapi.json`、`web/src/api/schema.d.ts`、`web/src/config/simulation.ts` 以及使用配置/指标的 UI。旧单轮请求的 `arrival_rate` 仍为请求/秒；多轮时明确标为“总请求目标 QPS”，不再解释为根 session/秒；其余旧字段保留含义与单位。新增参数提供旧请求可用的默认值，结果默认不传完整 token ID/hash。
+对外结果模型经 `server/src/simserver/routes.py` 的原有 `/api/simulate` 返回，更新 `server/src/simserver/openapi_export.py` 的导出结果、`web/openapi.json`、`web/src/api/schema.d.ts`、`web/src/config/simulation.ts` 以及使用配置/指标的 UI。旧单轮请求的 `arrival_rate` 仍为请求/秒；多轮时明确标为“总请求目标 QPS”，不再解释为根 session/秒；其余旧字段保留含义与单位。新增参数提供旧请求可用的默认值；旧 `session.content_seed` 不兼容，`allow_cross_session_shared_prefix=true` 明确拒绝，结果不回显块 ID。
 
 **本步完成检查**：端到端复现性、上述守恒关系、API schema 与前端类型一致；旧单轮场景继续可运行，新增 session 配置在界面可提交，理想/实际命中与容量指标可查看。
 
 ## 7. KV3：在已完成的 L1 接口上扩展 L2/L3
 
-此阶段才在 `schemas.py` 激活 L2/L3 容量、带宽、固定延迟及 `kv_bytes_per_token`；容量为 0 的层关闭。沿用相同 `WorkloadPlan`、链式 hash、probe 与指标分母，不重写客户端或引擎的到达时序。独占式 write-back：新块进 L1；L1 victim 降级 L2，L2 victim 降级 L3，L3 victim 删除；低层 hit 去重提升 L1 并移除原层位置，禁用层跳过。一个物理块同刻只属于一层；每层独立 LRU，降级块成为目标层最新驻留项，目标层满时递归逐出 victim，删除时清理 hash 反向索引。
+此阶段才在 `schemas.py` 激活 L2/L3 容量、带宽、固定延迟及 `kv_bytes_per_token`；容量为 0 的层关闭。沿用相同 `WorkloadPlan`、直接编码的完整块 ID、probe 与指标分母，不重写客户端或引擎的到达时序。独占式 write-back：新块进 L1；L1 victim 降级 L2，L2 victim 降级 L3，L3 victim 删除；低层 hit 去重提升 L1 并移除原层位置，禁用层跳过。一个物理块同刻只属于一层；每层独立 LRU，降级块成为目标层最新驻留项，目标层满时递归逐出 victim，删除时清理块 ID 反向索引。
 
 `kv_cache.py` 的全局 hash directory 记录每块实际 tier；probe 从首块逐一查找，优先 L1→L2→L3，同层按稳定 block ID 选取并返回每块来源。相同低层物理块在同 batch 被多请求命中时只提升和传输一次，建立多个 L1 引用；低层命中必须先拿到 L1 空间，事务失败不得留下部分提升。`scheduler.py` 继续同 snapshot 原子规划；`engine.py` step 末发布及完成释放流程不变。
 
@@ -219,5 +215,5 @@ t_L3 = latency_L3 + bytes_L3 / BW_L3_to_L2
 ## 8. 后续模块接入边界
 
 - `F001.CB4` 使用同一 `snapshot/probe/commit/publish/release` 接口：命中 token 不占 Prefill token budget，按 chunk 实际完成的完整块增量发布；retraction 释放引用、形成真实容量，避免立即命中自身导致无进展；同 step 保持 snapshot 隔离。此编排不属于 PC3A 的完成条件。
-- `F002` 消费命中前缀、实际新计算 token、逻辑 context、历史 KV 读取、新 KV 写入及 restore 信息；可扩展字节级容量与解析成本，但不得改变内容 hash、命中口径或缓存所有权。
+- `F002` 消费命中前缀、实际新计算 token、逻辑 context、历史 KV 读取、新 KV 写入及 restore 信息；可扩展字节级容量与解析成本，但不得改变完整块 ID 的判等语义、命中口径或缓存所有权。
 - 本设计不实现真实 KV tensor、跨仿真持久化、跨 Engine 路由、radix tree、partial block 跨请求 copy-on-write、inclusive/write-through 策略或计算/传输重叠调度。

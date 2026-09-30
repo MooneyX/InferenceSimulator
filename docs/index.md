@@ -8,7 +8,8 @@
 |---|---|
 | [design/architecture.md](design/architecture.md) | 总体架构：仓库模块划分、内核内部模块分解、依赖规则 |
 | [design/kernel.md](design/kernel.md) | 仿真内核设计：session 客户端、统一 DES 协调器、调度与 KV cache 语义、性能模型、工作负载接口 |
-| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | KV 前缀复用设计：session 负载、模拟客户端、目标理想命中率、链式 chunk hash、L1/L2/L3 与 LRU 语义 |
+| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | KV 前缀复用设计：session 负载、模拟客户端、目标理想命中率、chunk hash、L1/L2/L3 与 LRU 语义 |
+| [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 块身份直接编码：取消 token 物化与链式 SHA-256，结构化字符串 chunk hash 的格式、契约与各方职责 |
 | [design/api.md](design/api.md) | 服务层契约：config schema、API 端点、metrics 定义、前后端类型同步 |
 | [design/frontend.md](design/frontend.md) | 前端设计：请求甘特图视图规范与渲染约束 |
 | [design/roadmap.md](design/roadmap.md) | 里程碑与验收线、MVP 明确排除项、为未来预留的扩展接缝 |

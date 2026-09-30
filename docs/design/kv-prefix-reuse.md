@@ -92,6 +92,8 @@ D = sum(P_i); M = sum(M_i); r_max = B * M / D
 
 客户端构造子输入时，复制父请求完成后 `input + output` 上下文的前 `B*K_i` 个 token；若 `K_i<M_i`，下一 token 必须不同；余下用 request 域隔离的唯一 token 填充。生成器可以预定输出计划，但客户端只能在收到父请求实际完成结果后使用其 output token 构造子输入。部分继承表示从 block 边界分叉，不暗示自然语言对话完整继承。
 
+> **修订**：本节的链式 SHA-256 约定已由 [chunk-hash-encoding.md](chunk-hash-encoding.md) 取代——chunk hash 改为结构化字符串直接编码，不物化 token、不链式；下文保留以供追溯。
+
 ### `prefix_hash.py`：只有内容决定身份
 
 以稳定摘要计算完整输入及随后生成的 output 所形成的完整块：
@@ -156,7 +158,7 @@ L1 `ACTIVE` 引用数大于 0 且不可淘汰；`EVICTABLE` 引用数为 0，按
 
 保持现有 FCFS 和一次性 Prefill。每个 EngineStep 从 L1 取一次 `CacheSnapshot`，对候选做只读 probe，再按 `max_batch_size` 和 cache 规划结果确定本步可准入的连续队头；同 batch 候选全部基于该 snapshot，成功后一次提交事务。不能在探测阶段 `reserve`，也不能让先遍历的请求看到同 step 的新 KV。未准入候选不改变 cache。`StepPlan` 应返回逐请求 matched/reused token、逻辑 context、新分配 block、实际 Prefill 工作量和可执行准入结果；Engine 不根据目标理想命中直接跳过 token。
 
-Prefill step 结束时，按实际算完的 token 进度批量 `publish` 输入中形成的完整块；首次输出 token 在当前引擎 Prefill step 产生，后续输出 token 在 decode step 产生。仿真约定本步产出的 output token 在步末同时计入其 KV，累积成完整块即追加 hash 链并发布（包括最终 token），不在生成前发布。父请求完成、release 后，完整 output block 可命中后续子请求，partial output 不共享。`RequestCompletion` 必须返回实际生成的 `output_token_ids`。同一步重复计算出同 hash 的多个物理块不合并；到下一步再按稳定规则选取。
+Prefill step 结束时，按实际算完的 token 进度批量 `publish` 输入中形成的完整块；首次输出 token 在当前引擎 Prefill step 产生，后续输出 token 在 decode step 产生。仿真约定本步产出的 output token 在步末同时计入其 KV，累积成完整块即追加 hash 链并发布（包括最终 token），不在生成前发布。父请求完成、release 后，完整 output block 可命中后续子请求，partial output 不共享。`RequestCompletion` 的内容载荷约定由 [chunk-hash-encoding.md](chunk-hash-encoding.md) 修订为不携带 token。同一步重复计算出同 hash 的多个物理块不合并；到下一步再按稳定规则选取。
 
 ### `perf_model.py`
 

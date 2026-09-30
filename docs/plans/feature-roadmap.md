@@ -1,10 +1,10 @@
-# 待实现功能规划
+# 功能规划与实施状态
 
 ## 1. 文档约定
 
-本文用于逐项记录已经讨论并确认需要实现的功能。未经过讨论的候选功能不提前写入；后续每确认一项功能，再增加对应章节。
+本文记录已确认功能的目标、模块边界、依赖关系及实施状态。后续每确认一项功能，再增加对应章节；完成状态以代码、测试和对应设计文档为准。
 
-本文记录功能目标、模块边界、依赖关系和实施方向，不表示相关能力已经实现。开始编码前，仍需将最终确定的行为写入对应的 `docs/design/` 设计文档。
+> **F003 现行方案**：合成负载的完整块 ID 直接编码，不物化 token ID、不计算链式内容 hash；第 6 节按 [块身份直接编码设计](../design/chunk-hash-encoding.md) 解读。F003 已接入一次性 Prefill 引擎的 L1 缓存；L2/L3、chunked prefill/retraction 与解析性能模型是独立后续阶段。
 
 ### 1.1 功能编号
 
@@ -34,7 +34,7 @@
 |---|---|---|---|---|
 | `F001` | 完整的 token-level continuous batching | 待实现 | `F003` | P0 |
 | `F002` | 可配置、可解释、可校准的性能模型 | 待实现 | `F001` | P1 |
-| `F003` | 基于 token chunk hash 的 KV prefix cache 复用 | 待实现 | 无 | P0 |
+| `F003` | 基于完整块 ID 的 KV prefix cache 复用（L1） | 已完成（PC1～PC3A） | 无 | P0 |
 
 这里的 `F001` 是对现有简化 continuous batching 的增强，不表示当前系统完全没有 continuous batching。
 
@@ -52,7 +52,7 @@ F003 KV prefix cache 复用（常开）
   │         └─ 提供真实的 StepWorkload、batch shape 和 context length
   │              ▼
   └╌──────────▶ F002 可配置性能模型
-                 └─ 增强 F003 的字节级容量和增量 Prefill 成本
+                 └─ 增强 F003 的字节级容量和解析式 Prefill 成本
 ```
 
 ### 3.1 依赖矩阵
@@ -66,11 +66,11 @@ F003 KV prefix cache 复用（常开）
 
 依赖说明：
 
-- `F003` 的 token/hash、block manager 和当前引擎集成没有前置功能依赖，完成 PC1、PC2 和 PC3A 即视为 `F003` 完成；
-- prefix hash、lookup 和 block manager 始终运行，不提供启用开关；`F001` 必须消费 `F003` 已冻结的 block 级接口；
+- `F003` 的合成块 ID 编码、block manager 和当前一次性 Prefill 引擎集成不依赖 `F001`/`F002`；PC1、PC2、PC3A 已接通，L1 范围内视为完成；
+- 完整块 ID 判等、连续前缀 lookup 和 block manager 始终运行，不提供启用开关；`F001` 必须消费 `F003` 已冻结的 block 级接口；
 - chunked prefill 中的命中进度、token budget、逐 chunk 发布、`StepWorkload` 和 retraction 适配归 `F001` 负责，不作为 `F003` 完成条件；
 - `F002` 的端到端集成与验收对 `F001` 构成**硬依赖**，但算子公式、硬件规格、内存公式和校准 profile 可先行；
-- `F003` 不依赖 `F002`，可使用显式 `kv_block_size`、当前 `kv_token_budget` 解析出的 block 容量和经验模型独立运行；`F001` 后续迁移为 `max_total_tokens`，`F002` 再提供字节级容量与解析成本增强；
+- `F003` 不依赖 `F002`，可使用 `prefix_cache.block_size_tokens`、当前 `kv_token_budget` 解析出的 block 容量和经验模型独立运行；未来容量配置迁移须先落实在 `F001` 设计中，`F002` 再提供字节级容量与解析成本增强；
 - 实施顺序为先完成 `F003`，再完成依赖其缓存接口的 `F001`，最后进行 `F002` 端到端集成。
 
 ## 4. `F001`：完整的 token-level continuous batching
@@ -591,36 +591,36 @@ PM1 在 `F001` 完成 CB1、冻结接口后即可开始。
 - 增加公式手算、容量守恒、placement、通信量和并行不变量测试；
 - 设计与 API 变更继续遵循“先更新设计文档，再实施代码”。
 
-## 6. `F003`：基于 token chunk hash 的 KV prefix cache 复用
+## 6. `F003`：基于完整块 ID 的 KV prefix cache 复用（已完成 L1 阶段）
+
+本节描述已落地的**合成负载**身份与缓存路径；详细契约以 [块身份直接编码](../design/chunk-hash-encoding.md) 和 [前缀复用实现指导](../design/kv-prefix-reuse.md) 为准。这不是任意真实 token 内容的去重机制。
 
 ### 6.1 依赖与完成边界
 
-- **无前置功能依赖。** `F003` 使用显式 `kv_block_size`、由当前 `kv_token_budget` 解析出的 block 容量和现有经验模型，即可在一次性 Prefill 引擎上独立实现；
-- **是 `F001` 的硬依赖。** `F003` 提供与调度策略无关的 block 级 `probe`、`acquire`、`publish`、`release` 和 `snapshot` 接口；chunked prefill、token budget、`StepWorkload` 和 retraction 的调用编排归 `F001`；
-- **由 `F002` 可选增强。** `F002` 后续提供字节级容量、block rounding 和 cached context 下更准确的增量 Prefill 成本，不影响 `F003` 独立完成；
-- **完成条件。** PC1、PC2 和 PC3A 完成并通过本节验收后，即视为 `F003` 完成；后续 `F001` 的 prefix cache 调度适配和 `F002` 的精度增强不阻塞该状态。
+- **无前置功能依赖。** `F003` 使用 `prefix_cache.block_size_tokens`、由 `kv_token_budget` 解析出的 L1 block 容量和现有增量经验模型，在一次性 Prefill 引擎上运行；
+- **是 `F001` 的硬依赖。** 稳定接口为 `snapshot`、`probe`、`prepare_batch`、`commit`、`publish`、`advance` 和 `release`；chunked prefill、token budget、`StepWorkload` 和 retraction 的调用编排归 `F001`；
+- **由 `F002` 可选增强。** `F002` 后续提供字节级容量和 cached context 下更准确的解析成本；当前已有按完整 block 取整和增量经验 Prefill 成本；
+- **完成边界。** PC1、PC2 和 PC3A 的 L1 代码、API、前端及回归测试已接通；L2/L3（KV3）、`F001` 的调度适配和 `F002` 的精度增强不阻塞该状态。性能意图需另以基准实测，不能由功能测试推定提速。
 
 ### 6.2 目标
 
-为具有相同 token 前缀的请求复用已经生成的 prompt KV，减少重复 Prefill 计算，同时保持物理 KV 容量、每请求逻辑上下文和性能工作量之间的边界清晰。
+在合成负载预设的父子完整块继承关系内复用已计算的输入与输出 KV，减少重复 Prefill 计算，同时保持物理容量、每请求逻辑上下文和性能工作量之间的边界清晰。不同请求即使真实内容恰好相同，但没有规划继承关系，也不会凭内容自动共享。
 
 核心流程为：
 
 ```text
-请求 token IDs
+WorkloadPlan 只规划长度、拓扑和理想继承块数
     ↓
-生成带父链和 namespace 的稳定 block hash
+客户端发送时复制父请求完整块 ID 前缀，并直接编码新输入块 ID
     ↓
-在 KV cache 中查找最长连续命中前缀
+同一快照上连续 probe，prepare_batch / commit 原子准入
     ↓
-命中 block 建立共享引用，未命中部分进入当前引擎的一次性 Prefill
+已计算的完整输入块与输出填满的完整块在步末发布 ID
     ↓
-Prefill step 完成后发布新 block hash
-    ↓
-请求结束后解除引用，缓存 block 保留到容量不足时淘汰
+完成后 release；客户端按计划长度重建完整输出块 ID 并安排子轮次
 ```
 
-当前引擎将整个剩余 prompt 视为一个 Prefill 执行单元，但 `F003` 的缓存接口必须按完整 block 接收增量发布，不能把“一次发布整个 prompt”固化进 block manager。这样 `F001` 后续可以在每个 Prefill chunk 完成后调用同一接口，而无需修改 `F003`。
+当前引擎将剩余 prompt 视为一个 Prefill 执行单元，但缓存可按完整块接收增量发布，不能把“一次发布整个 prompt”固化进 block manager；`F001` 后续可在每个 Prefill chunk 完成时复用该接口。
 
 首期限定为普通 decoder-only、单 Engine、单逻辑实例、非 speculative、非 PD 分离场景。每次 `simulate` 从空 cache 开始，不在不同仿真或不同 API 请求之间持久化 KV。
 
@@ -629,10 +629,10 @@ Prefill step 完成后发布新 block hash
 首期支持：
 
 - 所有 synthetic workload 统一生成 session `WorkloadPlan`，由模拟客户端按时提交请求；
-- session 输入及已完成父请求 output token 的前缀复用；
-- paged KV 的完整 block 作为索引与共享粒度；
-- 链式 chunk hash；
-- 一个 hash 对应一个或多个物理 KV block；
+- 同 session 子轮次复制已完成父请求的完整输入/输出块 ID 前缀，父请求未满尾块不继承；
+- paged KV 的完整 block 作为索引与共享粒度，输入尾块可由输出补齐；
+- `chunk:{request_id}:{block_index}` 直接编码新块，不使用 token 内容的链式 hash；
+- 同一不透明块 ID 可以对应一个或多个物理 KV block；
 - 请求到有序 block table；
 - 活动引用计数；
 - 请求结束后的 cache residency；
@@ -643,66 +643,51 @@ Prefill step 完成后发布新 block hash
 首期不支持：
 
 - partial block 跨请求共享；
-- 非父子 session 请求之间的 generated output KV 复用；
+- 跨 session 公共前缀（`allow_cross_session_shared_prefix=true` 明确拒绝）、任意相同真实内容的自动去重；
 - 跨 Engine、跨仿真、跨进程或跨设备 cache 共享；
-- KV offload、swap、多级存储和远程 KV 传输；
+- KV offload、swap、多级存储和远程 KV 传输（KV3 独立扩展）；
 - radix tree、copy-on-write partial block 和 cache-aware request routing；
-- hash 与 lookup 的 CPU 耗时建模；
-- hash 碰撞后的 token-by-token 二次校验；
+- 身份编码与 lookup 的 CPU 耗时建模；
+- 真实内容 hash 的碰撞后二次校验；
 - `F001` 的 chunked prefill、token budget、P/D 互斥和 retraction 编排。
 
-最后一项由 `F001.CB4` 负责，不属于 `F003` 完成条件。首期使用足够强的稳定摘要并将碰撞视为可忽略事件；测试接口应允许注入 hasher，以验证碰撞不会破坏引用计数、索引清理和容量不变量。
+最后一项由 `F001.CB4` 负责，不属于 `F003` 完成条件。合成负载用唯一请求 ID 与块序号保证新块身份不相撞；重复 ID 的索引与引用健壮性通过直接构造相同字符串测试，不注入 hasher。
 
-### 6.4 请求内容与可复现性
+### 6.4 请求契约与可复现性
 
-仅包含 `prompt_len` 的请求不足以表达 session 继承关系或判断内容是否相同。统一 session workload 中，每个请求都必须具有确定的输入与输出 token 计划，并始终生成和查询对应 block hash。内部请求状态至少包含：
+`TurnPlan` 只记录拓扑、`prompt_len`、`output_len` 和 `ideal_reuse_blocks`，不预生成输出块 ID。客户端在发送时形成仅含 `prompt_len // B` 个完整输入块 ID 的 `InferenceRequest`，引擎独立推进计划的输出长度并在线发布完整输出块；`RequestCompletion(request_id, finish_time_ms)` 不传 token ID。运行时维护：
 
-- `prompt_token_ids` 或等价的不可变输入 token 序列；
-- 确定的 `output_token_plan`，完成后通过 `RequestCompletion` 交给模拟客户端；
-- 按 KV block 划分的有序 `prompt_block_hashes`；
-- 已命中的 prompt token 数；
-- 实际完成计算的 prompt token 数；
-- 已生成 output token 数；
-- 当前引用的有序 KV block IDs。
+- 显式输入和计划输出逻辑长度、连续的 `input_chunk_ids`；
+- 已命中的输入 token 数与实际计算的 Prefill token 数；
+- 已生成的 output token 数和当前引用的有序物理 block ID；
+- 客户端在完成回调后才保存完整块 ID 上下文并安排子轮次。
 
 统一规则：
 
 - 所有请求必须且只属于一个 session；单轮 session 是最小合法 workload；
-- workload 统一输出 `WorkloadPlan`，模拟客户端在 `ClientWakeup` 到时才构造请求并调用 `engine.submit`；
+- workload 统一输出 `WorkloadPlan`，模拟客户端在 `ClientWakeup` 到时构造请求，由协调器调用 `engine.submit`；
 - Engine 只维护已实际到达的 waiting/running 请求，并对每个请求执行 prefix cache 生命周期；
-- 不得根据长度、session ID 或父请求 ID 推断内容命中；
-- 外部 API 和结果默认不回显完整 token IDs，避免放大请求与响应；
-- synthetic workload 对根到达、长度、拓扑、内容和命中分配使用稳定派生的独立随机流；
-- session planner 通过父子内容继承和唯一后缀控制理想前缀命中率；
-- 相同 resolved config、workload 和 seed 必须生成相同 session、token、hash、客户端发送、命中、淘汰和事件序列。
+- 请求 ID 只用于生成新块身份；cache hit 只能由 `hash_index` 的连续 ID 判等决定，不得凭长度、session/请求/父请求 ID 推断；
+- 外部 API 和结果不回显内部块 ID；
+- synthetic workload 对根到达、长度、拓扑和命中分配使用稳定派生的独立随机流，无内容种子；
+- session planner 按父请求的完整逻辑块数与子请求的可复用完整输入块数分配理想继承量，不复制 partial 尾块；
+- 相同 resolved config、workload 和 seed 必须生成相同 session、块 ID、客户端发送、命中、淘汰、事件与结果序列。
 
-### 6.5 Hash 语义
-
-每个可缓存完整 block 的 hash 必须依赖缓存 namespace、父 block hash 和当前 block token IDs：
+### 6.5 合成负载的完整块身份
 
 ```text
-H_0 = H(cache_namespace, ROOT, block_0_tokens)
-H_i = H(cache_namespace, H_(i-1), block_i_tokens)
+encode(request_id, block_index) = "chunk:{request_id}:{block_index}"
 ```
 
-不能只 hash 当前 chunk。相同 token chunk 位于不同历史前缀时会产生不同 KV，必须通过父 hash 隔离。
+`request_id` 在单场独立 cache 的生命周期内唯一；`block_index` 是 input＋output 连续逻辑上下文中的 0 基序号。新块不依赖前驱 ID、token 序列或 namespace，也不进行链式 SHA-256。子轮次前 `K_i` 个完整块 ID **原样复制**已完成父请求的前缀（包括父请求继承自祖先的 ID）；余下从块 `K_i` 起按子请求 ID 编码。不同根即使真实内容恰好相同，也不会自动命中；这一等价关系仅适用于约定的合成继承关系，并非真实内容 hash。
 
-`cache_namespace` 至少为以下语义预留隔离能力：
+模型、tokenizer、KV dtype、adapter、多模态变换及 `cache_salt` 等配置在单场内固定，当前由每场新建的独立 cache 隔离，**不进入编码**。未来若多场或多 namespace 共用 cache，必须另加隔离域；真实 trace replay 若用内容 hash，也须同时定义输出实际长度/内容、完成消息与客户端—引擎身份协议，不能只替换编码函数。`stable_derive` 仍可用摘要派生随机流，但其摘要不是块身份。
 
-- 模型与权重版本；
-- tokenizer 版本；
-- KV dtype；
-- adapter/LoRA；
-- 用户指定 cache salt；
-- 后续可能影响 KV 内容的多模态输入或运行时变换。
-
-首期可以由固定模型配置生成 namespace，但接口中必须保留该边界。摘要使用 SHA-256、BLAKE2 等跨进程稳定算法，不使用 Python 内置 `hash()`。
-
-`kv_block_size` 决定 `F003` 的物理分配和 hash 粒度，与调度器一次处理多少 prompt token 无关。当前引擎在一次 Prefill 中完成全部剩余 prompt，并在 step 结束时批量发布其中已完成的完整 block；未来 `F001` 的 `chunked_prefill_size` 只改变 `publish` 的调用时机和每次完成的 block 数，不改变 `F003` 的 block/hash 语义。只有完整 block 才进入共享 hash 索引。
+`prefix_cache.block_size_tokens = B` 决定身份的完整块粒度与物理块分配粒度；只为完整块建立可复用 ID，输入尾块可由输出补齐。输出形成完整块时引擎在线发布；最终不足块仍占用物理 KV，在释放时回收。后续 `F001` 的 chunked prefill 只改变已完成块的发布时机，不改变当前不透明块 ID 的判等与索引语义。
 
 ### 6.6 KV 状态模型
 
-现有 `request_id -> token_count` 账本需要扩展为 block manager。内部 block 至少包含：
+现行 `HierarchicalKVCache` 以物理 block 管理 KV，旧 `KVCache` token 账本不参与统一仿真路径。内部 block 包含：
 
 ```text
 KVBlock
@@ -719,7 +704,7 @@ KV manager 至少维护：
 ```text
 blocks: block_id -> KVBlock
 request_blocks: request_id -> ordered block_id list
-hash_index: block_hash -> ordered block_id collection
+hash_index: opaque_full_chunk_id -> ordered block_id collection
 free_blocks
 evictable_lru
 ```
@@ -727,29 +712,29 @@ evictable_lru
 状态语义：
 
 - `ref_count > 0` 的 block 为活动共享 KV，不可淘汰；
-- 请求完成、回撤或释放时减少引用，不直接删除仍可缓存的完整 prompt block；
-- `ref_count == 0` 且带有效 hash 的 block 转为 `EVICTABLE`；
+- 请求完成或释放时减少引用；未来回撤复用同一 `release` 边界，不直接删除仍可缓存的完整输入/输出块；
+- `ref_count == 0` 且带有效完整块 ID 的 block 转为 `EVICTABLE`；
 - 容量不足时按确定性 LRU 淘汰 `EVICTABLE` block；
-- block 重新分配前必须删除旧的 hash 反向映射；
-- partial block 和首期不缓存的 output block 在无引用后直接释放；
+- block 重新分配前必须删除旧的 ID 反向映射；
+- 未发布或未填满的 partial block 在无引用后直接释放，已发布的完整输出块可驻留；
 - `block_id` 表示仿真器中的逻辑物理位置，不要求映射到真实 GPU 地址。
 
-`hash_index` 允许一个 hash 对应多个 block。同一个 step 中的请求统一基于 step 开始快照查询，新产生的 KV 在该 step 结束后才发布，因此同批请求可能独立计算出相同 block；索引和淘汰逻辑必须支持这种情况，不能隐式迁移或合并正在执行的物理 KV。
+`content_hash`、`hash_index` 是历史内部命名，值是仅供判等的不透明完整块 ID；索引允许同一 ID 对应多个物理 block。同一个 step 的请求基于同一开始快照查询，新产生的 KV 不被同批请求看见，因此可能独立发布相同 ID；不得隐式合并活动物理块。
 
 ### 6.7 命中规则
 
 Prefix lookup 必须：
 
-1. 从 prompt 第一个完整 block 开始；
-2. 按父链顺序查询；
+1. 从请求 `input_chunk_ids` 的第一个完整输入块开始；
+2. 按输入块 ID 序列顺序查询，不依赖父 hash 链；
 3. 返回从起点开始的最长连续命中；
 4. 在第一个 miss 处停止，不能跳过中间 miss 后继续复用；
-5. 返回选中的 block，但只在请求确定准入并执行 `acquire` 后建立活动引用；
-6. 使用确定性规则从同 hash 的多个位置中选择 block。
+5. 返回选中的 block，但只在同一快照的 `prepare_batch` / `commit` 成功后建立活动引用；
+6. 同 ID 对应多个物理位置时稳定选择最小 block ID。
 
 Prefix cache 只保存 KV，不保存下一 token logits，因此即使整个 prompt 的 KV 都已存在，也必须保留至少一个 prompt token 的执行工作。首期可将可跳过的计算量限制为 `prompt_len - 1`；如果最后一个 token 所在的完整 block 已命中，可以继续引用该 block，但该 token 仍计入本步实际 Prefill 计算，且不重复计入物理 KV 分配。
 
-首期只注册和复用 prompt 的完整 block。由于当前 workload 不生成具体 output token IDs，generated output KV 不进入共享 hash 链。
+当前引擎在每个输出 token 计入 KV 后，当 `(P + t) % B == 0` 时发布 `encode(request_id, (P + t) // B - 1)`；输入尾块可由输出补齐。客户端在完成回调后重建相同的完整输出块 ID，供后继请求继承；最终不足块不索引，仍占物理容量直到释放。
 
 ### 6.8 缓存接口与当前引擎接入
 
@@ -757,29 +742,29 @@ Prefix cache 只保存 KV，不保存下一 token logits，因此即使整个 pr
 
 ```text
 snapshot() -> CacheSnapshot
-probe(snapshot, block_hashes) -> PrefixMatch
-acquire(request_id, prefix_match, required_blocks) -> AllocationResult
-publish(request_id, completed_block_hashes)
+probe(snapshot, input_chunk_ids) -> PrefixProbe
+prepare_batch(snapshot, probes, allocations) -> CacheTransaction
+commit(transaction) -> BatchCacheResult
+publish(request_id, completed_block_hashes)  # 历史参数名，实参为完整块 ID
+advance(request_id, added_tokens=1)
 release(request_id)
 ```
 
-具体命名可以在设计阶段调整，但必须保持以下边界：
-
 - `probe` 只读，不刷新 LRU、不增加引用、不分配或淘汰 block；
-- `acquire` 只在请求确定准入后执行，并原子提交命中引用、新 block 分配和必要淘汰；
-- `publish` 只接收已经完成计算的完整 block，可以一次发布一个或多个 block；
-- `release` 解除请求引用，可复用 prompt block 转为 `EVICTABLE`，其余 block 释放；
-- `snapshot` 提供确定性的 active、evictable、free 和物理容量状态。
+- `prepare_batch` 基于同一快照规划连续队头，`commit` 原子提交命中引用、新块分配和必要淘汰；失败不得留下部分状态；
+- `publish` 只接受已计算完成的完整块 ID，允许批量或逐块发布；`advance` 先推进输出 token 对应的物理 KV；
+- `release` 解除请求引用，可复用完整输入/输出块转为 `EVICTABLE`，未发布的 partial 块释放；
+- `snapshot` 提供确定性的 active、evictable、free、预留和物理容量状态。
 
 PC3A 的客户端与引擎接入流程为：
 
-1. `ClientSend` 触发时，模拟客户端构造 token/hash，并通过协调器调用 `engine.submit` 进入 waiting queue，不修改 cache；
+1. `ClientSend` 触发时客户端按继承关系构造完整输入块 ID，协调器调用 `engine.submit` 进入 waiting queue，不修改 cache；
 2. engine step 开始时获取同一份 `CacheSnapshot`；
 3. 对候选请求只读查询最长缓存前缀；
-4. 将整个剩余 prompt 作为当前的一次性 Prefill 工作量，并计算所需新增 block；
-5. 请求确定准入后原子执行 `acquire`；
-6. Prefill step 完成后，通过 `publish` 批量发布新完成的完整 prompt block；
-7. 请求完成后调用 `release`，缓存 block 保留到后续容量不足时淘汰。
+4. 根据实际命中确定一次性 Prefill 工作量，按 `ceil((P+O)/B)` 规划全部物理块和未来增长；
+5. 对可准入的连续队头执行 `prepare_batch` / `commit`；
+6. Prefill step 结束时批量发布尚未命中的完整输入块；每个输出 token 先 `advance`，填满完整块时在线发布；
+7. 请求完成时 `release`，并由客户端收到完成回调后重建输出块 ID、安排后继发送。
 
 同一步中新计算的 KV 不对该 step 其他请求可见。候选请求未被调度时 cache 状态保持不变。PC3A 不负责 chunked prefill、`StepWorkload` 或 retraction；这些行为由 `F001.CB4` 使用相同接口完成。
 
@@ -794,7 +779,7 @@ PC3A 的客户端与引擎接入流程为：
 
 共享 block 在物理容量中只计算一次，但在每个引用请求的逻辑 context 中分别计算。不得使用共享后的物理 token 数代替 Decode 的 context length。
 
-空间不足时，`F003.acquire` 优先淘汰无活动引用的 LRU cache block。淘汰顺序使用单调访问序号和稳定 block ID 作为 tie-break，不依赖无序容器遍历。淘汰后仍无法满足分配时返回确定的容量不足结果，且不得留下部分引用、部分分配或被错误刷新的 LRU 状态。
+空间不足时，`prepare_batch` 规划淘汰无活动引用的 LRU cache block。淘汰顺序使用单调访问序号和稳定 block ID 作为 tie-break，不依赖无序容器遍历。淘汰后仍无法满足分配时返回确定的容量不足结果，且不得留下部分引用、部分分配或被错误刷新的 LRU 状态。
 
 `F003.release` 不区分请求是正常完成、终止还是被上层调度器回撤，只负责解除引用并维护 residency。是否回撤、何时重新准入以及如何保证系统进展属于调用方策略；`F001.CB4` 负责 continuous batching 下的对应活性语义。
 
@@ -816,19 +801,19 @@ prefill_cost(context_before, new_prefill_tokens)
 
 其中 `context_before` 为缓存前缀长度，`new_prefill_tokens` 为当前引擎一次计算的剩余 prompt token。该近似和现有经验系数足以完成 `F003` 的相对命中收益仿真，不依赖 `F002`。
 
-`F001.CB4` 后续将相同数据按 step 写入 `StepWorkload`；`F002` 再根据 Query 长度、历史 KV 读取和新增 KV 写入计算解析成本。hash 和 lookup 的 CPU 开销首期视为零，后续如需建模应作为独立 runtime overhead 增加。
+`F001.CB4` 后续将相同数据按 step 写入 `StepWorkload`；`F002` 再根据 Query 长度、历史 KV 读取和新增 KV 写入计算解析成本。短字符串身份编码和 lookup 的 CPU 开销当前不单独建模，若需要应作为 runtime overhead 增加。
 
 ### 6.11 配置
 
-prefix hash、lookup 和 block manager 默认常开，不提供启用字段。首期至少需要以下 resolved config：
+完整块 ID 索引判等、lookup 和 block manager 常开，不提供启用字段。当前配置包括：
 
-- `kv_block_size`：物理 KV block 的 token 容量；
-- `cache_salt`：可选 namespace 补充字段；
-- `prefix_cache_eviction_policy`：首期固定或仅允许 `lru`。
+- `prefix_cache.block_size_tokens`：物理 KV block 的 token 容量 `B`；
+- `prefix_cache.eviction_policy`：仅支持 `lru`；
+- `prefix_cache.cache_salt`：保留配置字段，但**不参与现行 ID 编码**；单场独立 cache 是隔离边界。
 
-`F003` 内部接收已经解析完成的 KV block 容量，不为 prefix cache 单独预留第二套容量。PC3A 由兼容层将当前 `kv_token_budget` 换算为 block 容量；`F001` 完成配置迁移后改由 `max_total_tokens` 提供同一语义。物理容量按完整 block 取整，有效 token、block capacity 和内部碎片分别统计。
+L1 容量仅由 `floor(kv_token_budget/B)` 解析，不为 prefix cache 单独维护第二套预算。物理占用按 `ceil((P+O)/B)` 规划，同时记录有效 token、物理 block capacity 和内部碎片；`F001` 的配置迁移以后续设计为准。
 
-合成 workload 另行提供 prompt 内容配置，不与 Engine 的 KV 策略字段混放。具体 API 字段归属在设计阶段确定。
+合成 workload 只提供长度分布、session 拓扑、理想复用率和种子；不接受旧 `session.content_seed` 或 prompt 内容配置，`allow_cross_session_shared_prefix=true` 明确拒绝。
 
 ### 6.12 Trace 与指标
 
@@ -856,69 +841,59 @@ Step trace 至少记录：
 
 ### 6.13 实施顺序
 
-#### PC1：session、输入内容与稳定 hash
+#### PC1：session 长度计划与直接块身份（已完成）
 
-- 将工作负载生成器统一改为输出 `WorkloadPlan`，每个请求必须且只属于一个 session；
-- 增加 `SimulationCoordinator` 与 `ClientDriver`，由客户端在 `ClientWakeup` 到时提交请求；
-- 扩展内部请求模型，使所有请求具有确定的输入与输出 token 计划；
-- 为根到达、长度、拓扑、内容和命中分配建立稳定派生的独立随机流；
-- 通过父子内容继承、唯一后缀和 block 量化构造目标理想命中率；
-- 实现 namespace、父 hash 和完整 block token 组成的稳定链式 hash；
-- 所有请求无条件执行 hash、probe、acquire、publish 和 release。
+- `WorkloadPlan` 只规划 session 拓扑、输入/输出长度及理想继承块数；根到达、长度、拓扑、分配各用稳定派生的随机流；
+- `ClientDriver` 到时构造完整输入块 ID，复制已完成父请求的完整块前缀；
+- `encode(request_id, block_index)` 直接生成新块身份，不物化 token 或计算链式 hash；
+- 客户端在完成回调后才重建输出完整块 ID 与后继发送事件。
 
-#### PC2：Paged KV block manager
+#### PC2：Paged KV block manager（已完成 L1）
 
-- 增加 block、request block table 和 hash index；
-- 增加活动引用计数、inactive residency 和确定性 LRU；
-- 支持一个 hash 对应多个物理 block；
-- 分离物理容量、有效 token、内部碎片和逻辑 context；
-- 保证 block 重用时旧索引被清理。
+- 以不透明块 ID 建索引，允许同一 ID 对应多个物理 block；
+- 维护活动引用、可淘汰驻留和确定性 LRU，按 ceil 口径预留未生成的输出物理块；
+- 区分有效 token、物理容量、内部碎片和逻辑 context，回收未发布尾块并清理旧索引。
 
-#### PC3A：当前引擎端到端接入与 `F003` 完成
+#### PC3A：当前引擎端到端接入（已完成 L1）
 
-- 基于 engine step 开始快照进行只读 prefix probe；
-- 将当前一次性 Prefill 的实际未命中 token 传给经验模型；
-- 通过 `acquire` 原子提交引用、分配和淘汰；
-- step 完成后批量发布新完成的完整 block hash；
-- 请求完成后 unpin，可缓存 block 保留驻留；
-- 增加 cache trace、命中率、淘汰、驻留和碎片指标；
-- 更新服务 schema、OpenAPI 和前端配置/结果展示；
-- 增加 prefix cache 的确定性和性能回归场景。
+- 基于 engine step 开始快照连续 probe，以 `prepare_batch` / `commit` 原子提交引用、分配与淘汰；
+- 按实际命中缩减一次性 Prefill 工作量，预留活动 KV 的未来增长；
+- prefill 后发布完整输入块，每个输出 token 推进 KV 后在填满块时在线发布 ID；
+- 请求完成后 release，已发布完整块保留驻留；
+- 记录分层命中、实际 Prefill、淘汰、驻留和碎片指标，服务 schema、OpenAPI 与前端同步；
+- 确定性、相同 ID 稳定索引、祖先继承和输入/输出尾块边界回归覆盖当前合成负载。
 
-PC1、PC2 和 PC3A 通过 `6.14` 验收后，`F003` 状态即可更新为已完成。
+PC1、PC2 和 PC3A 的功能范围已完成；性能收益需以独立基准评估，`F001`、`F002`、KV3 不属于该完成条件。
 
 #### PC4：可选精度增强
 
-- `F002` 完成后接入字节级 KV 容量、block rounding 和显存碎片；
+- `F002` 完成后接入字节级 KV 容量与更精确的显存碎片成本；已有物理块取整不需重做；
 - 使用 cached context、Query 长度、历史 KV 读取和新增 KV 写入计算解析成本；
-- 如有实测需求，再增加 hash 与 lookup runtime overhead。
+- 如有实测需求，再增加身份编码与 lookup runtime overhead。
 
 PC4 不属于 `F003` 完成条件。原计划中的 chunked prefill、P/D 互斥、`StepWorkload` 和 retraction 集成移入 `F001.CB4`。
 
 ### 6.14 验收要求
 
-- 相同 namespace、父前缀和 block token 产生相同 hash；任一项不同均产生不同 hash；
-- prefix lookup 只返回从 prompt 起点开始的最长连续完整 block；
-- `probe` 为只读操作，cache miss、候选请求未调度和容量不足均不改变引用计数、LRU 或物理占用；
-- `acquire` 原子提交命中引用、新分配和淘汰，失败时不留下部分状态；
-- `publish` 接受一个或多个已完成完整 block，不要求调用方一次发布整个 prompt；
-- 所有请求均执行 prefix hash、probe、acquire、publish 和 release，配置与结果中不存在缓存关闭分支；
-- 在当前引擎中，第一个共享前缀请求产生 miss，后续请求在 step 完成并发布 KV 后产生确定命中；
-- 当前引擎中的 prefix hit 减少实际一次性 Prefill 工作量和对应经验成本，但不缩短逻辑 context；
-- 同一 step 中的新 KV 不被同批其他请求命中；
-- 请求完成后活动引用归零，但可缓存 prompt block 在未淘汰前仍能命中；
-- 多个请求共享同一 block 时物理容量只计算一次，逻辑 context 分别计算；
-- active block 不可淘汰，inactive block 按确定性 LRU 淘汰；
-- block 重用后旧 hash 不再返回该位置；
-- partial block 不进入共享索引；
-- 即使整个 prompt 的 KV 已存在，仍至少执行一个 prompt token 以产生 logits；
-- 相同 resolved config、workload 和 seed 的 token、hash、命中、淘汰、step 与结果序列可复现；
-- 命中 token、实际计算 token、逻辑 context、物理 block 和内部碎片分别满足守恒不变量；
-- PC1、PC2、PC3A 及以上验收全部通过后即可判定 `F003` 完成，不等待 `F001` 或 `F002`；
-- 在编码前将最终数据结构、状态转移、API 字段和指标口径同步写入对应的 `docs/design/` 文档。
+- 同一 cache 生命周期内唯一请求 ID 与逻辑块序号编码出不同新块；父/祖先完整块 ID 原样继承，跨 session 根请求不意外共享；
+- prefix lookup 只返回从输入起点开始的最长连续完整块 ID 匹配；
+- `probe` 为只读操作；miss、未准入或容量不足均不改变引用计数、LRU 或物理占用；
+- `prepare_batch` / `commit` 原子提交命中引用、新分配和淘汰，失败时不留下部分状态；
+- `publish` 只接受完整块 ID，可一次发布一个或多个；输入尾块由输出补齐后可发布；
+- 所有请求均走完整块 ID 判等、probe、准入、publish/advance 和 release 路径，不存在缓存关闭分支；
+- 父请求完整输入/输出块在发布并完成释放后可供子请求命中，最终 partial 不可复用；
+- prefix hit 减少当前一次性 Prefill 的工作量和对应**仿真经验成本**，但不缩短逻辑 context；
+- 同一 step 的新 KV 不被同批其他请求命中；多个相同 ID 的物理块不会在同一步合并；
+- 多请求引用共享块时物理容量只计一次，逻辑 context 分别计数；活动块不可淘汰，空闲块按稳定 LRU 淘汰；
+- 物理块回收后旧 ID 索引失效；partial 块不索引，但占物理容量直至 release；
+- 即使整个 prompt 的 KV 已命中，仍至少计算一个输入 token 以产生 logits；
+- 客户端在完成回调后重建的完整输出块 ID 与引擎在线发布的 ID 一致，零 think time 可见父块；
+- 同一 resolved config、workload 和 seed 的计划、块 ID、命中、淘汰、事件和结果序列可复现；
+- 命中 token、实际计算 token、逻辑 context、物理 block 与碎片分别满足守恒不变量；
+- PC1、PC2、PC3A 的 L1 范围内完成不等待 `F001`、`F002` 或 KV3；程序耗时和内存的性能收益须另行实测，不能从仿真 TTFT 推出。
 
 ### 6.15 参考实现边界
 
 PC3A 保持当前引擎的一次性 Prefill 和既有调度行为，只新增 prefix cache 对准入容量、Prefill 工作量和请求生命周期的影响。`F003` 不自行实现 SGLang Prefill-first、chunked prefill 或 retraction；这些调度行为由 `F001.CB4` 调用 `F003` 的稳定接口完成。
 
-KV prefix cache 数据结构优先参考 vLLM 的链式 block hash、block table、引用计数和 hash-to-block 映射，但不要求逐行复刻任一运行时。首期目标是复现对容量、Prefill 工作量和延迟有影响的可观测缓存语义，不模拟真实 GPU 地址、KV tensor 内容或哈希计算过程。后续如需支持 SGLang 风格 radix cache、跨实例路由或 PD 分离 KV 传输，应作为独立功能扩展，不静默改变 `F003` 的默认行为。
+KV prefix cache 的 block table、引用计数、索引与 LRU 可参考现有运行时的管理语义；**合成负载身份不采用 vLLM 链式内容 hash**，只以结构化块 ID 判等。当前目标是模拟容量、Prefill 工作量与延迟的可观测缓存效果，不模拟真实 GPU 地址或 KV tensor。未来真实内容 trace replay 需要另定内容身份和完成协议；radix cache、跨实例路由或 PD 分离 KV 传输应作为独立扩展，不静默改变现有合成身份契约。

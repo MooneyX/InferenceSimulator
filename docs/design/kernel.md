@@ -37,10 +37,10 @@ RequestDone / KV publish-release
 
 ## 调度与 KV cache 语义
 
-- prefix hash、lookup 和 paged KV block manager 始终开启，不提供关闭开关；
+- 完整块身份判等、lookup 和 paged KV block manager 始终开启，不提供关闭开关；
 - 调度策略：FCFS，受 `max_batch_size` 与 L1 KV block 容量双重约束；
-- 每个到达请求按完整 token block 生成链式 hash，准入时执行只读 `probe`，确定准入后原子 `acquire`；
-- L1 容量不足时先按确定性 LRU 将 inactive block 降级到 L2/L3 或最终淘汰；active block 不可淘汰；
+- 发送时客户端携带完整输入块 ID：继承父请求的连续完整块前缀，其余由 `chunk:{request_id}:{block_index}` 直接编码；准入时基于同一快照只读 `probe`，再以 `prepare_batch` / `commit` 原子准入；
+- L1 容量不足时按确定性 LRU 淘汰 inactive block；active block 不可淘汰。L2/L3 降级属于后续扩展；
 - 请求完成时解除活动引用，输入及已生成输出形成的可复用完整 block 保留为 evictable，未满的 partial block 释放；
 - 无法通过驱逐获得容量时禁止准入；单请求在空 L1 中仍无法容纳时返回明确的不可执行/OOM 结果；
 - 严格 FCFS：队头放不下时停止本步准入，不跳过队头去准入后续较小请求。
@@ -66,17 +66,12 @@ step_time = max(Σ prefill 耗时（本步准入的全部请求）, decode 单�
 
 ## 工作负载接口
 
-负载生成器接口统一输出 session 计划：
+现行合成负载经 `build_plan(SyntheticWorkloadConfig, PrefixCacheConfig) -> WorkloadPlan` 构造 session 计划；旧长度入口的 `SyntheticSource` 仍产出 `Arrival`，通过 `plan_from_arrivals` 适配为独立根 session。
 
-```python
-class WorkloadGenerator(Protocol):
-    def build_plan(self) -> WorkloadPlan: ...
-```
-
-- `SyntheticSource` 保留泊松根 session 到达、prompt/output 长度分布和固定种子能力，并增加 session 拓扑、think time、token 内容和理想复用比例构造；配置的 `arrival_rate` 是所有轮次目标请求 QPS，根泊松速率为 `arrival_rate * num_sessions / num_requests`（session/秒），不保证有限场实测请求 QPS 精确达标；
+- `build_plan` 按固定种子规划根 session 泊松到达、prompt/output 长度、拓扑、think time 与理想复用块数，不物化 token ID 或预生成输出块 ID。配置的 `arrival_rate` 是所有轮次目标请求 QPS，根泊松速率为 `arrival_rate * num_sessions / num_requests`（session/秒），不保证有限场实测请求 QPS 精确达标；
 - `num_requests` 表示所有 session 的总轮次数，`num_sessions` 表示根请求数；每个请求必须且只属于一个 session；
 - 单轮 session 是最小合法 workload；
 - `WorkloadPlan` 只交给 `ClientDriver`，生成器永不接触 Engine 或 KV cache；
-- 客户端只向 `SimulationCoordinator` 注册未来 `ClientWakeup`；协调器在发送时刻唤醒客户端，客户端此时才构造请求并调用 `engine.submit`；
+- 客户端返回根请求的 `ClientWakeup`；父请求完成回调后才返回后继唤醒事件。协调器负责入队，并在发送时刻唤醒客户端构造请求，随后调用 `engine.submit`；
 - 不得把未来完整请求或预计到达时间预先放入 Engine；
 - `TraceSource` 后续同样解析为 `WorkloadPlan`，并经 `ClientDriver` 和 `SimulationCoordinator` 重放。

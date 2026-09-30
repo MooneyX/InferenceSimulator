@@ -274,9 +274,9 @@ class ClientWakeup:
 
 
 class Arrival(_Frozen):
-    """一个请求的到达事实，由 ``WorkloadSource`` 产出。
+    """旧长度源的到达事实；由 ``plan_from_arrivals`` 转为独立根 session。
 
-    这是负载生成器与引擎之间唯一的数据交换类型。
+    现行客户端向引擎提交的是 ``InferenceRequest``，不经该类型传 token 内容。
     """
 
     request_id: int = Field(ge=0)

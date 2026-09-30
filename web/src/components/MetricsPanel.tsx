@@ -85,7 +85,7 @@ export function MetricsPanel({ metrics }: MetricsPanelProps) {
           description="首根请求到达至末请求完成的总时长"
         />
         <MetricCard label="目标理想命中率" value={metrics.target_ideal_prefix_hit_rate} unit="%" description="用户设置的所有请求输入 token 加权目标" />
-        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="内容构造后按完整块量化的理想前缀" />
+        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="按计划继承块数和完整块粒度量化的理想前缀" />
         <MetricCard label="量化误差" value={metrics.ideal_hit_quantization_error} unit="%" description="构造理想命中率与目标之差" />
         <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="真正跳过 Prefill 的输入 token 比例" />
         <MetricCard label="有命中请求比例" value={metrics.requests_with_hit_ratio} unit="%" description="至少一个输入 token 真正复用的请求" />

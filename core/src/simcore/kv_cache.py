@@ -572,18 +572,18 @@ class HierarchicalKVCache:
         )
 
     def publish(self, request_id: int, completed_block_hashes: Sequence[str]) -> None:
-        """按逻辑顺序传入尚未发布的完整块 hash；允许分次提交。"""
+        """按逻辑顺序发布完整块 ID；参数名为历史遗留，不要求真实内容 hash。"""
         ids = self._blocks_for(request_id)
         hashes = tuple(completed_block_hashes)
         start = self._published_count[request_id]
         if start + len(hashes) > len(ids):
-            raise ValueError("发布的 hash 数量超过请求已有块数")
+            raise ValueError("发布的块 ID 数量超过请求已有块数")
         for position, content_hash in enumerate(hashes, start):
             block = self.blocks[ids[position]]
             if block.valid_tokens != self.block_size_tokens or block.content_hash is not None:
                 raise ValueError("仅可发布尚未发布的完整块")
             if not isinstance(content_hash, str) or not content_hash:
-                raise ValueError("完整块 hash 必须为非空字符串")
+                raise ValueError("完整块 ID 必须为非空字符串")
         for position, content_hash in enumerate(hashes, start):
             block_id = ids[position]
             self.blocks[block_id] = replace(self.blocks[block_id], content_hash=content_hash)

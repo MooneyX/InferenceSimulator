@@ -8,10 +8,10 @@
 
 ## 输入：配置表单
 
-表单字段与 [api.md](api.md) 的 Config schema 一一对应，分组展示：
+表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：`num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.topology`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`。`session.content_seed` 已移除；跨会话共享不受支持，`session.allow_cross_session_shared_prefix` 固定为 `false` 且不展示开关。所有负载均按 session 计划生成并由模拟客户端提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
-- **引擎（engine）**：`max_batch_size`、`kv_token_budget`，以及必填的 `prefix_cache.block_size_tokens`、namespace salt、固定 `lru` 策略、L1/L2/L3 容量与低层读取成本。prefix hash 和 prefix cache 始终开启，界面不提供启用开关。
+- **负载（workload）**：编辑 `num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`。`session.topology` 固定为 `linear`；`session.content_seed` 已移除，跨会话共享开关固定 `false` 且不展示。所有负载均按 session 计划提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
+- **引擎（engine）**：编辑 `max_batch_size`、`kv_token_budget` 和 `prefix_cache.block_size_tokens`；L1 容量由预算和块大小换算。`cache_salt` 及模型维度保持默认且不进入合成块 ID，L2/L3 不在当前表单或引擎中启用。完整块 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`。
 
 规则：
@@ -21,7 +21,7 @@
 
 ## 输出：指标与告警
 
-- **指标卡片**：TTFT（均值 / P50 / P99）、TPOT、实测端到端完成吞吐、makespan，以结果网格（参考样式的 `result-grid`）展示；`arrival_rate` 是输入的目标到达 QPS，不把完成吞吐误标为目标达成的到达率。
+- **指标卡片**：TTFT（均值 / P50 / P99）、TPOT、实测端到端完成吞吐、makespan，以及目标/构造/实际前缀命中率、Prefill 工作量与 L1 容量/驱逐/驻留峰值，以结果网格展示；`arrival_rate` 是输入的目标到达 QPS，不把完成吞吐误标为目标达成的到达率。
 - **告警列表**：`warnings` 逐条展示（如 KV 超限事件），为空则不渲染。
 - **甘特图**：见下节。
 

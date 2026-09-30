@@ -1,13 +1,11 @@
-"""工作负载生成：向引擎供给 ``Arrival`` 序列。
+"""合成负载规划与旧长度到达源。
 
-生成器只产出到达事实，永不接触引擎——这是 ``docs/design/kernel.md`` 定下的边界，
-使未来的 trace replay 可以替换实现而不触碰内核。
+``build_plan`` 只生成 session 拓扑、长度、理想继承块数和根发送计划，不物化 token
+或预生成块 ID；根到达、长度、拓扑、分配分别使用稳定派生的独立随机流。
+``SyntheticSource`` 仍提供旧 ``Arrival`` 长度入口，使用单一 ``random.Random(seed)``，
+由 ``plan_from_arrivals`` 转换为各自独立的根 session。生成器不接触 Engine/cache。
 
-可复现性：所有随机性来自 ``random.Random(seed)`` 这一个实例，采样顺序固定，
-因此同种子两次运行必然产出逐字节相同的序列。不使用 ``numpy``，避免其跨版本
-随机流变更破坏可复现性。
-
-依赖层级：仅依赖 ``schemas``。
+依赖层级：``schemas``、``prefix_hash.stable_derive``。
 """
 
 import math

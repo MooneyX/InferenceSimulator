@@ -18,8 +18,9 @@ docs/     # 设计文档
 ```powershell
 uv sync                                   # 安装依赖（根级 .venv）
 uv run pytest                             # 单元测试
-uv run pytest core/benchmarks -s          # 基准测试（验收线：1k 请求 < 1s、同种子逐字节一致）
-uv run ruff check . ; uv run ruff format --check .
+uv run pytest core/benchmarks -s          # 原有基准验收线：1k 请求 < 1s、同种子逐字节一致
+uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
+uv run ruff check core server ; uv run ruff format --check core server
 uv run python -m mypy
 
 cd web
@@ -30,6 +31,19 @@ npm run build                            # Vite 生产构建
 npm run check:types                      # 检查生成的 TS 类型是否最新
 npm run test:e2e                         # Playwright：真实后端 1k 请求与移动端验收
 ```
+
+块身份基准分别报告程序执行耗时与 `tracemalloc` 跟踪的 Python 峰值分配（不是进程 RSS 或仿真吞吐）。与迁移前提交 `542b8d4` 对照时，用同一脚本和固定参数，仅切换 `simcore` 源码路径；确认两次输出的 step、命中、Prefill 与淘汰计数一致：
+
+```powershell
+git worktree add --detach .baseline-chunk-id 542b8d4
+$env:PYTHONPATH = (Resolve-Path .baseline-chunk-id/core/src).Path
+uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
+Remove-Item Env:PYTHONPATH
+uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
+git worktree remove .baseline-chunk-id
+```
+
+`--block-size 8` 可复现第二组；以输出的 `simcore` 路径确认版本。`docs/plans/feature-roadmap.md` 第 6.16 节记录了一次实测，数据不构成跨机器性能保证。
 
 ## 启动服务
 

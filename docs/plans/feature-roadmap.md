@@ -897,3 +897,14 @@ PC4 不属于 `F003` 完成条件。原计划中的 chunked prefill、P/D 互斥
 PC3A 保持当前引擎的一次性 Prefill 和既有调度行为，只新增 prefix cache 对准入容量、Prefill 工作量和请求生命周期的影响。`F003` 不自行实现 SGLang Prefill-first、chunked prefill 或 retraction；这些调度行为由 `F001.CB4` 调用 `F003` 的稳定接口完成。
 
 KV prefix cache 的 block table、引用计数、索引与 LRU 可参考现有运行时的管理语义；**合成负载身份不采用 vLLM 链式内容 hash**，只以结构化块 ID 判等。当前目标是模拟容量、Prefill 工作量与延迟的可观测缓存效果，不模拟真实 GPU 地址或 KV tensor。未来真实内容 trace replay 需要另定内容身份和完成协议；radix cache、跨实例路由或 PD 分离 KV 传输应作为独立扩展，不静默改变现有合成身份契约。
+
+### 6.16 性能观测（非验收阈值）
+
+使用 `core/benchmarks/bench_chunk_identity.py`，分别加载迁移前提交 `542b8d4` 和直接块 ID 版本 `dda4fe4` 的 `simcore`，保持同一脚本与 Python 3.12.13（Windows）运行。固定 seed=17、1000 请求/250 session、输入 64/输出 16 token、目标理想命中率 0.25、L1 token 预算 4096；热身一次后独立计时三次，报告中位数。`tracemalloc` 在另一次仿真中记录 Python 分配峰值，不是进程 RSS；采样无并行、无强制速度阈值。
+
+| 块大小 `B` | 迁移前中位耗时 | 直接编码中位耗时 | 迁移前 Python 峰值 | 直接编码 Python 峰值 |
+|---|---:|---:|---:|---:|
+| 16 | 0.785 s | 0.626 s | 8.094 MiB | 2.974 MiB |
+| 8 | 1.286 s | 0.966 s | 8.691 MiB | 3.406 MiB |
+
+两版本的总输入 64000 token、理想/实际命中各 16000 token、实际 Prefill 48000 token 一致；`B=16` 的步数/驱逐数均为 4479/3744，`B=8` 均为 4491/7488。这是**该机器、固定合成负载的一次观测**，说明在相同模拟语义下减少程序耗时与 Python 峰值分配；不代表所有负载提速，也不等于仿真预测的 TTFT/吞吐提升。复现时以脚本输出的 `simcore` 路径确认加载了目标版本，并核对两版本的指标一致性。

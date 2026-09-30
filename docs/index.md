@@ -27,6 +27,7 @@
 | [plans/perf-model.md](plans/perf-model.md) | F002：可解释性能模型、容量、校准及单机 TP |
 | [plans/server-api.md](plans/server-api.md) | 各阶段服务/API 契约与类型交付 |
 | [plans/frontend.md](plans/frontend.md) | 各阶段配置交互与结果展示 |
+| [plans/remove-superseded-implementations.md](plans/remove-superseded-implementations.md) | 旧 KV 调度、旧合成源与跨 session 配置的同步清理 |
 
 ## 实现入口
 

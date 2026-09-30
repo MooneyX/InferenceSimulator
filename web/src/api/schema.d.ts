@@ -483,8 +483,6 @@ export interface components {
              * @default 0
              */
             target_ideal_prefix_hit_rate: number;
-            /** Content Seed */
-            content_seed?: number | null;
             /**
              * Allow Cross Session Shared Prefix
              * @default false

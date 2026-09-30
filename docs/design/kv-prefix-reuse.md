@@ -36,8 +36,7 @@ synthetic.session:
   topology: linear              # 首期生成线性链，数据结构保留分支
   think_time_ms                 # >= 0
   target_ideal_prefix_hit_rate  # [0, 1]
-  content_seed: optional        # 不指定则从已有 seed 稳定派生
-  allow_cross_session_shared_prefix: false
+  allow_cross_session_shared_prefix: false  # true 在计划构造时明确拒绝；不再接受 content_seed
 
 prefix_cache:
   block_size_tokens             # 全场唯一 B
@@ -70,7 +69,7 @@ ClientWakeup(session_id, turn_id, send_time_ms)
 
 ### `workload.py`：一次规划、到时发送
 
-保留现有长度分布采样函数；生成器改为产生不可变 `WorkloadPlan`，不接触 Engine、cache 或事件队列。分别用 `stable_derive(seed, domain)` 派生根到达、轮次长度、session 拓扑、内容和命中分配的独立随机流，禁止某个维度新增采样扰动其他维度。根和各请求唯一后缀使用 session/request 域隔离，禁止随机内容偶然跨 session 命中；显式公共前缀开启时将这部分共享计入 ideal。
+保留现有长度分布采样函数；生成器改为产生不可变 `WorkloadPlan`，不接触 Engine、cache 或事件队列。分别用 `stable_derive(seed, domain)` 派生根到达、轮次长度、session 拓扑和命中分配的独立随机流，禁止某个维度新增采样扰动其他维度。根和各请求的新块由请求 ID 隔离，跨 session 公共前缀不再支持；旧内容种子/显式公共前缀约定参见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 的修订。
 
 **由目标请求 QPS 构造计划**（首期线性 session）：
 
@@ -192,7 +191,7 @@ free_blocks + resident_blocks + reserved_future_blocks = tier_capacity_blocks  #
 active_blocks <= L1_resident_blocks
 ```
 
-若保留单独的“可用但尚未预留”与“未来已预留”账本，以上 `free_blocks` 专指可用且未预留的容量；L2/L3 没有未来预留时为 `free + resident = capacity`。显式跨 session 前缀也必须计入 ideal，不能破坏 `actual <= ideal`。
+若保留单独的“可用但尚未预留”与“未来已预留”账本，以上 `free_blocks` 专指可用且未预留的容量；L2/L3 没有未来预留时为 `free + resident = capacity`。跨 session 前缀在当前块身份方案下不受支持；理想命中仅计入同 session 继承，不得破坏 `actual <= ideal`。
 
 ### `server/`、`web/`
 

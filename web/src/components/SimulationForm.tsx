@@ -227,33 +227,6 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               })
             }
           />
-          <div className="form-field">
-            <label htmlFor="cross-session-shared-prefix">
-              <input
-                id="cross-session-shared-prefix"
-                name="workload.synthetic.session.allow_cross_session_shared_prefix"
-                type="checkbox"
-                style={{ width: "auto", minHeight: "auto", padding: 0, marginRight: 8 }}
-                checked={session.allow_cross_session_shared_prefix}
-                onChange={(event) =>
-                  setConfig({
-                    ...config,
-                    workload: {
-                      ...config.workload,
-                      synthetic: {
-                        ...synthetic,
-                        session: {
-                          ...session,
-                          allow_cross_session_shared_prefix: event.currentTarget.checked,
-                        },
-                      },
-                    },
-                  })
-                }
-              />
-              允许跨会话共享公共前缀
-            </label>
-          </div>
         </div>
 
         <div className="distribution-grid">

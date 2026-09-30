@@ -725,18 +725,6 @@
             "title": "Target Ideal Prefix Hit Rate",
             "default": 0.0
           },
-          "content_seed": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Content Seed"
-          },
           "allow_cross_session_shared_prefix": {
             "type": "boolean",
             "title": "Allow Cross Session Shared Prefix",

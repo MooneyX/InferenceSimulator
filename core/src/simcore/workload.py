@@ -201,6 +201,10 @@ def build_plan(
     cfg: SyntheticWorkloadConfig, cache: PrefixCacheConfig | None = None
 ) -> WorkloadPlan:
     """独立随机流一次规划拓扑、根到达、长度、理想命中和内容。"""
+    if cfg.session.allow_cross_session_shared_prefix:
+        raise ValueError(
+            "不支持 allow_cross_session_shared_prefix=true：块身份不支持跨 session 共享"
+        )
     cache = cache or PrefixCacheConfig()
     block_size = cache.block_size_tokens
     sessions = cfg.session.num_sessions
@@ -210,9 +214,7 @@ def build_plan(
     arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
     length_rng = random.Random(stable_derive(cfg.seed, "length"))
     allocation_rng = random.Random(stable_derive(cfg.seed, "allocation"))
-    content_seed = cfg.session.content_seed
-    if content_seed is None:
-        content_seed = stable_derive(cfg.seed, "content")
+    content_seed = stable_derive(cfg.seed, "content")
     counts = [n // sessions] * sessions
     shuffled = list(range(sessions))
     topology_rng.shuffle(shuffled)
@@ -259,11 +261,6 @@ def build_plan(
             parent = turns[turn.parent_request_id]
             maxima[turn.request_id] = min(
                 (parent.prompt_len + parent.output_len) // block_size,
-                (turn.prompt_len - 1) // block_size,
-            )
-        elif cfg.session.allow_cross_session_shared_prefix and turn.request_id != roots[0]:
-            maxima[turn.request_id] = min(
-                turns[roots[0]].prompt_len // block_size,
                 (turn.prompt_len - 1) // block_size,
             )
         else:

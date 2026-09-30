@@ -109,6 +109,23 @@ class TestErrors:
         assert response.status_code == 422
         assert "r_max=0" in response.json()["detail"]
 
+    def test_content_seed_is_rejected(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        payload["workload"]["synthetic"]["session"] = {"content_seed": 123}
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert "content_seed" in response.text
+
+    def test_cross_session_shared_prefix_is_rejected(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=2)
+        payload["workload"]["synthetic"]["session"] = {
+            "num_sessions": 2,
+            "allow_cross_session_shared_prefix": True,
+        }
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert "不支持 allow_cross_session_shared_prefix=true" in response.json()["detail"]
+
     def test_trace_mode_not_implemented(self, client: TestClient) -> None:
         payload = make_payload()
         payload["workload"] = {"mode": "trace"}

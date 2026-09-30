@@ -16,7 +16,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(1000);
     expect(screen.getByLabelText("轮次间思考时间（ms）")).toHaveValue(0);
     expect(screen.getByLabelText("目标理想前缀命中率（0–1）")).toHaveValue(0);
-    expect(screen.getByLabelText("允许跨会话共享公共前缀")).not.toBeChecked();
+    expect(screen.queryByLabelText("允许跨会话共享公共前缀")).not.toBeInTheDocument();
     expect(screen.getByLabelText("最大批大小")).toHaveValue(32);
     expect(screen.getByLabelText("L1 KV token 预算")).toHaveValue(65_536);
     expect(screen.getByLabelText("Prefix cache 块大小（token）")).toHaveValue(1);
@@ -115,7 +115,6 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("目标理想前缀命中率（0–1）"), {
       target: { value: "0.2" },
     });
-    fireEvent.click(screen.getByLabelText("允许跨会话共享公共前缀"));
     fireEvent.change(screen.getByLabelText("L1 KV token 预算"), {
       target: { value: "9" },
     });
@@ -135,7 +134,7 @@ describe("SimulationForm", () => {
             topology: "linear",
             think_time_ms: 30,
             target_ideal_prefix_hit_rate: 0.2,
-            allow_cross_session_shared_prefix: true,
+            allow_cross_session_shared_prefix: false,
           },
         },
       },

@@ -16,8 +16,7 @@ workload:
       topology: linear
       think_time_ms: float
       target_ideal_prefix_hit_rate: float
-      content_seed: int | null
-      allow_cross_session_shared_prefix: false
+      allow_cross_session_shared_prefix: false # true 不支持，计划构造时报 422；旧 content_seed 字段不再接受
 engine:
   max_batch_size: int
   kv_token_budget: int           # 解析为 L1 block 容量
@@ -89,7 +88,7 @@ warnings:  # 如 KV 超限事件
 
 | 状态码 | 场景 | 响应体 |
 |---|---|---|
-| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配） | FastAPI 默认 `HTTPValidationError` |
+| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配），或计划构造拒绝不支持的跨 session 共享 | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划错误为 `{"detail": str}` |
 | `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
 
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。

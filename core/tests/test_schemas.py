@@ -15,6 +15,7 @@ from simcore.schemas import (
     PerfModelConfig,
     PoissonLength,
     RequestRecord,
+    SessionConfig,
     SimConfig,
     SimMeta,
     SimResult,
@@ -122,6 +123,10 @@ class TestConfigValidation:
             EngineConfig.model_validate(
                 {"max_batch_size": 8, "kv_token_budget": 4096, "max_batch_tokens": 1024}
             )
+
+    def test_session_content_seed_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="content_seed"):
+            SessionConfig.model_validate({"content_seed": 123})
 
     def test_config_is_frozen(self) -> None:
         cfg = make_config()

@@ -144,40 +144,15 @@ def test_hash_chain_and_partial_tail() -> None:
     )
 
 
-def test_domains_and_explicit_public_prefix() -> None:
-    cache = PrefixCacheConfig(block_size_tokens=4)
-    cfg = config(n=4, s=2, target=0.1)
-    changed_content = cfg.model_copy(
-        update={"session": cfg.session.model_copy(update={"content_seed": 123})}
-    )
-    a = build_plan(cfg, cache)
-    b = build_plan(changed_content, cache)
-    assert a.root_request_ids == b.root_request_ids
-    assert [t.root_arrival_time_ms for t in a.turns.values()] == [
-        t.root_arrival_time_ms for t in b.turns.values()
-    ]
-    assert [t.prompt_len for t in a.turns.values()] == [t.prompt_len for t in b.turns.values()]
-    assert (
-        a.turns[a.root_request_ids[0]].output_token_plan
-        != b.turns[b.root_request_ids[0]].output_token_plan
-    )
-
-    shared_cfg = config(n=2, s=2, target=0.2)
-    shared_cfg = shared_cfg.model_copy(
+def test_cross_session_shared_prefix_is_rejected_before_allocation() -> None:
+    cfg = config(n=2, s=2, target=0.2)
+    shared_cfg = cfg.model_copy(
         update={
-            "session": shared_cfg.session.model_copy(
-                update={"allow_cross_session_shared_prefix": True}
-            )
+            "session": cfg.session.model_copy(update={"allow_cross_session_shared_prefix": True})
         }
     )
-    shared = build_plan(shared_cfg, cache)
-    first, second = (shared.turns[key] for key in shared.root_request_ids)
-    assert second.ideal_reuse_blocks == 1
-    public = build_input(first, 4)
-    other = build_input(second, 4, public_prefix=public)
-    assert other[:4] == public[:4]
-    assert other[4] != public[4]
-    assert shared.constructed_ideal_prefix_hit_rate == pytest.approx(4 / 20)
+    with pytest.raises(ValueError, match="不支持 allow_cross_session_shared_prefix=true"):
+        build_plan(shared_cfg, PrefixCacheConfig(block_size_tokens=4))
 
 
 def test_length_arrival_adapter() -> None:

@@ -20,9 +20,9 @@ workload:
 engine:
   max_batch_size: int
   kv_token_budget: int           # 解析为 L1 block 容量
-  prefix_cache:                  # 必填且始终开启，无 enabled 字段
+  prefix_cache:                  # 输入可省略；解析后始终存在，无 enabled 字段
     block_size_tokens: int
-    cache_salt: str | null
+    cache_salt: str
     eviction_policy: lru
     hierarchy_policy: exclusive_write_back
     l1:
@@ -36,6 +36,11 @@ engine:
       read_bandwidth_bytes_per_ms: float
       fixed_latency_ms: float
     kv_bytes_per_token: int
+    model_id: str
+    tokenizer_id: str
+    kv_dtype: str
+    adapter_id: str
+    multimodal_transform_id: str
 perf_model:
   prefill_c1: float
   prefill_c2: float              # 默认 0
@@ -52,9 +57,7 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-规则：采样结果向上取整并钳制到 ≥ 1 token。`lognormal` 用于表达长尾负载（少量超长 prompt/output 对 KV 预算与调度的冲击）。
-
-所有 synthetic workload 都生成 `WorkloadPlan` 并经模拟客户端提交。每个请求必须且只属于一个 session；单轮 session 用于表达没有后续轮次的最小 workload。`num_requests=N` 为总轮数、`num_sessions=S` 为根数，用户输入的 `arrival_rate=q` 是所有轮次的目标请求 QPS（正有限数）；计划先把 `N` 轮均衡分配给 `S` 个 session，并用 `lambda_root=q*S/N`（session/秒）的泊松过程采样根到达。子请求不预定到达时刻，实际到达由父请求完成时刻与 `think_time_ms` 决定。该换算仅给出持续注入时的名义长期平均速率，有限场实测 QPS 不保证等于 `q`；默认 `S=N` 时保持旧单轮到达率口径。
+输入配置中的 `arrival_rate` 表示所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。采样、到达计划及理想前缀继承量的内部算法见 [workload.md](workload.md)。`l1.capacity_blocks` 由 `floor(kv_token_budget/block_size_tokens)` 解析；显式输入不一致时报校验错误。L2/L3、`kv_bytes_per_token` 等字段已有 schema，但现行引擎仅使用 L1；低层配置非零也不意味着低层已启用。
 
 ## API
 
@@ -69,7 +72,7 @@ POST /api/simulate
 
 ```yaml
 meta:      # 配置回显、仿真时钟范围等
-metrics:   # 见下
+metrics:   # 汇总指标；计算口径见 metrics.md
 requests:  # 每个 session 轮次一条区间记录，供甘特图消费
   - id: int
     session_id: int
@@ -78,7 +81,7 @@ requests:  # 每个 session 轮次一条区间记录，供甘特图消费
     prefill_start: float
     prefill_end: float           # = decode_start
     finish: float
-warnings:  # 如 KV 超限事件
+warnings:  # 成功结果中的非致命告警；无法容纳的请求返回 422 而非 warnings
 ```
 
 - 请求体即 `SimConfig`，响应体即 `SimResult`，服务层不另行定义数据类型。
@@ -88,24 +91,12 @@ warnings:  # 如 KV 超限事件
 
 | 状态码 | 场景 | 响应体 |
 |---|---|---|
-| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配），或计划构造拒绝不支持的跨 session 共享 | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划错误为 `{"detail": str}` |
+| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配）、计划构造拒绝跨 session 共享/不可行理想命中目标，或单请求超过 L1 可执行容量（OOM） | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划与 OOM 错误为 `{"detail": str}` |
 | `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
 
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。
 
-## Metrics 定义
-
-- TTFT（= prefill_end − arrival）：均值 / P50 / P99
-- TPOT（decode 阶段平均每 token 耗时）
-- 实测端到端完成吞吐（总轮次数 / makespan），与输入的目标到达 QPS 不同
-- makespan（末请求完成时刻 − 首根请求到达时刻）
-
-计算口径：
-
-- 分位数：线性插值（与 numpy `percentile` 默认 `linear` 方法一致），即对升序样本取位置 `(n−1)·q` 并在相邻两点间插值。
-- TPOT：逐请求 `(finish − prefill_end) / (output_len − 1)`，再对请求取算术平均；`output_len = 1` 的请求无 decode 阶段，不计入。全部请求均为 `output_len = 1` 时为 `null`。
-- 吞吐单位为 请求/秒（makespan 为 ms，换算后相除）；makespan 为 0 时吞吐无定义，为 `null`。
-- 时间类指标单位均为 ms。
+`metrics` 包含 TTFT、TPOT、完成吞吐、makespan 及 L1 缓存命中/容量字段；计算与空值口径统一见 [metrics.md](metrics.md)。
 
 ## 类型同步
 

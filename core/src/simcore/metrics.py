@@ -1,6 +1,6 @@
 """指标汇总：由区间记录计算全场 ``Metrics``。
 
-计算口径见 ``docs/design/api.md``「Metrics 定义」：
+计算口径见 ``docs/design/metrics.md``：
 
 - 分位数用线性插值（numpy ``percentile`` 默认 ``linear`` 方法）。
 - TPOT 先逐请求算 ``decode 时长 / (output_len - 1)``，再对请求取平均；单 token 请求不计入。

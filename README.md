@@ -10,7 +10,7 @@ LLM Serving 系统级推理仿真器。离散事件仿真内核 + 前后端分�
 core/     # 仿真内核 simcore：纯 Python 包，零 IO（M1 已完成）
 server/   # FastAPI 服务层：同步仿真 API 与 OpenAPI 导出（M2 已完成）
 web/      # React + TypeScript + Vite + ECharts 单页前端（M3 已完成）
-docs/     # 设计文档
+docs/     # 现行设计、模块实施计划与文档索引
 ```
 
 ## 开发
@@ -32,18 +32,7 @@ npm run check:types                      # 检查生成的 TS 类型是否最新
 npm run test:e2e                         # Playwright：真实后端 1k 请求与移动端验收
 ```
 
-块身份基准分别报告程序执行耗时与 `tracemalloc` 跟踪的 Python 峰值分配（不是进程 RSS 或仿真吞吐）。与迁移前提交 `542b8d4` 对照时，用同一脚本和固定参数，仅切换 `simcore` 源码路径；确认两次输出的 step、命中、Prefill 与淘汰计数一致：
-
-```powershell
-git worktree add --detach .baseline-chunk-id 542b8d4
-$env:PYTHONPATH = (Resolve-Path .baseline-chunk-id/core/src).Path
-uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
-Remove-Item Env:PYTHONPATH
-uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
-git worktree remove .baseline-chunk-id
-```
-
-`--block-size 8` 可复现第二组；以输出的 `simcore` 路径确认版本。`docs/plans/feature-roadmap.md` 第 6.16 节记录了一次实测，数据不构成跨机器性能保证。
+块身份基准报告程序执行耗时与 `tracemalloc` 跟踪的 Python 峰值分配，并非进程 RSS 或仿真预测的吞吐；数据不构成跨机器性能保证。
 
 ## 启动服务
 

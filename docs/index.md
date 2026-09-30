@@ -6,19 +6,27 @@
 
 | 文档 | 内容 |
 |---|---|
-| [design/architecture.md](design/architecture.md) | 总体架构：仓库模块划分、内核内部模块分解、依赖规则 |
-| [design/kernel.md](design/kernel.md) | 仿真内核设计：session 客户端、统一 DES 协调器、调度与 KV cache 语义、性能模型、工作负载接口 |
-| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | KV 前缀复用设计：session 负载、理想命中分配、完整块 ID、L1 与未来 L2/L3 的 LRU 语义 |
-| [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 块身份直接编码：不物化 token ID、不计算链式 SHA-256，结构化块 ID 格式、契约与各方职责 |
-| [design/api.md](design/api.md) | 服务层契约：config schema、API 端点、metrics 定义、前后端类型同步 |
-| [design/frontend.md](design/frontend.md) | 前端设计：请求甘特图视图规范与渲染约束 |
-| [design/roadmap.md](design/roadmap.md) | 里程碑与验收线、MVP 明确排除项、为未来预留的扩展接缝 |
+| [design/architecture.md](design/architecture.md) | 仓库与内核模块的边界、所有权和依赖规则 |
+| [design/workload.md](design/workload.md) | 合成 session 计划、理想继承与客户端发送 |
+| [design/events.md](design/events.md) | 唯一 DES 时钟、协调器事件顺序和回调 |
+| [design/kernel.md](design/kernel.md) | 当前引擎步进、一次性 Prefill 与 FCFS 准入 |
+| [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 合成负载完整块 ID 的编码与生成时机 |
+| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | 当前 L1 block、连续命中、事务、容量和 LRU |
+| [design/perf-model.md](design/perf-model.md) | 当前四系数经验模型与融合步长近似 |
+| [design/metrics.md](design/metrics.md) | 时延、吞吐、命中及 L1 容量的计算口径 |
+| [design/api.md](design/api.md) | 当前配置、HTTP 响应与 OpenAPI 类型链 |
+| [design/frontend.md](design/frontend.md) | 当前表单、结果展示与甘特图交互 |
 
 ## 规划文档
 
 | 文档 | 内容 |
 |---|---|
-| [plans/feature-roadmap.md](plans/feature-roadmap.md) | 功能状态与规划：F003 L1 已完成；F001 continuous batching、F002 性能模型仍待实现；KV3 为独立扩展 |
+| [plans/feature-roadmap.md](plans/feature-roadmap.md) | 功能状态、依赖及按模块组织的计划入口 |
+| [plans/scheduler-engine.md](plans/scheduler-engine.md) | F001：调度与引擎的分块、预算、互斥及缓存编排 |
+| [plans/kv-cache.md](plans/kv-cache.md) | KV3：L2/L3 缓存与迁移、restore |
+| [plans/perf-model.md](plans/perf-model.md) | F002：可解释性能模型、容量、校准及单机 TP |
+| [plans/server-api.md](plans/server-api.md) | 各阶段服务/API 契约与类型交付 |
+| [plans/frontend.md](plans/frontend.md) | 各阶段配置交互与结果展示 |
 
 ## 实现入口
 
@@ -33,5 +41,6 @@
 
 ## 编写约定
 
-- `design/` 下的设计文档只记录已锁定的设计结论与指导，不记录讨论过程与背景；其他类型的文档（如调研笔记、实验记录）按需组织，不受此限。
-- 设计变更需先更新对应文档，再实施代码。
+- `design/` 一篇只讲一个当前已实现的主题：不变量、接口、所有权与必要的编码指导；不保留旧方案、讨论过程或未落地能力的细节。
+- `plans/` 按负责模块记录待实施范围、依赖、阶段交付和验收；`feature-roadmap.md` 仅做状态及依赖索引，不复制设计契约。
+- 新能力先更新对应计划与设计，代码接通并核对测试后将稳定契约转入设计，移除已完成的实施过程。

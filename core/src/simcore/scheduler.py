@@ -5,10 +5,8 @@
 - 依据性能模型给出本步步长。
 - 不感知仿真时钟与事件队列：何时调用、步长如何推进时钟、请求何时完成，均由引擎负责。
 
-调度规则（见 ``docs/design/kernel.md``）：
-- 严格 FCFS：队头放不下即停止本步准入，不跳过队头。
-- 双重约束：batch 内请求数 <= ``max_batch_size``，且准入不使 KV 占用超预算。
-- 超大请求强制准入：队头 prompt 超过整个预算时，仅当 batch 为空才强制准入，避免死锁。
+以下强制超预算准入仅适用于遗留 ``FCFSScheduler``；统一仿真路径使用
+``PrefixScheduler`` 的原子 L1 准入与 OOM 规则（见 ``docs/design/kernel.md``）。
 
 与引擎的约定：batch = 全部 KV 驻留请求；引擎须在步末释放完成请求，
 故每次 ``plan_step`` 开始时驻留请求均处于 decode 阶段。

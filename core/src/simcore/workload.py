@@ -56,7 +56,7 @@ class WorkloadSource(Protocol):
 def sample_length(dist: LengthDist, rng: random.Random) -> int:
     """按分布采样一个 token 长度。
 
-    结果向上取整并钳制到 >= 1（见 ``docs/design/api.md``）：长度为 0 的请求无意义，
+    结果向上取整并钳制到 >= 1（见 ``docs/design/workload.md``）：长度为 0 的请求无意义，
     且会让性能模型与 KV 账本失去定义。
 
     - ``fixed``：直接返回配置值，不消耗随机数。

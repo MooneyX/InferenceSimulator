@@ -1,20 +1,22 @@
-"""PC1-A：会话计划、内容继承、哈希身份与预算量化。"""
+"""PC1-A：会话长度与拓扑计划、块身份继承及预算量化。"""
 
 from dataclasses import FrozenInstanceError
 
 import pytest
 from pydantic import ValidationError
 
-from simcore.prefix_hash import cache_namespace, chunk_hashes, next_chunk_hash, stable_derive
+from simcore.client import ClientDriver
+from simcore.prefix_hash import encode, stable_derive
 from simcore.schemas import (
     Arrival,
     EngineConfig,
     FixedLength,
     PrefixCacheConfig,
+    RequestCompletion,
     SessionConfig,
     SyntheticWorkloadConfig,
 )
-from simcore.workload import build_input, build_plan, make_request, plan_from_arrivals
+from simcore.workload import build_plan, plan_from_arrivals
 
 
 def config(
@@ -103,44 +105,36 @@ def test_half_block_quantization_prefers_smaller() -> None:
     assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(4 / 60)
 
 
-def test_content_and_hash_reproduction_and_isolation() -> None:
+def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
     cache = PrefixCacheConfig(block_size_tokens=4)
     plan = build_plan(config(n=6, s=2, target=0.2), cache)
     assert plan == build_plan(config(n=6, s=2, target=0.2), cache)
-    root = plan.turns[plan.root_request_ids[0]]
-    parent_request = make_request(root, cache)
-    child = plan.turns[plan.children[root.request_id][0]]
-    with pytest.raises(ValueError, match="父请求"):
-        make_request(child, cache)
-    parent_context = parent_request.input_token_ids + root.output_token_plan
-    child_request = make_request(child, cache, parent_context)
-    copied = child.ideal_reuse_blocks * 4
-    assert child_request.input_token_ids[:copied] == parent_context[:copied]
-    assert len(child_request.input_token_ids) == child.prompt_len
-    assert len(child_request.output_token_plan) == child.output_len
-    assert len(child_request.input_chunk_hashes) == child.prompt_len // 4
-    if copied < child.prompt_len:
-        assert child_request.input_token_ids[copied] != parent_context[copied]
-    assert build_input(root, 4) != build_input(plan.turns[plan.root_request_ids[1]], 4)
-    assert parent_request.input_chunk_hashes == make_request(root, cache).input_chunk_hashes
+    client = ClientDriver(plan, cache)
+    roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
+    assert all(len(request.input_chunk_ids) == request.prompt_len // 4 for request in roots)
+    assert roots[0].input_chunk_ids[0] == encode(roots[0].request_id, 0)
+    assert roots[0].input_chunk_ids[0] != roots[1].input_chunk_ids[0]
     assert stable_derive(17, "length") != stable_derive(17, "root-arrival")
-    assert cache_namespace(cache) != cache_namespace(cache.model_copy(update={"cache_salt": "x"}))
     with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
-        plan.turns[root.request_id] = child  # type: ignore[index]
+        plan.turns[roots[0].request_id] = plan.turns[roots[1].request_id]  # type: ignore[index]
 
 
-def test_hash_chain_and_partial_tail() -> None:
-    namespace = b"test"
-    assert chunk_hashes((1, 2, 3), 2, namespace) == chunk_hashes((1, 2), 2, namespace)
+def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
+    cache = PrefixCacheConfig(block_size_tokens=4)
+    plan = build_plan(config(n=3, s=1, target=0.2), cache)
+    root_id = plan.root_request_ids[0]
+    root = plan.turns[root_id]
+    assert not hasattr(root, "output_token_plan")
+    assert not hasattr(root, "unique_suffix_seed")
+    client = ClientDriver(plan, cache)
+    request = client.on_wakeup(client.initial_wakeups()[0])
+    assert request.input_chunk_ids == (encode(root_id, 0), encode(root_id, 1))
+    assert not hasattr(request, "output_token_plan")
+    child_wakeup = client.on_request_completed(RequestCompletion(root_id, 10))[0]
+    child = client.on_wakeup(child_wakeup)
     assert (
-        chunk_hashes((1, 2, 3, 4), 2, namespace)[1] != chunk_hashes((7, 8, 3, 4), 2, namespace)[1]
-    )
-    assert chunk_hashes((1, 2), 2, namespace) != chunk_hashes((1, 2), 2, b"other")
-    first = chunk_hashes((1, 2), 2, namespace)[-1]
-    assert next_chunk_hash(namespace, first, (3, 4)) == chunk_hashes((1, 2, 3, 4), 2, namespace)[-1]
-    assert chunk_hashes((1, 2, 3, 4), 2, namespace, hasher=lambda _: "collision") == (
-        "collision",
-        "collision",
+        child.input_chunk_ids[: child.ideal_reuse_blocks]
+        == (request.input_chunk_ids[: child.ideal_reuse_blocks])
     )
 
 
@@ -157,8 +151,11 @@ def test_cross_session_shared_prefix_is_rejected_before_allocation() -> None:
 
 def test_length_arrival_adapter() -> None:
     arrival = Arrival(request_id=8, sim_time=1, prompt_len=3, output_len=2)
-    plan = plan_from_arrivals((arrival,))
+    plan = plan_from_arrivals((arrival,), PrefixCacheConfig(block_size_tokens=4))
     assert plan.root_request_ids == (8,)
-    request = make_request(plan.turns[8], PrefixCacheConfig())
-    assert len(request.input_token_ids) == 3
-    assert request == make_request(plan.turns[8], PrefixCacheConfig())
+    client = ClientDriver(plan, PrefixCacheConfig(block_size_tokens=4))
+    request = client.on_wakeup(client.initial_wakeups()[0])
+    assert (request.prompt_len, request.output_len, request.input_chunk_ids) == (3, 2, ())
+    assert client.on_request_completed(RequestCompletion(8, 5)) == ()
+    with pytest.raises(ValueError, match="重复"):
+        plan_from_arrivals((arrival, arrival))

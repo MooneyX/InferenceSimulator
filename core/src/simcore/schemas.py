@@ -229,8 +229,6 @@ class TurnPlan:
     prompt_len: int
     output_len: int
     ideal_reuse_blocks: int
-    unique_suffix_seed: int
-    output_token_plan: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,16 +251,15 @@ class InferenceRequest:
     request_id: int
     session_id: int
     parent_request_id: int | None
-    input_token_ids: tuple[int, ...]
-    output_token_plan: tuple[int, ...]
-    input_chunk_hashes: tuple[str, ...]
+    prompt_len: int
+    output_len: int
+    input_chunk_ids: tuple[str, ...]
     ideal_reuse_blocks: int
 
 
 @dataclass(frozen=True, slots=True)
 class RequestCompletion:
     request_id: int
-    output_token_ids: tuple[int, ...]
     finish_time_ms: float
 
 

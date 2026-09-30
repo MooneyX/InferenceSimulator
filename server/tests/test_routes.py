@@ -90,7 +90,7 @@ class TestSuccess:
         assert body["requests"][1]["session_id"] == 0
         assert body["requests"][1]["parent_request_id"] == 0
         assert "input_token_ids" not in body["requests"][1]
-        assert "input_chunk_hashes" not in body["requests"][1]
+        assert "input_chunk_ids" not in body["requests"][1]
 
     def test_infeasible_cache_budget_rejected(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload(num_requests=50, budget=500))

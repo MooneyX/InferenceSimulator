@@ -16,11 +16,10 @@ from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
-from simcore.prefix_hash import cache_namespace, chunk_hashes, stable_derive
+from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     Arrival,
     FixedLength,
-    InferenceRequest,
     LengthDist,
     LognormalLength,
     PoissonLength,
@@ -34,10 +33,8 @@ from simcore.schemas import (
 __all__ = [
     "SyntheticSource",
     "WorkloadSource",
-    "build_input",
     "build_plan",
     "build_source",
-    "make_request",
     "plan_from_arrivals",
     "sample_length",
 ]
@@ -150,57 +147,10 @@ def build_source(cfg: WorkloadConfig) -> WorkloadSource:
     return SyntheticSource(cfg.synthetic)
 
 
-def _unique_tokens(turn: TurnPlan, start: int, count: int) -> tuple[int, ...]:
-    """将内容域、session、request 和位置编码为不相撞的合成 token。"""
-    prefix = (
-        (turn.unique_suffix_seed << 192)
-        | ((turn.session_id + 1) << 128)
-        | ((turn.request_id + 1) << 64)
-    )
-    return tuple(prefix | (position + 1) for position in range(start, start + count))
-
-
-def build_input(
-    turn: TurnPlan,
-    block_size_tokens: int,
-    parent_context: tuple[int, ...] | None = None,
-    public_prefix: tuple[int, ...] = (),
-) -> tuple[int, ...]:
-    """到时从已完成的父上下文构造子轮次；不得预测父输出。"""
-    reused = block_size_tokens * turn.ideal_reuse_blocks
-    if turn.parent_request_id is not None:
-        if parent_context is None or len(parent_context) < reused:
-            raise ValueError("子轮次需要父请求完成后的逻辑上下文")
-        head = parent_context[:reused]
-    else:
-        head = public_prefix[:reused]
-        if reused and len(head) != reused:
-            raise ValueError("公共前缀长度不足")
-    return head + _unique_tokens(turn, len(head), turn.prompt_len - len(head))
-
-
-def make_request(
-    turn: TurnPlan,
-    cache: PrefixCacheConfig,
-    parent_context: tuple[int, ...] | None = None,
-    public_prefix: tuple[int, ...] = (),
-) -> InferenceRequest:
-    inputs = build_input(turn, cache.block_size_tokens, parent_context, public_prefix)
-    return InferenceRequest(
-        request_id=turn.request_id,
-        session_id=turn.session_id,
-        parent_request_id=turn.parent_request_id,
-        input_token_ids=inputs,
-        output_token_plan=turn.output_token_plan,
-        input_chunk_hashes=chunk_hashes(inputs, cache.block_size_tokens, cache_namespace(cache)),
-        ideal_reuse_blocks=turn.ideal_reuse_blocks,
-    )
-
-
 def build_plan(
     cfg: SyntheticWorkloadConfig, cache: PrefixCacheConfig | None = None
 ) -> WorkloadPlan:
-    """独立随机流一次规划拓扑、根到达、长度、理想命中和内容。"""
+    """独立随机流一次规划拓扑、根到达、长度和理想命中。"""
     if cfg.session.allow_cross_session_shared_prefix:
         raise ValueError(
             "不支持 allow_cross_session_shared_prefix=true：块身份不支持跨 session 共享"
@@ -214,7 +164,6 @@ def build_plan(
     arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
     length_rng = random.Random(stable_derive(cfg.seed, "length"))
     allocation_rng = random.Random(stable_derive(cfg.seed, "allocation"))
-    content_seed = stable_derive(cfg.seed, "content")
     counts = [n // sessions] * sessions
     shuffled = list(range(sessions))
     topology_rng.shuffle(shuffled)
@@ -232,7 +181,6 @@ def build_plan(
         for index in range(count):
             prompt_len = sample_length(cfg.prompt_len, length_rng)
             output_len = sample_length(cfg.output_len, length_rng)
-            suffix_seed = stable_derive(content_seed, f"session:{session_id}:request:{request_id}")
             turn = TurnPlan(
                 request_id=request_id,
                 session_id=session_id,
@@ -242,12 +190,8 @@ def build_plan(
                 prompt_len=prompt_len,
                 output_len=output_len,
                 ideal_reuse_blocks=0,
-                unique_suffix_seed=suffix_seed,
-                output_token_plan=(),
             )
-            turns[request_id] = replace(
-                turn, output_token_plan=_unique_tokens(turn, prompt_len, output_len)
-            )
+            turns[request_id] = turn
             if parent_id is None:
                 roots.append(request_id)
             else:
@@ -300,9 +244,9 @@ def build_plan(
 
 
 def plan_from_arrivals(
-    arrivals: Iterable[Arrival], cache: PrefixCacheConfig | None = None, seed: int = 0
+    arrivals: Iterable[Arrival], cache: PrefixCacheConfig | None = None
 ) -> WorkloadPlan:
-    """旧长度负载入口适配为独立根 session，补齐稳定 token 内容。"""
+    """旧长度负载入口适配为各自独立的根 session。"""
     cache = cache or PrefixCacheConfig()
     turns: dict[int, TurnPlan] = {}
     roots: list[int] = []
@@ -310,7 +254,7 @@ def plan_from_arrivals(
         key = arrival.request_id
         if key in turns:
             raise ValueError(f"重复的 request_id: {key}")
-        turn = TurnPlan(
+        turns[key] = TurnPlan(
             request_id=key,
             session_id=key,
             parent_request_id=None,
@@ -319,11 +263,6 @@ def plan_from_arrivals(
             prompt_len=arrival.prompt_len,
             output_len=arrival.output_len,
             ideal_reuse_blocks=0,
-            unique_suffix_seed=stable_derive(seed, f"legacy:{key}"),
-            output_token_plan=(),
-        )
-        turns[key] = replace(
-            turn, output_token_plan=_unique_tokens(turn, turn.prompt_len, turn.output_len)
         )
         roots.append(key)
     roots.sort(key=lambda key: (turns[key].root_arrival_time_ms or 0, key))

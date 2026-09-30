@@ -1,5 +1,6 @@
 """闭环客户端：只在父请求实际完成后创建下一轮发送。"""
 
+from simcore.prefix_hash import encode
 from simcore.schemas import (
     ClientWakeup,
     InferenceRequest,
@@ -7,13 +8,12 @@ from simcore.schemas import (
     RequestCompletion,
     WorkloadPlan,
 )
-from simcore.workload import make_request
 
 __all__ = ["ClientDriver"]
 
 
 class ClientDriver:
-    """持有 session 逻辑上下文、待发送轮次及唯一公共前缀。"""
+    """持有 session 的已完成完整块上下文和待发送轮次。"""
 
     def __init__(self, plan: WorkloadPlan, cache: PrefixCacheConfig) -> None:
         if plan.block_size_tokens != cache.block_size_tokens:
@@ -22,9 +22,8 @@ class ClientDriver:
         self.cache = cache
         self._ready: dict[int, float] = {}
         self._inflight: dict[int, InferenceRequest] = {}
-        self._finished: dict[int, tuple[int, ...]] = {}
+        self._finished: dict[int, tuple[str, ...]] = {}
         self._sent: set[int] = set()
-        self._public_prefix: tuple[int, ...] = ()
         for request_id in plan.root_request_ids:
             time = plan.turns[request_id].root_arrival_time_ms
             if time is None:
@@ -45,12 +44,30 @@ class ClientDriver:
         planned = self._ready.get(wakeup.turn_id)
         if planned is None or planned != wakeup.send_time_ms or wakeup.turn_id in self._sent:
             raise ValueError("轮次未就绪、重复发送或发送时间不符")
-        context = (
-            self._finished[turn.parent_request_id] if turn.parent_request_id is not None else None
+        block_size = self.cache.block_size_tokens
+        inherited = turn.ideal_reuse_blocks
+        if turn.parent_request_id is not None:
+            parent = self._finished.get(turn.parent_request_id)
+            if parent is None or len(parent) < inherited:
+                raise ValueError("子轮次需要父请求完成后的完整块上下文")
+            head = parent[:inherited]
+        else:
+            if inherited:
+                raise ValueError("根请求不能继承完整块")
+            head = ()
+        input_chunk_ids = head + tuple(
+            encode(turn.request_id, index)
+            for index in range(inherited, turn.prompt_len // block_size)
         )
-        request = make_request(turn, self.cache, context, self._public_prefix)
-        if turn.parent_request_id is None and not self._sent:
-            self._public_prefix = request.input_token_ids
+        request = InferenceRequest(
+            request_id=turn.request_id,
+            session_id=turn.session_id,
+            parent_request_id=turn.parent_request_id,
+            prompt_len=turn.prompt_len,
+            output_len=turn.output_len,
+            input_chunk_ids=input_chunk_ids,
+            ideal_reuse_blocks=inherited,
+        )
         self._sent.add(turn.request_id)
         self._inflight[turn.request_id] = request
         del self._ready[turn.request_id]
@@ -60,9 +77,15 @@ class ClientDriver:
         request = self._inflight.get(completion.request_id)
         if request is None:
             raise ValueError("完成了未发送或已完成的请求")
-        if len(completion.output_token_ids) != len(request.output_token_plan):
-            raise ValueError("实际输出 token 数不符合计划")
-        self._finished[request.request_id] = request.input_token_ids + completion.output_token_ids
+        block_size = self.cache.block_size_tokens
+        output_chunk_ids = tuple(
+            encode(request.request_id, index)
+            for index in range(
+                request.prompt_len // block_size,
+                (request.prompt_len + request.output_len) // block_size,
+            )
+        )
+        self._finished[request.request_id] = request.input_chunk_ids + output_chunk_ids
         del self._inflight[completion.request_id]
         wakeups: list[ClientWakeup] = []
         for child_id in self.plan.children.get(request.request_id, ()):

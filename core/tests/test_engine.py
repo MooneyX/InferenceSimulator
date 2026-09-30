@@ -7,6 +7,7 @@ import itertools
 
 import pytest
 
+from simcore.client import ClientDriver
 from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
 from simcore.kv_cache import CacheOOMError
@@ -19,7 +20,7 @@ from simcore.schemas import (
     RequestRecord,
     SyntheticWorkloadConfig,
 )
-from simcore.workload import SyntheticSource, make_request, plan_from_arrivals
+from simcore.workload import SyntheticSource, plan_from_arrivals
 
 SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
 
@@ -49,10 +50,11 @@ def steps(result: EngineRun) -> list[StepTrace]:
 
 
 class TestImmediateEngine:
-    def test_submit_step_and_completion_return_generated_content(self) -> None:
+    def test_submit_step_and_completion_return_finish_time(self) -> None:
         config = EngineConfig(max_batch_size=1, kv_token_budget=100)
         plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config.prefix_cache)
-        request = make_request(plan.turns[7], config.prefix_cache)
+        client = ClientDriver(plan, config.prefix_cache)
+        request = client.on_wakeup(client.initial_wakeups()[0])
         engine = Engine(config, SIMPLE)
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
@@ -66,7 +68,7 @@ class TestImmediateEngine:
         with pytest.raises(RuntimeError, match="未完成"):
             engine.finalize()
         completion = engine.complete(8.0, 7)
-        assert completion.output_token_ids == request.output_token_plan
+        assert completion.request_id == request.request_id
         assert completion.finish_time_ms == 8.0
         with pytest.raises(ValueError, match="未待结算"):
             engine.complete(8.0, 7)

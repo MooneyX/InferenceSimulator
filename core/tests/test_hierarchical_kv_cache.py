@@ -49,7 +49,7 @@ def test_same_snapshot_batch_miss_and_shared_hit() -> None:
     cache = HierarchicalKVCache(8, 2)
     snapshot = cache.snapshot()
     allocation = (AdmissionAllocation(0, 2, 1, ("a",)), AdmissionAllocation(1, 2, 1, ("a",)))
-    probes = tuple(cache.probe(snapshot, item.input_chunk_hashes) for item in allocation)
+    probes = tuple(cache.probe(snapshot, item.input_chunk_ids) for item in allocation)
     assert cache.snapshot() == snapshot
     tx = cache.prepare_batch(snapshot, probes, allocation)
     assert cache.snapshot() == snapshot
@@ -64,7 +64,7 @@ def test_same_snapshot_batch_miss_and_shared_hit() -> None:
     assert dict(old.hash_index)["a"] == (0, 1)
     snapshot = cache.snapshot()
     allocation = (AdmissionAllocation(2, 2, 1, ("a",)), AdmissionAllocation(3, 2, 1, ("a",)))
-    probes = tuple(cache.probe(snapshot, item.input_chunk_hashes) for item in allocation)
+    probes = tuple(cache.probe(snapshot, item.input_chunk_ids) for item in allocation)
     result = cache.commit(cache.prepare_batch(snapshot, probes, allocation))
     assert result.allocated_blocks == 0
     assert result.reused_block_ids == (0,)
@@ -105,7 +105,7 @@ def test_capacity_failure_rollback_and_oom() -> None:
     admit(cache, 0, ("a", "b"), output=0)
     before = cache.snapshot()
     allocation = AdmissionAllocation(1, 2, 1, ("x",))
-    probe = cache.probe(before, allocation.input_chunk_hashes)
+    probe = cache.probe(before, allocation.input_chunk_ids)
     with pytest.raises(CacheCapacityError):
         cache.prepare_batch(before, (probe,), (allocation,))
     assert cache.snapshot() == before

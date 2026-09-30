@@ -165,7 +165,7 @@ class CachedStepPlan:
             result.request_id: (
                 result.matched_cache_tokens,
                 result.actual_hit_tokens,
-                len(request.input_token_ids) - result.actual_hit_tokens,
+                request.prompt_len - result.actual_hit_tokens,
             )
             for request, result in zip(self.admitted, self.cache_result.requests, strict=True)
         }
@@ -223,12 +223,12 @@ class PrefixScheduler:
         candidates = list(self._waiting)[:capacity] if can_admit else ()
         for request in candidates:
             assert before is not None
-            probe = cache.probe(before, request.input_chunk_hashes)
+            probe = cache.probe(before, request.input_chunk_ids)
             allocation = AdmissionAllocation(
                 request.request_id,
-                len(request.input_token_ids),
-                len(request.output_token_plan),
-                request.input_chunk_hashes,
+                request.prompt_len,
+                request.output_len,
+                request.input_chunk_ids,
             )
             try:
                 proposal = cache.prepare_batch(before, (*probes, probe), (*allocations, allocation))
@@ -249,8 +249,7 @@ class PrefixScheduler:
         after = cache.snapshot() if self._record_trace else None
         reused = [entry.actual_hit_tokens for entry in result.requests] if result else []
         new_prefill = [
-            len(request.input_token_ids) - hit
-            for request, hit in zip(selected, reused, strict=True)
+            request.prompt_len - hit for request, hit in zip(selected, reused, strict=True)
         ]
         logical_tokens = cache.logical_context_tokens
         duration = step_time(

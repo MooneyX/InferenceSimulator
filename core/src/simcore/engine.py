@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
 from simcore.kv_cache import CacheSnapshot, HierarchicalKVCache
-from simcore.prefix_hash import cache_namespace, next_chunk_hash
+from simcore.prefix_hash import encode
 from simcore.scheduler import PrefixScheduler
 from simcore.schemas import (
     Arrival,
@@ -89,8 +89,6 @@ class Engine:
         self._prefix_scheduler = PrefixScheduler(
             engine, perf, self._prefix_cache, record_trace=record_trace
         )
-        self._namespace = cache_namespace(engine.prefix_cache)
-        self._last_hash: dict[int, str] = {}
         self._admission_stats: dict[int, tuple[int, int]] = {}
         self._l1_peak_resident_blocks = 0
         self._log = EventLog(enabled=record_trace)
@@ -121,8 +119,8 @@ class Engine:
         arrival = Arrival(
             request_id=request.request_id,
             sim_time=now_ms,
-            prompt_len=len(request.input_token_ids),
-            output_len=len(request.output_token_plan),
+            prompt_len=request.prompt_len,
+            output_len=request.output_len,
         )
         self._prefix_scheduler.enqueue(request, now_ms)
         self._requests[request.request_id] = request
@@ -152,21 +150,17 @@ class Engine:
             produced = self._running[request_id] + 1
             self._running[request_id] = produced
             self._publish_output(request_id, produced)
-            if produced == len(self._requests[request_id].output_token_plan):
+            if produced == self._requests[request_id].output_len:
                 finished.append(request_id)
 
         for request, probe in zip(plan.admitted, plan.probes, strict=True):
             request_id = request.request_id
             self._prefill_start[request_id] = now_ms
             self._prefill_end[request_id] = end
-            new_hashes = request.input_chunk_hashes[probe.matched_blocks :]
-            cache.publish(request_id, new_hashes)
-            self._last_hash[request_id] = (
-                request.input_chunk_hashes[-1] if request.input_chunk_hashes else "ROOT"
-            )
+            cache.publish(request_id, request.input_chunk_ids[probe.matched_blocks :])
             self._running[request_id] = 1
             self._publish_output(request_id, 1)
-            if len(request.output_token_plan) == 1:
+            if request.output_len == 1:
                 finished.append(request_id)
 
         self._l1_peak_resident_blocks = max(self._l1_peak_resident_blocks, cache.resident_blocks)
@@ -216,30 +210,23 @@ class Engine:
         cache = self._prefix_cache
         request = self._requests[request_id]
         cache.advance(request_id)
-        total_tokens = len(request.input_token_ids) + produced
+        total_tokens = request.prompt_len + produced
         block_size = self._cache_config.block_size_tokens
         if total_tokens % block_size == 0:
-            context = request.input_token_ids + request.output_token_plan[:produced]
-            digest = next_chunk_hash(
-                self._namespace, self._last_hash[request_id], context[-block_size:]
-            )
-            cache.publish(request_id, (digest,))
-            self._last_hash[request_id] = digest
+            cache.publish(request_id, (encode(request_id, total_tokens // block_size - 1),))
 
     def complete(self, now_ms: float, request_id: int) -> RequestCompletion:
-        """在 Done 事件时释放 KV，返回本请求实际已生成的内容。"""
+        """在 Done 事件时释放 KV，只返回请求身份和完成时间。"""
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
             raise ValueError(f"请求 {request_id} 未待结算或完成时刻不符")
         released = self._prefix_cache.request_context_tokens(request_id)
         self._prefix_cache.release(request_id)
         self._prefix_scheduler.on_request_released()
-        del self._last_hash[request_id]
         self._log.record(DoneTrace(now_ms, request_id, released))
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
-        request = self._requests[request_id]
-        return RequestCompletion(request_id, request.output_token_plan, now_ms)
+        return RequestCompletion(request_id, now_ms)
 
     # ------------------------------------------------------------ 结算
 

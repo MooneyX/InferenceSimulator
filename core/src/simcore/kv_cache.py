@@ -284,7 +284,7 @@ class CacheSnapshot:
 @dataclass(frozen=True, slots=True)
 class PrefixProbe:
     snapshot_epoch: int
-    input_chunk_hashes: tuple[str, ...]
+    input_chunk_ids: tuple[str, ...]
     block_refs: tuple[tuple[int, int], ...]  # (block_id, owner_generation)
     source_tiers: tuple[str, ...]
     block_size_tokens: int
@@ -303,7 +303,7 @@ class AdmissionAllocation:
     request_id: int
     prompt_len: int
     output_len: int
-    input_chunk_hashes: tuple[str, ...]
+    input_chunk_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,14 +392,14 @@ class HierarchicalKVCache:
             self.reserved_future_blocks,
         )
 
-    def probe(self, snapshot: CacheSnapshot, input_chunk_hashes: Sequence[str]) -> PrefixProbe:
+    def probe(self, snapshot: CacheSnapshot, input_chunk_ids: Sequence[str]) -> PrefixProbe:
         """仅对给定 snapshot 查找连续的完整前缀，同 hash 选择最小物理 ID。"""
         self._check_snapshot_owner(snapshot)
         index = dict(snapshot.hash_index)
         blocks = {block.block_id: block for block in snapshot.blocks}
         found: list[tuple[int, int]] = []
         tiers: list[str] = []
-        for content_hash in input_chunk_hashes:
+        for content_hash in input_chunk_ids:
             candidates = index.get(content_hash)
             if not candidates:
                 break
@@ -408,7 +408,7 @@ class HierarchicalKVCache:
             tiers.append(block.tier)
         return PrefixProbe(
             snapshot.epoch,
-            tuple(input_chunk_hashes),
+            tuple(input_chunk_ids),
             tuple(found),
             tuple(tiers),
             self.block_size_tokens,
@@ -444,23 +444,23 @@ class HierarchicalKVCache:
             total_blocks = (
                 item.prompt_len + item.output_len + self.block_size_tokens - 1
             ) // self.block_size_tokens
-            if len(item.input_chunk_hashes) != item.prompt_len // self.block_size_tokens:
-                raise ValueError("input_chunk_hashes 数量必须等于完整输入块数")
-            if item.input_chunk_hashes != probe.input_chunk_hashes:
-                raise ValueError("probe 与 allocation 的输入 hash 不一致")
+            if len(item.input_chunk_ids) != item.prompt_len // self.block_size_tokens:
+                raise ValueError("input_chunk_ids 数量必须等于完整输入块数")
+            if item.input_chunk_ids != probe.input_chunk_ids:
+                raise ValueError("probe 与 allocation 的输入块 ID 不一致")
             if (
                 probe.snapshot_epoch != snapshot.epoch
                 or probe.block_size_tokens != self.block_size_tokens
             ):
                 raise ValueError("probe 不属于本次 snapshot")
-            if probe.matched_blocks > len(item.input_chunk_hashes):
+            if probe.matched_blocks > len(item.input_chunk_ids):
                 raise ValueError("probe 匹配块数不合法")
             for position, (block_id, generation) in enumerate(probe.block_refs):
                 block = block_map.get(block_id)
                 if (
                     block is None
                     or block.owner_generation != generation
-                    or block.content_hash != item.input_chunk_hashes[position]
+                    or block.content_hash != item.input_chunk_ids[position]
                     or block_id not in snapshot_index.get(block.content_hash, ())
                 ):
                     raise ValueError("probe 包含已失效的块引用")

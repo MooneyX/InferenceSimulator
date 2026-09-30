@@ -26,9 +26,9 @@ def request(
         request_id=key,
         session_id=key,
         parent_request_id=None,
-        input_token_ids=tuple(range(prompt)),
-        output_token_plan=tuple(range(output)),
-        input_chunk_hashes=hashes,
+        prompt_len=prompt,
+        output_len=output,
+        input_chunk_ids=hashes,
         ideal_reuse_blocks=len(hashes),
     )
 

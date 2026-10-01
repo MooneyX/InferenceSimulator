@@ -273,9 +273,10 @@ class ClientWakeup:
 
 
 class Arrival(_Frozen):
-    """旧长度源的到达事实；由 ``plan_from_arrivals`` 转为独立根 session。
+    """请求 ID、到达时刻与长度记录；手写序列由 ``plan_from_arrivals`` 转为独立根 session。
 
-    现行客户端向引擎提交的是 ``InferenceRequest``，不经该类型传 token 内容。
+    客户端向引擎提交 ``InferenceRequest``；引擎仍用此类型记录实际提交时刻，
+    不经此类型传递 token 内容。
     """
 
     request_id: int = Field(ge=0)

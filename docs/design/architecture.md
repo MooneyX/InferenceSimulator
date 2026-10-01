@@ -17,7 +17,7 @@ web/      前端：React + TypeScript + Vite + ECharts
 ```
 schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
-workload     build_plan 规划长度、拓扑和理想复用；SyntheticSource 为旧长度入口（依赖 schemas、prefix_hash）
+workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样；plan_from_arrivals 适配手写 Arrival（依赖 schemas、prefix_hash）
 client       ClientDriver：消费计划、维护已完成完整块 ID 上下文、发送时构造请求（依赖 schemas、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     当前 L1 KV block、索引、容量与 LRU；L2/L3 仅预留配置与字段（依赖 schemas）

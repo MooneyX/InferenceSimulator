@@ -8,7 +8,7 @@
 
 `arrival_rate=q` 的单位是所有轮次的目标请求/秒，根的泊松速率为 `q*S/N` session/秒；首根同样采样指数间隔，不固定在时刻 0。这个换算仅给出持续注入的长期名义速率，单次有限仿真的实际到达率和完成吞吐不保证等于 `q`。`S=N` 时退化为单轮请求到达口径。根到达、长度、拓扑及理想命中分配分别由 `stable_derive(seed, domain)` 派生独立随机流，保持相同配置与种子的计划可复现。
 
-`prompt_len`、`output_len` 使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。`SyntheticSource` 仍提供只含长度的 `Arrival` 入口，`plan_from_arrivals` 将各条到达转换为独立根 session。`trace` 模式目前未实现。
+`prompt_len`、`output_len` 使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。合成负载由 `build_plan` 构造 session 计划；手写 `Arrival` 到达序列可经 `run_engine` 调用 `plan_from_arrivals` 适配为各自独立的根 session。`trace` 模式目前未实现。
 
 ## 理想继承块分配
 
@@ -19,7 +19,7 @@ M_i = min(floor(L_parent(i)/B), floor((P_i-1)/B))
 D = sum(P_i); M = sum(M_i); r_max = B*M/D
 ```
 
-`target_ideal_prefix_hit_rate > r_max` 明确报不可行错误并给出 `r_max`。在 `[0,M]` 中取使 `abs(B*K/D-target)` 最小的整数总块数 `K`，距离相等时取较小值；再按 `K*M_i/M` 先取整、按余数和独立随机流的稳定顺序分配余量。输出构造命中率及量化误差；理想继承量仅约束块身份的构造，**不代表物理缓存已命中**。跨 session 公共前缀不支持，配置为 `allow_cross_session_shared_prefix=true` 时明确拒绝。
+`target_ideal_prefix_hit_rate > r_max` 明确报不可行错误并给出 `r_max`。在 `[0,M]` 中取使 `abs(B*K/D-target)` 最小的整数总块数 `K`，距离相等时取较小值；再按 `K*M_i/M` 先取整、按余数和独立随机流的稳定顺序分配余量。输出构造命中率及量化误差；理想继承量仅约束块身份的构造，**不代表物理缓存已命中**。跨 session 公共前缀不支持：根请求不继承块，不同根请求生成不同的新块 ID；只有同 session 父子轮次可继承完整块。配置不提供跨 session 共享字段，额外字段无论取值均由 schema 拒绝。
 
 ## 客户端的发送契约
 

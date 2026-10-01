@@ -14,7 +14,7 @@
 
 `snapshot() -> CacheSnapshot` 提供一致容量与索引视图。`probe(snapshot, input_chunk_ids) -> PrefixProbe` 从输入首个完整块开始，按 ID 依次找最长连续命中，首个 miss 即停止；同 ID 有多个物理位置时稳定选取最小 block ID。probe 本身不增加引用或刷新 LRU。
 
-调度器在一个 `EngineStep` 内对候选共用步首 snapshot，按 `max_batch_size` 与物理容量只选择连续 FCFS 队头；`prepare_batch(snapshot, probes, allocations)` 规划命中引用、新块与必要淘汰，`commit(transaction)` 原子提交。失败不留下部分分配或错误的 LRU；本 step 新发布的 KV 不对同 step 的其他请求可见，同 ID 因此可能对应多个物理块。`StepPlan` 的实际 Prefill 只能由 probe/commit 结果导出，不能用目标理想命中率直接跳过计算。
+调度器在一个 `EngineStep` 内对候选共用步首 snapshot，按 `max_batch_size` 与物理容量只选择连续 FCFS 队头；`prepare_batch(snapshot, probes, allocations)` 规划命中引用、新块与必要淘汰，`commit(transaction)` 原子提交。失败不留下部分分配或错误的 LRU；本 step 新发布的 KV 不对同 step 的其他请求可见，同 ID 因此可能对应多个物理块。`CachedStepPlan` 的实际 Prefill 只能由 probe/commit 结果导出，不能用目标理想命中率直接跳过计算。
 
 `matched_cache_tokens` 是连续匹配的完整 block token 数；`actual_hit_tokens = min(matched_cache_tokens, prompt_len-1)` 是实际跳过的 Prefill token。即使整个输入块 KV 已匹配，也至少重算最后一个输入 token 来产生 logits；匹配的物理 block 不重复分配。`actual_prefill_tokens = prompt_len-actual_hit_tokens`。命中前缀不会缩短每请求的 Decode 逻辑上下文；当前 L1 命中没有 restore 成本，也不单独计身份编码/lookup 的 CPU 成本。当前耗时估算见 [perf-model.md](perf-model.md)。
 

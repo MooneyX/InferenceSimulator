@@ -16,7 +16,6 @@ workload:
       topology: linear
       think_time_ms: float
       target_ideal_prefix_hit_rate: float
-      allow_cross_session_shared_prefix: false # true 不支持，计划构造时报 422；旧 content_seed 字段不再接受
 engine:
   max_batch_size: int
   kv_token_budget: int           # 解析为 L1 block 容量
@@ -57,7 +56,7 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-输入配置中的 `arrival_rate` 表示所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。采样、到达计划及理想前缀继承量的内部算法见 [workload.md](workload.md)。`l1.capacity_blocks` 由 `floor(kv_token_budget/block_size_tokens)` 解析；显式输入不一致时报校验错误。L2/L3、`kv_bytes_per_token` 等字段已有 schema，但现行引擎仅使用 L1；低层配置非零也不意味着低层已启用。
+输入配置中的 `arrival_rate` 表示所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。采样、到达计划及理想前缀继承量的内部算法见 [workload.md](workload.md)。跨 session 公共前缀不支持，配置中没有共享开关；同 session 父子轮次仍可继承完整块。`session.content_seed` 亦不在 schema 中，显式提交这些额外字段（包括布尔值 `true` 或 `false`）均因未知字段返回 422，响应 `meta.config` 不回显。`l1.capacity_blocks` 由 `floor(kv_token_budget/block_size_tokens)` 解析；显式输入不一致时报校验错误。L2/L3、`kv_bytes_per_token` 等字段已有 schema，但现行引擎仅使用 L1；低层配置非零也不意味着低层已启用。
 
 ## API
 
@@ -91,7 +90,7 @@ warnings:  # 成功结果中的非致命告警；无法容纳的请求返回 422
 
 | 状态码 | 场景 | 响应体 |
 |---|---|---|
-| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配）、计划构造拒绝跨 session 共享/不可行理想命中目标，或单请求超过 L1 可执行容量（OOM） | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划与 OOM 错误为 `{"detail": str}` |
+| `422` | config 校验失败（类型、范围、未知字段、`mode` 与载荷不匹配）；理想命中目标不可行；或单请求超过 L1 可执行容量（OOM） | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划与 OOM 错误为 `{"detail": str}` |
 | `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
 
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。

@@ -43,7 +43,6 @@ describe("SimulationForm", () => {
             topology: "linear",
             think_time_ms: 0,
             target_ideal_prefix_hit_rate: 0,
-            allow_cross_session_shared_prefix: false,
           },
         },
       },
@@ -70,6 +69,10 @@ describe("SimulationForm", () => {
         decode_d2: 0.002,
       },
     });
+    const submittedSession = onSubmit.mock.calls[0][0].workload.synthetic.session;
+    expect(JSON.parse(JSON.stringify(submittedSession))).not.toHaveProperty(
+      "allow_cross_session_shared_prefix",
+    );
   });
 
   it("updates scalar and distribution fields before submission", () => {
@@ -134,7 +137,6 @@ describe("SimulationForm", () => {
             topology: "linear",
             think_time_ms: 30,
             target_ideal_prefix_hit_rate: 0.2,
-            allow_cross_session_shared_prefix: false,
           },
         },
       },

@@ -19,7 +19,6 @@ describe("createDefaultSimConfig", () => {
             topology: "linear",
             think_time_ms: 0,
             target_ideal_prefix_hit_rate: 0,
-            allow_cross_session_shared_prefix: false,
           },
         },
       },
@@ -46,6 +45,9 @@ describe("createDefaultSimConfig", () => {
         decode_d2: 0.002,
       },
     });
+    const session = createDefaultSimConfig().workload.synthetic!.session!;
+    expect(session).not.toHaveProperty("allow_cross_session_shared_prefix");
+    expect(JSON.parse(JSON.stringify(session))).not.toHaveProperty("allow_cross_session_shared_prefix");
   });
 
   it("returns independent objects", () => {

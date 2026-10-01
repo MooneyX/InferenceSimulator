@@ -138,15 +138,16 @@ def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
     )
 
 
-def test_cross_session_shared_prefix_is_rejected_before_allocation() -> None:
-    cfg = config(n=2, s=2, target=0.2)
-    shared_cfg = cfg.model_copy(
-        update={
-            "session": cfg.session.model_copy(update={"allow_cross_session_shared_prefix": True})
-        }
-    )
-    with pytest.raises(ValueError, match="不支持 allow_cross_session_shared_prefix=true"):
-        build_plan(shared_cfg, PrefixCacheConfig(block_size_tokens=4))
+def test_distinct_roots_have_isolated_chunk_ids() -> None:
+    cache = PrefixCacheConfig(block_size_tokens=4)
+    plan = build_plan(config(n=2, s=2), cache)
+    client = ClientDriver(plan, cache)
+    roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
+    assert len(roots) == 2
+    assert all(root.ideal_reuse_blocks == 0 for root in roots)
+    assert roots[0].input_chunk_ids == tuple(encode(roots[0].request_id, i) for i in range(2))
+    assert roots[1].input_chunk_ids == tuple(encode(roots[1].request_id, i) for i in range(2))
+    assert set(roots[0].input_chunk_ids).isdisjoint(roots[1].input_chunk_ids)
 
 
 def test_length_arrival_adapter() -> None:

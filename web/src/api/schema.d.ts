@@ -483,11 +483,6 @@ export interface components {
              * @default 0
              */
             target_ideal_prefix_hit_rate: number;
-            /**
-             * Allow Cross Session Shared Prefix
-             * @default false
-             */
-            allow_cross_session_shared_prefix: boolean;
         };
         /**
          * SimConfig

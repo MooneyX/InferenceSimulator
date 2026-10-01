@@ -71,10 +71,6 @@ def build_plan(
     cfg: SyntheticWorkloadConfig, cache: PrefixCacheConfig | None = None
 ) -> WorkloadPlan:
     """独立随机流一次规划拓扑、根到达、长度和理想命中。"""
-    if cfg.session.allow_cross_session_shared_prefix:
-        raise ValueError(
-            "不支持 allow_cross_session_shared_prefix=true：块身份不支持跨 session 共享"
-        )
     cache = cache or PrefixCacheConfig()
     block_size = cache.block_size_tokens
     sessions = cfg.session.num_sessions

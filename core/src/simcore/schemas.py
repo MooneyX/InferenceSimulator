@@ -106,7 +106,6 @@ class SessionConfig(_Frozen):
     topology: Literal["linear"] = "linear"
     think_time_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, allow_inf_nan=False)
-    allow_cross_session_shared_prefix: bool = False
 
 
 class SyntheticWorkloadConfig(_Frozen):

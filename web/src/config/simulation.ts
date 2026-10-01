@@ -50,7 +50,6 @@ export function createDefaultSimConfig(): SimConfig {
           topology: "linear",
           think_time_ms: 0,
           target_ideal_prefix_hit_rate: 0,
-          allow_cross_session_shared_prefix: false,
         },
       },
     },

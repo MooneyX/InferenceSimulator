@@ -724,11 +724,6 @@
             "minimum": 0.0,
             "title": "Target Ideal Prefix Hit Rate",
             "default": 0.0
-          },
-          "allow_cross_session_shared_prefix": {
-            "type": "boolean",
-            "title": "Allow Cross Session Shared Prefix",
-            "default": false
           }
         },
         "additionalProperties": false,

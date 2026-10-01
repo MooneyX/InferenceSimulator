@@ -45,6 +45,10 @@ class TestSuccess:
         assert response.headers["content-type"] == "application/json"
         body = response.json()
         assert set(body) == {"meta", "metrics", "requests", "warnings"}
+        assert (
+            "allow_cross_session_shared_prefix"
+            not in body["meta"]["config"]["workload"]["synthetic"]["session"]
+        )
         assert len(body["requests"]) == 100
         assert body["metrics"]["total_input_tokens"] == sum(
             request["prompt_len"] for request in body["requests"]
@@ -116,15 +120,23 @@ class TestErrors:
         assert response.status_code == 422
         assert "content_seed" in response.text
 
-    def test_cross_session_shared_prefix_is_rejected(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("value", [True, False])
+    def test_cross_session_field_is_rejected_as_extra(
+        self, client: TestClient, value: bool
+    ) -> None:
         payload = make_payload(num_requests=2)
         payload["workload"]["synthetic"]["session"] = {
             "num_sessions": 2,
-            "allow_cross_session_shared_prefix": True,
+            "allow_cross_session_shared_prefix": value,
         }
         response = client.post(URL, json=payload)
         assert response.status_code == 422
-        assert "不支持 allow_cross_session_shared_prefix=true" in response.json()["detail"]
+        assert any(
+            error["type"] == "extra_forbidden"
+            and error["loc"]
+            == ["body", "workload", "synthetic", "session", "allow_cross_session_shared_prefix"]
+            for error in response.json()["detail"]
+        )
 
     def test_trace_mode_not_implemented(self, client: TestClient) -> None:
         payload = make_payload()

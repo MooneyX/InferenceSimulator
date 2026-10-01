@@ -124,6 +124,29 @@ class TestConfigValidation:
                 {"max_batch_size": 8, "kv_token_budget": 4096, "max_batch_tokens": 1024}
             )
 
+    def test_session_without_cross_session_field_roundtrips(self) -> None:
+        payload = make_config().model_dump()
+        session = payload["workload"]["synthetic"]["session"]
+        assert "allow_cross_session_shared_prefix" not in session
+        parsed = SimConfig.model_validate(payload)
+        assert (
+            "allow_cross_session_shared_prefix"
+            not in parsed.model_dump()["workload"]["synthetic"]["session"]
+        )
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_cross_session_field_is_rejected_as_extra(self, value: bool) -> None:
+        payload = make_config().model_dump()
+        payload["workload"]["synthetic"]["session"]["allow_cross_session_shared_prefix"] = value
+        with pytest.raises(ValidationError) as exc_info:
+            SimConfig.model_validate(payload)
+        assert any(
+            error["type"] == "extra_forbidden"
+            and error["loc"]
+            == ("workload", "synthetic", "session", "allow_cross_session_shared_prefix")
+            for error in exc_info.value.errors()
+        )
+
     def test_session_content_seed_rejected(self) -> None:
         with pytest.raises(ValidationError, match="content_seed"):
             SessionConfig.model_validate({"content_seed": 123})

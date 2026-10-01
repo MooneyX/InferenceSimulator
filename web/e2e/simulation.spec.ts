@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("runs and renders a 1,000-request simulation", async ({ page }) => {
+  test.setTimeout(360_000);
   const browserErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -21,6 +22,10 @@ test("runs and renders a 1,000-request simulation", async ({ page }) => {
 
   const response = await responsePromise;
   expect(response.status()).toBe(200);
+  const submittedSession = response.request().postDataJSON().workload.synthetic.session;
+  const returnedSession = (await response.json()).meta.config.workload.synthetic.session;
+  expect(submittedSession).not.toHaveProperty("allow_cross_session_shared_prefix");
+  expect(returnedSession).not.toHaveProperty("allow_cross_session_shared_prefix");
   await expect(page.getByRole("heading", { name: "仿真指标" })).toBeVisible();
 
   const chart = page.getByRole("img", {

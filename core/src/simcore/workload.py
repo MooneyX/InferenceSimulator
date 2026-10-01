@@ -1,18 +1,16 @@
-"""合成负载规划与旧长度到达源。
+"""合成负载规划及手写 Arrival 到达序列的适配。
 
 ``build_plan`` 只生成 session 拓扑、长度、理想继承块数和根发送计划，不物化 token
 或预生成块 ID；根到达、长度、拓扑、分配分别使用稳定派生的独立随机流。
-``SyntheticSource`` 仍提供旧 ``Arrival`` 长度入口，使用单一 ``random.Random(seed)``，
-由 ``plan_from_arrivals`` 转换为各自独立的根 session。生成器不接触 Engine/cache。
+``plan_from_arrivals`` 将手写到达序列转换为各自独立的根 session。
 
 依赖层级：``schemas``、``prefix_hash.stable_derive``。
 """
 
 import math
 import random
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import replace
-from typing import Protocol, runtime_checkable
 
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
@@ -24,40 +22,19 @@ from simcore.schemas import (
     PrefixCacheConfig,
     SyntheticWorkloadConfig,
     TurnPlan,
-    WorkloadConfig,
     WorkloadPlan,
 )
 
-__all__ = [
-    "SyntheticSource",
-    "WorkloadSource",
-    "build_plan",
-    "build_source",
-    "plan_from_arrivals",
-    "sample_length",
-]
+__all__ = ["build_plan", "plan_from_arrivals", "sample_length"]
 
 _MS_PER_SECOND = 1000.0
-
-
-@runtime_checkable
-class WorkloadSource(Protocol):
-    """负载源协议：产出按 ``sim_time`` 升序排列的 ``Arrival`` 序列。
-
-    实现方须保证：
-    - 升序：``sim_time`` 单调不减（引擎依赖此性质批量入队）。
-    - 可复现：同配置多次迭代产出完全相同的序列。
-    - 可重复迭代：每次 ``__iter__`` 都从头产出同一序列，而非耗尽即空。
-    """
-
-    def __iter__(self) -> Iterator[Arrival]: ...
 
 
 def sample_length(dist: LengthDist, rng: random.Random) -> int:
     """按分布采样一个 token 长度。
 
     结果向上取整并钳制到 >= 1（见 ``docs/design/workload.md``）：长度为 0 的请求无意义，
-    且会让性能模型与 KV 账本失去定义。
+    且会让性能模型与 KV 容量计算失去定义。
 
     - ``fixed``：直接返回配置值，不消耗随机数。
     - ``poisson``：以 Knuth 乘积法采样，均值即 ``mean``。
@@ -88,61 +65,6 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:
         count += 1
         product *= rng.random()
     return count
-
-
-class SyntheticSource:
-    """合成负载：泊松到达 + 长度分布采样 + 固定种子。
-
-    到达过程为泊松过程，等价于间隔服从指数分布 ``Exp(arrival_rate)``。配置中的
-    ``arrival_rate`` 单位为 请求/秒，内部换算为 ms 时间轴。
-
-    首个请求的到达时刻同样采样一个间隔，而非固定为 0——避免 t=0 处出现人为的
-    突发，使统计量不受首请求特殊化的干扰。
-
-    采样顺序固定为「间隔 → prompt → output」逐请求推进，任何顺序改动都会改变
-    随机流，因此视为对外契约的一部分。
-    """
-
-    def __init__(self, cfg: SyntheticWorkloadConfig) -> None:
-        self._cfg = cfg
-        self._arrivals: tuple[Arrival, ...] = self._materialize(cfg)
-
-    @staticmethod
-    def _materialize(cfg: SyntheticWorkloadConfig) -> tuple[Arrival, ...]:
-        rng = random.Random(cfg.seed)
-        rate_per_ms = cfg.arrival_rate / _MS_PER_SECOND
-        arrivals: list[Arrival] = []
-        clock = 0.0
-        for request_id in range(cfg.num_requests):
-            clock += rng.expovariate(rate_per_ms)
-            arrivals.append(
-                Arrival(
-                    request_id=request_id,
-                    sim_time=clock,
-                    prompt_len=sample_length(cfg.prompt_len, rng),
-                    output_len=sample_length(cfg.output_len, rng),
-                )
-            )
-        return tuple(arrivals)
-
-    def __iter__(self) -> Iterator[Arrival]:
-        return iter(self._arrivals)
-
-    def __len__(self) -> int:
-        return len(self._arrivals)
-
-
-def build_source(cfg: WorkloadConfig) -> WorkloadSource:
-    """按配置构造负载源。
-
-    Raises:
-        NotImplementedError: ``mode='trace'``。trace replay 是预留接缝，MVP 不实现。
-    """
-    if cfg.mode == "trace":
-        raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
-    if cfg.synthetic is None:  # pragma: no cover - schema 层已保证
-        raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
-    return SyntheticSource(cfg.synthetic)
 
 
 def build_plan(
@@ -244,7 +166,7 @@ def build_plan(
 def plan_from_arrivals(
     arrivals: Iterable[Arrival], cache: PrefixCacheConfig | None = None
 ) -> WorkloadPlan:
-    """旧长度负载入口适配为各自独立的根 session。"""
+    """将手写 Arrival 到达序列适配为各自独立的根 session。"""
     cache = cache or PrefixCacheConfig()
     turns: dict[int, TurnPlan] = {}
     roots: list[int] = []

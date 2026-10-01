@@ -8,6 +8,7 @@ import itertools
 import pytest
 
 from simcore.client import ClientDriver
+from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
 from simcore.kv_cache import CacheOOMError
@@ -20,7 +21,7 @@ from simcore.schemas import (
     RequestRecord,
     SyntheticWorkloadConfig,
 )
-from simcore.workload import SyntheticSource, plan_from_arrivals
+from simcore.workload import build_plan, plan_from_arrivals
 
 SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
 
@@ -211,7 +212,9 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
     )
     cfg = EngineConfig.model_validate({"max_batch_size": 16, "kv_token_budget": 8000, **engine})
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
-    return run_engine(cfg, perf, SyntheticSource(workload), record_trace=record_trace)
+    plan = build_plan(workload, cfg.prefix_cache)
+    client = ClientDriver(plan, cfg.prefix_cache)
+    return Coordinator(Engine(cfg, perf, record_trace=record_trace), client).run()
 
 
 @pytest.fixture(scope="module")

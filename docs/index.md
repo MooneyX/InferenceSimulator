@@ -22,7 +22,7 @@
 | 文档 | 内容 |
 |---|---|
 | [plans/feature-roadmap.md](plans/feature-roadmap.md) | 功能状态、依赖及按模块组织的计划入口 |
-| [plans/scheduler-engine.md](plans/scheduler-engine.md) | F001：调度与引擎的分块、预算、互斥及缓存编排 |
+| [plans/scheduler-engine.md](plans/scheduler-engine.md) | F001：双 P/D 模式、逐请求预算、KV 生命周期与结果契约的唯一实施规范 |
 | [plans/kv-cache.md](plans/kv-cache.md) | KV3：L2/L3 缓存与迁移、restore |
 | [plans/perf-model.md](plans/perf-model.md) | F002：可解释性能模型、容量、校准及单机 TP |
 | [plans/server-api.md](plans/server-api.md) | 各阶段服务/API 契约与类型交付 |
@@ -44,4 +44,4 @@
 
 - `design/` 一篇只讲一个当前已实现的主题：不变量、接口、所有权与必要的编码指导；不保留旧方案、讨论过程或未落地能力的细节。
 - `plans/` 按负责模块记录待实施范围、依赖、阶段交付和验收；`feature-roadmap.md` 仅做状态及依赖索引，不复制设计契约。
-- 新能力先更新对应计划与设计，代码接通并核对测试后将稳定契约转入设计，移除已完成的实施过程。
+- F001 的目标行为及实现验收以 [调度与引擎计划](plans/scheduler-engine.md) 为唯一规范；`design/` 记录当前已实现行为，实施后同步其状态描述，但不得引入与 F001 规范冲突的第二套规则。其他能力在实施前记录计划，实施完成后再同步设计文档。

@@ -8,6 +8,7 @@
 
 from simcore.runner import simulate
 from simcore.schemas import (
+    AbortedRequest,
     Arrival,
     EngineConfig,
     FixedLength,
@@ -22,6 +23,7 @@ from simcore.schemas import (
     SimConfig,
     SimMeta,
     SimResult,
+    SkippedRequest,
     SyntheticWorkloadConfig,
     WorkloadConfig,
     WorkloadMode,
@@ -30,6 +32,7 @@ from simcore.schemas import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "AbortedRequest",
     "Arrival",
     "EngineConfig",
     "FixedLength",
@@ -44,6 +47,7 @@ __all__ = [
     "SimConfig",
     "SimMeta",
     "SimResult",
+    "SkippedRequest",
     "SyntheticWorkloadConfig",
     "WorkloadConfig",
     "WorkloadMode",

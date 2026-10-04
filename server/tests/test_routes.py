@@ -39,6 +39,19 @@ def client() -> TestClient:
 
 
 class TestSuccess:
+    def test_new_engine_fields_echo_and_counts(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 16}
+        payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
+        payload["engine"] = {"max_running_requests": 1, "max_total_tokens": 192}
+        response = client.post(URL, json=payload)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["config"]["engine"]["page_size"] == 64
+        assert body["meta"]["num_completed"] == 1
+        assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
+        assert body["aborted_requests"] == body["skipped_requests"] == []
+
     def test_returns_full_result(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload())
         assert response.status_code == 200
@@ -103,6 +116,14 @@ class TestSuccess:
 
 
 class TestErrors:
+    @pytest.mark.parametrize("capacity", [63, 130])
+    def test_invalid_page_capacity_returns_422(self, client: TestClient, capacity: int) -> None:
+        payload = make_payload(num_requests=1)
+        payload["engine"] = {"max_running_requests": 1, "max_total_tokens": capacity}
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert "max_total_tokens" in response.text
+
     def test_unreachable_ideal_hit_target_reports_r_max(self, client: TestClient) -> None:
         payload = make_payload(num_requests=2)
         payload["workload"]["synthetic"]["session"] = {

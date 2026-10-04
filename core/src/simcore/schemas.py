@@ -16,6 +16,7 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
+    "AbortedRequest",
     "Arrival",
     "ClientWakeup",
     "EngineConfig",
@@ -35,6 +36,7 @@ __all__ = [
     "SimConfig",
     "SimMeta",
     "SimResult",
+    "SkippedRequest",
     "SyntheticWorkloadConfig",
     "TurnPlan",
     "WorkloadConfig",
@@ -115,6 +117,7 @@ class SyntheticWorkloadConfig(_Frozen):
     arrival_rate: float = Field(gt=0, allow_inf_nan=False, description="总请求目标 QPS")
     prompt_len: LengthDist
     output_len: LengthDist
+    max_new_tokens: int = Field(default=128, ge=1, description="每个请求可见的生成上限")
     seed: int = Field(ge=0, description="随机种子；同种子必须逐字节可复现")
     session: SessionConfig = Field(default_factory=SessionConfig)
 
@@ -170,28 +173,36 @@ class PrefixCacheConfig(_Frozen):
 
 
 class EngineConfig(_Frozen):
-    """KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。"""
+    """单实例 KV 池配置；页数仅由 token 容量和页大小推导。"""
 
-    max_batch_size: int = Field(ge=1, description="单步 batch 内最大请求数")
-    kv_token_budget: int = Field(ge=1, description="KV cache token 预算总额")
-    prefix_cache: PrefixCacheConfig = Field(default_factory=PrefixCacheConfig)
+    max_running_requests: int = Field(ge=1, description="同时驻留的运行请求数上限")
+    max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
+    max_prefill_tokens: int = Field(default=16_384, ge=1, description="单次 Prefill 的新计算额度")
+    page_size: int = Field(default=64, ge=1, description="每个 KV 页的 token 数")
+    pd_mutually_exclusive: bool = Field(default=True, description="Prefill 与 Decode 分步执行")
 
     @model_validator(mode="after")
-    def _resolve_cache(self) -> Self:
-        capacity = self.kv_token_budget // self.prefix_cache.block_size_tokens
-        if capacity < 1:
-            raise ValueError("kv_token_budget 不足以容纳一个 prefix cache block")
-        l1 = self.prefix_cache.l1
-        if "l1" in self.prefix_cache.model_fields_set and l1.capacity_blocks != capacity:
-            raise ValueError(
-                "l1.capacity_blocks 必须等于 floor(kv_token_budget / block_size_tokens)"
-            )
-        object.__setattr__(
-            self,
-            "prefix_cache",
-            self.prefix_cache.model_copy(update={"l1": L1CacheConfig(capacity_blocks=capacity)}),
-        )
+    def _check_capacity(self) -> Self:
+        if self.max_total_tokens < self.page_size or self.max_total_tokens % self.page_size:
+            raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
         return self
+
+    @property
+    def capacity_pages(self) -> int:
+        return self.max_total_tokens // self.page_size
+
+    @property
+    def prefix_cache(self) -> PrefixCacheConfig:
+        """旧内核过渡期使用的只读视图，不作为配置输入或输出字段。"""
+        return PrefixCacheConfig(
+            block_size_tokens=self.page_size,
+            l1=L1CacheConfig(capacity_blocks=self.capacity_pages),
+        )
+
+    @property
+    def max_batch_size(self) -> int:
+        """旧调度器的只读适配；后续由 max_running_requests 直接取代。"""
+        return self.max_running_requests
 
 
 class PerfModelConfig(_Frozen):
@@ -283,6 +294,7 @@ class Arrival(_Frozen):
     sim_time: float = Field(ge=0, description="到达时刻（ms）")
     prompt_len: int = Field(ge=1, description="prompt token 数")
     output_len: int = Field(ge=1, description="待生成 token 数")
+    max_new_tokens: int = Field(default=128, ge=1, description="手写到达请求的可见生成上限")
 
 
 class RequestRecord(_Record):
@@ -328,12 +340,37 @@ class RequestRecord(_Record):
         return self
 
 
+class AbortedRequest(_Record):
+    """已发送但执行失败的请求；失败不终止其他请求。"""
+
+    id: int = Field(ge=0)
+    arrival: float = Field(ge=0)
+    failed_at: float = Field(ge=0)
+    reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"]
+    generated_tokens: int = Field(ge=0)
+    retry_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check_failure_time(self) -> Self:
+        if self.failed_at < self.arrival:
+            raise ValueError("failed_at 不得早于 arrival")
+        return self
+
+
+class SkippedRequest(_Record):
+    """父轮未成功，因而从未发送的子轮。"""
+
+    id: int = Field(ge=0)
+    parent_request_id: int = Field(ge=0)
+    reason: Literal["parent_not_completed"] = "parent_not_completed"
+
+
 class Metrics(_Record):
     """全场指标。``None`` 表示该指标在本场仿真中无定义。"""
 
-    ttft_mean: float = Field(ge=0, description="TTFT 均值（ms）")
-    ttft_p50: float = Field(ge=0)
-    ttft_p99: float = Field(ge=0)
+    ttft_mean: float | None = Field(ge=0, description="TTFT 均值（ms）")
+    ttft_p50: float | None = Field(ge=0)
+    ttft_p99: float | None = Field(ge=0)
     tpot_mean: float | None = Field(
         default=None,
         ge=0,
@@ -394,7 +431,10 @@ class SimMeta(_Record):
     """配置回显与仿真规模信息。"""
 
     config: SimConfig
-    num_requests: int = Field(ge=0)
+    num_requests: int = Field(ge=0, description="计划中的请求总数")
+    num_completed: int = Field(ge=0)
+    num_aborted: int = Field(ge=0)
+    num_skipped: int = Field(ge=0)
     num_engine_steps: int = Field(ge=0, description="引擎迭代步数")
     sim_start: float = Field(ge=0, description="首请求到达时刻（ms）")
     sim_end: float = Field(ge=0, description="末请求完成时刻（ms）")
@@ -403,6 +443,8 @@ class SimMeta(_Record):
     def _check_window(self) -> Self:
         if self.sim_end < self.sim_start:
             raise ValueError(f"sim_end({self.sim_end}) 不得早于 sim_start({self.sim_start})")
+        if self.num_completed + self.num_aborted + self.num_skipped != self.num_requests:
+            raise ValueError("完成、失败与跳过数量之和必须等于计划请求总数")
         return self
 
 
@@ -412,4 +454,16 @@ class SimResult(_Record):
     meta: SimMeta
     metrics: Metrics
     requests: list[RequestRecord] = Field(default_factory=list)
+    aborted_requests: list[AbortedRequest] = Field(default_factory=list)
+    skipped_requests: list[SkippedRequest] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_result_counts(self) -> Self:
+        if (
+            len(self.requests) != self.meta.num_completed
+            or len(self.aborted_requests) != self.meta.num_aborted
+            or len(self.skipped_requests) != self.meta.num_skipped
+        ):
+            raise ValueError("结果列表长度与完成、失败、跳过计数不一致")
+        return self

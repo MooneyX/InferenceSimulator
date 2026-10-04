@@ -34,7 +34,10 @@ def simulate(config: SimConfig) -> SimResult:
     return SimResult(
         meta=SimMeta(
             config=config,
-            num_requests=len(run.records),
+            num_requests=len(plan.turns),
+            num_completed=len(run.records),
+            num_aborted=0,
+            num_skipped=0,
             num_engine_steps=run.num_engine_steps,
             sim_start=run.sim_start,
             sim_end=run.sim_end,

@@ -14,6 +14,7 @@ from simcore.kv_cache import (
     PrefixProbe,
 )
 from simcore.perf_model import step_time
+from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig
 
 __all__ = ["CachedStepPlan", "PrefixScheduler"]
@@ -99,12 +100,16 @@ class PrefixScheduler:
         candidates = list(self._waiting)[:capacity] if can_admit else ()
         for request in candidates:
             assert before is not None
-            probe = cache.probe(before, request.input_chunk_ids)
+            input_chunk_ids = tuple(
+                logical_chunk_id(request.request_id, index, request.inherited_prefix_ids)
+                for index in range(request.prompt_len // cache.block_size_tokens)
+            )
+            probe = cache.probe(before, input_chunk_ids)
             allocation = AdmissionAllocation(
                 request.request_id,
                 request.prompt_len,
-                request.output_len,
-                request.input_chunk_ids,
+                request.max_new_tokens,
+                input_chunk_ids,
             )
             try:
                 proposal = cache.prepare_batch(before, (*probes, probe), (*allocations, allocation))

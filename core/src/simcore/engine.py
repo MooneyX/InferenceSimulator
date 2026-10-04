@@ -3,12 +3,12 @@
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
 from simcore.kv_cache import CacheSnapshot, HierarchicalKVCache
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import encode, logical_chunk_id
 from simcore.scheduler import PrefixScheduler
 from simcore.schemas import (
     Arrival,
@@ -71,17 +71,31 @@ def run_engine(
     from simcore.coordinator import Coordinator
     from simcore.workload import plan_from_arrivals
 
-    plan = plan_from_arrivals(arrivals, engine.prefix_cache)
-    client = ClientDriver(plan, engine.prefix_cache)
-    return Coordinator(Engine(engine, perf, record_trace=record_trace), client).run()
+    plan = plan_from_arrivals(arrivals, engine)
+    client = ClientDriver(plan, engine)
+    return Coordinator(
+        Engine(
+            engine,
+            perf,
+            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
+            record_trace=record_trace,
+        ),
+        client,
+    ).run()
 
 
 class Engine:
     """维护即时请求与调度/KV 状态，不预存未来请求或持有事件队列。"""
 
     def __init__(
-        self, engine: EngineConfig, perf: PerfModelConfig, record_trace: bool = True
+        self,
+        engine: EngineConfig,
+        perf: PerfModelConfig,
+        *,
+        output_targets: Mapping[int, int],
+        record_trace: bool = True,
     ) -> None:
+        self._output_targets = dict(output_targets)
         self._cache_config: PrefixCacheConfig = engine.prefix_cache
         self._prefix_cache = HierarchicalKVCache(
             engine.prefix_cache.l1.capacity_blocks, engine.prefix_cache.block_size_tokens
@@ -116,11 +130,15 @@ class Engine:
         """只在客户端真正发送时入缓存调度队列并记录提交时刻。"""
         if request.request_id in self._requests:
             raise ValueError(f"request_id 重复: {request.request_id}")
+        output_len = self._output_targets.get(request.request_id)
+        if output_len is None or not 1 <= output_len <= request.max_new_tokens:
+            raise ValueError("请求实际输出长度与可见上限不一致")
         arrival = Arrival(
             request_id=request.request_id,
             sim_time=now_ms,
             prompt_len=request.prompt_len,
-            output_len=request.output_len,
+            output_len=output_len,
+            max_new_tokens=request.max_new_tokens,
         )
         self._prefix_scheduler.enqueue(request, now_ms)
         self._requests[request.request_id] = request
@@ -150,17 +168,25 @@ class Engine:
             produced = self._running[request_id] + 1
             self._running[request_id] = produced
             self._publish_output(request_id, produced)
-            if produced == self._requests[request_id].output_len:
+            if produced == self._output_targets[request_id]:
                 finished.append(request_id)
 
         for request, probe in zip(plan.admitted, plan.probes, strict=True):
             request_id = request.request_id
             self._prefill_start[request_id] = now_ms
             self._prefill_end[request_id] = end
-            cache.publish(request_id, request.input_chunk_ids[probe.matched_blocks :])
+            cache.publish(
+                request_id,
+                tuple(
+                    logical_chunk_id(request_id, index, request.inherited_prefix_ids)
+                    for index in range(
+                        probe.matched_blocks, request.prompt_len // cache.block_size_tokens
+                    )
+                ),
+            )
             self._running[request_id] = 1
             self._publish_output(request_id, 1)
-            if request.output_len == 1:
+            if self._output_targets[request_id] == 1:
                 finished.append(request_id)
 
         self._l1_peak_resident_blocks = max(self._l1_peak_resident_blocks, cache.resident_blocks)
@@ -226,7 +252,7 @@ class Engine:
         self._log.record(DoneTrace(now_ms, request_id, released))
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
-        return RequestCompletion(request_id, now_ms)
+        return RequestCompletion(request_id, now_ms, self._output_targets[request_id])
 
     # ------------------------------------------------------------ 结算
 

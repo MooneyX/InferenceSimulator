@@ -13,6 +13,19 @@ def encode(request_id: int, block_index: int) -> str:
     return f"chunk:{request_id}:{block_index}"
 
 
+def logical_chunk_id(
+    request_id: int, block_index: int, inherited_prefix_ids: tuple[str, ...]
+) -> str:
+    """按逻辑页位置从不可变继承前缀或请求 ID 推导页身份。"""
+    if type(request_id) is not int or type(block_index) is not int:
+        raise TypeError("request_id 和 block_index 必须为非负整数")
+    if request_id < 0 or block_index < 0:
+        raise ValueError("request_id 和 block_index 必须为非负整数")
+    if block_index < len(inherited_prefix_ids):
+        return inherited_prefix_ids[block_index]
+    return encode(request_id, block_index)
+
+
 def stable_derive(seed: int, domain: str) -> int:
     """按域派生独立随机流，避免采样维度之间相互扰动。"""
     payload = json.dumps([seed, domain], ensure_ascii=False, separators=(",", ":")).encode()

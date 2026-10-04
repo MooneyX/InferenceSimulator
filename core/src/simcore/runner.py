@@ -25,10 +25,15 @@ def simulate(config: SimConfig) -> SimResult:
     synthetic = config.workload.synthetic
     if synthetic is None:  # pragma: no cover - schema 层已保证
         raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
-    plan = build_plan(synthetic, config.engine.prefix_cache)
-    client = ClientDriver(plan, config.engine.prefix_cache)
+    plan = build_plan(synthetic, config.engine)
+    client = ClientDriver(plan, config.engine)
     run = Coordinator(
-        Engine(config.engine, config.perf_model, record_trace=False),
+        Engine(
+            config.engine,
+            config.perf_model,
+            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
+            record_trace=False,
+        ),
         client,
     ).run()
     return SimResult(

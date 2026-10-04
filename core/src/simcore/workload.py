@@ -15,11 +15,11 @@ from dataclasses import replace
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     Arrival,
+    EngineConfig,
     FixedLength,
     LengthDist,
     LognormalLength,
     PoissonLength,
-    PrefixCacheConfig,
     SyntheticWorkloadConfig,
     TurnPlan,
     WorkloadPlan,
@@ -67,12 +67,16 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:
     return count
 
 
-def build_plan(
-    cfg: SyntheticWorkloadConfig, cache: PrefixCacheConfig | None = None
-) -> WorkloadPlan:
-    """独立随机流一次规划拓扑、根到达、长度和理想命中。"""
-    cache = cache or PrefixCacheConfig()
-    block_size = cache.block_size_tokens
+def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:
+    prompt_pages = (prompt_len + engine.page_size - 1) // engine.page_size
+    return max(
+        0, min(configured_limit, engine.max_total_tokens - (prompt_pages + 1) * engine.page_size)
+    )
+
+
+def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:
+    """独立随机流采样输出；仅引擎使用截断后的真实目标长度。"""
+    block_size = engine.page_size
     sessions = cfg.session.num_sessions
     assert sessions is not None  # schema 解析后必有 session 数
     n = cfg.num_requests
@@ -96,7 +100,8 @@ def build_plan(
         parent_id: int | None = None
         for index in range(count):
             prompt_len = sample_length(cfg.prompt_len, length_rng)
-            output_len = sample_length(cfg.output_len, length_rng)
+            sampled_output_len = sample_length(cfg.output_len, length_rng)
+            max_new_tokens = _visible_limit(prompt_len, cfg.max_new_tokens, engine)
             turn = TurnPlan(
                 request_id=request_id,
                 session_id=session_id,
@@ -104,7 +109,8 @@ def build_plan(
                 root_arrival_time_ms=clock if index == 0 else None,
                 think_time_ms=None if index == 0 else cfg.session.think_time_ms,
                 prompt_len=prompt_len,
-                output_len=output_len,
+                output_len=min(sampled_output_len, max_new_tokens),
+                max_new_tokens=max_new_tokens,
                 ideal_reuse_blocks=0,
             )
             turns[request_id] = turn
@@ -119,9 +125,13 @@ def build_plan(
     for turn in turns.values():
         if turn.parent_request_id is not None:
             parent = turns[turn.parent_request_id]
-            maxima[turn.request_id] = min(
-                (parent.prompt_len + parent.output_len) // block_size,
-                (turn.prompt_len - 1) // block_size,
+            maxima[turn.request_id] = (
+                min(
+                    (parent.prompt_len + parent.output_len - 1) // block_size,
+                    (turn.prompt_len - 1) // block_size,
+                )
+                if parent.output_len > 0
+                else 0
             )
         else:
             maxima[turn.request_id] = 0
@@ -159,17 +169,15 @@ def build_plan(
     )
 
 
-def plan_from_arrivals(
-    arrivals: Iterable[Arrival], cache: PrefixCacheConfig | None = None
-) -> WorkloadPlan:
+def plan_from_arrivals(arrivals: Iterable[Arrival], engine: EngineConfig) -> WorkloadPlan:
     """将手写 Arrival 到达序列适配为各自独立的根 session。"""
-    cache = cache or PrefixCacheConfig()
     turns: dict[int, TurnPlan] = {}
     roots: list[int] = []
     for arrival in arrivals:
         key = arrival.request_id
         if key in turns:
             raise ValueError(f"重复的 request_id: {key}")
+        max_new_tokens = _visible_limit(arrival.prompt_len, arrival.max_new_tokens, engine)
         turns[key] = TurnPlan(
             request_id=key,
             session_id=key,
@@ -177,7 +185,8 @@ def plan_from_arrivals(
             root_arrival_time_ms=arrival.sim_time,
             think_time_ms=None,
             prompt_len=arrival.prompt_len,
-            output_len=arrival.output_len,
+            output_len=min(arrival.output_len, max_new_tokens),
+            max_new_tokens=max_new_tokens,
             ideal_reuse_blocks=0,
         )
         roots.append(key)
@@ -186,5 +195,5 @@ def plan_from_arrivals(
         turns=turns,
         root_request_ids=tuple(roots),
         children={},
-        block_size_tokens=cache.block_size_tokens,
+        block_size_tokens=engine.page_size,
     )

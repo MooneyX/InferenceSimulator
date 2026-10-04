@@ -238,6 +238,7 @@ class TurnPlan:
     think_time_ms: float | None
     prompt_len: int
     output_len: int
+    max_new_tokens: int
     ideal_reuse_blocks: int
 
 
@@ -262,8 +263,8 @@ class InferenceRequest:
     session_id: int
     parent_request_id: int | None
     prompt_len: int
-    output_len: int
-    input_chunk_ids: tuple[str, ...]
+    max_new_tokens: int
+    inherited_prefix_ids: tuple[str, ...]
     ideal_reuse_blocks: int
 
 
@@ -271,6 +272,7 @@ class InferenceRequest:
 class RequestCompletion:
     request_id: int
     finish_time_ms: float
+    generated_tokens: int
 
 
 @dataclass(frozen=True, slots=True)

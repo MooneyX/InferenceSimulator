@@ -25,7 +25,7 @@ kv_available = HBM * utilization - weights - runtime - workspace - activation_pe
 token_budget_per_rank = floor(kv_available / kv_bytes_per_token_per_rank)
 ```
 
-容量还须按每 rank 的分片/复制规则和 F001 的 `page_size` 取整，并计入 allocator 元数据与碎片。解析模式将推导结果作为 resolved `max_total_tokens` 的容量来源；经验模式接受显式 `max_total_tokens`。同时提供用户上限和硬件推导容量时取二者较小值，并注明容量来源。计算与访存初期采用 Roofline：
+容量推导须考虑每 rank 的分片/复制规则、allocator 元数据与碎片。F001 的显式 `max_total_tokens` 输入必须是 `page_size` 的正整数倍，不自动取整；未来解析模式仅在生成配置前将硬件推导值向下对齐到完整页（不足一页时报错）。若同时给出已校验的用户上限和已对齐的硬件容量，取二者较小值作为唯一的 resolved `max_total_tokens`；进入 `EngineConfig` 时该值仍必须为整页且不得另设有效容量字段。计算与访存初期采用 Roofline：
 
 ```text
 t_compute = step_FLOPs / effective_FLOPS(shape)

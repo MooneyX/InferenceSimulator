@@ -4,7 +4,7 @@
 
 | 前置模块 | 服务与 schema 交付 | 验收 |
 |---|---|---|
-| [F001 调度/引擎](scheduler-engine.md) | `core.schemas` 提供 `engine.max_running_requests`、`engine.max_total_tokens`、`engine.max_prefill_tokens`、`engine.page_size`（默认 64）和布尔 `engine.pd_mutually_exclusive`（默认 `true`），合成负载提供 `workload.synthetic.max_new_tokens`；回显配置及有效页容量，配置错误与请求级 abort 分别处理 | 开关默认互斥，显式 `false` 启用融合；两种模式使用相同配置和缓存契约；运行中 abort 通过结果状态报告，OpenAPI 与真实响应一致 |
+| [F001 调度/引擎](scheduler-engine.md) | `core.schemas` 提供 `engine.max_running_requests`、`engine.max_total_tokens`、`engine.max_prefill_tokens`、`engine.page_size`（默认 64）和布尔 `engine.pd_mutually_exclusive`（默认 `true`），合成负载提供 `workload.synthetic.max_new_tokens`；`max_total_tokens` 必须是 `page_size` 的整数倍，直接回显输入容量，不生成第二个有效容量字段；配置错误与请求级 abort 分别处理 | 非整页或不足一页的容量返回 422；开关默认互斥，显式 `false` 启用融合；运行中 abort 通过结果状态报告，OpenAPI 与真实响应一致 |
 | [F002 性能模型](perf-model.md) | 服务端管理预设、版本与校准 profile；展开完整 resolved config 供零 IO 内核使用；在结果中加入可解释成本和适用范围告警 | 同一预设版本与输入可复现，经验、解析与校准模式按各自契约运行 |
 | [KV3 缓存](kv-cache.md) | 启用低层配置的真实约束与分层/restore 结果字段；不要把仅已解析的字段表述成已启用 | 低层关闭时维持 L1 输出，低层启用时与缓存指标相符 |
 

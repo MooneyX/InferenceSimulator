@@ -57,6 +57,9 @@ def compute_metrics(
     replayed_prefill_tokens: int = 0,
 ) -> Metrics:
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
+    peak_resident = max(
+        l1_peak_resident_blocks, cache_snapshot.resident_blocks if cache_snapshot else 0
+    )
     if not records:
         return Metrics(
             ttft_mean=None,
@@ -72,7 +75,7 @@ def compute_metrics(
             ideal_hit_quantization_error=plan.quantization_error if plan else 0.0,
             replayed_prefill_tokens=replayed_prefill_tokens,
             l1_evictions=l1_evictions,
-            l1_peak_resident_blocks=l1_peak_resident_blocks,
+            l1_peak_resident_blocks=peak_resident,
             l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
             l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
             l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,
@@ -143,7 +146,7 @@ def compute_metrics(
         replayed_prefill_tokens=replayed_prefill_tokens,
         saved_prefill_tokens=input_tokens - prefill,
         l1_evictions=l1_evictions,
-        l1_peak_resident_blocks=l1_peak_resident_blocks,
+        l1_peak_resident_blocks=peak_resident,
         l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
         l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
         l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,

@@ -378,14 +378,16 @@ class Metrics(_Record):
     tpot_mean: float | None = Field(
         default=None,
         ge=0,
-        description="decode 阶段平均每 token 耗时（ms）；所有请求 output_len 均为 1 时为 None",
+        description="成功且输出超过 1 token 的请求逐项平均；无样本时为 None（ms）",
     )
     throughput: float | None = Field(
         default=None,
         ge=0,
         description="请求数 / makespan（请求/秒）；makespan 为 0 时为 None",
     )
-    makespan: float = Field(ge=0, description="末请求完成时刻 − 首请求到达时刻（ms）")
+    makespan: float = Field(
+        ge=0, description="末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）"
+    )
     target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
     constructed_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
     ideal_hit_quantization_error: float = Field(default=0.0, ge=0)
@@ -424,9 +426,10 @@ class Metrics(_Record):
             and self.saved_prefill_tokens == self.actual_hit_tokens
             and self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens
             == self.actual_hit_tokens
-            and self.l1_free_blocks + self.l1_resident_blocks + self.l1_reserved_future_blocks
-            == self.l1_capacity_blocks
-            and self.l1_active_blocks <= self.l1_resident_blocks
+            and self.l1_reserved_future_blocks == 0
+            and self.l1_free_blocks + self.l1_resident_blocks == self.l1_capacity_blocks
+            and self.l1_active_blocks + self.l1_evictable_blocks == self.l1_resident_blocks
+            and self.l1_resident_blocks <= self.l1_peak_resident_blocks <= self.l1_capacity_blocks
         ):
             raise ValueError("全场前缀命中、Prefill 或 L1 物理块容量不守恒")
         return self
@@ -471,4 +474,34 @@ class SimResult(_Record):
             or len(self.skipped_requests) != self.meta.num_skipped
         ):
             raise ValueError("结果列表长度与完成、失败、跳过计数不一致")
+        groups = (
+            tuple(item.id for item in self.requests),
+            tuple(item.id for item in self.aborted_requests),
+            tuple(item.id for item in self.skipped_requests),
+        )
+        if any(ids != tuple(sorted(set(ids))) for ids in groups):
+            raise ValueError("完成、失败、跳过请求必须分别按 ID 严格升序排列")
+        if len(set().union(*groups)) != self.meta.num_requests:
+            raise ValueError("同一请求不可同时出现在多个结果状态")
+        non_completed = set(groups[1]) | set(groups[2])
+        if any(item.parent_request_id not in non_completed for item in self.skipped_requests):
+            raise ValueError("跳过请求的父轮必须已失败或跳过")
+        ttft_values = (self.metrics.ttft_mean, self.metrics.ttft_p50, self.metrics.ttft_p99)
+        if self.meta.num_completed == 0:
+            if (
+                any(value is not None for value in ttft_values)
+                or self.metrics.tpot_mean is not None
+                or self.metrics.throughput is not None
+                or self.metrics.makespan != 0
+            ):
+                raise ValueError("无成功请求时 TTFT、TPOT、吞吐无定义且 makespan 为 0")
+        elif any(value is None for value in ttft_values):
+            raise ValueError("有成功请求时 TTFT 统计必须有定义")
+        elif (self.metrics.makespan == 0) != (self.metrics.throughput is None):
+            raise ValueError("有成功请求时吞吐仅在 makespan 为 0 时无定义")
+        if self.meta.num_completed and (
+            (self.metrics.tpot_mean is None)
+            == any(request.output_len > 1 for request in self.requests)
+        ):
+            raise ValueError("TPOT 仅对成功且输出超过 1 token 的请求有定义")
         return self

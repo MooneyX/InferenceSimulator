@@ -36,6 +36,10 @@ class Coordinator:
                 self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id),
             )
 
+    def _process_aborts(self) -> None:
+        for request_id in self.engine.drain_aborts():
+            self.engine.register_skipped(self.client.on_request_aborted(request_id))
+
     def _schedule_step(self, now_ms: float) -> None:
         if not self._step_pending:
             time = max(now_ms, self._busy_until)
@@ -58,14 +62,17 @@ class Coordinator:
                 self._enqueue_wakeups(self.client.on_request_completed(completion))
             elif event.kind is EventKind.CLIENT_SEND:
                 wakeup = self._wakeups.pop(event.ref)
-                self.engine.submit(self.client.on_wakeup(wakeup), now_ms)
-                self._schedule_step(now_ms)
+                accepted = self.engine.submit(self.client.on_wakeup(wakeup), now_ms)
+                self._process_aborts()
+                if accepted:
+                    self._schedule_step(now_ms)
             elif event.kind is EventKind.ENGINE_STEP:
                 self._step_pending = False
                 duration, finished = self.engine.step(now_ms, event.ref)
+                self._process_aborts()
                 end = now_ms + duration
                 self._busy_until = end
-                self._next_step += 1
+                self._next_step = self.engine.num_steps
                 for request_id in finished:
                     heapq.heappush(self._heap, self._factory.request_done(end, request_id))
                 if self.engine.has_work:

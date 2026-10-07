@@ -241,15 +241,27 @@ class F001Scheduler:
         self._last_arrival = now_ms
         if request.max_new_tokens < 1:
             return False
-        item = WaitingRequest(request, now_ms, generated_tokens)
+        self._insert(WaitingRequest(request, now_ms, generated_tokens))
+        return True
+
+    def requeue(self, request: InferenceRequest, now_ms: float, generated_tokens: int) -> None:
+        """回撤请求于步终重新等待；不改变尚在计算中到达请求的发送时钟。"""
+        if not 1 <= generated_tokens < request.max_new_tokens:
+            raise ValueError("回撤请求的生成进度不合法")
+        self._insert(WaitingRequest(request, now_ms, generated_tokens))
+
+    def _insert(self, item: WaitingRequest) -> None:
+        key = item.request.request_id
+        if key in self._queued:
+            raise ValueError("请求已在等待队列中")
         index = len(self._waiting)
-        while index and self._waiting[index - 1].arrival == now_ms:
-            if self._waiting[index - 1].request.request_id < request.request_id:
+        while index:
+            previous = self._waiting[index - 1]
+            if (previous.arrival, previous.request.request_id) <= (item.arrival, key):
                 break
             index -= 1
         self._waiting.insert(index, item)
-        self._queued.add(request.request_id)
-        return True
+        self._queued.add(key)
 
     def select_prefill(
         self,

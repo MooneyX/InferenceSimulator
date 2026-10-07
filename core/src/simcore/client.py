@@ -6,6 +6,7 @@ from simcore.schemas import (
     EngineConfig,
     InferenceRequest,
     RequestCompletion,
+    SkippedRequest,
     WorkloadPlan,
 )
 
@@ -93,3 +94,20 @@ class ClientDriver:
             self._ready[child_id] = time
             wakeups.append(ClientWakeup(child.session_id, child_id, time))
         return tuple(wakeups)
+
+    def on_request_aborted(self, request_id: int) -> tuple[SkippedRequest, ...]:
+        """失败不触发子轮发送，递归标记全部尚未发送的后代。"""
+        if request_id not in self._inflight:
+            raise ValueError("失败了未发送或已结算的请求")
+        del self._inflight[request_id]
+        skipped: list[SkippedRequest] = []
+        stack = list(reversed(self.plan.children.get(request_id, ())))
+        while stack:
+            child_id = stack.pop()
+            if child_id in self._sent or child_id in self._ready:
+                raise ValueError("失败父轮的后代不应已就绪或发送")
+            child = self.plan.turns[child_id]
+            assert child.parent_request_id is not None
+            skipped.append(SkippedRequest(id=child_id, parent_request_id=child.parent_request_id))
+            stack.extend(reversed(self.plan.children.get(child_id, ())))
+        return tuple(sorted(skipped, key=lambda item: item.id))

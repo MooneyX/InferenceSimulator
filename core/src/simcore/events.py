@@ -158,6 +158,8 @@ class StepTrace:
     l1_free_after: int = 0
     l1_internal_fragmentation_tokens: int = 0
     phase: Literal["PREFILL", "DECODE", "MIXED"] | None = None
+    withdrawn: tuple[int, ...] = ()
+    aborted: tuple[int, ...] = ()
 
     @property
     def end(self) -> float:

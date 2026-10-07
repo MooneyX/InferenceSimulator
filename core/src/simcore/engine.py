@@ -8,16 +8,18 @@ from dataclasses import dataclass
 from typing import Literal
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
-from simcore.kv_cache import L1KVCache, L1Snapshot
+from simcore.kv_cache import CacheCapacityError, L1KVCache, L1Snapshot
 from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, workload_time
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import (
+    AbortedRequest,
     Arrival,
     EngineConfig,
     InferenceRequest,
     PerfModelConfig,
     RequestCompletion,
     RequestRecord,
+    SkippedRequest,
 )
 
 __all__ = ["Engine", "EngineRun", "run_engine"]
@@ -46,6 +48,9 @@ class EngineRun:
     cache_snapshot: L1Snapshot
     l1_evictions: int = 0
     l1_peak_resident_blocks: int = 0
+    aborted_requests: tuple[AbortedRequest, ...] = ()
+    skipped_requests: tuple[SkippedRequest, ...] = ()
+    replayed_prefill_tokens: int = 0
 
 
 def run_engine(
@@ -105,6 +110,12 @@ class Engine:
         self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
+        self._arrival_times: dict[int, float] = {}
+        self._aborted: dict[int, AbortedRequest] = {}
+        self._recent_aborts: list[int] = []
+        self._skipped: dict[int, SkippedRequest] = {}
+        self._retry_counts: dict[int, int] = {}
+        self._replayed_tokens: dict[int, int] = {}
         # request_id -> 已采样输出数；Decode 只处理步首已有请求
         self._running: dict[int, int] = {}
         self._pending_done: dict[int, float] = {}
@@ -127,24 +138,93 @@ class Engine:
     def last_workload(self) -> StepWorkload | None:
         return self._last_workload
 
-    def submit(self, request: InferenceRequest, now_ms: float) -> None:
-        """只在客户端真正发送时入缓存调度队列并记录提交时刻。"""
-        if request.request_id in self._requests:
-            raise ValueError(f"request_id 重复: {request.request_id}")
-        output_len = self._output_targets.get(request.request_id)
-        if output_len is None or not 1 <= output_len <= request.max_new_tokens:
+    def submit(self, request: InferenceRequest, now_ms: float) -> bool:
+        """发送时 M<1 直接失败；其他请求按 FCFS 入队。"""
+        key = request.request_id
+        if key in self._requests:
+            raise ValueError(f"request_id 重复: {key}")
+        output_len = self._output_targets.get(key)
+        if output_len is None:
+            raise ValueError("请求缺少引擎持有的输出目标")
+        if request.max_new_tokens > 0 and not 1 <= output_len <= request.max_new_tokens:
             raise ValueError("请求实际输出长度与可见上限不一致")
-        arrival = Arrival(
-            request_id=request.request_id,
+        self._requests[key] = request
+        self._arrival_times[key] = now_ms
+        self._log.record(ArrivalTrace(now_ms, key, request.prompt_len, output_len))
+        if not self._prefix_scheduler.enqueue(request, now_ms):
+            self._abort(key, now_ms, "input_exceeds_kv_capacity")
+            return False
+        self._arrivals[key] = Arrival(
+            request_id=key,
             sim_time=now_ms,
             prompt_len=request.prompt_len,
             output_len=output_len,
             max_new_tokens=request.max_new_tokens,
         )
-        self._prefix_scheduler.enqueue(request, now_ms)
-        self._requests[request.request_id] = request
-        self._arrivals[request.request_id] = arrival
-        self._log.record(ArrivalTrace.of(arrival))
+        return True
+
+    def _abort(
+        self,
+        request_id: int,
+        now_ms: float,
+        reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"],
+    ) -> None:
+        if request_id in self._aborted or request_id in self._finish:
+            raise ValueError("请求已终结")
+        self._aborted[request_id] = AbortedRequest(
+            id=request_id,
+            arrival=self._arrival_times[request_id],
+            failed_at=now_ms,
+            reason=reason,
+            generated_tokens=self._running.get(request_id, 0),
+            retry_count=self._retry_counts.get(request_id, 0),
+        )
+        self._recent_aborts.append(request_id)
+
+    def drain_aborts(self) -> tuple[int, ...]:
+        """供客户端标记后代 skipped；每个失败仅通知一次。"""
+        result = tuple(sorted(self._recent_aborts))
+        self._recent_aborts.clear()
+        return result
+
+    def register_skipped(self, skipped: tuple[SkippedRequest, ...]) -> None:
+        for item in skipped:
+            if item.id in self._requests or item.id in self._skipped:
+                raise ValueError("跳过的子轮已发送或重复标记")
+            self._skipped[item.id] = item
+
+    def _prepare_decode(
+        self, running: dict[int, RunningRequest], now_ms: float
+    ) -> tuple[dict[int, RunningRequest], tuple[tuple[int, int], ...]]:
+        """先驱逐，再按 g、负输入长、ID 回撤；单请求仍无法进展则终止。"""
+        remaining = dict(running)
+        withdrawn: list[tuple[int, int]] = []
+        cache = self._prefix_cache
+        while remaining:
+            needed = sum(cache.state(key).k % cache.page_size == 0 for key in remaining)
+            try:
+                cache.ensure_free(needed)
+                break
+            except CacheCapacityError:
+                cache.ensure_free(cache.free_pages + cache.evictable_pages)
+                key = min(
+                    remaining,
+                    key=lambda candidate: (
+                        remaining[candidate].generated_tokens,
+                        -remaining[candidate].request.prompt_len,
+                        candidate,
+                    ),
+                )
+                generated = remaining[key].generated_tokens
+                if len(remaining) == 1:
+                    self._abort(key, now_ms, "decode_kv_exhausted")
+                else:
+                    self._retry_counts[key] = self._retry_counts.get(key, 0) + 1
+                    withdrawn.append((key, generated))
+                cache.withdraw(key)
+                del self._running[key]
+                del remaining[key]
+        return remaining, tuple(withdrawn)
 
     def step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]]:
         """只推进步首 Decode 和本步 Prefill；结果发布后下一步才可复用。"""
@@ -156,12 +236,26 @@ class Engine:
             for key, generated in self._running.items()
         }
         before = cache.snapshot() if self._log.enabled else None
+        evictions_before = cache.evictions
+        aborts_before = len(self._recent_aborts)
+        withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
             selection = self._prefix_scheduler.select_prefill(running)
+            if not selection.admitted and running:
+                running, withdrawn = self._prepare_decode(running, now_ms)
+                if withdrawn:
+                    self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = () if selection.admitted else tuple(sorted(running))
         else:
+            running, withdrawn = self._prepare_decode(running, now_ms)
+            if withdrawn:
+                self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
             selection = self._prefix_scheduler.select_prefill(running, decode_ids)
+        for item in selection.aborted:
+            self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
+        for item in selection.restored:
+            self._running[item.request.request_id] = item.generated_tokens
         prefill = tuple(
             sorted(
                 (
@@ -181,6 +275,12 @@ class Engine:
             for key in decode_ids
         )
         if not prefill and not decode:
+            for key, generated in withdrawn:
+                self._prefix_scheduler.requeue(self._requests[key], now_ms, generated)
+            if not self.has_work and not self._pending_done:
+                self._prefix_scheduler.advance_ratio({}, idle=True)
+            if selection.aborted or selection.restored or withdrawn or self._recent_aborts:
+                return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
         phase: Literal["PREFILL", "DECODE", "MIXED"] = (
             "MIXED" if prefill and decode else "PREFILL" if prefill else "DECODE"
@@ -192,7 +292,6 @@ class Engine:
         workload = StepWorkload(phase, prefill, decode, allocated_pages, len(prefill) + len(decode))
         duration = workload_time(workload, self._perf)
         end = now_ms + duration
-        evictions_before = cache.evictions
         cache.ensure_free(workload.allocated_pages)
         for candidate in selection.admitted:
             cache.admit(candidate.waiting.request.request_id)
@@ -209,7 +308,12 @@ class Engine:
             item = candidate.waiting
             key = item.request.request_id
             cache.extend(key, item.target_tokens)
-            if not item.restoring:
+            if item.restoring:
+                self._running[key] = item.generated_tokens
+                self._replayed_tokens[key] = (
+                    self._replayed_tokens.get(key, 0) + candidate.new_tokens
+                )
+            else:
                 self._prefill_start[key] = now_ms
                 self._prefill_end[key] = end
                 self._running[key] = 1
@@ -253,15 +357,20 @@ class Engine:
                     l1_free_after=cache_after.free_blocks,
                     l1_internal_fragmentation_tokens=cache_after.internal_fragmentation_tokens,
                     phase=workload.phase,
+                    withdrawn=tuple(key for key, _ in withdrawn),
+                    aborted=tuple(sorted(self._recent_aborts[aborts_before:])),
                 )
             )
         for key in finished:
             del self._running[key]
             self._pending_done[key] = end
-        self._prefix_scheduler.advance_ratio(
-            {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},
-            decoded=bool(decode_ids),
-        )
+        for key, generated in withdrawn:
+            self._prefix_scheduler.requeue(self._requests[key], end, generated)
+        if not withdrawn:
+            self._prefix_scheduler.advance_ratio(
+                {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},
+                decoded=bool(decode_ids),
+            )
         self._num_steps += 1
         return duration, tuple(finished)
 
@@ -284,7 +393,7 @@ class Engine:
     def finalize(self) -> EngineRun:
         """所有请求完成后形成稳定输出，包含即时提交时刻。"""
         arrivals = self._arrivals
-        unfinished = arrivals.keys() - self._finish.keys()
+        unfinished = arrivals.keys() - self._finish.keys() - self._aborted.keys()
         if unfinished:  # pragma: no cover - 进展保证下不可达
             raise RuntimeError(f"仿真结束但仍有 {len(unfinished)} 个请求未完成")
 
@@ -307,15 +416,20 @@ class Engine:
                 actual_prefill_tokens=(
                     arrivals[request_id].prompt_len - self._admission_stats[request_id][1]
                 ),
+                replayed_prefill_tokens=self._replayed_tokens.get(request_id, 0),
+                retry_count=self._retry_counts.get(request_id, 0),
                 l1_hit_tokens=self._admission_stats.get(request_id, (0, 0))[1],
                 logical_context_tokens=(
                     arrivals[request_id].prompt_len + arrivals[request_id].output_len
                 ),
             )
-            for request_id in sorted(arrivals)
+            for request_id in sorted(self._finish)
         )
-        sim_start = min((a.sim_time for a in arrivals.values()), default=0.0)
-        sim_end = max(self._finish.values(), default=0.0)
+        sim_start = min(self._arrival_times.values(), default=0.0)
+        sim_end = max(
+            (*self._finish.values(), *(item.failed_at for item in self._aborted.values())),
+            default=sim_start,
+        )
         return EngineRun(
             records=records,
             warnings=tuple(self._warnings),
@@ -326,4 +440,7 @@ class Engine:
             cache_snapshot=self._prefix_cache.snapshot(),
             l1_evictions=self._prefix_cache.evictions,
             l1_peak_resident_blocks=self._prefix_cache.peak_resident_pages,
+            aborted_requests=tuple(self._aborted[key] for key in sorted(self._aborted)),
+            skipped_requests=tuple(self._skipped[key] for key in sorted(self._skipped)),
+            replayed_prefill_tokens=sum(self._replayed_tokens.values()),
         )

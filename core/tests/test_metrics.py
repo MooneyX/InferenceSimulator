@@ -178,9 +178,11 @@ class TestPrefixMetrics:
 
 
 class TestEdgeCases:
-    def test_empty_rejected(self) -> None:
-        with pytest.raises(ValueError, match="为空"):
-            compute_metrics([])
+    def test_empty_has_undefined_success_metrics(self) -> None:
+        result = compute_metrics([])
+        assert result.ttft_mean is None and result.ttft_p50 is None
+        assert result.ttft_p99 is None and result.tpot_mean is None
+        assert result.throughput is None and result.makespan == 0
 
     def test_accepts_tuple(self) -> None:
         m = compute_metrics((rec(0, 0.0, 10.0, 30.0, 3),))

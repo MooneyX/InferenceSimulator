@@ -53,14 +53,38 @@ def compute_metrics(
     cache_snapshot: CacheSnapshot | L1Snapshot | None = None,
     l1_evictions: int = 0,
     l1_peak_resident_blocks: int = 0,
+    earliest_sent_arrival: float | None = None,
+    replayed_prefill_tokens: int = 0,
 ) -> Metrics:
-    """由区间记录计算全场指标。
-
-    Raises:
-        ValueError: ``records`` 为空——配置层保证至少 1 个请求，空输入说明调用有误。
-    """
+    """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
     if not records:
-        raise ValueError("records 为空，无法计算指标")
+        return Metrics(
+            ttft_mean=None,
+            ttft_p50=None,
+            ttft_p99=None,
+            tpot_mean=None,
+            throughput=None,
+            makespan=0.0,
+            target_ideal_prefix_hit_rate=plan.target_ideal_prefix_hit_rate if plan else 0.0,
+            constructed_ideal_prefix_hit_rate=(
+                plan.constructed_ideal_prefix_hit_rate if plan else 0.0
+            ),
+            ideal_hit_quantization_error=plan.quantization_error if plan else 0.0,
+            replayed_prefill_tokens=replayed_prefill_tokens,
+            l1_evictions=l1_evictions,
+            l1_peak_resident_blocks=l1_peak_resident_blocks,
+            l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
+            l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
+            l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,
+            l1_evictable_blocks=cache_snapshot.evictable_blocks if cache_snapshot else 0,
+            l1_free_blocks=cache_snapshot.free_blocks if cache_snapshot else 0,
+            l1_reserved_future_blocks=(
+                cache_snapshot.reserved_future_blocks if cache_snapshot else 0
+            ),
+            l1_internal_fragmentation_tokens=(
+                cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
+            ),
+        )
 
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
     ttft_mean = math.fsum(ttfts) / len(ttfts)
@@ -69,6 +93,8 @@ def compute_metrics(
     tpot_mean = math.fsum(tpots) / len(tpots) if tpots else None
 
     sim_start = min(r.arrival for r in records)
+    if earliest_sent_arrival is not None:
+        sim_start = min(sim_start, earliest_sent_arrival)
     sim_end = max(r.finish for r in records)
     makespan = sim_end - sim_start
     throughput = len(records) / (makespan / _MS_PER_SECOND) if makespan > 0 else None
@@ -114,6 +140,7 @@ def compute_metrics(
         l2_hit_tokens=sum(record.l2_hit_tokens for record in records),
         l3_hit_tokens=sum(record.l3_hit_tokens for record in records),
         actual_prefill_tokens=prefill,
+        replayed_prefill_tokens=replayed_prefill_tokens,
         saved_prefill_tokens=input_tokens - prefill,
         l1_evictions=l1_evictions,
         l1_peak_resident_blocks=l1_peak_resident_blocks,

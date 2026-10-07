@@ -53,20 +53,25 @@ class TestOrdering:
         done = f.request_done(5.0, 2)
         assert sorted([step, arrival, done]) == [done, arrival, step]
 
-    def test_client_callbacks_precede_send_and_step(self) -> None:
+    def test_client_callbacks_and_immediate_children_precede_normal_send(self) -> None:
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         send = f.client_send(5.0, 3)
+        child = f.client_child_send(5.0, 4)
         callback = f.client_completion(5.0, 2)
         done = f.request_done(5.0, 2)
-        assert sorted((step, send, callback, done)) == [done, callback, send, step]
+        assert sorted((step, send, child, callback, done)) == [done, callback, child, send, step]
         assert f.arrival(5.0, 3).kind == send.kind
 
-    def test_same_time_same_kind_by_creation(self) -> None:
+    def test_same_time_same_kind_by_request_id_then_creation(self) -> None:
         f = EventFactory()
-        a = f.arrival(5.0, 9)
-        b = f.arrival(5.0, 3)
-        assert a < b  # 按 seq，而非 request_id
+        high_id = f.arrival(5.0, 9)
+        low_id = f.arrival(5.0, 3)
+        assert low_id < high_id
+        assert f.request_done(5.0, 1) < f.request_done(5.0, 2)
+        first = f.client_send(5.0, 7)
+        second = f.client_send(5.0, 7)
+        assert first < second
 
     def test_heap_pop_order_is_deterministic(self) -> None:
         """随机打乱入堆顺序，出堆序列恒定 —— 可复现性的直接保证。"""
@@ -89,7 +94,13 @@ class TestOrdering:
             assert [heapq.heappop(heap) for _ in range(len(heap))] == expected
 
     def test_kind_priority_values(self) -> None:
-        assert EventKind.REQUEST_DONE < EventKind.ARRIVAL < EventKind.ENGINE_STEP
+        assert (
+            EventKind.REQUEST_DONE
+            < EventKind.CLIENT_COMPLETION
+            < EventKind.CLIENT_CHILD_SEND
+            < EventKind.ARRIVAL
+            < EventKind.ENGINE_STEP
+        )
 
 
 class TestEventFactory:
@@ -104,6 +115,7 @@ class TestEventFactory:
         assert (f.arrival(1.0, 7).kind, f.arrival(1.0, 7).ref) == (EventKind.ARRIVAL, 7)
         assert f.engine_step(1.0, 4).kind is EventKind.ENGINE_STEP
         assert f.request_done(1.0, 2).kind is EventKind.REQUEST_DONE
+        assert f.client_child_send(1.0, 3).kind is EventKind.CLIENT_CHILD_SEND
 
     def test_independent_factories(self) -> None:
         assert EventFactory().arrival(0.0, 0).seq == EventFactory().arrival(0.0, 0).seq == 0

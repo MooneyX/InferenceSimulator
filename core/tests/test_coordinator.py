@@ -31,7 +31,7 @@ def config(think: float = 0) -> SimConfig:
                 session=SessionConfig(num_sessions=1, think_time_ms=think),
             )
         ),
-        engine=EngineConfig(max_batch_size=1, kv_token_budget=200),
+        engine=EngineConfig(max_running_requests=1, max_total_tokens=200, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=0),
     )
 
@@ -51,8 +51,16 @@ def test_zero_think_done_callback_send_step_order() -> None:
     cfg = config()
     workload = cfg.workload.synthetic
     assert workload is not None
-    client = ClientDriver(build_plan(workload, cfg.engine.prefix_cache), cfg.engine.prefix_cache)
-    run = Coordinator(Engine(cfg.engine, cfg.perf_model), client).run()
+    plan = build_plan(workload, cfg.engine)
+    client = ClientDriver(plan, cfg.engine)
+    run = Coordinator(
+        Engine(
+            cfg.engine,
+            cfg.perf_model,
+            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
+        ),
+        client,
+    ).run()
     records = run.records
     assert records[0].finish == records[1].arrival
     assert records[1].prefill_start == records[1].arrival

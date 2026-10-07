@@ -7,12 +7,13 @@
 - **事件流** ``TraceRecord``：引擎处理事件后产出的自描述记录，按处理顺序追加到
   ``EventLog``。内核产出完整事件流但不经 API 暴露，为决策溯源与播放式仿真预留。
 
-同刻全序（可复现性的前提）：``(time, kind, seq)``。
+同刻全序（可复现性的前提）：``(time, kind, ref, seq)``。
 
-- ``kind`` 优先级：``REQUEST_DONE`` < ``CLIENT_COMPLETION`` < ``CLIENT_SEND``
-  < ``ENGINE_STEP``。同一时刻先结算全部完成并释放 KV，再通知客户端，接着发送
-  已就绪的请求，最后执行引擎步，使零思考时间的子请求能看到父请求释放的资源。
-- ``seq`` 由 ``EventFactory`` 单调分配，打破同刻同类事件的平局，等价于按创建顺序。
+- ``kind`` 优先级：``REQUEST_DONE`` < ``CLIENT_COMPLETION`` <
+  ``CLIENT_CHILD_SEND`` < ``CLIENT_SEND`` < ``ENGINE_STEP``。先按请求 ID
+  结算全部完成、释放 KV 和回调，再发送本时刻唤醒的子轮，然后发送普通到达，
+  最后安排引擎步。将来才到达的子轮与普通发送同级，按时刻和 ID 排序。
+- ``ref`` 在同类事件内按请求 ID 排序；``seq`` 只负责相同 ID 的最终平局。
 
 依赖层级：仅依赖 ``schemas``。
 """
@@ -41,29 +42,29 @@ class EventKind(IntEnum):
 
     REQUEST_DONE = 0
     CLIENT_COMPLETION = 1
-    CLIENT_SEND = 2
-    ARRIVAL = 2  # 旧调用方的发送事件别名
-    ENGINE_STEP = 3
+    CLIENT_CHILD_SEND = 2
+    CLIENT_SEND = 3
+    ARRIVAL = 3  # 旧调用方的发送事件别名
+    ENGINE_STEP = 4
 
 
 @dataclass(frozen=True, slots=True, order=True)
 class Event:
-    """调度事件。按字段声明顺序 ``(time, kind, seq, ref)`` 比较，可直接入 ``heapq``。
+    """调度事件。按 ``(time, kind, ref, seq)`` 排序，可直接入 ``heapq``。
 
-    ``seq`` 全局唯一，故比较永远不会落到 ``ref``。
+    同一时间同类事件优先处理较小的请求 ID，序号仅打破相同 ID 的平局。
 
     Attributes:
         time: 事件触发时刻（ms）。
         kind: 事件类别。
+        ref: 发送为 turn_id；完成/回调为 request_id；引擎步为步序号。
         seq: 创建序号，由 ``EventFactory`` 分配。
-        ref: ``CLIENT_SEND`` 为 turn_id；完成/回调事件为 request_id；
-            ``ENGINE_STEP`` 为步序号。
     """
 
     time: float
     kind: EventKind
-    seq: int
     ref: int
+    seq: int
 
 
 class EventFactory:
@@ -77,7 +78,7 @@ class EventFactory:
     def _make(self, time: float, kind: EventKind, ref: int) -> Event:
         seq = self._next_seq
         self._next_seq = seq + 1
-        return Event(time, kind, seq, ref)
+        return Event(time, kind, ref, seq)
 
     def arrival(self, time: float, request_id: int) -> Event:
         """旧单轮到达事件；映射到客户端发送的同刻优先级。"""
@@ -88,6 +89,10 @@ class EventFactory:
 
     def client_send(self, time: float, turn_id: int) -> Event:
         return self._make(time, EventKind.CLIENT_SEND, turn_id)
+
+    def client_child_send(self, time: float, turn_id: int) -> Event:
+        """完成回调在本时刻唤醒的子轮须先于其他普通发送。"""
+        return self._make(time, EventKind.CLIENT_CHILD_SEND, turn_id)
 
     def engine_step(self, time: float, step_index: int) -> Event:
         return self._make(time, EventKind.ENGINE_STEP, step_index)

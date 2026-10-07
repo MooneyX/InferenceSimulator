@@ -26,15 +26,18 @@ class Coordinator:
         self._busy_until = float("-inf")
         self._enqueue_wakeups(client.initial_wakeups())
 
-    def _enqueue_wakeups(self, wakeups: Iterable[ClientWakeup]) -> None:
+    def _enqueue_wakeups(
+        self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None
+    ) -> None:
         for wakeup in wakeups:
             if wakeup.turn_id in self._wakeups:
                 raise ValueError(f"轮次 {wakeup.turn_id} 重复安排发送")
             self._wakeups[wakeup.turn_id] = wakeup
-            heapq.heappush(
-                self._heap,
-                self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id),
-            )
+            if completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
+                event = self._factory.client_child_send(wakeup.send_time_ms, wakeup.turn_id)
+            else:
+                event = self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
+            heapq.heappush(self._heap, event)
 
     def _process_aborts(self) -> None:
         for request_id in self.engine.drain_aborts():
@@ -59,8 +62,10 @@ class Coordinator:
                 )
             elif event.kind is EventKind.CLIENT_COMPLETION:
                 completion = self._completions.pop(event.ref)
-                self._enqueue_wakeups(self.client.on_request_completed(completion))
-            elif event.kind is EventKind.CLIENT_SEND:
+                self._enqueue_wakeups(
+                    self.client.on_request_completed(completion), completed_at_ms=now_ms
+                )
+            elif event.kind in (EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND):
                 wakeup = self._wakeups.pop(event.ref)
                 accepted = self.engine.submit(self.client.on_wakeup(wakeup), now_ms)
                 self._process_aborts()

@@ -1,21 +1,21 @@
-"""单引擎执行器：内容请求始终通过 L1 块缓存调度与执行。
+"""单引擎执行器：请求通过 F001 调度器与 L1 页池顺序执行。
 
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
-from simcore.kv_cache import CacheSnapshot, HierarchicalKVCache
-from simcore.prefix_hash import encode, logical_chunk_id
-from simcore.scheduler import PrefixScheduler
+from simcore.kv_cache import L1KVCache, L1Snapshot
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, workload_time
+from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import (
     Arrival,
     EngineConfig,
     InferenceRequest,
     PerfModelConfig,
-    PrefixCacheConfig,
     RequestCompletion,
     RequestRecord,
 )
@@ -43,7 +43,7 @@ class EngineRun:
     sim_start: float
     sim_end: float
     trace: EventLog
-    cache_snapshot: CacheSnapshot
+    cache_snapshot: L1Snapshot
     l1_evictions: int = 0
     l1_peak_resident_blocks: int = 0
 
@@ -61,7 +61,7 @@ def run_engine(
         engine: 引擎配置。
         perf: 性能模型系数。
         arrivals: 到达序列，``request_id`` 须唯一。经事件堆排序，故不要求输入有序；
-            同刻到达按输入顺序处理。
+            同刻到达按请求 ID 排序处理。
         record_trace: 是否保存事件流；基准测试可关闭以剥离记录开销。
 
     Raises:
@@ -96,19 +96,16 @@ class Engine:
         record_trace: bool = True,
     ) -> None:
         self._output_targets = dict(output_targets)
-        self._cache_config: PrefixCacheConfig = engine.prefix_cache
-        self._prefix_cache = HierarchicalKVCache(
-            engine.prefix_cache.l1.capacity_blocks, engine.prefix_cache.block_size_tokens
-        )
-        self._prefix_scheduler = PrefixScheduler(
-            engine, perf, self._prefix_cache, record_trace=record_trace
-        )
+        self._engine_config = engine
+        self._perf = perf
+        self._prefix_cache = L1KVCache(engine.max_total_tokens, engine.page_size)
+        self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
-        self._l1_peak_resident_blocks = 0
+        self._last_workload: StepWorkload | None = None
         self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
-        # request_id -> 已产出 token 数；插入顺序即准入顺序，决定 decode 推进顺序
+        # request_id -> 已采样输出数；Decode 只处理步首已有请求
         self._running: dict[int, int] = {}
         self._pending_done: dict[int, float] = {}
         self._prefill_start: dict[int, float] = {}
@@ -125,6 +122,10 @@ class Engine:
     @property
     def num_steps(self) -> int:
         return self._num_steps
+
+    @property
+    def last_workload(self) -> StepWorkload | None:
+        return self._last_workload
 
     def submit(self, request: InferenceRequest, now_ms: float) -> None:
         """只在客户端真正发送时入缓存调度队列并记录提交时刻。"""
@@ -146,77 +147,104 @@ class Engine:
         self._log.record(ArrivalTrace.of(arrival))
 
     def step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]]:
-        """在同一 L1 快照上原子准入，步末发布真正算完的完整块。"""
+        """只推进步首 Decode 和本步 Prefill；结果发布后下一步才可复用。"""
         if step_index != self._num_steps:
             raise ValueError(f"预期 step_index={self._num_steps}，得到 {step_index}")
-        scheduler = self._prefix_scheduler
         cache = self._prefix_cache
-        plan = scheduler.plan_step()
-        if plan is None:
-            raise RuntimeError(f"step {step_index} @{now_ms}: 引擎步被调度但无工作")
-        end = now_ms + plan.duration
-        if plan.cache_result is not None:
-            for result in plan.cache_result.requests:
-                self._admission_stats[result.request_id] = (
-                    result.matched_cache_tokens,
-                    result.actual_hit_tokens,
-                )
-        self._l1_peak_resident_blocks = max(self._l1_peak_resident_blocks, cache.resident_blocks)
-        decoding = list(self._running)
-        finished: list[int] = []
-        for request_id in decoding:
-            produced = self._running[request_id] + 1
-            self._running[request_id] = produced
-            self._publish_output(request_id, produced)
-            if produced == self._output_targets[request_id]:
-                finished.append(request_id)
-
-        for request, probe in zip(plan.admitted, plan.probes, strict=True):
-            request_id = request.request_id
-            self._prefill_start[request_id] = now_ms
-            self._prefill_end[request_id] = end
-            cache.publish(
-                request_id,
-                tuple(
-                    logical_chunk_id(request_id, index, request.inherited_prefix_ids)
-                    for index in range(
-                        probe.matched_blocks, request.prompt_len // cache.block_size_tokens
+        running = {
+            key: RunningRequest(self._requests[key], generated)
+            for key, generated in self._running.items()
+        }
+        before = cache.snapshot() if self._log.enabled else None
+        if self._engine_config.pd_mutually_exclusive:
+            selection = self._prefix_scheduler.select_prefill(running)
+            decode_ids = () if selection.admitted else tuple(sorted(running))
+        else:
+            decode_ids = tuple(sorted(running))
+            selection = self._prefix_scheduler.select_prefill(running, decode_ids)
+        prefill = tuple(
+            sorted(
+                (
+                    PrefillWork(
+                        candidate.waiting.request.request_id,
+                        candidate.reused_tokens,
+                        candidate.new_tokens,
+                        candidate.context_after,
                     )
+                    for candidate in selection.admitted
                 ),
+                key=lambda entry: entry.request_id,
             )
-            self._running[request_id] = 1
-            self._publish_output(request_id, 1)
-            if self._output_targets[request_id] == 1:
-                finished.append(request_id)
-
-        self._l1_peak_resident_blocks = max(self._l1_peak_resident_blocks, cache.resident_blocks)
+        )
+        decode = tuple(
+            DecodeWork(key, self._requests[key].prompt_len + running[key].generated_tokens)
+            for key in decode_ids
+        )
+        if not prefill and not decode:
+            raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
+        phase: Literal["PREFILL", "DECODE", "MIXED"] = (
+            "MIXED" if prefill and decode else "PREFILL" if prefill else "DECODE"
+        )
+        decode_new_pages = sum(cache.state(key).k % cache.page_size == 0 for key in decode_ids)
+        allocated_pages = decode_new_pages + sum(
+            candidate.required_pages for candidate in selection.admitted
+        )
+        workload = StepWorkload(phase, prefill, decode, allocated_pages, len(prefill) + len(decode))
+        duration = workload_time(workload, self._perf)
+        end = now_ms + duration
+        evictions_before = cache.evictions
+        cache.ensure_free(workload.allocated_pages)
+        for candidate in selection.admitted:
+            cache.admit(candidate.waiting.request.request_id)
+        finished: list[int] = []
+        for key in decode_ids:
+            previous = running[key].generated_tokens
+            if cache.state(key).k != self._requests[key].prompt_len + previous - 1:
+                raise RuntimeError("Decode 步首 KV 长度与已采样输出数不一致")
+            cache.extend(key, cache.state(key).k + 1)
+            self._running[key] = previous + 1
+            if self._running[key] == self._output_targets[key]:
+                finished.append(key)
+        for candidate in selection.admitted:
+            item = candidate.waiting
+            key = item.request.request_id
+            cache.extend(key, item.target_tokens)
+            if not item.restoring:
+                self._prefill_start[key] = now_ms
+                self._prefill_end[key] = end
+                self._running[key] = 1
+                if self._output_targets[key] == 1:
+                    finished.append(key)
+            self._admission_stats.setdefault(
+                key, (candidate.reused_tokens, candidate.reused_tokens)
+            )
+        cache.publish_batch(tuple(item.waiting.request.request_id for item in selection.admitted))
+        self._last_workload = workload
+        finished.sort()
         if self._log.enabled:
-            cache_after = cache.snapshot()
-            before = plan.cache_before
             assert before is not None
+            cache_after = cache.snapshot()
             self._log.record(
                 StepTrace(
                     time=now_ms,
                     step_index=step_index,
-                    duration=plan.duration,
-                    admitted=tuple(request.request_id for request in plan.admitted),
+                    duration=duration,
+                    admitted=tuple(
+                        candidate.waiting.request.request_id for candidate in selection.admitted
+                    ),
                     forced=(),
-                    num_decoding=plan.num_decoding,
-                    batch_total_tokens=plan.batch_total_tokens,
-                    kv_used=cache.logical_context_tokens,
+                    num_decoding=len(decode),
+                    batch_total_tokens=sum(item.context_after for item in prefill)
+                    + sum(item.context_after_decode for item in decode),
+                    kv_used=sum(cache.state(key).k for key in self._running)
+                    + sum(cache.state(key).k for key in self._pending_done),
                     kv_overflow=0,
                     finished=tuple(finished),
-                    probes=len(plan.probes),
-                    matched_cache_tokens=sum(p.matched_cache_tokens for p in plan.probes),
-                    actual_hit_tokens=sum(
-                        item.actual_hit_tokens for item in plan.cache_result.requests
-                    )
-                    if plan.cache_result
-                    else 0,
-                    allocated_blocks=plan.cache_result.allocated_blocks if plan.cache_result else 0,
-                    evicted_blocks=len(plan.cache_result.evicted_block_ids)
-                    if plan.cache_result
-                    else 0,
+                    probes=len(selection.admitted),
+                    matched_cache_tokens=sum(item.reused_tokens for item in prefill),
+                    actual_hit_tokens=sum(item.reused_tokens for item in prefill),
+                    allocated_blocks=allocated_pages,
+                    evicted_blocks=cache.evictions - evictions_before,
                     l1_active_before=before.active_blocks,
                     l1_evictable_before=before.evictable_blocks,
                     l1_free_before=before.free_blocks,
@@ -224,34 +252,31 @@ class Engine:
                     l1_evictable_after=cache_after.evictable_blocks,
                     l1_free_after=cache_after.free_blocks,
                     l1_internal_fragmentation_tokens=cache_after.internal_fragmentation_tokens,
+                    phase=workload.phase,
                 )
             )
-        for request_id in finished:
-            del self._running[request_id]
-            self._pending_done[request_id] = end
+        for key in finished:
+            del self._running[key]
+            self._pending_done[key] = end
+        self._prefix_scheduler.advance_ratio(
+            {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},
+            decoded=bool(decode_ids),
+        )
         self._num_steps += 1
-        return plan.duration, tuple(finished)
-
-    def _publish_output(self, request_id: int, produced: int) -> None:
-        cache = self._prefix_cache
-        request = self._requests[request_id]
-        cache.advance(request_id)
-        total_tokens = request.prompt_len + produced
-        block_size = self._cache_config.block_size_tokens
-        if total_tokens % block_size == 0:
-            cache.publish(request_id, (encode(request_id, total_tokens // block_size - 1),))
+        return duration, tuple(finished)
 
     def complete(self, now_ms: float, request_id: int) -> RequestCompletion:
         """在 Done 事件时释放 KV，只返回请求身份和完成时间。"""
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
             raise ValueError(f"请求 {request_id} 未待结算或完成时刻不符")
-        released = self._prefix_cache.request_context_tokens(request_id)
-        self._prefix_cache.release(request_id)
-        self._prefix_scheduler.on_request_released()
+        released = self._prefix_cache.state(request_id).k
+        self._prefix_cache.finish(request_id)
         self._log.record(DoneTrace(now_ms, request_id, released))
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
+        if not self.has_work and not self._pending_done:
+            self._prefix_scheduler.advance_ratio({}, idle=True)
         return RequestCompletion(request_id, now_ms, self._output_targets[request_id])
 
     # ------------------------------------------------------------ 结算
@@ -275,8 +300,7 @@ class Engine:
                 session_id=self._requests[request_id].session_id,
                 parent_request_id=self._requests[request_id].parent_request_id,
                 ideal_reuse_tokens=(
-                    self._requests[request_id].ideal_reuse_blocks
-                    * self._cache_config.block_size_tokens
+                    self._requests[request_id].ideal_reuse_blocks * self._prefix_cache.page_size
                 ),
                 matched_cache_tokens=self._admission_stats.get(request_id, (0, 0))[0],
                 actual_hit_tokens=self._admission_stats.get(request_id, (0, 0))[1],
@@ -301,5 +325,5 @@ class Engine:
             trace=self._log,
             cache_snapshot=self._prefix_cache.snapshot(),
             l1_evictions=self._prefix_cache.evictions,
-            l1_peak_resident_blocks=self._l1_peak_resident_blocks,
+            l1_peak_resident_blocks=self._prefix_cache.peak_resident_pages,
         )

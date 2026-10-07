@@ -1,17 +1,89 @@
 """性能模型：把 token 规模映射为耗时（ms）。
 
 本模块全部为**纯函数**——输出仅取决于显式入参，无全局状态、无缓存、无随机性。
-这是 ``docs/design/perf-model.md`` 的当前成本契约，也为未来内核替换保留纯函数接缝：
+本期单步计费以 F001 ``StepWorkload`` 为准；旧成本函数保留供已有调用方使用。
 只要系数一致，任何语言的等价实现都必须给出逐位相同的结果。
 
 依赖层级：仅依赖 ``schemas``。
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal
 
 from simcore.schemas import PerfModelConfig
 
-__all__ = ["decode_step_time", "prefill_cost", "prefill_time", "step_time"]
+__all__ = [
+    "DecodeWork",
+    "PrefillWork",
+    "StepWorkload",
+    "decode_step_time",
+    "prefill_cost",
+    "prefill_time",
+    "step_time",
+    "workload_time",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PrefillWork:
+    request_id: int
+    reused_tokens: int
+    new_tokens: int
+    context_after: int
+
+    def __post_init__(self) -> None:
+        if self.request_id < 0 or self.reused_tokens < 0 or self.new_tokens < 1:
+            raise ValueError("Prefill 请求 ID、复用量或新计算量不合法")
+        if self.context_after != self.reused_tokens + self.new_tokens:
+            raise ValueError("Prefill 上下文长度必须等于复用量与新计算量之和")
+
+
+@dataclass(frozen=True, slots=True)
+class DecodeWork:
+    request_id: int
+    context_after_decode: int
+
+    def __post_init__(self) -> None:
+        if self.request_id < 0 or self.context_after_decode < 1:
+            raise ValueError("Decode 请求 ID 或上下文长度不合法")
+
+
+@dataclass(frozen=True, slots=True)
+class StepWorkload:
+    phase: Literal["PREFILL", "DECODE", "MIXED"]
+    prefill: tuple[PrefillWork, ...]
+    decode: tuple[DecodeWork, ...]
+    allocated_pages: int
+    batch_requests: int
+
+    def __post_init__(self) -> None:
+        prefill_ids = tuple(item.request_id for item in self.prefill)
+        decode_ids = tuple(item.request_id for item in self.decode)
+        phase = "MIXED" if prefill_ids and decode_ids else "PREFILL" if prefill_ids else "DECODE"
+        if (not prefill_ids and not decode_ids) or self.phase != phase:
+            raise ValueError("单步阶段须与非空 Prefill/Decode 集合一致")
+        if (
+            prefill_ids != tuple(sorted(set(prefill_ids)))
+            or decode_ids != tuple(sorted(set(decode_ids)))
+            or set(prefill_ids) & set(decode_ids)
+        ):
+            raise ValueError("Prefill/Decode 请求须各自按 ID 排序且不可重叠")
+        if self.allocated_pages < 0 or self.batch_requests != len(prefill_ids) + len(decode_ids):
+            raise ValueError("单步页申请量或批内请求数不合法")
+
+
+def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
+    """纯步取各自成本；融合取较大成本，不重复统计同一步 Decode。"""
+    prefill_total = 0.0
+    for item in workload.prefill:
+        prefill_total += prefill_cost(item.reused_tokens, item.new_tokens, cfg)
+    decode_total = (
+        decode_step_time(sum(item.context_after_decode for item in workload.decode), cfg)
+        if workload.decode
+        else 0.0
+    )
+    return max(prefill_total, decode_total)
 
 
 def prefill_time(prompt_tokens: int, cfg: PerfModelConfig) -> float:

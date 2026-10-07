@@ -20,6 +20,7 @@ __all__ = [
     "KVRequestState",
     "L1KVCache",
     "L1Page",
+    "L1Snapshot",
     "PrefixProbe",
     "RequestCacheResult",
 ]
@@ -493,6 +494,17 @@ class KVRequestState:
     f: int
 
 
+@dataclass(frozen=True, slots=True)
+class L1Snapshot:
+    capacity_blocks: int
+    resident_blocks: int
+    active_blocks: int
+    evictable_blocks: int
+    free_blocks: int
+    internal_fragmentation_tokens: int
+    reserved_future_blocks: int = 0
+
+
 class L1KVCache:
     """F001 单池 KV：共享完整页索引 + 每请求 K/F，不保存物理页表。
 
@@ -541,6 +553,18 @@ class L1KVCache:
     @property
     def available_tokens(self) -> int:
         return (self.free_pages + self._evictable_pages) * self.page_size
+
+    def snapshot(self) -> L1Snapshot:
+        """只汇总计数与活动请求，不复制或排序驻留完整页。"""
+        private_tokens = sum(state.k - state.f for state in self._states.values())
+        return L1Snapshot(
+            capacity_blocks=self.capacity_pages,
+            resident_blocks=self.resident_pages,
+            active_blocks=self.active_pages,
+            evictable_blocks=self.evictable_pages,
+            free_blocks=self.free_pages,
+            internal_fragmentation_tokens=self._private_pages * self.page_size - private_tokens,
+        )
 
     def page(self, chunk_id: str) -> L1Page | None:
         """只读查找不刷新 LRU。"""

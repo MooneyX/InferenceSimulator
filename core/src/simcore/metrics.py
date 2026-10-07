@@ -12,7 +12,7 @@
 import math
 from collections.abc import Sequence
 
-from simcore.kv_cache import CacheSnapshot
+from simcore.kv_cache import CacheSnapshot, L1Snapshot
 from simcore.schemas import Metrics, RequestRecord, WorkloadPlan
 
 __all__ = ["compute_metrics", "percentile"]
@@ -50,7 +50,7 @@ def compute_metrics(
     records: Sequence[RequestRecord],
     *,
     plan: WorkloadPlan | None = None,
-    cache_snapshot: CacheSnapshot | None = None,
+    cache_snapshot: CacheSnapshot | L1Snapshot | None = None,
     l1_evictions: int = 0,
     l1_peak_resident_blocks: int = 0,
 ) -> Metrics:

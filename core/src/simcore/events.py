@@ -20,6 +20,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Literal
 
 from simcore.schemas import Arrival
 
@@ -156,6 +157,7 @@ class StepTrace:
     l1_evictable_after: int = 0
     l1_free_after: int = 0
     l1_internal_fragmentation_tokens: int = 0
+    phase: Literal["PREFILL", "DECODE", "MIXED"] | None = None
 
     @property
     def end(self) -> float:

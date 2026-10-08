@@ -10,7 +10,7 @@ export interface MetricsPanelProps {
 interface MetricCardProps {
   label: string;
   value: number | null | undefined;
-  unit: "ms" | "请求/秒" | "%" | "token" | "blocks";
+  unit: "ms" | "请求/秒" | "%" | "token" | "页" | "次";
   description: string;
 }
 
@@ -82,7 +82,7 @@ export function MetricsPanel({ metrics }: MetricsPanelProps) {
           label="Makespan"
           value={metrics.makespan}
           unit="ms"
-          description="首根请求到达至末请求完成的总时长"
+          description="最早已发送请求到达至末成功请求完成的时间"
         />
         <MetricCard label="目标理想命中率" value={metrics.target_ideal_prefix_hit_rate} unit="%" description="用户设置的所有请求输入 token 加权目标" />
         <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="按计划继承块数和完整块粒度量化的理想前缀" />
@@ -90,11 +90,12 @@ export function MetricsPanel({ metrics }: MetricsPanelProps) {
         <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="真正跳过 Prefill 的输入 token 比例" />
         <MetricCard label="有命中请求比例" value={metrics.requests_with_hit_ratio} unit="%" description="至少一个输入 token 真正复用的请求" />
         <MetricCard label="完整块全命中请求比例" value={metrics.requests_fully_cached_ratio} unit="%" description="有完整输入块且全部物理命中的请求" />
-        <MetricCard label="实际 Prefill" value={metrics.actual_prefill_tokens} unit="token" description="本场真实计算的输入 token 数" />
+        <MetricCard label="实际 Prefill" value={metrics.actual_prefill_tokens} unit="token" description="成功请求首次准入计算的输入 token 数" />
+        <MetricCard label="重算 Prefill" value={metrics.replayed_prefill_tokens} unit="token" description="回撤恢复的重复计算，包含后续失败请求" />
         <MetricCard label="节省 Prefill" value={metrics.saved_prefill_tokens} unit="token" description="命中而跳过的输入 token 数" />
-        <MetricCard label="L1 容量" value={metrics.l1_capacity_blocks} unit="blocks" description="由 KV token 预算与块大小推导的物理容量" />
-        <MetricCard label="L1 驱逐" value={metrics.l1_evictions} unit="blocks" description="仿真中发生的 LRU 驱逐次数" />
-        <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="blocks" description="仿真中物理块驻留的峰值" />
+        <MetricCard label="L1 容量" value={metrics.l1_capacity_blocks} unit="页" description="max_total_tokens / page_size，实际 KV 页池容量" />
+        <MetricCard label="L1 驱逐" value={metrics.l1_evictions} unit="次" description="仿真中发生的 LRU 驱逐次数" />
+        <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="页" description="仿真中实际物理 KV 页驻留峰值" />
       </dl>
     </section>
   );

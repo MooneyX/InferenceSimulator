@@ -11,7 +11,6 @@ from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
-from simcore.kv_cache import CacheOOMError
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -38,7 +37,14 @@ def run(
     perf: PerfModelConfig = SIMPLE,
 ) -> EngineRun:
     return run_engine(
-        EngineConfig(max_batch_size=max_batch_size, kv_token_budget=budget), perf, arrivals
+        EngineConfig(
+            max_running_requests=max_batch_size,
+            max_total_tokens=budget,
+            page_size=1,
+            pd_mutually_exclusive=False,
+        ),
+        perf,
+        arrivals,
     )
 
 
@@ -52,11 +58,11 @@ def steps(result: EngineRun) -> list[StepTrace]:
 
 class TestImmediateEngine:
     def test_submit_step_and_completion_return_finish_time(self) -> None:
-        config = EngineConfig(max_batch_size=1, kv_token_budget=100)
-        plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config.prefix_cache)
-        client = ClientDriver(plan, config.prefix_cache)
+        config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
+        plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config)
+        client = ClientDriver(plan, config)
         request = client.on_wakeup(client.initial_wakeups()[0])
-        engine = Engine(config, SIMPLE)
+        engine = Engine(config, SIMPLE, output_targets={7: plan.turns[7].output_len})
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
         engine.submit(request, 3.0)
@@ -143,7 +149,7 @@ class TestSameTimeOrdering:
 
         若顺序颠倒，t=10 的步会看到 KV 仍被占满而无法准入，且 batch 已无 decode 工作。
         """
-        result = run([req(0, 0.0, 10, 1), req(1, 0.0, 10, 1)], budget=11)
+        result = run([req(0, 0.0, 10, 1), req(1, 0.0, 10, 1)], budget=14)
         assert [interval(r) for r in result.records] == [
             (0.0, 0.0, 10.0, 10.0),
             (0.0, 10.0, 20.0, 20.0),
@@ -159,12 +165,12 @@ class TestSameTimeOrdering:
 
 class TestKVBehaviour:
     def test_budget_blocks_admission(self) -> None:
-        result = run([req(0, 0.0, 8, 2), req(1, 0.0, 5, 1)], budget=10)
+        result = run([req(0, 0.0, 8, 2), req(1, 0.0, 5, 1)], budget=11)
         # r1 需等 r0 完成（@18）释放
         assert interval(result.records[1]) == (0.0, 18.0, 23.0, 23.0)
         assert result.warnings == ()
 
-    def test_future_growth_is_reserved_before_admission(self) -> None:
+    def test_future_growth_is_estimated_not_reserved_before_admission(self) -> None:
         result = run([req(0, 0.0, 5, 10), req(1, 0.0, 5, 10)], budget=15)
         assert len(result.records) == 2
         assert result.records[1].prefill_start >= result.records[0].finish
@@ -174,13 +180,12 @@ class TestKVBehaviour:
 
     @pytest.mark.parametrize(
         "arrivals",
-        [[req(0, 0.0, 15, 3)], [req(0, 0.0, 5, 10)]],
+        [[req(0, 0.0, 15, 3)], [req(0, 0.0, 10, 1)]],
     )
-    def test_request_exceeding_l1_is_rejected_without_forcing(
-        self, arrivals: list[Arrival]
-    ) -> None:
-        with pytest.raises(CacheOOMError, match="单独运行也超过"):
-            run(arrivals, budget=10)
+    def test_request_exceeding_l1_is_aborted_without_forcing(self, arrivals: list[Arrival]) -> None:
+        result = run(arrivals, budget=10)
+        assert result.num_engine_steps == 0 and result.records == ()
+        assert result.aborted_requests[0].reason == "input_exceeds_kv_capacity"
 
 
 class TestEdgeCases:
@@ -210,11 +215,27 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
         output_len=PoissonLength(mean=30.0),
         seed=seed,
     )
-    cfg = EngineConfig.model_validate({"max_batch_size": 16, "kv_token_budget": 8000, **engine})
+    cfg = EngineConfig.model_validate(
+        {
+            "max_running_requests": 16,
+            "max_total_tokens": 8000,
+            "page_size": 1,
+            "pd_mutually_exclusive": False,
+            **engine,
+        }
+    )
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
-    plan = build_plan(workload, cfg.prefix_cache)
-    client = ClientDriver(plan, cfg.prefix_cache)
-    return Coordinator(Engine(cfg, perf, record_trace=record_trace), client).run()
+    plan = build_plan(workload, cfg)
+    client = ClientDriver(plan, cfg)
+    return Coordinator(
+        Engine(
+            cfg,
+            perf,
+            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
+            record_trace=record_trace,
+        ),
+        client,
+    ).run()
 
 
 @pytest.fixture(scope="module")

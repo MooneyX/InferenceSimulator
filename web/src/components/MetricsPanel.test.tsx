@@ -31,6 +31,7 @@ const metrics: Metrics = {
   promotions: 0,
   demotions: 0,
   actual_prefill_tokens: 830,
+  replayed_prefill_tokens: 4,
   saved_prefill_tokens: 170,
   l1_capacity_blocks: 256,
   l1_evictions: 4,
@@ -70,8 +71,9 @@ describe("MetricsPanel", () => {
     expect(metricValue("实际前缀命中率")).toHaveTextContent("17 %");
     expect(metricValue("完整块全命中请求比例")).toHaveTextContent("25 %");
     expect(metricValue("节省 Prefill")).toHaveTextContent("170 token");
-    expect(metricValue("L1 容量")).toHaveTextContent("256 blocks");
-    expect(metricValue("L1 驱逐")).toHaveTextContent("4 blocks");
+    expect(metricValue("重算 Prefill")).toHaveTextContent("4 token");
+    expect(metricValue("L1 容量")).toHaveTextContent("256 页");
+    expect(metricValue("L1 驱逐")).toHaveTextContent("4 次");
   });
 
   it("shows undefined instead of coercing nullable metrics to zero", () => {

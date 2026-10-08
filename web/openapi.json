@@ -58,32 +58,98 @@
   },
   "components": {
     "schemas": {
-      "EngineConfig": {
+      "AbortedRequest": {
         "properties": {
-          "max_batch_size": {
+          "id": {
             "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Batch Size",
-            "description": "单步 batch 内最大请求数"
+            "minimum": 0.0,
+            "title": "Id"
           },
-          "kv_token_budget": {
+          "arrival": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Arrival"
+          },
+          "failed_at": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Failed At"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "input_exceeds_kv_capacity",
+              "decode_kv_exhausted"
+            ],
+            "title": "Reason"
+          },
+          "generated_tokens": {
             "type": "integer",
-            "minimum": 1.0,
-            "title": "Kv Token Budget",
-            "description": "KV cache token 预算总额"
+            "minimum": 0.0,
+            "title": "Generated Tokens"
           },
-          "prefix_cache": {
-            "$ref": "#/components/schemas/PrefixCacheConfig"
+          "retry_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Retry Count"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "max_batch_size",
-          "kv_token_budget"
+          "id",
+          "arrival",
+          "failed_at",
+          "reason",
+          "generated_tokens",
+          "retry_count"
+        ],
+        "title": "AbortedRequest",
+        "description": "已发送但执行失败的请求；失败不终止其他请求。"
+      },
+      "EngineConfig": {
+        "properties": {
+          "max_running_requests": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Running Requests",
+            "description": "同时驻留的运行请求数上限"
+          },
+          "max_total_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Total Tokens",
+            "description": "KV 池的实际 token 容量"
+          },
+          "max_prefill_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Prefill Tokens",
+            "description": "单次 Prefill 的新计算额度",
+            "default": 16384
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page Size",
+            "description": "每个 KV 页的 token 数",
+            "default": 64
+          },
+          "pd_mutually_exclusive": {
+            "type": "boolean",
+            "title": "Pd Mutually Exclusive",
+            "description": "Prefill 与 Decode 分步执行",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "max_running_requests",
+          "max_total_tokens"
         ],
         "title": "EngineConfig",
-        "description": "KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。"
+        "description": "单实例 KV 池配置；页数仅由 token 容量和页大小推导。"
       },
       "ErrorResponse": {
         "properties": {
@@ -135,21 +201,6 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
-      "L1CacheConfig": {
-        "properties": {
-          "capacity_blocks": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Capacity Blocks"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "capacity_blocks"
-        ],
-        "title": "L1CacheConfig"
-      },
       "LognormalLength": {
         "properties": {
           "dist": {
@@ -180,47 +231,43 @@
         "title": "LognormalLength",
         "description": "对数正态分布长度，用于表达长尾负载。"
       },
-      "LowerTierConfig": {
-        "properties": {
-          "capacity_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Capacity Blocks",
-            "default": 0
-          },
-          "read_bandwidth_bytes_per_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Read Bandwidth Bytes Per Ms",
-            "default": 0.0
-          },
-          "fixed_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Fixed Latency Ms",
-            "default": 0.0
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "LowerTierConfig"
-      },
       "Metrics": {
         "properties": {
           "ttft_mean": {
-            "type": "number",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Ttft Mean",
             "description": "TTFT 均值（ms）"
           },
           "ttft_p50": {
-            "type": "number",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Ttft P50"
           },
           "ttft_p99": {
-            "type": "number",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Ttft P99"
           },
           "tpot_mean": {
@@ -234,7 +281,7 @@
               }
             ],
             "title": "Tpot Mean",
-            "description": "decode 阶段平均每 token 耗时（ms）；所有请求 output_len 均为 1 时为 None"
+            "description": "成功且输出超过 1 token 的请求逐项平均；无样本时为 None（ms）"
           },
           "throughput": {
             "anyOf": [
@@ -253,7 +300,7 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Makespan",
-            "description": "末请求完成时刻 − 首请求到达时刻（ms）"
+            "description": "末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）"
           },
           "target_ideal_prefix_hit_rate": {
             "type": "number",
@@ -366,6 +413,12 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Actual Prefill Tokens",
+            "default": 0
+          },
+          "replayed_prefill_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Replayed Prefill Tokens",
             "default": 0
           },
           "saved_prefill_tokens": {
@@ -497,76 +550,6 @@
         "title": "PoissonLength",
         "description": "泊松分布长度。"
       },
-      "PrefixCacheConfig": {
-        "properties": {
-          "block_size_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Block Size Tokens",
-            "default": 1
-          },
-          "cache_salt": {
-            "type": "string",
-            "title": "Cache Salt",
-            "default": ""
-          },
-          "eviction_policy": {
-            "type": "string",
-            "const": "lru",
-            "title": "Eviction Policy",
-            "default": "lru"
-          },
-          "hierarchy_policy": {
-            "type": "string",
-            "const": "exclusive_write_back",
-            "title": "Hierarchy Policy",
-            "default": "exclusive_write_back"
-          },
-          "l1": {
-            "$ref": "#/components/schemas/L1CacheConfig"
-          },
-          "l2": {
-            "$ref": "#/components/schemas/LowerTierConfig"
-          },
-          "l3": {
-            "$ref": "#/components/schemas/LowerTierConfig"
-          },
-          "kv_bytes_per_token": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Kv Bytes Per Token",
-            "default": 1
-          },
-          "model_id": {
-            "type": "string",
-            "title": "Model Id",
-            "default": "default-model"
-          },
-          "tokenizer_id": {
-            "type": "string",
-            "title": "Tokenizer Id",
-            "default": "default-tokenizer"
-          },
-          "kv_dtype": {
-            "type": "string",
-            "title": "Kv Dtype",
-            "default": "default-dtype"
-          },
-          "adapter_id": {
-            "type": "string",
-            "title": "Adapter Id",
-            "default": "default-adapter"
-          },
-          "multimodal_transform_id": {
-            "type": "string",
-            "title": "Multimodal Transform Id",
-            "default": "default-transform"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "PrefixCacheConfig"
-      },
       "RequestRecord": {
         "properties": {
           "id": {
@@ -652,6 +635,18 @@
               }
             ],
             "title": "Actual Prefill Tokens"
+          },
+          "replayed_prefill_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Replayed Prefill Tokens",
+            "default": 0
+          },
+          "retry_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Retry Count",
+            "default": 0
           },
           "logical_context_tokens": {
             "type": "integer",
@@ -761,7 +756,23 @@
           "num_requests": {
             "type": "integer",
             "minimum": 0.0,
-            "title": "Num Requests"
+            "title": "Num Requests",
+            "description": "计划中的请求总数"
+          },
+          "num_completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Completed"
+          },
+          "num_aborted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Aborted"
+          },
+          "num_skipped": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Skipped"
           },
           "num_engine_steps": {
             "type": "integer",
@@ -787,6 +798,9 @@
         "required": [
           "config",
           "num_requests",
+          "num_completed",
+          "num_aborted",
+          "num_skipped",
           "num_engine_steps",
           "sim_start",
           "sim_end"
@@ -809,6 +823,20 @@
             "type": "array",
             "title": "Requests"
           },
+          "aborted_requests": {
+            "items": {
+              "$ref": "#/components/schemas/AbortedRequest"
+            },
+            "type": "array",
+            "title": "Aborted Requests"
+          },
+          "skipped_requests": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedRequest"
+            },
+            "type": "array",
+            "title": "Skipped Requests"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -825,6 +853,34 @@
         ],
         "title": "SimResult",
         "description": "一场仿真的完整输出，即 ``POST /api/simulate`` 的响应体。"
+      },
+      "SkippedRequest": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Id"
+          },
+          "parent_request_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Parent Request Id"
+          },
+          "reason": {
+            "type": "string",
+            "const": "parent_not_completed",
+            "title": "Reason",
+            "default": "parent_not_completed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "parent_request_id"
+        ],
+        "title": "SkippedRequest",
+        "description": "父轮未成功，因而从未发送的子轮。"
       },
       "SyntheticWorkloadConfig": {
         "properties": {
@@ -883,6 +939,13 @@
                 "poisson": "#/components/schemas/PoissonLength"
               }
             }
+          },
+          "max_new_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max New Tokens",
+            "description": "每个请求可见的生成上限",
+            "default": 128
           },
           "seed": {
             "type": "integer",

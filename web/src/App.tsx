@@ -93,18 +93,39 @@ export default function App() {
 
         {result ? (
           <>
+            <section className="simulation-status" aria-label="请求结果状态">
+              已完成 {result.meta.num_completed} · 失败 {result.meta.num_aborted} · 跳过 {result.meta.num_skipped}
+              {(result.aborted_requests?.length ?? 0) > 0 ? (
+                <ul aria-label="失败请求原因">
+                  {result.aborted_requests?.map((item) => (
+                    <li key={item.id}>请求 {item.id}：{item.reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {(result.skipped_requests?.length ?? 0) > 0 ? (
+                <ul aria-label="跳过请求原因">
+                  {result.skipped_requests?.map((item) => (
+                    <li key={item.id}>请求 {item.id}（父请求 {item.parent_request_id}）：{item.reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
             <MetricsPanel metrics={result.metrics} />
             <WarningsPanel warnings={result.warnings} />
-            <Suspense
-              fallback={
-                <section className="simulation-status" role="status">
-                  <span className="status-indicator" aria-hidden="true" />
-                  正在加载请求生命周期图…
-                </section>
-              }
-            >
-              <RequestGantt requests={result.requests} />
-            </Suspense>
+            {(result.requests?.length ?? 0) > 0 ? (
+              <Suspense
+                fallback={
+                  <section className="simulation-status" role="status">
+                    <span className="status-indicator" aria-hidden="true" />
+                    正在加载请求生命周期图…
+                  </section>
+                }
+              >
+                <RequestGantt requests={result.requests ?? []} />
+              </Suspense>
+            ) : (
+              <section className="simulation-status">本次没有已完成请求，无法绘制生命周期图。</section>
+            )}
           </>
         ) : null}
 

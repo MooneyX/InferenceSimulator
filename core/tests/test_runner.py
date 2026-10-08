@@ -4,7 +4,6 @@ import pytest
 
 import simcore
 from simcore import SimConfig, SimResult, simulate
-from simcore.kv_cache import CacheOOMError
 from simcore.metrics import compute_metrics
 from simcore.schemas import (
     EngineConfig,
@@ -12,7 +11,6 @@ from simcore.schemas import (
     LognormalLength,
     PerfModelConfig,
     PoissonLength,
-    PrefixCacheConfig,
     SessionConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
@@ -30,7 +28,7 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
                 seed=seed,
             )
         ),
-        engine=EngineConfig(max_batch_size=16, kv_token_budget=budget),
+        engine=EngineConfig(max_running_requests=16, max_total_tokens=budget, page_size=1),
         perf_model=PerfModelConfig(
             prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002
         ),
@@ -63,14 +61,12 @@ class TestEndToEnd:
             assert getattr(result.metrics, name) == getattr(baseline, name)
         assert result.metrics.total_input_tokens == sum(r.prompt_len for r in result.requests)
         assert result.metrics.actual_hit_tokens == sum(r.actual_hit_tokens for r in result.requests)
-        assert (
-            result.metrics.l1_capacity_blocks
-            == result.meta.config.engine.prefix_cache.l1.capacity_blocks
-        )
+        assert result.metrics.l1_capacity_blocks == result.meta.config.engine.capacity_pages
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_ttft_percentiles_ordered(self, result: SimResult) -> None:
         m = result.metrics
+        assert m.ttft_p50 is not None and m.ttft_p99 is not None
         assert 0.0 < m.ttft_p50 <= m.ttft_p99
         assert m.tpot_mean is not None and m.tpot_mean > 0
         assert m.throughput is not None and m.throughput > 0
@@ -88,9 +84,9 @@ class TestEndToEnd:
                 )
             ),
             engine=EngineConfig(
-                max_batch_size=2,
-                kv_token_budget=80,
-                prefix_cache=PrefixCacheConfig(block_size_tokens=2),
+                max_running_requests=2,
+                max_total_tokens=80,
+                page_size=2,
             ),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
@@ -110,9 +106,25 @@ class TestEndToEnd:
         assert result.requests[1].parent_request_id == result.requests[0].id
         assert result.requests[1].actual_prefill_tokens == 8
 
-    def test_infeasible_request_reports_hard_oom(self) -> None:
-        with pytest.raises(CacheOOMError, match="单独运行也超过"):
-            simulate(make_config(num_requests=50, budget=500))
+    def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
+        cfg = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=2,
+                    arrival_rate=10,
+                    prompt_len=FixedLength(value=128),
+                    output_len=FixedLength(value=1),
+                    seed=0,
+                )
+            ),
+            engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
+            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+        )
+        result = simulate(cfg)
+        assert (result.meta.num_requests, result.meta.num_aborted) == (2, 2)
+        assert result.requests == []
+        assert all(item.reason == "input_exceeds_kv_capacity" for item in result.aborted_requests)
+        assert result.metrics.ttft_mean is None
 
     def test_json_roundtrip(self, result: SimResult) -> None:
         """服务层将直接序列化该对象，必须 JSON 往返无损。"""
@@ -155,7 +167,7 @@ class TestSmallCases:
                     ),
                 )
             ),
-            engine=EngineConfig(max_batch_size=2, kv_token_budget=100),
+            engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
         result = simulate(cfg)
@@ -176,7 +188,7 @@ class TestSmallCases:
                     seed=0,
                 )
             ),
-            engine=EngineConfig(max_batch_size=1, kv_token_budget=100),
+            engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
         r = simulate(cfg)

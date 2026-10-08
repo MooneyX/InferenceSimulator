@@ -80,7 +80,6 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
     throw new Error("SimulationForm requires a synthetic workload configuration");
   }
   const session = synthetic.session!;
-  const prefixCache = config.engine.prefix_cache!;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -172,6 +171,24 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
         </div>
 
         <div className="form-grid" style={{ marginTop: 18 }}>
+          <NumberField
+            id="max-new-tokens"
+            name="workload.synthetic.max_new_tokens"
+            label="每请求生成上限（token）"
+            value={synthetic.max_new_tokens}
+            integer
+            min={1}
+            error={errorByField.get("workload.synthetic.max_new_tokens")}
+            onChange={(maxNewTokens) =>
+              setConfig({
+                ...config,
+                workload: {
+                  ...config.workload,
+                  synthetic: { ...synthetic, max_new_tokens: maxNewTokens },
+                },
+              })
+            }
+          />
           <NumberField
             id="num-sessions"
             name="workload.synthetic.session.num_sessions"
@@ -277,66 +294,81 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>批处理规模与 KV cache token 预算</p>
+          <p>单实例 KV 页池与 Prefill/Decode 执行方式</p>
         </div>
 
         <div className="form-grid">
           <NumberField
-            id="max-batch-size"
-            name="engine.max_batch_size"
-            label="最大批大小"
-            value={config.engine.max_batch_size}
+            id="max-running-requests"
+            name="engine.max_running_requests"
+            label="最多同时运行请求"
+            value={config.engine.max_running_requests}
             integer
             min={1}
-            error={errorByField.get("engine.max_batch_size")}
-            onChange={(maxBatchSize) =>
-              setConfig({
-                ...config,
-                engine: { ...config.engine, max_batch_size: maxBatchSize },
-              })
-            }
+            error={errorByField.get("engine.max_running_requests")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, max_running_requests: value },
+            })}
           />
           <NumberField
-            id="kv-token-budget"
-            name="engine.kv_token_budget"
-            label="L1 KV token 预算"
-            value={config.engine.kv_token_budget}
+            id="max-total-tokens"
+            name="engine.max_total_tokens"
+            label="L1 KV 总容量（token）"
+            value={config.engine.max_total_tokens}
             integer
             min={1}
-            error={errorByField.get("engine.kv_token_budget")}
-            onChange={(kvTokenBudget) =>
-              setConfig({
-                ...config,
-                engine: { ...config.engine, kv_token_budget: kvTokenBudget },
-              })
-            }
+            error={errorByField.get("engine.max_total_tokens")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, max_total_tokens: value },
+            })}
           />
           <NumberField
-            id="block-size-tokens"
-            name="engine.prefix_cache.block_size_tokens"
-            label="Prefix cache 块大小（token）"
-            value={prefixCache.block_size_tokens}
+            id="max-prefill-tokens"
+            name="engine.max_prefill_tokens"
+            label="单次 Prefill 额度（token）"
+            value={config.engine.max_prefill_tokens}
             integer
             min={1}
-            error={errorByField.get("engine.prefix_cache.block_size_tokens")}
-            onChange={(blockSize) =>
-              setConfig({
-                ...config,
-                engine: {
-                  ...config.engine,
-                  prefix_cache: { ...prefixCache, block_size_tokens: blockSize },
-                },
-              })
-            }
+            error={errorByField.get("engine.max_prefill_tokens")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, max_prefill_tokens: value },
+            })}
+          />
+          <NumberField
+            id="page-size"
+            name="engine.page_size"
+            label="每页 token 数"
+            value={config.engine.page_size}
+            integer
+            min={1}
+            error={errorByField.get("engine.page_size")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, page_size: value },
+            })}
           />
         </div>
+        <div className="form-field">
+          <label htmlFor="pd-mutually-exclusive">
+            <input
+              id="pd-mutually-exclusive"
+              name="engine.pd_mutually_exclusive"
+              type="checkbox"
+              checked={config.engine.pd_mutually_exclusive}
+              onChange={(event) => setConfig({
+                ...config,
+                engine: { ...config.engine, pd_mutually_exclusive: event.currentTarget.checked },
+              })}
+            />
+            Prefill / Decode 分步执行（关闭后允许融合步）
+          </label>
+        </div>
         <p>
-          L1 容量由 KV token 预算换算：
-          {Number.isInteger(prefixCache.block_size_tokens) && prefixCache.block_size_tokens > 0 &&
-          Number.isInteger(config.engine.kv_token_budget) && config.engine.kv_token_budget >= 1
-            ? ` ${Math.floor(config.engine.kv_token_budget / prefixCache.block_size_tokens)} blocks`
-            : " —"}
-          （向下取整，至少 1 block）
+          L1 容量：{Number.isInteger(config.engine.max_total_tokens) &&
+          Number.isInteger(config.engine.page_size) && config.engine.page_size > 0 &&
+          config.engine.max_total_tokens >= config.engine.page_size &&
+          config.engine.max_total_tokens % config.engine.page_size === 0
+            ? `${config.engine.max_total_tokens / config.engine.page_size} 页`
+            : "请填写至少一页且为整页倍数的容量"}
         </p>
       </section>
 

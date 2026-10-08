@@ -11,12 +11,16 @@ const config: SimConfig = {
       arrival_rate: 2,
       prompt_len: { dist: "fixed", value: 16 },
       output_len: { dist: "fixed", value: 8 },
+      max_new_tokens: 128,
       seed: 42,
     },
   },
   engine: {
-    max_batch_size: 4,
-    kv_token_budget: 4096,
+    max_running_requests: 4,
+    max_total_tokens: 4096,
+    max_prefill_tokens: 16_384,
+    page_size: 64,
+    pd_mutually_exclusive: true,
   },
   perf_model: {
     prefill_c1: 0.1,
@@ -30,6 +34,9 @@ const result: SimResult = {
   meta: {
     config,
     num_requests: 1,
+    num_completed: 1,
+    num_aborted: 0,
+    num_skipped: 0,
     num_engine_steps: 8,
     sim_start: 0,
     sim_end: 3,
@@ -59,6 +66,7 @@ const result: SimResult = {
     promotions: 0,
     demotions: 0,
     actual_prefill_tokens: 16,
+    replayed_prefill_tokens: 0,
     saved_prefill_tokens: 0,
     l1_evictions: 0,
     l1_peak_resident_blocks: 24,
@@ -84,12 +92,16 @@ const result: SimResult = {
       matched_cache_tokens: 0,
       actual_hit_tokens: 0,
       actual_prefill_tokens: 16,
+      replayed_prefill_tokens: 0,
+      retry_count: 0,
       logical_context_tokens: 24,
       l1_hit_tokens: 0,
       l2_hit_tokens: 0,
       l3_hit_tokens: 0,
     },
   ],
+  aborted_requests: [],
+  skipped_requests: [],
   warnings: [],
 };
 
@@ -122,7 +134,7 @@ describe("simulate", () => {
   it("maps a 422 response to validation details", async () => {
     const detail = [
       {
-        loc: ["body", "engine", "max_batch_size"],
+        loc: ["body", "engine", "max_running_requests"],
         msg: "Input should be greater than 0",
         type: "greater_than",
       },

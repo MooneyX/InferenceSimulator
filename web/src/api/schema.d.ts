@@ -35,21 +35,59 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AbortedRequest
+         * @description 已发送但执行失败的请求；失败不终止其他请求。
+         */
+        AbortedRequest: {
+            /** Id */
+            id: number;
+            /** Arrival */
+            arrival: number;
+            /** Failed At */
+            failed_at: number;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "input_exceeds_kv_capacity" | "decode_kv_exhausted";
+            /** Generated Tokens */
+            generated_tokens: number;
+            /** Retry Count */
+            retry_count: number;
+        };
+        /**
          * EngineConfig
-         * @description KV token 预算是 L1 容量的唯一输入；解析后统一以 block 记账。
+         * @description 单实例 KV 池配置；页数仅由 token 容量和页大小推导。
          */
         EngineConfig: {
             /**
-             * Max Batch Size
-             * @description 单步 batch 内最大请求数
+             * Max Running Requests
+             * @description 同时驻留的运行请求数上限
              */
-            max_batch_size: number;
+            max_running_requests: number;
             /**
-             * Kv Token Budget
-             * @description KV cache token 预算总额
+             * Max Total Tokens
+             * @description KV 池的实际 token 容量
              */
-            kv_token_budget: number;
-            prefix_cache?: components["schemas"]["PrefixCacheConfig"];
+            max_total_tokens: number;
+            /**
+             * Max Prefill Tokens
+             * @description 单次 Prefill 的新计算额度
+             * @default 16384
+             */
+            max_prefill_tokens: number;
+            /**
+             * Page Size
+             * @description 每个 KV 页的 token 数
+             * @default 64
+             */
+            page_size: number;
+            /**
+             * Pd Mutually Exclusive
+             * @description Prefill 与 Decode 分步执行
+             * @default true
+             */
+            pd_mutually_exclusive: boolean;
         };
         /**
          * ErrorResponse
@@ -82,11 +120,6 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** L1CacheConfig */
-        L1CacheConfig: {
-            /** Capacity Blocks */
-            capacity_blocks: number;
-        };
         /**
          * LognormalLength
          * @description 对数正态分布长度，用于表达长尾负载。
@@ -108,24 +141,6 @@ export interface components {
              */
             sigma: number;
         };
-        /** LowerTierConfig */
-        LowerTierConfig: {
-            /**
-             * Capacity Blocks
-             * @default 0
-             */
-            capacity_blocks: number;
-            /**
-             * Read Bandwidth Bytes Per Ms
-             * @default 0
-             */
-            read_bandwidth_bytes_per_ms: number;
-            /**
-             * Fixed Latency Ms
-             * @default 0
-             */
-            fixed_latency_ms: number;
-        };
         /**
          * Metrics
          * @description 全场指标。``None`` 表示该指标在本场仿真中无定义。
@@ -135,14 +150,14 @@ export interface components {
              * Ttft Mean
              * @description TTFT 均值（ms）
              */
-            ttft_mean: number;
+            ttft_mean: number | null;
             /** Ttft P50 */
-            ttft_p50: number;
+            ttft_p50: number | null;
             /** Ttft P99 */
-            ttft_p99: number;
+            ttft_p99: number | null;
             /**
              * Tpot Mean
-             * @description decode 阶段平均每 token 耗时（ms）；所有请求 output_len 均为 1 时为 None
+             * @description 成功且输出超过 1 token 的请求逐项平均；无样本时为 None（ms）
              */
             tpot_mean?: number | null;
             /**
@@ -152,7 +167,7 @@ export interface components {
             throughput?: number | null;
             /**
              * Makespan
-             * @description 末请求完成时刻 − 首请求到达时刻（ms）
+             * @description 末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）
              */
             makespan: number;
             /**
@@ -246,6 +261,11 @@ export interface components {
              */
             actual_prefill_tokens: number;
             /**
+             * Replayed Prefill Tokens
+             * @default 0
+             */
+            replayed_prefill_tokens: number;
+            /**
              * Saved Prefill Tokens
              * @default 0
              */
@@ -332,64 +352,6 @@ export interface components {
              */
             mean: number;
         };
-        /** PrefixCacheConfig */
-        PrefixCacheConfig: {
-            /**
-             * Block Size Tokens
-             * @default 1
-             */
-            block_size_tokens: number;
-            /**
-             * Cache Salt
-             * @default
-             */
-            cache_salt: string;
-            /**
-             * Eviction Policy
-             * @default lru
-             * @constant
-             */
-            eviction_policy: "lru";
-            /**
-             * Hierarchy Policy
-             * @default exclusive_write_back
-             * @constant
-             */
-            hierarchy_policy: "exclusive_write_back";
-            l1?: components["schemas"]["L1CacheConfig"];
-            l2?: components["schemas"]["LowerTierConfig"];
-            l3?: components["schemas"]["LowerTierConfig"];
-            /**
-             * Kv Bytes Per Token
-             * @default 1
-             */
-            kv_bytes_per_token: number;
-            /**
-             * Model Id
-             * @default default-model
-             */
-            model_id: string;
-            /**
-             * Tokenizer Id
-             * @default default-tokenizer
-             */
-            tokenizer_id: string;
-            /**
-             * Kv Dtype
-             * @default default-dtype
-             */
-            kv_dtype: string;
-            /**
-             * Adapter Id
-             * @default default-adapter
-             */
-            adapter_id: string;
-            /**
-             * Multimodal Transform Id
-             * @default default-transform
-             */
-            multimodal_transform_id: string;
-        };
         /**
          * RequestRecord
          * @description 单请求的生命周期区间记录，供甘特图与指标汇总消费。
@@ -439,6 +401,16 @@ export interface components {
             actual_hit_tokens: number;
             /** Actual Prefill Tokens */
             actual_prefill_tokens?: number | null;
+            /**
+             * Replayed Prefill Tokens
+             * @default 0
+             */
+            replayed_prefill_tokens: number;
+            /**
+             * Retry Count
+             * @default 0
+             */
+            retry_count: number;
             /**
              * Logical Context Tokens
              * @default 0
@@ -499,8 +471,17 @@ export interface components {
          */
         SimMeta: {
             config: components["schemas"]["SimConfig"];
-            /** Num Requests */
+            /**
+             * Num Requests
+             * @description 计划中的请求总数
+             */
             num_requests: number;
+            /** Num Completed */
+            num_completed: number;
+            /** Num Aborted */
+            num_aborted: number;
+            /** Num Skipped */
+            num_skipped: number;
             /**
              * Num Engine Steps
              * @description 引擎迭代步数
@@ -526,8 +507,28 @@ export interface components {
             metrics: components["schemas"]["Metrics"];
             /** Requests */
             requests?: components["schemas"]["RequestRecord"][];
+            /** Aborted Requests */
+            aborted_requests?: components["schemas"]["AbortedRequest"][];
+            /** Skipped Requests */
+            skipped_requests?: components["schemas"]["SkippedRequest"][];
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * SkippedRequest
+         * @description 父轮未成功，因而从未发送的子轮。
+         */
+        SkippedRequest: {
+            /** Id */
+            id: number;
+            /** Parent Request Id */
+            parent_request_id: number;
+            /**
+             * Reason
+             * @default parent_not_completed
+             * @constant
+             */
+            reason: "parent_not_completed";
         };
         /**
          * SyntheticWorkloadConfig
@@ -548,6 +549,12 @@ export interface components {
             prompt_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
             /** Output Len */
             output_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
+            /**
+             * Max New Tokens
+             * @description 每个请求可见的生成上限
+             * @default 128
+             */
+            max_new_tokens: number;
             /**
              * Seed
              * @description 随机种子；同种子必须逐字节可复现

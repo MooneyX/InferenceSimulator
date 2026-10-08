@@ -20,7 +20,6 @@ from simcore import (
     EngineConfig,
     FixedLength,
     PerfModelConfig,
-    PrefixCacheConfig,
     SessionConfig,
     SimConfig,
     SyntheticWorkloadConfig,
@@ -46,9 +45,9 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
             )
         ),
         engine=EngineConfig(
-            max_batch_size=8,
-            kv_token_budget=4096,
-            prefix_cache=PrefixCacheConfig(block_size_tokens=block_size),
+            max_running_requests=8,
+            max_total_tokens=4096,
+            page_size=block_size,
         ),
         perf_model=PerfModelConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
     )

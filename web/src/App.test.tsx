@@ -21,6 +21,9 @@ const result: SimResult = {
   meta: {
     config: createDefaultSimConfig(),
     num_requests: 1,
+    num_completed: 1,
+    num_aborted: 0,
+    num_skipped: 0,
     num_engine_steps: 8,
     sim_start: 0,
     sim_end: 3,
@@ -50,6 +53,7 @@ const result: SimResult = {
     promotions: 0,
     demotions: 0,
     actual_prefill_tokens: 16,
+    replayed_prefill_tokens: 0,
     saved_prefill_tokens: 0,
     l1_evictions: 0,
     l1_peak_resident_blocks: 24,
@@ -75,13 +79,17 @@ const result: SimResult = {
       matched_cache_tokens: 0,
       actual_hit_tokens: 0,
       actual_prefill_tokens: 16,
+      replayed_prefill_tokens: 0,
+      retry_count: 0,
       logical_context_tokens: 24,
       l1_hit_tokens: 0,
       l2_hit_tokens: 0,
       l3_hit_tokens: 0,
     },
   ],
-  warnings: ["请求 0 超过 KV token 预算，已强制准入"],
+  aborted_requests: [],
+  skipped_requests: [],
+  warnings: ["仿真提示"],
 };
 
 const simulateMock = vi.mocked(simulate);
@@ -114,7 +122,48 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "仿真告警" })).toBeInTheDocument();
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
+    expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 0 · 跳过 0");
     expect(screen.queryByRole("heading", { name: "等待仿真结果" })).not.toBeInTheDocument();
+  });
+
+  it("shows abort and skip reasons but charts completed requests only", async () => {
+    simulateMock.mockResolvedValue({
+      ...result,
+      meta: { ...result.meta, num_requests: 3, num_aborted: 1, num_skipped: 1 },
+      aborted_requests: [{
+        id: 1, arrival: 0, failed_at: 0,
+        reason: "input_exceeds_kv_capacity", generated_tokens: 0, retry_count: 0,
+      }],
+      skipped_requests: [{ id: 2, parent_request_id: 1, reason: "parent_not_completed" }],
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(await screen.findByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 1 · 跳过 1");
+    expect(screen.getByLabelText("失败请求原因")).toHaveTextContent("input_exceeds_kv_capacity");
+    expect(screen.getByLabelText("跳过请求原因")).toHaveTextContent("parent_not_completed");
+    expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
+  });
+
+  it("shows an empty chart state when every request failed", async () => {
+    simulateMock.mockResolvedValue({
+      ...result,
+      meta: { ...result.meta, num_completed: 0, num_aborted: 1 },
+      metrics: {
+        ...result.metrics,
+        ttft_mean: null, ttft_p50: null, ttft_p99: null,
+        tpot_mean: null, throughput: null, makespan: 0,
+      },
+      requests: [],
+      aborted_requests: [{
+        id: 0, arrival: 0, failed_at: 0,
+        reason: "input_exceeds_kv_capacity", generated_tokens: 0, retry_count: 0,
+      }],
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(await screen.findByText("本次没有已完成请求，无法绘制生命周期图。")).toBeInTheDocument();
+    expect(screen.queryByTestId("request-gantt")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 0 · 失败 1 · 跳过 0");
   });
 
   it("disables duplicate submission while the request is pending", async () => {
@@ -142,7 +191,7 @@ describe("App", () => {
         status: 422,
         validationErrors: [
           {
-            loc: ["body", "engine", "max_batch_size"],
+            loc: ["body", "engine", "max_running_requests"],
             msg: "Input should be greater than 0",
             type: "greater_than",
           },
@@ -156,7 +205,7 @@ describe("App", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("仿真配置校验失败");
     expect(alert).toHaveTextContent(
-      "body → engine → max_batch_size：Input should be greater than 0",
+      "body → engine → max_running_requests：Input should be greater than 0",
     );
     expect(screen.queryByRole("heading", { name: "仿真指标" })).not.toBeInTheDocument();
   });

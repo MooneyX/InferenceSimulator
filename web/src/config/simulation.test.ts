@@ -13,6 +13,7 @@ describe("createDefaultSimConfig", () => {
           arrival_rate: 50,
           prompt_len: { dist: "lognormal", mean: 512, sigma: 1 },
           output_len: { dist: "poisson", mean: 128 },
+          max_new_tokens: 128,
           seed: 0,
           session: {
             num_sessions: 1000,
@@ -23,20 +24,11 @@ describe("createDefaultSimConfig", () => {
         },
       },
       engine: {
-        max_batch_size: 32,
-        kv_token_budget: 65_536,
-        prefix_cache: {
-          block_size_tokens: 1,
-          cache_salt: "",
-          eviction_policy: "lru",
-          hierarchy_policy: "exclusive_write_back",
-          kv_bytes_per_token: 1,
-          model_id: "default-model",
-          tokenizer_id: "default-tokenizer",
-          kv_dtype: "default-dtype",
-          adapter_id: "default-adapter",
-          multimodal_transform_id: "default-transform",
-        },
+        max_running_requests: 32,
+        max_total_tokens: 65_536,
+        max_prefill_tokens: 16_384,
+        page_size: 64,
+        pd_mutually_exclusive: true,
       },
       perf_model: {
         prefill_c1: 0.05,
@@ -60,7 +52,7 @@ describe("createDefaultSimConfig", () => {
       second.workload.synthetic?.prompt_len,
     );
     expect(first.workload.synthetic?.session).not.toBe(second.workload.synthetic?.session);
-    expect(first.engine.prefix_cache).not.toBe(second.engine.prefix_cache);
+    expect(first.engine).not.toBe(second.engine);
   });
 });
 
@@ -69,10 +61,9 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(createDefaultSimConfig())).toEqual([]);
   });
 
-  it("accepts legacy requests without session or prefix cache", () => {
+  it("accepts a synthetic request without an optional session", () => {
     const config = createDefaultSimConfig();
     delete config.workload.synthetic!.session;
-    delete config.engine.prefix_cache;
     expect(validateSimConfig(config)).toEqual([]);
   });
 
@@ -102,26 +93,22 @@ describe("validateSimConfig", () => {
     ]);
   });
 
-  it("requires a valid block size and derives one L1 budget", () => {
+  it("rejects non-page capacity rather than rounding it down", () => {
     const config = createDefaultSimConfig();
-    config.engine.kv_token_budget = 9;
-    config.engine.prefix_cache!.block_size_tokens = 4;
+    config.engine.max_total_tokens = 128;
     expect(validateSimConfig(config)).toEqual([]);
-    config.engine.prefix_cache!.l1 = { capacity_blocks: 2 };
+    config.engine.max_total_tokens = 130;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.max_total_tokens",
+    ]);
+    config.engine.max_total_tokens = 63;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.max_total_tokens",
+    ]);
+    config.engine.max_total_tokens = 128;
+    config.engine.page_size = 1;
+    config.engine.pd_mutually_exclusive = false;
     expect(validateSimConfig(config)).toEqual([]);
-    config.engine.prefix_cache!.l1.capacity_blocks = 3;
-    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.kv_token_budget",
-    ]);
-    delete config.engine.prefix_cache!.l1;
-    config.engine.prefix_cache!.block_size_tokens = 10;
-    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.prefix_cache.block_size_tokens",
-    ]);
-    config.engine.prefix_cache!.block_size_tokens = 0;
-    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.prefix_cache.block_size_tokens",
-    ]);
   });
 
   it("rejects the unsupported trace mode", () => {
@@ -155,8 +142,12 @@ describe("validateSimConfig", () => {
     synthetic.num_requests = 1.5;
     synthetic.arrival_rate = Number.NaN;
     synthetic.seed = -1;
-    config.engine.max_batch_size = 0;
-    config.engine.kv_token_budget = 2.5;
+    synthetic.max_new_tokens = 0;
+    config.engine.max_running_requests = 0;
+    config.engine.max_total_tokens = 2.5;
+    config.engine.max_prefill_tokens = 0;
+    config.engine.page_size = 0;
+    config.engine.pd_mutually_exclusive = null as unknown as boolean;
     config.perf_model.prefill_c1 = -0.1;
     config.perf_model.prefill_c2 = Number.POSITIVE_INFINITY;
     config.perf_model.decode_d1 = -1;
@@ -165,9 +156,13 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "workload.synthetic.num_requests",
       "workload.synthetic.arrival_rate",
+      "workload.synthetic.max_new_tokens",
       "workload.synthetic.seed",
-      "engine.max_batch_size",
-      "engine.kv_token_budget",
+      "engine.max_running_requests",
+      "engine.max_total_tokens",
+      "engine.max_prefill_tokens",
+      "engine.page_size",
+      "engine.pd_mutually_exclusive",
       "perf_model.prefill_c1",
       "perf_model.prefill_c2",
       "perf_model.decode_d1",

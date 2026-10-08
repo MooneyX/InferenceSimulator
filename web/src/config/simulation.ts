@@ -15,9 +15,12 @@ export type ConfigField =
   | "workload.synthetic.output_len.mean"
   | "workload.synthetic.output_len.sigma"
   | "workload.synthetic.seed"
-  | "engine.max_batch_size"
-  | "engine.kv_token_budget"
-  | "engine.prefix_cache.block_size_tokens"
+  | "workload.synthetic.max_new_tokens"
+  | "engine.max_running_requests"
+  | "engine.max_total_tokens"
+  | "engine.max_prefill_tokens"
+  | "engine.page_size"
+  | "engine.pd_mutually_exclusive"
   | "perf_model.prefill_c1"
   | "perf_model.prefill_c2"
   | "perf_model.decode_d1"
@@ -45,6 +48,7 @@ export function createDefaultSimConfig(): SimConfig {
           mean: 128,
         },
         seed: 0,
+        max_new_tokens: 128,
         session: {
           num_sessions: 1000,
           topology: "linear",
@@ -54,20 +58,11 @@ export function createDefaultSimConfig(): SimConfig {
       },
     },
     engine: {
-      max_batch_size: 32,
-      kv_token_budget: 65_536,
-      prefix_cache: {
-        block_size_tokens: 1,
-        cache_salt: "",
-        eviction_policy: "lru",
-        hierarchy_policy: "exclusive_write_back",
-        kv_bytes_per_token: 1,
-        model_id: "default-model",
-        tokenizer_id: "default-tokenizer",
-        kv_dtype: "default-dtype",
-        adapter_id: "default-adapter",
-        multimodal_transform_id: "default-transform",
-      },
+      max_running_requests: 32,
+      max_total_tokens: 65_536,
+      max_prefill_tokens: 16_384,
+      page_size: 64,
+      pd_mutually_exclusive: true,
     },
     perf_model: {
       prefill_c1: 0.05,
@@ -191,6 +186,7 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       "workload.synthetic.output_len",
       synthetic.output_len,
     );
+    validatePositiveInteger(errors, "workload.synthetic.max_new_tokens", synthetic.max_new_tokens);
 
     if (!Number.isInteger(synthetic.seed) || synthetic.seed < 0) {
       errors.push({
@@ -200,25 +196,21 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
     }
   }
 
-  validatePositiveInteger(errors, "engine.max_batch_size", engine.max_batch_size);
-  validatePositiveInteger(errors, "engine.kv_token_budget", engine.kv_token_budget);
-  const blockSize = engine.prefix_cache?.block_size_tokens ?? 1;
-  validatePositiveInteger(errors, "engine.prefix_cache.block_size_tokens", blockSize);
-  if (Number.isInteger(blockSize) && blockSize >= 1 &&
-      Number.isInteger(engine.kv_token_budget) && engine.kv_token_budget >= 1) {
-    const capacityBlocks = Math.floor(engine.kv_token_budget / blockSize);
-    if (capacityBlocks < 1) {
-      errors.push({
-        field: "engine.prefix_cache.block_size_tokens",
-        message: "块大小不能超过 KV token 预算，L1 至少要容纳一个 block",
-      });
-    } else if (engine.prefix_cache?.l1 !== undefined &&
-               engine.prefix_cache.l1.capacity_blocks !== capacityBlocks) {
-      errors.push({
-        field: "engine.kv_token_budget",
-        message: "L1 容量必须等于 floor(KV token 预算 / 块大小)",
-      });
-    }
+  validatePositiveInteger(errors, "engine.max_running_requests", engine.max_running_requests);
+  validatePositiveInteger(errors, "engine.max_total_tokens", engine.max_total_tokens);
+  validatePositiveInteger(errors, "engine.max_prefill_tokens", engine.max_prefill_tokens);
+  validatePositiveInteger(errors, "engine.page_size", engine.page_size);
+  if (typeof engine.pd_mutually_exclusive !== "boolean") {
+    errors.push({ field: "engine.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
+  }
+  if (Number.isInteger(engine.max_total_tokens) && engine.max_total_tokens > 0 &&
+      Number.isInteger(engine.page_size) && engine.page_size > 0 &&
+      (engine.max_total_tokens < engine.page_size ||
+       engine.max_total_tokens % engine.page_size !== 0)) {
+    errors.push({
+      field: "engine.max_total_tokens",
+      message: "KV token 容量须至少为一页，且必须是页大小的整数倍",
+    });
   }
   validateFiniteNumber(errors, "perf_model.prefill_c1", perfModel.prefill_c1, 0);
   validateFiniteNumber(errors, "perf_model.prefill_c2", perfModel.prefill_c2, 0);

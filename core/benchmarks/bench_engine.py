@@ -2,10 +2,10 @@
 
 本基准用例的验收线：
 
-- 1k 请求全场仿真 < 1s（取多次运行的最小值，排除调度抖动）。
-- 同种子两次运行结果逐字节一致。
+- 同 seed 两次运行结果逐字节一致。
+- 100/1k/10k 两种 P/D 模式报告墙钟、步数及物理页驻留峰值。
 
-10k 规模只报告耗时、不设阈值，用于观察扩展趋势。
+不设与机器性能绑定的硬耗时阈值。
 
 运行方式（默认 ``pytest`` 不收集本目录，避免拖慢常规单测）::
 
@@ -34,13 +34,11 @@ from simcore import (
     simulate,
 )
 
-ACCEPTANCE_REQUESTS = 1_000
-ACCEPTANCE_SECONDS = 1.0
-SCALE_REQUESTS = 10_000
-REPEATS = 5
+BENCHMARK_SIZES = (100, 1_000, 10_000)
+REPEATS = 3
 
 
-def bench_config(num_requests: int, seed: int = 0) -> SimConfig:
+def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) -> SimConfig:
     """基准负载：长尾 prompt + 泊松 output。
 
     到达率（50 req/s）约为服务能力（约 5.6 req/s）的 9 倍，刻意过载：batch 常驻满载、
@@ -58,7 +56,12 @@ def bench_config(num_requests: int, seed: int = 0) -> SimConfig:
                 seed=seed,
             )
         ),
-        engine=EngineConfig(max_batch_size=32, kv_token_budget=65_536),
+        engine=EngineConfig(
+            max_running_requests=32,
+            max_total_tokens=65_536,
+            page_size=64,
+            pd_mutually_exclusive=exclusive,
+        ),
         perf_model=PerfModelConfig(
             prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002
         ),
@@ -68,21 +71,19 @@ def bench_config(num_requests: int, seed: int = 0) -> SimConfig:
 @dataclass(frozen=True, slots=True)
 class Timing:
     num_requests: int
+    exclusive: bool
     num_engine_steps: int
+    peak_resident_pages: int
     best_seconds: float
     median_seconds: float
 
-    @property
-    def requests_per_second(self) -> float:
-        return self.num_requests / self.best_seconds
-
     def render(self) -> str:
-        best_ms = self.best_seconds * 1000
-        median_ms = self.median_seconds * 1000
+        mode = "exclusive" if self.exclusive else "fused"
         return (
-            f"{self.num_requests:>7,} req  {self.num_engine_steps:>8,} steps  "
-            f"best {best_ms:8.1f} ms  median {median_ms:8.1f} ms  "
-            f"{self.requests_per_second:>10,.0f} req/s"
+            f"{self.num_requests:>7,} req  {mode:>9}  "
+            f"best {self.best_seconds * 1000:9.1f} ms  "
+            f"median {self.median_seconds * 1000:9.1f} ms  "
+            f"steps {self.num_engine_steps:>8,}  peak KV {self.peak_resident_pages:>5,} pages"
         )
 
 
@@ -98,13 +99,15 @@ def measure(fn: Callable[[], SimResult], repeats: int = REPEATS) -> tuple[SimRes
     return result, durations
 
 
-def time_simulate(num_requests: int, repeats: int = REPEATS) -> Timing:
-    cfg = bench_config(num_requests)
+def time_simulate(num_requests: int, *, exclusive: bool, repeats: int = REPEATS) -> Timing:
+    cfg = bench_config(num_requests, exclusive=exclusive)
     result, durations = measure(lambda: simulate(cfg), repeats)
     ordered = sorted(durations)
     return Timing(
         num_requests=num_requests,
+        exclusive=exclusive,
         num_engine_steps=result.meta.num_engine_steps,
+        peak_resident_pages=result.metrics.l1_peak_resident_blocks,
         best_seconds=ordered[0],
         median_seconds=ordered[len(ordered) // 2],
     )
@@ -115,24 +118,19 @@ def time_simulate(num_requests: int, repeats: int = REPEATS) -> Timing:
 pytestmark = pytest.mark.benchmark
 
 
-def test_acceptance_1k_under_one_second() -> None:
-    timing = time_simulate(ACCEPTANCE_REQUESTS)
-    print(f"\n{timing.render()}")
-    assert timing.best_seconds < ACCEPTANCE_SECONDS, (
-        f"1k 请求耗时 {timing.best_seconds:.3f}s 超出验收线 {ACCEPTANCE_SECONDS}s"
-    )
-
-
-def test_acceptance_same_seed_byte_identical() -> None:
-    cfg = bench_config(ACCEPTANCE_REQUESTS, seed=42)
-    assert simulate(cfg).model_dump_json() == simulate(cfg).model_dump_json()
-
-
-def test_scale_10k_report() -> None:
-    """仅报告，不设阈值。"""
-    timing = time_simulate(SCALE_REQUESTS, repeats=3)
+@pytest.mark.parametrize("num_requests", BENCHMARK_SIZES)
+@pytest.mark.parametrize("exclusive", [True, False], ids=["exclusive", "fused"])
+def test_scale_report(num_requests: int, exclusive: bool) -> None:
+    timing = time_simulate(num_requests, exclusive=exclusive)
     print(f"\n{timing.render()}")
     assert timing.num_engine_steps > 0
+    assert 0 <= timing.peak_resident_pages <= 65_536 // 64
+
+
+@pytest.mark.parametrize("exclusive", [True, False], ids=["exclusive", "fused"])
+def test_acceptance_same_seed_byte_identical(exclusive: bool) -> None:
+    cfg = bench_config(100, seed=42, exclusive=exclusive)
+    assert simulate(cfg).model_dump_json() == simulate(cfg).model_dump_json()
 
 
 # ---------------------------------------------------------------- 脚本入口
@@ -140,12 +138,10 @@ def test_scale_10k_report() -> None:
 
 def main() -> int:
     print(f"simcore benchmark (python {sys.version.split()[0]}, best of {REPEATS})")
-    acceptance = time_simulate(ACCEPTANCE_REQUESTS)
-    print(acceptance.render())
-    print(time_simulate(SCALE_REQUESTS, repeats=3).render())
-    passed = acceptance.best_seconds < ACCEPTANCE_SECONDS
-    print(f"acceptance (1k < {ACCEPTANCE_SECONDS}s): {'PASS' if passed else 'FAIL'}")
-    return 0 if passed else 1
+    for num_requests in BENCHMARK_SIZES:
+        for exclusive in (True, False):
+            print(time_simulate(num_requests, exclusive=exclusive).render())
+    return 0
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ docs/     # 现行设计、模块实施计划与文档索引
 ```powershell
 uv sync                                   # 安装依赖（根级 .venv）
 uv run pytest                             # 单元测试
-uv run pytest core/benchmarks -s          # 原有基准验收线：1k 请求 < 1s、同种子逐字节一致
+uv run pytest core/benchmarks/bench_engine.py -s  # 100/1k/10k，两种 P/D 模式的耗时、步数和 KV 峰值
 uv run python core/benchmarks/bench_chunk_identity.py --requests 1000 --sessions 250 --block-size 16 --repeats 3
 uv run ruff check core server ; uv run ruff format --check core server
 uv run python -m mypy
@@ -29,7 +29,7 @@ npm test                                 # Vitest 单元与组件测试
 npm run typecheck                        # 前端与浏览器测试类型检查
 npm run build                            # Vite 生产构建
 npm run check:types                      # 检查生成的 TS 类型是否最新
-npm run test:e2e                         # Playwright：真实后端 1k 请求与移动端验收
+npm run test:e2e                         # Playwright：真实后端六组规模/模式响应与移动端验收
 ```
 
 块身份基准报告程序执行耗时与 `tracemalloc` 跟踪的 Python 峰值分配，并非进程 RSS 或仿真预测的吞吐；数据不构成跨机器性能保证。
@@ -49,19 +49,19 @@ cd web
 npm run dev
 ```
 
-前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面支持完整 synthetic 配置、指标与告警展示，以及可缩放平移的 Canvas 请求甘特图。
+前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面支持 synthetic 配置、P/D 模式切换、完成/失败/跳过状态及指标展示；Canvas 甘特图仅绘制已完成请求。
 
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_batch_size":32,"kv_token_budget":65536},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
+$body = '{"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_running_requests":32,"max_total_tokens":65536,"page_size":64,"pd_mutually_exclusive":true},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
 Remove-Item simulate-request.json
 ```
 
-响应包含配置与时钟元信息 `meta`、汇总指标 `metrics`、每请求生命周期区间 `requests` 和 `warnings`。无效配置返回 `422`；尚未实现的 `workload.mode=trace` 返回 `501`。
+响应包含 `meta`、`metrics`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；尚未实现的 `workload.mode=trace` 返回 `501`。
 
 ## 同步前端类型
 
@@ -92,7 +92,7 @@ result = simulate(
                     "output_len": {"dist": "poisson", "mean": 128},
                 },
             },
-            "engine": {"max_batch_size": 32, "kv_token_budget": 65536},
+            "engine": {"max_running_requests": 32, "max_total_tokens": 65536, "page_size": 64},
             "perf_model": {
                 "prefill_c1": 0.05,
                 "prefill_c2": 1e-5,

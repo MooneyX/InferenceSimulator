@@ -1,87 +1,66 @@
-"""PC3A-A：FCFS 批规划只读 probe、原子缓存准入及实际 Prefill 工作量。"""
+"""F001 FCFS 准入接入：同批不可互见、队头不跳过和空池失败。"""
 
-import pytest
-
-from simcore.kv_cache import CacheOOMError, HierarchicalKVCache
-from simcore.scheduler import PrefixScheduler
-from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig, PrefixCacheConfig
-
-PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0.1, decode_d1=0, decode_d2=0)
+from simcore.kv_cache import L1KVCache
+from simcore.prefix_hash import encode
+from simcore.scheduler import F001Scheduler, RunningRequest
+from simcore.schemas import EngineConfig, InferenceRequest
 
 
-def make(budget: int = 20, block_size: int = 2) -> tuple[PrefixScheduler, HierarchicalKVCache]:
-    config = EngineConfig(
-        max_batch_size=4,
-        kv_token_budget=budget,
-        prefix_cache=PrefixCacheConfig(block_size_tokens=block_size),
-    )
-    cache = HierarchicalKVCache(config.prefix_cache.l1.capacity_blocks, block_size)
-    return PrefixScheduler(config, PERF, cache), cache
+def setup(capacity: int = 80) -> tuple[F001Scheduler, L1KVCache]:
+    engine = EngineConfig(max_running_requests=3, max_total_tokens=capacity, page_size=4)
+    cache = L1KVCache(engine.max_total_tokens, engine.page_size)
+    return F001Scheduler(engine, cache), cache
 
 
 def request(
-    key: int, hashes: tuple[str, ...], prompt: int = 4, output: int = 2
+    key: int, *, prompt: int = 5, maximum: int = 1, inherited: tuple[str, ...] = ()
 ) -> InferenceRequest:
-    return InferenceRequest(
-        request_id=key,
-        session_id=key,
-        parent_request_id=None,
-        prompt_len=prompt,
-        output_len=output,
-        input_chunk_ids=hashes,
-        ideal_reuse_blocks=len(hashes),
-    )
+    return InferenceRequest(key, key, None, prompt, maximum, inherited, len(inherited))
 
 
-def test_same_step_new_blocks_not_visible_and_published_hit() -> None:
-    scheduler, cache = make()
-    scheduler.enqueue(request(0, ("a", "b")), 0)
-    scheduler.enqueue(request(1, ("a", "b")), 0)
-    first = scheduler.plan_step()
-    assert first is not None
-    assert first.request_results == {0: (0, 0, 4), 1: (0, 0, 4)}
-    assert first.cache_result is not None
-    assert first.cache_result.allocated_blocks == 4
-    assert first.duration == pytest.approx(2 * (4 + 0.1 * 16))
-    cache.publish(0, ("a", "b"))
-    cache.publish(1, ("a", "b"))
-    cache.release(0)
-    cache.release(1)
-    scheduler.enqueue(request(2, ("a", "b")), 1)
-    later = scheduler.plan_step()
-    assert later is not None
-    assert later.request_results == {2: (4, 3, 1)}
-    assert later.duration == pytest.approx(1 + 0.1 * 7)
-    assert later.cache_result is not None
-    assert later.cache_result.allocated_blocks == 0
-    assert later.cache_result.reused_block_ids == (0, 1)
+def test_same_batch_new_pages_not_visible_until_publication() -> None:
+    scheduler, cache = setup()
+    inherited = (encode(0, 0),)
+    scheduler.enqueue(request(1, inherited=inherited), 0)
+    scheduler.enqueue(request(2, inherited=inherited), 0)
+    batch = scheduler.select_prefill({})
+    assert [
+        (candidate.waiting.request.request_id, candidate.reused_tokens)
+        for candidate in batch.admitted
+    ] == [(1, 0), (2, 0)]
+    for item in batch.admitted:
+        cache.admit(item.waiting.request.request_id)
+        cache.extend(item.waiting.request.request_id, item.context_after)
+    assert cache.page(inherited[0]) is None and cache.private_pages == 4
+    assert cache.publish_batch((2, 1)) == 1
+    assert cache.page(inherited[0]) is not None and cache.page(inherited[0]).ref_count == 2  # type: ignore[union-attr]
+    cache.finish(1)
+    cache.finish(2)
+    scheduler.enqueue(request(3, inherited=inherited), 1)
+    later = scheduler.select_prefill({})
+    assert later.admitted[0].reused_tokens == 4
 
 
-def test_fcfs_head_waits_without_mutating_cache() -> None:
-    scheduler, cache = make(budget=10)
-    scheduler.enqueue(request(0, ("a", "b")), 0)
-    first = scheduler.plan_step()
-    assert first is not None
-    snapshot = cache.snapshot()
-    scheduler.enqueue(request(1, ("x", "y")), 1)
-    scheduler.enqueue(request(2, ("a", "b")), 1)
-    waiting = scheduler.plan_step()
-    assert waiting is not None
-    assert waiting.admitted == ()
+def test_fcfs_failed_head_remains_waiting_while_running_decodes() -> None:
+    scheduler, cache = setup(capacity=32)
+    running = request(0, maximum=2)
+    cache.pin(running, 0)
+    cache.admit(0)
+    cache.extend(0, 5)
+    cache.publish(0)
+    scheduler.enqueue(request(1, maximum=30), 1)
+    scheduler.enqueue(request(2), 1)
+    batch = scheduler.select_prefill({0: RunningRequest(running, 1)})
+    assert batch.admitted == () and batch.blocked
     assert scheduler.num_waiting == 2
-    assert cache.snapshot() == snapshot
-    cache.release(0)
-    scheduler.on_request_released()
-    admitted = scheduler.plan_step()
-    assert admitted is not None
-    assert admitted.admitted[0].request_id == 1
+    assert cache.free_pages + cache.resident_pages == cache.capacity_pages
 
 
-def test_single_request_oom_is_not_forced() -> None:
-    scheduler, cache = make(budget=4)
-    scheduler.enqueue(request(0, ("a", "b"), output=1), 0)
-    before = cache.snapshot()
-    with pytest.raises(CacheOOMError):
-        scheduler.plan_step()
-    assert cache.snapshot() == before
-    assert scheduler.num_waiting == 1
+def test_permanently_infeasible_head_aborts_then_admits_next_request() -> None:
+    scheduler, cache = setup(capacity=16)
+    scheduler.enqueue(request(0, prompt=12), 0)
+    scheduler.enqueue(request(1, prompt=1), 0)
+    batch = scheduler.select_prefill({})
+    assert [item.request.request_id for item in batch.aborted] == [0]
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1]
+    assert cache.resident_pages == 0 and scheduler.num_waiting == 0

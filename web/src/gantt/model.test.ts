@@ -23,6 +23,8 @@ function request(
     matched_cache_tokens: 0,
     actual_hit_tokens: 0,
     actual_prefill_tokens: 16,
+    replayed_prefill_tokens: 0,
+    retry_count: 0,
     logical_context_tokens: 24,
     l1_hit_tokens: 0,
     l2_hit_tokens: 0,

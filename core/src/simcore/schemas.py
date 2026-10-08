@@ -22,14 +22,11 @@ __all__ = [
     "EngineConfig",
     "FixedLength",
     "InferenceRequest",
-    "L1CacheConfig",
     "LengthDist",
     "LognormalLength",
-    "LowerTierConfig",
     "Metrics",
     "PerfModelConfig",
     "PoissonLength",
-    "PrefixCacheConfig",
     "RequestCompletion",
     "RequestRecord",
     "SessionConfig",
@@ -151,32 +148,6 @@ class WorkloadConfig(_Frozen):
         return self
 
 
-class L1CacheConfig(_Frozen):
-    capacity_blocks: int = Field(ge=1)
-
-
-class LowerTierConfig(_Frozen):
-    capacity_blocks: int = Field(default=0, ge=0)
-    read_bandwidth_bytes_per_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    fixed_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-
-
-class PrefixCacheConfig(_Frozen):
-    block_size_tokens: int = Field(default=1, ge=1)
-    cache_salt: str = ""
-    eviction_policy: Literal["lru"] = "lru"
-    hierarchy_policy: Literal["exclusive_write_back"] = "exclusive_write_back"
-    l1: L1CacheConfig = Field(default_factory=lambda: L1CacheConfig(capacity_blocks=1))
-    l2: LowerTierConfig = Field(default_factory=LowerTierConfig)
-    l3: LowerTierConfig = Field(default_factory=LowerTierConfig)
-    kv_bytes_per_token: int = Field(default=1, ge=1)
-    model_id: str = "default-model"
-    tokenizer_id: str = "default-tokenizer"
-    kv_dtype: str = "default-dtype"
-    adapter_id: str = "default-adapter"
-    multimodal_transform_id: str = "default-transform"
-
-
 class EngineConfig(_Frozen):
     """单实例 KV 池配置；页数仅由 token 容量和页大小推导。"""
 
@@ -195,19 +166,6 @@ class EngineConfig(_Frozen):
     @property
     def capacity_pages(self) -> int:
         return self.max_total_tokens // self.page_size
-
-    @property
-    def prefix_cache(self) -> PrefixCacheConfig:
-        """旧内核过渡期使用的只读视图，不作为配置输入或输出字段。"""
-        return PrefixCacheConfig(
-            block_size_tokens=self.page_size,
-            l1=L1CacheConfig(capacity_blocks=self.capacity_pages),
-        )
-
-    @property
-    def max_batch_size(self) -> int:
-        """旧调度器的只读适配；后续由 max_running_requests 直接取代。"""
-        return self.max_running_requests
 
 
 class PerfModelConfig(_Frozen):
@@ -252,10 +210,7 @@ class WorkloadPlan:
     turns: Mapping[int, TurnPlan]
     root_request_ids: tuple[int, ...]
     children: Mapping[int, tuple[int, ...]]
-    target_ideal_prefix_hit_rate: float = 0.0
     constructed_ideal_prefix_hit_rate: float = 0.0
-    quantization_error: float = 0.0
-    block_size_tokens: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "turns", MappingProxyType(dict(self.turns)))

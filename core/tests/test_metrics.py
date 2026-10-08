@@ -3,7 +3,15 @@
 import pytest
 
 from simcore.metrics import compute_metrics, percentile
-from simcore.schemas import RequestRecord, WorkloadPlan
+from simcore.schemas import (
+    EngineConfig,
+    FixedLength,
+    PerfModelConfig,
+    RequestRecord,
+    SimConfig,
+    SyntheticWorkloadConfig,
+    WorkloadConfig,
+)
 
 
 def rec(
@@ -147,9 +155,20 @@ class TestPrefixMetrics:
             actual_prefill_tokens=1,
             l1_hit_tokens=4,
         )
-        result = compute_metrics(
-            [first, second], plan=WorkloadPlan({}, (), {}, block_size_tokens=2)
+        config = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=2,
+                    arrival_rate=1,
+                    prompt_len=FixedLength(value=5),
+                    output_len=FixedLength(value=2),
+                    seed=0,
+                )
+            ),
+            engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=2),
+            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
+        result = compute_metrics([first, second], config=config)
         assert result.total_input_tokens == 15
         assert result.ideal_hit_tokens == 4
         assert result.actual_prefix_hit_rate == pytest.approx(4 / 15)

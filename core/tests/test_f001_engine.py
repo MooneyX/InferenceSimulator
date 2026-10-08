@@ -4,7 +4,6 @@ import pytest
 
 from simcore.engine import Engine, run_engine
 from simcore.events import DoneTrace
-from simcore.perf_model import DecodeWork, PrefillWork
 from simcore.prefix_hash import encode
 from simcore.runner import simulate
 from simcore.schemas import (
@@ -45,11 +44,10 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
     engine.submit(request(0, prompt=65, maximum=100), 0)
     duration, finished = engine.step(0, 0)
     assert duration == 65 and finished == ()
-    assert engine.last_workload is not None
-    assert engine.last_workload.phase == "PREFILL"
-    assert engine.last_workload.prefill == (PrefillWork(0, 0, 65, 65),)
-    assert engine.last_workload.decode == ()
-    assert engine.last_workload.allocated_pages == 2
+    prefill_step = list(engine._log.steps())[-1]
+    assert prefill_step.phase == "PREFILL"
+    assert prefill_step.admitted == (0,) and prefill_step.num_decoding == 0
+    assert prefill_step.batch_total_tokens == 65 and prefill_step.allocated_blocks == 2
     assert engine._prefix_cache.state(0).k == 65
     assert engine._prefix_cache.state(0).f == 64
     assert engine._prefix_cache.private_page_count(0) == 1
@@ -57,9 +55,9 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
     assert engine._prefix_cache.snapshot().reserved_future_blocks == 0
     duration, finished = engine.step(65, 1)
     assert duration == 71 and finished == ()
-    decode_workload = engine.last_workload
-    assert decode_workload is not None and decode_workload.phase == "DECODE"
-    assert decode_workload.decode == (DecodeWork(0, 66),)
+    decode_step = list(engine._log.steps())[-1]
+    assert decode_step.phase == "DECODE"
+    assert decode_step.num_decoding == 1 and decode_step.batch_total_tokens == 66
     assert engine._prefix_cache.state(0).k == 66
     duration, finished = engine.step(136, 2)
     assert duration == 72 and finished == (0,)
@@ -103,16 +101,16 @@ def test_exclusive_mode_prefills_next_arrival_without_decoding_existing_request(
     engine.step(0, 0)
     engine.submit(request(1), 4)
     assert engine.step(4, 1) == (4, ())
-    assert engine.last_workload is not None
-    assert engine.last_workload.phase == "PREFILL"
-    assert engine.last_workload.decode == ()
+    prefill_step = list(engine._log.steps())[-1]
+    assert prefill_step.phase == "PREFILL"
+    assert prefill_step.admitted == (1,) and prefill_step.num_decoding == 0
     assert engine._prefix_cache.state(0).k == 4
     duration, finished = engine.step(8, 2)
     assert duration == 15 and finished == (0, 1)
-    decode_workload = engine.last_workload
-    assert decode_workload is not None and decode_workload.phase == "DECODE"
-    assert decode_workload.allocated_pages == 2
-    assert decode_workload.decode == (DecodeWork(0, 5), DecodeWork(1, 5))
+    decode_step = list(engine._log.steps())[-1]
+    assert decode_step.phase == "DECODE"
+    assert decode_step.allocated_blocks == 2 and decode_step.num_decoding == 2
+    assert decode_step.batch_total_tokens == 10
     engine.complete(23, 0)
     engine.complete(23, 1)
     assert [item.phase for item in engine.finalize().trace.steps()] == [
@@ -129,11 +127,10 @@ def test_fused_mode_only_decodes_request_running_at_step_start() -> None:
     engine.submit(request(1), 4)
     duration, finished = engine.step(4, 1)
     assert duration == 10 and finished == (0,)
-    assert engine.last_workload is not None
-    assert engine.last_workload.phase == "MIXED"
-    assert engine.last_workload.prefill == (PrefillWork(1, 0, 4, 4),)
-    assert engine.last_workload.decode == (DecodeWork(0, 5),)
-    assert engine.last_workload.allocated_pages == 2
+    mixed_step = list(engine._log.steps())[-1]
+    assert mixed_step.phase == "MIXED"
+    assert mixed_step.admitted == (1,) and mixed_step.num_decoding == 1
+    assert mixed_step.batch_total_tokens == 9 and mixed_step.allocated_blocks == 2
     assert engine._prefix_cache.state(1).k == 4
     engine.complete(14, 0)
     assert engine.step(14, 2) == (10, (1,))
@@ -152,7 +149,7 @@ def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> Non
     engine.submit(request(2, prompt=65, maximum=1, inherited=shared), 0)
     duration, finished = engine.step(0, 0)
     assert duration == 130 and finished == (1, 2)
-    assert engine.last_workload is not None and engine.last_workload.allocated_pages == 4
+    assert list(engine._log.steps())[-1].allocated_blocks == 4
     page = engine._prefix_cache.page(shared[0])
     assert page is not None and page.ref_count == 2
     assert engine._prefix_cache.resident_pages == 3
@@ -173,8 +170,9 @@ def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
     engine.complete(4096, 0)
     engine.submit(request(1, prompt=65, maximum=1, inherited=(encode(0, 0),)), 4096)
     assert engine.step(4096, 1) == (129, (1,))
-    assert engine.last_workload is not None
-    assert engine.last_workload.prefill == (PrefillWork(1, 64, 1, 65),)
+    prefill_step = list(engine._log.steps())[-1]
+    assert prefill_step.admitted == (1,)
+    assert prefill_step.matched_cache_tokens == 64 and prefill_step.batch_total_tokens == 65
     engine.complete(4225, 1)
     assert engine.finalize().records[1].actual_prefill_tokens == 1
 
@@ -220,4 +218,4 @@ def test_empty_step_is_rejected_without_advancing_clock() -> None:
     engine = make_engine({})
     with pytest.raises(RuntimeError, match="没有可执行"):
         engine.step(0, 0)
-    assert engine.num_steps == 0 and engine.last_workload is None
+    assert engine.num_steps == 0 and tuple(engine._log.steps()) == ()

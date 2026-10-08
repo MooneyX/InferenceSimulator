@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RequestRecord } from "../api/types";
-import { buildGanttModel, selectVisibleSegments } from "./model";
+import { buildGanttModel } from "./model";
 
 function request(
   id: number,
@@ -110,51 +110,5 @@ describe("buildGanttModel", () => {
 
     expect(model.rows).toHaveLength(1000);
     expect(model.segments).toHaveLength(3000);
-  });
-});
-
-describe("selectVisibleSegments", () => {
-  it("keeps only intervals near the visible row and time range", () => {
-    const model = buildGanttModel([
-      request(0, 0, 2, 4, 8),
-      request(1, 10, 12, 14, 18),
-      request(2, 20, 22, 24, 28),
-      request(3, 30, 32, 34, 38),
-    ]);
-
-    const visible = selectVisibleSegments(
-      model,
-      { startTime: 11, endTime: 16, firstRow: 1, lastRow: 1 },
-      { rows: 0, timeRatio: 0 },
-    );
-
-    expect(visible.map(({ key }) => key)).toEqual([
-      "1-queue",
-      "1-prefill",
-      "1-decode",
-    ]);
-  });
-
-  it("adds row and time overscan around the viewport", () => {
-    const model = buildGanttModel([
-      request(0, 0, 2, 4, 8),
-      request(1, 10, 12, 14, 18),
-      request(2, 20, 22, 24, 28),
-    ]);
-
-    const visible = selectVisibleSegments(
-      model,
-      { startTime: 10, endTime: 20, firstRow: 1, lastRow: 1 },
-      { rows: 1, timeRatio: 0.2 },
-    );
-
-    expect(visible.map(({ key }) => key)).toEqual([
-      "0-decode",
-      "1-queue",
-      "1-prefill",
-      "1-decode",
-      "2-queue",
-      "2-prefill",
-    ]);
   });
 });

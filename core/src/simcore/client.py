@@ -17,33 +17,27 @@ class ClientDriver:
     """根据已完成父轮的请求身份和实际生成数构造继承前缀。"""
 
     def __init__(self, plan: WorkloadPlan, engine: EngineConfig) -> None:
-        if plan.block_size_tokens != engine.page_size:
-            raise ValueError("计划和引擎 page_size 不一致")
         self.plan = plan
         self.page_size = engine.page_size
-        self._ready: dict[int, float] = {}
         self._inflight: dict[int, InferenceRequest] = {}
         self._finished: dict[int, tuple[InferenceRequest, int]] = {}
         self._sent: set[int] = set()
-        for request_id in plan.root_request_ids:
-            time = plan.turns[request_id].root_arrival_time_ms
-            if time is None:
-                raise ValueError("根请求缺少计划到达时间")
-            self._ready[request_id] = time
 
     def initial_wakeups(self) -> tuple[ClientWakeup, ...]:
-        return tuple(
-            ClientWakeup(self.plan.turns[key].session_id, key, self._ready[key])
-            for key in self.plan.root_request_ids
-            if key in self._ready
-        )
+        wakeups: list[ClientWakeup] = []
+        for request_id in self.plan.root_request_ids:
+            turn = self.plan.turns[request_id]
+            time = turn.root_arrival_time_ms
+            if time is None:
+                raise ValueError("根请求缺少计划到达时间")
+            wakeups.append(ClientWakeup(turn.session_id, request_id, time))
+        return tuple(wakeups)
 
     def on_wakeup(self, wakeup: ClientWakeup) -> InferenceRequest:
         turn = self.plan.turns[wakeup.turn_id]
         if turn.session_id != wakeup.session_id:
             raise ValueError("客户端唤醒的 session_id 与轮次不一致")
-        planned = self._ready.get(wakeup.turn_id)
-        if planned is None or planned != wakeup.send_time_ms or wakeup.turn_id in self._sent:
+        if wakeup.turn_id in self._sent:
             raise ValueError("轮次未就绪、重复发送或发送时间不符")
         inherited = turn.ideal_reuse_blocks
         if inherited > (turn.prompt_len - 1) // self.page_size:
@@ -57,6 +51,8 @@ class ClientDriver:
                 for index in range(inherited)
             )
         else:
+            if turn.root_arrival_time_ms != wakeup.send_time_ms:
+                raise ValueError("根请求发送时间与计划不符")
             if inherited:
                 raise ValueError("根请求不能继承完整块")
             head = ()
@@ -71,7 +67,6 @@ class ClientDriver:
         )
         self._sent.add(turn.request_id)
         self._inflight[turn.request_id] = request
-        del self._ready[turn.request_id]
         return request
 
     def on_request_completed(self, completion: RequestCompletion) -> tuple[ClientWakeup, ...]:
@@ -91,7 +86,6 @@ class ClientDriver:
             if child.think_time_ms is None:
                 raise ValueError("子轮次缺少 think time")
             time = completion.finish_time_ms + child.think_time_ms
-            self._ready[child_id] = time
             wakeups.append(ClientWakeup(child.session_id, child_id, time))
         return tuple(wakeups)
 
@@ -101,13 +95,16 @@ class ClientDriver:
             raise ValueError("失败了未发送或已结算的请求")
         del self._inflight[request_id]
         skipped: list[SkippedRequest] = []
-        stack = list(reversed(self.plan.children.get(request_id, ())))
+        stack = [
+            (child_id, request_id) for child_id in reversed(self.plan.children.get(request_id, ()))
+        ]
         while stack:
-            child_id = stack.pop()
-            if child_id in self._sent or child_id in self._ready:
-                raise ValueError("失败父轮的后代不应已就绪或发送")
-            child = self.plan.turns[child_id]
-            assert child.parent_request_id is not None
-            skipped.append(SkippedRequest(id=child_id, parent_request_id=child.parent_request_id))
-            stack.extend(reversed(self.plan.children.get(child_id, ())))
+            child_id, parent_id = stack.pop()
+            if child_id in self._sent:
+                raise ValueError("失败父轮的后代不应已发送")
+            skipped.append(SkippedRequest(id=child_id, parent_request_id=parent_id))
+            stack.extend(
+                (descendant_id, child_id)
+                for descendant_id in reversed(self.plan.children.get(child_id, ()))
+            )
         return tuple(sorted(skipped, key=lambda item: item.id))

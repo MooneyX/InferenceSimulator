@@ -106,7 +106,6 @@ class Engine:
         self._prefix_cache = L1KVCache(engine.max_total_tokens, engine.page_size)
         self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
-        self._last_workload: StepWorkload | None = None
         self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
@@ -123,7 +122,6 @@ class Engine:
         self._prefill_end: dict[int, float] = {}
         self._finish: dict[int, float] = {}
         self._num_steps = 0
-        self._warnings: list[str] = []
 
     @property
     def has_work(self) -> bool:
@@ -133,10 +131,6 @@ class Engine:
     @property
     def num_steps(self) -> int:
         return self._num_steps
-
-    @property
-    def last_workload(self) -> StepWorkload | None:
-        return self._last_workload
 
     def submit(self, request: InferenceRequest, now_ms: float) -> bool:
         """发送时 M<1 直接失败；其他请求按 FCFS 入队。"""
@@ -169,8 +163,6 @@ class Engine:
         now_ms: float,
         reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"],
     ) -> None:
-        if request_id in self._aborted or request_id in self._finish:
-            raise ValueError("请求已终结")
         self._aborted[request_id] = AbortedRequest(
             id=request_id,
             arrival=self._arrival_times[request_id],
@@ -189,8 +181,6 @@ class Engine:
 
     def register_skipped(self, skipped: tuple[SkippedRequest, ...]) -> None:
         for item in skipped:
-            if item.id in self._requests or item.id in self._skipped:
-                raise ValueError("跳过的子轮已发送或重复标记")
             self._skipped[item.id] = item
 
     def _prepare_decode(
@@ -228,8 +218,6 @@ class Engine:
 
     def step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]]:
         """只推进步首 Decode 和本步 Prefill；结果发布后下一步才可复用。"""
-        if step_index != self._num_steps:
-            raise ValueError(f"预期 step_index={self._num_steps}，得到 {step_index}")
         cache = self._prefix_cache
         running = {
             key: RunningRequest(self._requests[key], generated)
@@ -298,8 +286,6 @@ class Engine:
         finished: list[int] = []
         for key in decode_ids:
             previous = running[key].generated_tokens
-            if cache.state(key).k != self._requests[key].prompt_len + previous - 1:
-                raise RuntimeError("Decode 步首 KV 长度与已采样输出数不一致")
             cache.extend(key, cache.state(key).k + 1)
             self._running[key] = previous + 1
             if self._running[key] == self._output_targets[key]:
@@ -323,10 +309,8 @@ class Engine:
                 key, (candidate.reused_tokens, candidate.reused_tokens)
             )
         cache.publish_batch(tuple(item.waiting.request.request_id for item in selection.admitted))
-        self._last_workload = workload
         finished.sort()
-        if self._log.enabled:
-            assert before is not None
+        if before is not None:
             cache_after = cache.snapshot()
             self._log.record(
                 StepTrace(
@@ -393,10 +377,6 @@ class Engine:
     def finalize(self) -> EngineRun:
         """所有请求完成后形成稳定输出，包含即时提交时刻。"""
         arrivals = self._arrivals
-        unfinished = arrivals.keys() - self._finish.keys() - self._aborted.keys()
-        if unfinished:  # pragma: no cover - 进展保证下不可达
-            raise RuntimeError(f"仿真结束但仍有 {len(unfinished)} 个请求未完成")
-
         records = tuple(
             RequestRecord(
                 id=request_id,
@@ -432,7 +412,7 @@ class Engine:
         )
         return EngineRun(
             records=records,
-            warnings=tuple(self._warnings),
+            warnings=(),
             num_engine_steps=self._num_steps,
             sim_start=sim_start,
             sim_end=sim_end,

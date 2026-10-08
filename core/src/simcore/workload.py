@@ -11,6 +11,7 @@ import math
 import random
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import cast
 
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
@@ -77,8 +78,7 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
 def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:
     """独立随机流采样长度、到达和子轮思考时间；仅引擎使用截断后的输出长度。"""
     block_size = engine.page_size
-    sessions = cfg.session.num_sessions
-    assert sessions is not None  # schema 解析后必有 session 数
+    sessions = cast(int, cfg.session.num_sessions)
     n = cfg.num_requests
     topology_rng = random.Random(stable_derive(cfg.seed, "topology"))
     arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
@@ -170,10 +170,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
         turns=turns,
         root_request_ids=tuple(roots),
         children=children,
-        target_ideal_prefix_hit_rate=target,
         constructed_ideal_prefix_hit_rate=achieved,
-        quantization_error=abs(achieved - target),
-        block_size_tokens=block_size,
     )
 
 
@@ -203,5 +200,4 @@ def plan_from_arrivals(arrivals: Iterable[Arrival], engine: EngineConfig) -> Wor
         turns=turns,
         root_request_ids=tuple(roots),
         children={},
-        block_size_tokens=engine.page_size,
     )

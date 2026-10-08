@@ -17,7 +17,7 @@ def make_plan(*, ordinary_at: float = 8, think: float = 0) -> WorkloadPlan:
         3: TurnPlan(3, 0, 0, None, think, 5, 1, 1, 1),
         4: TurnPlan(4, 1, 1, None, think, 5, 1, 1, 1),
     }
-    return WorkloadPlan(turns, (2, 1, 0), {0: (3,), 1: (4,)}, block_size_tokens=4)
+    return WorkloadPlan(turns, (2, 1, 0), {0: (3,), 1: (4,)})
 
 
 def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinator, Engine]:

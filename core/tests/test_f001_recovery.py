@@ -67,7 +67,7 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
     assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 8
     engine._prefix_cache.withdraw(99)
     assert engine.step(22, 2) == (8, ())
-    assert engine.last_workload is not None and engine.last_workload.phase == "PREFILL"
+    assert list(engine._log.steps())[-1].phase == "PREFILL"
     assert engine._running[1] == 1 and engine._prefix_cache.state(1).k == 8
     assert engine._prefill_end[1] == 12
     assert engine._replayed_tokens[1] == 8
@@ -128,9 +128,10 @@ def test_fused_mode_fixes_decode_set_before_prefill_admission() -> None:
     occupy(engine._prefix_cache, 99, 20)
     engine.submit(request(2, maximum=1), 12)
     assert engine.step(12, 1) == (10, ())
-    workload = engine.last_workload
-    assert workload is not None and workload.phase == "DECODE"
-    assert [item.request_id for item in workload.decode] == [0]
+    step = list(engine._log.steps())[-1]
+    assert step.phase == "DECODE"
+    assert step.num_decoding == 1 and step.batch_total_tokens == 5
+    assert step.admitted == ()
     assert list(engine._log.steps())[-1].withdrawn == (1,)
     assert engine._prefix_scheduler.num_waiting == 2
     assert 1 not in engine._running  # 本步回撤者不能重新被 Prefill 准入
@@ -149,9 +150,9 @@ def test_restore_with_two_sampled_tokens_recomputes_only_p_plus_one() -> None:
     engine._retry_counts[0] = 1
     engine._prefix_scheduler.requeue(item, 14, generated_tokens=2)
     assert engine.step(14, 2) == (1, ())
-    assert engine.last_workload is not None
-    assert engine.last_workload.prefill[0].context_after == 5
-    assert engine.last_workload.prefill[0].new_tokens == 1
+    step = list(engine._log.steps())[-1]
+    assert step.phase == "PREFILL" and step.admitted == (0,)
+    assert step.batch_total_tokens == 5 and step.matched_cache_tokens == 4
     assert engine._prefix_cache.state(0).k == 5 and engine._running[0] == 2
     assert engine._prefill_end[0] == 4
     assert engine.step(15, 3) == (11, (0,))

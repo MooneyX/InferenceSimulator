@@ -27,21 +27,6 @@ export interface GanttModel {
   endTime: number | null;
 }
 
-export interface GanttViewport {
-  startTime: number;
-  endTime: number;
-  firstRow: number;
-  lastRow: number;
-}
-
-export interface GanttOverscan {
-  rows?: number;
-  timeRatio?: number;
-}
-
-const DEFAULT_ROW_OVERSCAN = 2;
-const DEFAULT_TIME_OVERSCAN_RATIO = 0.1;
-
 function createSegment(
   row: GanttRequestRow,
   phase: GanttPhase,
@@ -88,27 +73,4 @@ export function buildGanttModel(requests: readonly RequestRecord[]): GanttModel 
       rows[0].finish,
     ),
   };
-}
-
-export function selectVisibleSegments(
-  model: GanttModel,
-  viewport: GanttViewport,
-  overscan: GanttOverscan = {},
-): GanttSegment[] {
-  const rowOverscan = Math.max(0, overscan.rows ?? DEFAULT_ROW_OVERSCAN);
-  const timeRatio = Math.max(0, overscan.timeRatio ?? DEFAULT_TIME_OVERSCAN_RATIO);
-  const visibleDuration = Math.max(0, viewport.endTime - viewport.startTime);
-  const timeOverscan = visibleDuration * timeRatio;
-  const firstRow = Math.floor(viewport.firstRow - rowOverscan);
-  const lastRow = Math.ceil(viewport.lastRow + rowOverscan);
-  const startTime = viewport.startTime - timeOverscan;
-  const endTime = viewport.endTime + timeOverscan;
-
-  return model.segments.filter(
-    (segment) =>
-      segment.rowIndex >= firstRow &&
-      segment.rowIndex <= lastRow &&
-      segment.end >= startTime &&
-      segment.start <= endTime,
-  );
 }

@@ -8,7 +8,6 @@
 
 ```text
 prefill_cost(c, n) = prefill_c1*n + prefill_c2*((c+n)^2 - c^2)
-prefill_time(P) = prefill_cost(0, P)
 decode_step_time(T) = decode_d1 + decode_d2*T
 ```
 

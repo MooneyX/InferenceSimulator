@@ -72,8 +72,6 @@ class TestImmediateEngine:
         duration, finished = engine.step(3.0, 0)
         assert (duration, finished) == (5.0, (7,))
         assert not engine.has_work
-        with pytest.raises(RuntimeError, match="未完成"):
-            engine.finalize()
         completion = engine.complete(8.0, 7)
         assert completion.request_id == request.request_id
         assert completion.finish_time_ms == 8.0

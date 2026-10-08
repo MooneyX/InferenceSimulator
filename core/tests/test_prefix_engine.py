@@ -78,7 +78,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         output_len=1,
         ideal_reuse_blocks=blocks,
     )
-    plan = WorkloadPlan({7: root_plan.turns[7], 8: child}, (7,), {7: (8,)}, block_size_tokens=4)
+    plan = WorkloadPlan({7: root_plan.turns[7], 8: child}, (7,), {7: (8,)})
     client = ClientDriver(plan, config)
     engine = Engine(config, PERF, output_targets={7: output, 8: 1})
     parent = client.on_wakeup(client.initial_wakeups()[0])

@@ -21,7 +21,7 @@ workload     build_plan 规划长度、拓扑和理想复用；sample_length 采
 client       ClientDriver：消费计划、维护已完成完整块 ID 上下文、发送时构造请求（依赖 schemas、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     当前 L1 KV block、索引、容量与 LRU；L2/L3 仅预留配置与字段（依赖 schemas）
-scheduler    FCFS 调度：batch 组成与 cache transaction 决策（依赖 kv_cache、perf_model）
+scheduler    F001 FCFS 调度：按 KV 页状态选择 batch（依赖 kv_cache、schemas）
 engine       已到达请求、EngineStep、KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与引擎 trace 类型（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；路由 client 与 engine（依赖 client、engine、events）
@@ -53,8 +53,8 @@ runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、c
 | `ClientWakeup` | `schemas`（由 `client` 构造） | `coordinator` | 未来客户端发送事件，只含 session/turn 身份和发送时刻 |
 | `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine` | wakeup 到时才构造的请求：显式长度和完整输入块 ID，不含未来到达时间 |
 | `RequestCompletion` | `schemas`（由 `engine` 构造） | `coordinator`、`client` | 仅请求 ID 与完成时刻；客户端据已知长度重建完整输出块 ID |
-| `CachedStepPlan` | `scheduler` | `engine` | 当前 L1 路径的单步准入、命中和步长结果（值对象） |
-| `CacheSnapshot` | `kv_cache` | `scheduler`、`engine`、`metrics` | 物理块与预留容量的不可变快照 |
+| `AdmissionBatch` | `scheduler` | `engine` | F001 的准入、恢复、失败与预算估算（值对象） |
+| `L1Snapshot` | `kv_cache` | `engine`、`metrics` | L1 页容量与驻留状态的不可变汇总 |
 | `Event` / `EventKind` | `events` | `coordinator` | 全局事件队列载荷与同刻全序（值对象） |
 | `EventFactory` | `events` | `coordinator` | 事件序号分配器，由协调器实例化并独占持有 |
 | `TraceRecord` | `events` | `engine` | Arrival、Step 和 Done 记录；不含 ClientSend 或客户端回调记录 |
@@ -63,7 +63,7 @@ runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、c
 
 协作者注入：
 
-- `HierarchicalKVCache`：由 `engine` 构造并持有所有权，注入 `scheduler`。完整块 ID 的索引判等与 cache 始终开启；`scheduler` 调用只读 `snapshot` / `probe` 和 `prepare_batch` / `commit` 原子准入，`engine` 在 step 与完成边界调用 `publish` / `advance` / `release` / `snapshot`。缓存容量、索引和 LRU 不允许被其他模块直接修改；当前仅实现 L1，L2/L3 是后续扩展。
+- `L1KVCache`：由 `engine` 构造并持有所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 选择连续队头；引擎在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`。完整页 ID 索引与 LRU 由缓存维护；当前仅实现 L1。
 
 引擎可在内部记录 `ArrivalTrace`、`StepTrace`、`DoneTrace`；顶层 `simulate` 默认关闭逐步记录，HTTP API 不暴露 `EventLog`。如需未来的决策溯源，应另行定义对外 schema，不把当前内部事件流误认为已有公共响应。
 

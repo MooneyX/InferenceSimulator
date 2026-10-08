@@ -4,11 +4,13 @@
 事件流不经 API 暴露，默认关闭记录；旧长度 Arrival 由 ``engine.run_engine`` 适配。
 """
 
+from typing import cast
+
 from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.metrics import compute_metrics
-from simcore.schemas import SimConfig, SimMeta, SimResult
+from simcore.schemas import SimConfig, SimMeta, SimResult, SyntheticWorkloadConfig
 from simcore.workload import build_plan
 
 __all__ = ["simulate"]
@@ -22,9 +24,7 @@ def simulate(config: SimConfig) -> SimResult:
     """
     if config.workload.mode == "trace":
         raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
-    synthetic = config.workload.synthetic
-    if synthetic is None:  # pragma: no cover - schema 层已保证
-        raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
+    synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
     plan = build_plan(synthetic, config.engine)
     client = ClientDriver(plan, config.engine)
     run = Coordinator(
@@ -50,6 +50,7 @@ def simulate(config: SimConfig) -> SimResult:
         metrics=compute_metrics(
             run.records,
             plan=plan,
+            config=config,
             cache_snapshot=run.cache_snapshot,
             l1_evictions=run.l1_evictions,
             l1_peak_resident_blocks=run.l1_peak_resident_blocks,

@@ -10,8 +10,8 @@
 
 ## 准入与步进
 
-- `PrefixScheduler` 管理已到达请求的 FCFS 等待队列；`Engine` 维护运行请求，步首在 `max_batch_size` 和 L1 物理容量约束下只准入连续队头。队头暂时放不下时等待释放，不跳过较小的后续请求；单请求在空 L1 仍放不下则报不可执行/OOM，不允许强制超预算准入。
-- 每步使用同一 L1 快照探测候选，并通过事务原子准入；调度结果由 `CachedStepPlan` 表达。同一步新发布的块对本步其他请求不可见。完整块的身份、事务、LRU 和释放规则由 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md) 定义。
+- `F001Scheduler` 管理已到达请求的 FCFS 等待队列；`Engine` 维护运行请求，步首在 `max_running_requests` 和 L1 物理容量约束下只准入连续队头。队头暂时放不下时等待或回撤，不跳过较小的后续请求；单请求无法执行时记录失败，不允许强制超预算准入。
+- 调度器逐队头探测并临时保护已命中的完整页，按实际页容量选择候选；调度结果由 `AdmissionBatch` 表达。执行层确认准入后逐请求扩展 KV，同一步新发布的页对本步其他请求不可见。完整页的身份、容量、LRU 和释放规则见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
 - 准入请求在一个 step 内完成未命中输入的 Prefill，并产出首个 output token；步首已驻留的请求各推进一个 Decode token。步末结算已完成请求，未完成请求在后续 step 继续 Decode。步长由 [perf-model.md](perf-model.md) 定义。
 
 除排队外，当前引擎不单独建模网络或采样开销；经验公式和步长口径见 [perf-model.md](perf-model.md)。

@@ -57,9 +57,7 @@ def mixed_plan() -> WorkloadPlan:
         turns,
         (2, 0),
         {0: (1,), 2: (3,)},
-        target_ideal_prefix_hit_rate=4 / 26,
         constructed_ideal_prefix_hit_rate=4 / 26,
-        block_size_tokens=4,
     )
 
 

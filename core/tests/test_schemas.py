@@ -120,7 +120,6 @@ class TestConfigValidation:
         assert (engine.page_size, engine.capacity_pages) == (64, 64)
         assert engine.max_prefill_tokens == 16_384
         assert engine.pd_mutually_exclusive is True
-        assert engine.prefix_cache.l1.capacity_blocks == engine.capacity_pages
         assert engine.model_dump() == {
             "max_running_requests": 8,
             "max_total_tokens": 4096,

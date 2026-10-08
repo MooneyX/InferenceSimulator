@@ -122,7 +122,9 @@ def test_quantization_and_infeasibility() -> None:
     plan = build_plan(config(n=6, s=2, target=0.2), cache)
     assert sum(t.ideal_reuse_blocks for t in plan.turns.values()) == 3
     assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(12 / 60)
-    assert plan.quantization_error == pytest.approx(0)
+    assert not hasattr(plan, "quantization_error")
+    assert not hasattr(plan, "target_ideal_prefix_hit_rate")
+    assert not hasattr(plan, "block_size_tokens")
     with pytest.raises(ValueError, match="r_max"):
         build_plan(config(n=6, s=2, target=0.9), cache)
     with pytest.raises(ValueError, match="r_max=0"):

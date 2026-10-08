@@ -11,7 +11,7 @@
 | [design/events.md](design/events.md) | 唯一 DES 时钟、协调器事件顺序和回调 |
 | [design/kernel.md](design/kernel.md) | 当前引擎步进、一次性 Prefill 与 FCFS 准入 |
 | [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 合成负载完整块 ID 的编码与生成时机 |
-| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | 当前 L1 block、连续命中、事务、容量和 LRU |
+| [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | 当前 L1 页、连续命中、容量和 LRU |
 | [design/perf-model.md](design/perf-model.md) | 当前四系数经验模型与融合步长近似 |
 | [design/metrics.md](design/metrics.md) | 时延、吞吐、命中及 L1 容量的计算口径 |
 | [design/api.md](design/api.md) | 当前配置、HTTP 响应与 OpenAPI 类型链 |

@@ -30,8 +30,6 @@ class Coordinator:
         self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None
     ) -> None:
         for wakeup in wakeups:
-            if wakeup.turn_id in self._wakeups:
-                raise ValueError(f"轮次 {wakeup.turn_id} 重复安排发送")
             self._wakeups[wakeup.turn_id] = wakeup
             if completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
                 event = self._factory.client_child_send(wakeup.send_time_ms, wakeup.turn_id)
@@ -82,8 +80,6 @@ class Coordinator:
                     heapq.heappush(self._heap, self._factory.request_done(end, request_id))
                 if self.engine.has_work:
                     self._schedule_step(end)
-            else:
-                raise AssertionError(f"未知事件类型 {event.kind}")
         return self.engine.finalize()
 
 

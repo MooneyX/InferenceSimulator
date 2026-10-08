@@ -7,6 +7,7 @@ import pytest
 from simcore.client import ClientDriver
 from simcore.prefix_hash import encode
 from simcore.schemas import (
+    ClientWakeup,
     EngineConfig,
     FixedLength,
     RequestCompletion,
@@ -39,13 +40,12 @@ def test_child_waits_for_actual_parent_output() -> None:
     turns = dict(base.plan.turns)
     turns[child_id] = replace(turns[child_id], prompt_len=12, ideal_reuse_blocks=5)
     client = ClientDriver(
-        WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children, block_size_tokens=2),
+        WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children),
         EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2),
     )
     wakeup = client.initial_wakeups()[0]
     parent = client.on_wakeup(wakeup)
     child_id = client.plan.children[parent.request_id][0]
-    assert client.initial_wakeups() == ()
     with pytest.raises(ValueError, match="未就绪"):
         client.on_wakeup(wakeup)
     with pytest.raises(ValueError, match="未发送"):
@@ -68,6 +68,32 @@ def test_child_waits_for_actual_parent_output() -> None:
         client.on_request_completed(RequestCompletion(parent.request_id, 31, 4))
 
 
+def test_child_without_reuse_still_waits_for_parent_completion() -> None:
+    base = make_client()
+    parent_id = base.plan.root_request_ids[0]
+    child_id = base.plan.children[parent_id][0]
+    turns = dict(base.plan.turns)
+    turns[child_id] = replace(turns[child_id], ideal_reuse_blocks=0)
+    client = ClientDriver(
+        WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children),
+        EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2),
+    )
+    client.on_wakeup(client.initial_wakeups()[0])
+    child = turns[child_id]
+    with pytest.raises(ValueError, match="父请求完成"):
+        client.on_wakeup(ClientWakeup(child.session_id, child_id, 0))
+    wakeup = client.on_request_completed(RequestCompletion(parent_id, 30, 4))[0]
+    assert client.on_wakeup(wakeup).parent_request_id == parent_id
+
+
+def test_root_wakeup_uses_planned_time() -> None:
+    client = make_client()
+    wakeup = client.initial_wakeups()[0]
+    with pytest.raises(ValueError, match="发送时间与计划不符"):
+        client.on_wakeup(replace(wakeup, send_time_ms=wakeup.send_time_ms + 1))
+    assert client.on_wakeup(wakeup).request_id == wakeup.turn_id
+
+
 def test_last_sampled_token_does_not_create_inheritable_page() -> None:
     base = make_client()
     parent_id = base.plan.root_request_ids[0]
@@ -75,7 +101,7 @@ def test_last_sampled_token_does_not_create_inheritable_page() -> None:
     turns = dict(base.plan.turns)
     turns[child_id] = replace(turns[child_id], prompt_len=12, ideal_reuse_blocks=5)
     client = ClientDriver(
-        WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children, block_size_tokens=2),
+        WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children),
         EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2),
     )
     client.on_wakeup(client.initial_wakeups()[0])
@@ -114,7 +140,7 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
     turns[child_id] = replace(turns[child_id], prompt_len=5, output_len=5, ideal_reuse_blocks=1)
     turns[grandchild_id] = replace(turns[grandchild_id], prompt_len=13, ideal_reuse_blocks=2)
     client = ClientDriver(
-        WorkloadPlan(turns, base.root_request_ids, base.children, block_size_tokens=4), engine
+        WorkloadPlan(turns, base.root_request_ids, base.children), engine
     )
 
     root = client.on_wakeup(client.initial_wakeups()[0])

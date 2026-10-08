@@ -107,6 +107,33 @@ class TestEndToEnd:
         assert result.requests[1].parent_request_id == result.requests[0].id
         assert result.requests[1].actual_prefill_tokens == 8
 
+    def test_quantization_error_comes_from_config_and_plan(self) -> None:
+        config = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=2,
+                    arrival_rate=10,
+                    prompt_len=FixedLength(value=16),
+                    output_len=FixedLength(value=8),
+                    seed=2,
+                    session=SessionConfig(num_sessions=1, target_ideal_prefix_hit_rate=0.1),
+                )
+            ),
+            engine=EngineConfig(max_running_requests=2, max_total_tokens=80, page_size=2),
+            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+        )
+        synthetic = config.workload.synthetic
+        assert synthetic is not None
+        plan = build_plan(synthetic, config.engine)
+        metrics = simulate(config).metrics
+        assert metrics.target_ideal_prefix_hit_rate == pytest.approx(0.1)
+        assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(0.125)
+        assert metrics.ideal_hit_quantization_error == pytest.approx(0.025)
+        empty = compute_metrics([], plan=plan, config=config)
+        assert empty.target_ideal_prefix_hit_rate == metrics.target_ideal_prefix_hit_rate
+        assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
+        assert empty.ideal_hit_quantization_error == metrics.ideal_hit_quantization_error
+
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
         cfg = SimConfig(
             workload=WorkloadConfig(

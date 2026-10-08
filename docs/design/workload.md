@@ -4,7 +4,7 @@
 
 ## 计划与到达
 
-`build_plan(SyntheticWorkloadConfig, PrefixCacheConfig) -> WorkloadPlan` 一次性生成不可变计划，不访问 Engine 或 KV cache。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录 `prompt_len`、`output_len` 和 `ideal_reuse_blocks`，不预生成输出块 ID。
+`build_plan(SyntheticWorkloadConfig, EngineConfig) -> WorkloadPlan` 一次性生成不可变计划，不访问 Engine 或 KV cache。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录 `prompt_len`、`output_len` 和 `ideal_reuse_blocks`，不预生成输出块 ID。
 
 `arrival_rate=q` 的单位是所有轮次的目标请求/秒，根的泊松速率为 `q*S/N` session/秒；首根同样采样指数间隔，不固定在时刻 0。这个换算仅给出持续注入的长期名义速率，单次有限仿真的实际到达率和完成吞吐不保证等于 `q`。`S=N` 时退化为单轮请求到达口径。根到达、长度、拓扑、思考时间及理想命中分配分别由 `stable_derive(seed, domain)` 派生独立随机流，保持相同配置与种子的计划可复现。`session.think_time_ms` 是子轮思考时间的指数分布均值（毫秒），每个子轮独立采样一次；设为 `0` 时始终无等待。根轮不采样思考时间，子轮实际到达仍由父轮完成时刻决定。
 

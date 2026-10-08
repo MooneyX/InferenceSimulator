@@ -1,5 +1,6 @@
 """PC1-A：会话长度与拓扑计划、块身份继承及预算量化。"""
 
+import random
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -66,7 +67,7 @@ def test_plan_topology_and_root_poisson_rate() -> None:
     for turn in plan.turns.values():
         if turn.parent_request_id is not None:
             assert turn.root_arrival_time_ms is None
-            assert turn.think_time_ms == 30
+            assert turn.think_time_ms is not None and turn.think_time_ms >= 0
             assert plan.children[turn.parent_request_id] == (turn.request_id,)
     assert (plan.turns[plan.root_request_ids[0]].root_arrival_time_ms or 0.0) > 0
     roots = [(plan.turns[key].root_arrival_time_ms or 0.0) for key in plan.root_request_ids]
@@ -79,6 +80,41 @@ def test_plan_topology_and_root_poisson_rate() -> None:
         assert plan.turns[key].root_arrival_time_ms == pytest.approx(
             (fast.turns[key].root_arrival_time_ms or 0.0) * 2
         )
+
+
+def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> None:
+    cfg = config(n=100, s=20)
+    plan = build_plan(cfg, engine())
+    delays = [
+        turn.think_time_ms for turn in plan.turns.values() if turn.parent_request_id is not None
+    ]
+    rng = random.Random(stable_derive(cfg.seed, "think-time"))
+    assert delays == [rng.expovariate(1.0 / 30) for _ in range(80)]
+    assert len(set(delays)) == 80
+    assert build_plan(cfg, engine()) == plan
+
+    changed = cfg.model_copy(
+        update={"session": cfg.session.model_copy(update={"think_time_ms": 60.0})}
+    )
+    changed_plan = build_plan(changed, engine())
+    for request_id, turn in plan.turns.items():
+        other = changed_plan.turns[request_id]
+        assert turn.root_arrival_time_ms == other.root_arrival_time_ms
+        assert (turn.prompt_len, turn.output_len, turn.ideal_reuse_blocks) == (
+            other.prompt_len, other.output_len, other.ideal_reuse_blocks
+        )
+        if turn.think_time_ms is not None:
+            assert other.think_time_ms == pytest.approx(2 * turn.think_time_ms)
+
+    zero = cfg.model_copy(
+        update={"session": cfg.session.model_copy(update={"think_time_ms": 0.0})}
+    )
+    zero_plan = build_plan(zero, engine())
+    assert all(
+        turn.think_time_ms == 0.0
+        for turn in zero_plan.turns.values()
+        if turn.parent_request_id is not None
+    )
 
 
 def test_quantization_and_infeasibility() -> None:

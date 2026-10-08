@@ -14,7 +14,7 @@ workload:
     session:
       num_sessions: int          # 根请求数，1 <= num_sessions <= num_requests
       topology: linear
-      think_time_ms: float
+      think_time_ms: float       # 非负；子轮思考时间的指数分布均值（ms），0 为无等待
       target_ideal_prefix_hit_rate: float
 engine:
   max_batch_size: int

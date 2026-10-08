@@ -15,6 +15,7 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
+from simcore.workload import build_plan
 
 
 def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) -> SimConfig:
@@ -171,9 +172,16 @@ class TestSmallCases:
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
         result = simulate(cfg)
+        synthetic = cfg.workload.synthetic
+        assert synthetic is not None
+        plan = build_plan(synthetic, cfg.engine)
         assert len(result.requests) == 3
         for parent, child in zip(result.requests, result.requests[1:], strict=False):
-            assert child.arrival == parent.finish + think_time_ms
+            sampled_delay = plan.turns[child.id].think_time_ms
+            assert sampled_delay is not None
+            assert child.arrival == parent.finish + sampled_delay
+            if think_time_ms == 0:
+                assert child.arrival == parent.finish
             assert child.prefill_start >= child.arrival
         assert result.meta.num_engine_steps == 6
 

@@ -1,5 +1,7 @@
 """真实完成触发会话后续轮次与统一时钟同刻事件顺序。"""
 
+from itertools import pairwise
+
 import pytest
 
 from simcore import simulate
@@ -41,9 +43,14 @@ def test_single_session_children_arrive_only_after_completion() -> None:
     first = simulate(cfg)
     assert first.model_dump_json() == simulate(cfg).model_dump_json()
     records = first.requests
+    workload = cfg.workload.synthetic
+    assert workload is not None
+    plan = build_plan(workload, cfg.engine)
     assert len(records) == 3
-    assert records[1].arrival == pytest.approx(records[0].finish + 12)
-    assert records[2].arrival == pytest.approx(records[1].finish + 12)
+    for parent, child in pairwise(records):
+        delay = plan.turns[child.id].think_time_ms
+        assert delay is not None
+        assert child.arrival == pytest.approx(parent.finish + delay)
     assert first.meta.num_requests == 3
 
 

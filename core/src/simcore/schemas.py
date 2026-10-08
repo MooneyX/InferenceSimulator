@@ -106,7 +106,12 @@ class SessionConfig(_Frozen):
 
     num_sessions: int | None = Field(default=None, ge=1)
     topology: Literal["linear"] = "linear"
-    think_time_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    think_time_ms: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="子轮思考时间的指数分布均值（ms）；0 表示无等待",
+    )
     target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, allow_inf_nan=False)
 
 

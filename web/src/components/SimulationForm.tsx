@@ -211,7 +211,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <NumberField
             id="think-time-ms"
             name="workload.synthetic.session.think_time_ms"
-            label="轮次间思考时间（ms）"
+            label="轮次间平均思考时间（ms，指数分布）"
             value={session.think_time_ms}
             error={errorByField.get("workload.synthetic.session.think_time_ms")}
             onChange={(thinkTime) =>

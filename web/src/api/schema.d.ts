@@ -447,6 +447,7 @@ export interface components {
             topology: "linear";
             /**
              * Think Time Ms
+             * @description 子轮思考时间的指数分布均值（ms）；0 表示无等待
              * @default 0
              */
             think_time_ms: number;

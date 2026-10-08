@@ -75,7 +75,7 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
 
 
 def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:
-    """独立随机流采样输出；仅引擎使用截断后的真实目标长度。"""
+    """独立随机流采样长度、到达和子轮思考时间；仅引擎使用截断后的输出长度。"""
     block_size = engine.page_size
     sessions = cfg.session.num_sessions
     assert sessions is not None  # schema 解析后必有 session 数
@@ -83,6 +83,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     topology_rng = random.Random(stable_derive(cfg.seed, "topology"))
     arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
     length_rng = random.Random(stable_derive(cfg.seed, "length"))
+    think_time_rng = random.Random(stable_derive(cfg.seed, "think-time"))
     allocation_rng = random.Random(stable_derive(cfg.seed, "allocation"))
     counts = [n // sessions] * sessions
     shuffled = list(range(sessions))
@@ -102,12 +103,19 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
             prompt_len = sample_length(cfg.prompt_len, length_rng)
             sampled_output_len = sample_length(cfg.output_len, length_rng)
             max_new_tokens = _visible_limit(prompt_len, cfg.max_new_tokens, engine)
+            think_time_ms = None
+            if parent_id is not None:
+                think_time_ms = (
+                    think_time_rng.expovariate(1.0 / cfg.session.think_time_ms)
+                    if cfg.session.think_time_ms > 0
+                    else 0.0
+                )
             turn = TurnPlan(
                 request_id=request_id,
                 session_id=session_id,
                 parent_request_id=parent_id,
                 root_arrival_time_ms=clock if index == 0 else None,
-                think_time_ms=None if index == 0 else cfg.session.think_time_ms,
+                think_time_ms=think_time_ms,
                 prompt_len=prompt_len,
                 output_len=min(sampled_output_len, max_new_tokens),
                 max_new_tokens=max_new_tokens,

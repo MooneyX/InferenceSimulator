@@ -14,7 +14,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
     expect(screen.getByLabelText("总请求目标 QPS（请求/秒）")).toHaveValue(50);
     expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(1000);
-    expect(screen.getByLabelText("轮次间思考时间（ms）")).toHaveValue(0);
+    expect(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）")).toHaveValue(0);
     expect(screen.getByLabelText("目标理想前缀命中率（0–1）")).toHaveValue(0);
     expect(screen.queryByLabelText("允许跨会话共享公共前缀")).not.toBeInTheDocument();
     expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(128);
@@ -107,7 +107,7 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), {
       target: { value: "5" },
     });
-    fireEvent.change(screen.getByLabelText("轮次间思考时间（ms）"), {
+    fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"), {
       target: { value: "30" },
     });
     fireEvent.change(screen.getByLabelText("目标理想前缀命中率（0–1）"), {
@@ -146,7 +146,7 @@ describe("SimulationForm", () => {
 
   it.each([
     ["会话数量（根请求数）", "1001", "会话数量不能超过请求数量"],
-    ["轮次间思考时间（ms）", "-1", "必须是大于或等于 0 的有限数值"],
+    ["轮次间平均思考时间（ms，指数分布）", "-1", "必须是大于或等于 0 的有限数值"],
     ["目标理想前缀命中率（0–1）", "1.1", "必须是 0 到 1 之间的有限数值"],
     ["L1 KV 总容量（token）", "130", "必须是页大小的整数倍"],
     ["每页 token 数", "0", "必须是大于或等于 1 的整数"],

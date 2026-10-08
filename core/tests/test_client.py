@@ -52,7 +52,10 @@ def test_child_waits_for_actual_parent_output() -> None:
         client.on_request_completed(RequestCompletion(child_id, 29, 4))
     (next_wakeup,) = client.on_request_completed(RequestCompletion(parent.request_id, 30, 4))
     assert next_wakeup.turn_id == child_id
-    assert next_wakeup.send_time_ms == 35
+    sampled_delay = client.plan.turns[child_id].think_time_ms
+    assert sampled_delay is not None
+    assert next_wakeup.send_time_ms == 30 + sampled_delay
+    assert next_wakeup.send_time_ms > 30
     child = client.on_wakeup(next_wakeup)
     inherited = client.plan.turns[child_id].ideal_reuse_blocks
     assert parent.inherited_prefix_ids == ()

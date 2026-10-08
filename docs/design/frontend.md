@@ -10,7 +10,7 @@
 
 表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：编辑 `num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.think_time_ms`、`session.target_ideal_prefix_hit_rate`。`session.topology` 固定为 `linear`；`session.content_seed` 与跨会话共享开关均已移除，表单及提交 JSON 不包含这些字段；跨 session 公共前缀不支持，同 session 父子轮次仍可继承完整块。所有负载均按 session 计划提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
+- **负载（workload）**：编辑 `num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`seed`，以及 `session.num_sessions`、`session.think_time_ms`（子轮间指数分布的平均思考时间，0 为无等待）、`session.target_ideal_prefix_hit_rate`。`session.topology` 固定为 `linear`；`session.content_seed` 与跨会话共享开关均已移除，表单及提交 JSON 不包含这些字段；跨 session 公共前缀不支持，同 session 父子轮次仍可继承完整块。所有负载均按 session 计划提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
 - **引擎（engine）**：编辑 `max_batch_size`、`kv_token_budget` 和 `prefix_cache.block_size_tokens`；L1 容量由预算和块大小换算。`cache_salt` 及模型维度保持默认且不进入合成块 ID，L2/L3 不在当前表单或引擎中启用。完整块 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`。
 

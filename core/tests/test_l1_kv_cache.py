@@ -26,23 +26,24 @@ def assert_conserved(cache: TieredKVCache) -> None:
 
 
 def run_prefill(cache: TieredKVCache, req: InferenceRequest) -> None:
-    hit = cache.probe(req, req.prompt_len)
-    cache.pin(req, hit)
+    sources = cache.probe(req, req.prompt_len)
+    cache.pin(req, len(sources) * cache.page_size)
     cache.admit(req.request_id)
     cache.extend(req.request_id, req.prompt_len)
     cache.publish(req.request_id)
     assert_conserved(cache)
 
 
-@pytest.mark.parametrize(("prompt_len", "hit"), [(63, 0), (64, 0), (65, 64)])
-def test_prompt_last_token_is_not_reused(prompt_len: int, hit: int) -> None:
+@pytest.mark.parametrize("prompt_len", [63, 64, 65])
+def test_prompt_last_token_is_not_reused(prompt_len: int) -> None:
     cache = L1KVCache(256, 64)
     parent = request(0, 128)
     run_prefill(cache, parent)
     cache.finish(0)
     inherited = (encode(0, 0),) if prompt_len == 65 else ()
     child = request(1, prompt_len, inherited)
-    assert cache.probe(child, prompt_len) == hit
+    expected = ((encode(0, 0), "L1"),) if prompt_len == 65 else ()
+    assert cache.probe(child, prompt_len) == expected
     assert cache.page(encode(0, 0)) is not None
     assert_conserved(cache)
 
@@ -51,8 +52,15 @@ def test_page_size_one_still_requires_last_input_token() -> None:
     cache = L1KVCache(8, 1)
     run_prefill(cache, request(0, 4))
     cache.finish(0)
-    assert cache.probe(request(1, 3, tuple(encode(0, i) for i in range(2))), 3) == 2
-    assert cache.probe(request(2, 4, tuple(encode(0, i) for i in range(3))), 4) == 3
+    assert cache.probe(request(1, 3, tuple(encode(0, i) for i in range(2))), 3) == (
+        (encode(0, 0), "L1"),
+        (encode(0, 1), "L1"),
+    )
+    assert cache.probe(request(2, 4, tuple(encode(0, i) for i in range(3))), 4) == (
+        (encode(0, 0), "L1"),
+        (encode(0, 1), "L1"),
+        (encode(0, 2), "L1"),
+    )
     assert_conserved(cache)
 
 
@@ -80,7 +88,7 @@ def test_same_batch_private_pages_merge_only_after_publication() -> None:
     first = request(1, 65, (shared,))
     second = request(2, 65, (shared,))
     for req in (first, second):
-        assert cache.probe(req, req.prompt_len) == 0
+        assert cache.probe(req, req.prompt_len) == ()
         cache.pin(req, 0)
         cache.admit(req.request_id)
         cache.extend(req.request_id, 65)
@@ -108,7 +116,7 @@ def test_failed_candidate_undoes_pin_without_refreshing_lru() -> None:
     assert page is not None
     seq = page.last_access_seq
     child = request(1, 65, (encode(0, 0),))
-    assert cache.probe(child, 65) == 64
+    assert cache.probe(child, 65) == ((encode(0, 0), "L1"),)
     cache.pin(child, 64)
     assert cache.available_tokens == 128
     assert cache.evictable_pages == 0
@@ -202,8 +210,8 @@ def test_restore_reuses_complete_context_and_withdraw_discards_private_pages() -
     assert cache.page(encode(0, 1)) is None
     cache.withdraw(0)
     assert cache.resident_pages == 1 and cache.private_pages == 0
-    assert cache.probe(req, 65) == 64
-    assert cache.probe(req, 128, restoring=True) == 64
+    assert cache.probe(req, 65) == ((encode(0, 0), "L1"),)
+    assert cache.probe(req, 128, restoring=True) == ((encode(0, 0), "L1"),)
     cache.pin(req, 64)
     cache.admit(0)
     cache.extend(0, 128)
@@ -218,7 +226,7 @@ def test_full_hit_restores_without_allocating_or_prefill() -> None:
     req = request(0, 64)
     run_prefill(cache, req)
     cache.finish(0)
-    assert cache.probe(req, 64, restoring=True) == 64
+    assert cache.probe(req, 64, restoring=True) == ((encode(0, 0), "L1"),)
     cache.pin(req, 64)
     state = cache.admit(0)
     assert state.k == state.f == 64
@@ -264,6 +272,21 @@ def test_tiered_lru_demotes_one_level_at_a_time_and_deletes_last_tier() -> None:
     assert cache.tier_snapshot("L3").evictions == 1
 
 
+def test_probe_returns_ordered_tiers_and_stops_at_first_missing_page() -> None:
+    cache = TieredKVCache(2, 1, 1, 1)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    ids = tuple(encode(i, 0) for i in range(4))
+    expected = tuple(zip(ids, ("L3", "L2", "L1", "L1"), strict=True))
+    assert cache.probe(request(4, 5, ids), 5) == expected
+    assert cache.probe(request(4, 5, ids), 5, restoring=True) == expected
+    assert cache.probe(request(5, 5, (ids[0], "missing", *ids[2:])), 5) == expected[:1]
+    assert cache.probe(request(6, 4, ids), 4) == expected[:3]
+    with pytest.raises(ValueError, match="原始 prompt"):
+        cache.probe(request(7, 5, ids), 4)
+
+
 def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None:
     cache = TieredKVCache(2, 1, 1)
     for request_id in range(3):
@@ -272,8 +295,8 @@ def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None
     shared = encode(0, 0)
     first = request(3, 2, (shared,))
     second = request(4, 2, (shared,))
-    assert cache.probe(first, first.prompt_len) == 1
-    assert cache.probe_sources(first, 1) == ((shared, "L2"),)
+    sources = cache.probe(first, first.prompt_len)
+    assert sources == cache.probe(second, second.prompt_len) == ((shared, "L2"),)
     for item in (first, second):
         cache.pin(item, 1)
     assert tier_page(cache, shared).ref_count == 2
@@ -282,6 +305,7 @@ def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None
     assert cache.prepare_batch((shared, shared), reserve_pages=1) == ((shared, "L2"),)
     assert cache.promotions == 1
     assert tier_page(cache, shared).tier == "L1"
+    assert sources == ((shared, "L2"),)  # 来源按查询时冻结，不随迁移改变
     assert tier_page(cache, shared).ref_count == 2
     for item in (first, second):
         cache.admit(item.request_id)

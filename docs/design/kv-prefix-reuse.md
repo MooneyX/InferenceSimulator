@@ -8,7 +8,7 @@
 
 ## 连续命中与引用
 
-`probe` 按逻辑 ID 顺序跨层查找已发布完整页，到首个缺失页为止，并记录每个命中页查询时的来源；首次输入最多命中 `floor((P-1)/B)*B` token，故至少重算一个输入 token。回撤目标 `R=P+g-1` 最多命中 `floor(R/B)*B` token。页 ID 按逻辑位置由继承前缀或 `(request_id, 页序号)` 推导。`pin` 暂时为命中页加引用，失败时 `cancel_pin` 归还且不刷新 LRU；成功提交才将低层页提升并刷新访问序号。零引用且未受保护的完整页才可淘汰；各层按 `(last_access_seq, chunk_id)` 稳定升序选择。L1 的 `A=(free_pages+evictable_pages)*B` 是准入可用量，不等于当前空闲量；低层页的提升另占唯一 L1 容量，同批多个请求命中同一低层页只迁移一次。逐请求预算和回撤见 [kernel.md](kernel.md)。
+`probe` 按逻辑 ID 顺序跨层查找已发布完整页，到首个缺失页为止，直接返回按顺序排列的 `(chunk_id, tier)` 命中页元组；命中 token 数为元组长度乘 `B`，`tier` 固定为查询时来源；首次输入最多命中 `floor((P-1)/B)*B` token，故至少重算一个输入 token。回撤目标 `R=P+g-1` 最多命中 `floor(R/B)*B` token。页 ID 按逻辑位置由继承前缀或 `(request_id, 页序号)` 推导。`pin` 暂时为命中页加引用，失败时 `cancel_pin` 归还且不刷新 LRU；成功提交才将低层页提升并刷新访问序号。零引用且未受保护的完整页才可淘汰；各层按 `(last_access_seq, chunk_id)` 稳定升序选择。L1 的 `A=(free_pages+evictable_pages)*B` 是准入可用量，不等于当前空闲量；低层页的提升另占唯一 L1 容量，同批多个请求命中同一低层页只迁移一次。逐请求预算和回撤见 [kernel.md](kernel.md)。
 
 成功请求只在首次准入时按查询来源计 `l1/l2/l3_hit_tokens`；三者之和为 `actual_hit_tokens`，`actual_prefill_tokens=P-actual_hit_tokens`。回撤重算单列为 `replayed_prefill_tokens`，不重复计首次命中。共享物理页只占一页容量，不缩短 Decode 的逻辑上下文；身份查找不计 CPU 耗时。
 

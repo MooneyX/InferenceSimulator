@@ -169,8 +169,8 @@ class F001Scheduler:
             item = self._waiting[0]
             request = item.request
             target = item.target_tokens
-            hit = cache.probe(request, target, restoring=item.restoring)
-            sources = cache.probe_sources(request, hit) if tiered else ()
+            sources = cache.probe(request, target, restoring=item.restoring)
+            hit = len(sources) * block_size
             cache.pin(request, hit)
             new_tokens = target - hit
             new_promotions = {

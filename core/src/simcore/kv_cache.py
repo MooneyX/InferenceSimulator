@@ -173,8 +173,8 @@ class TieredKVCache:
 
     def probe(
         self, request: InferenceRequest, target_tokens: int, *, restoring: bool = False
-    ) -> int:
-        """逐页查连续已发布前缀；只读查找不会刷新 LRU。"""
+    ) -> tuple[tuple[str, str], ...]:
+        """逐页返回连续已发布前缀的查询时来源；不刷新 LRU。"""
         if target_tokens < request.prompt_len:
             raise ValueError("重算目标不得小于原始 prompt")
         limit = (
@@ -182,23 +182,13 @@ class TieredKVCache:
             if restoring
             else (request.prompt_len - 1) // self.page_size
         )
+        sources: list[tuple[str, str]] = []
         for index in range(limit):
-            if self._chunk_id(request, index) not in self._entries:
-                return index * self.page_size
-        return limit * self.page_size
-
-    def probe_sources(
-        self, request: InferenceRequest, matched_tokens: int
-    ) -> tuple[tuple[str, str], ...]:
-        """返回当前命中前缀的逐页来源；应在 pin 及迁移之前调用。"""
-        if matched_tokens < 0 or matched_tokens % self.page_size:
-            raise ValueError("命中前缀必须是非负整页长度")
-        sources = []
-        for index in range(matched_tokens // self.page_size):
             chunk_id = self._chunk_id(request, index)
-            if chunk_id not in self._entries:
-                raise ValueError("命中前缀包含未发布页")
-            sources.append((chunk_id, self._entries[chunk_id].tier))
+            entry = self._entries.get(chunk_id)
+            if entry is None:
+                break
+            sources.append((chunk_id, entry.tier))
         return tuple(sources)
 
     def pin(self, request: InferenceRequest, matched_tokens: int) -> None:

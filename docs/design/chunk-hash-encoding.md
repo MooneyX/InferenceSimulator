@@ -18,14 +18,13 @@ hash 对内核其余部分保持不透明字符串；禁止按 session ID、请�
 
 ## 数据契约
 
-`TurnPlan` 保存长度与理想继承块数；`InferenceRequest` 保存显式的 `prompt_len`、`output_len` 和完整的 `input_chunk_ids`；`RequestCompletion` 只保存请求 ID 与完成时间。计划和请求都不携带输出块 ID。
+`TurnPlan` 保存输入长度、采样后截断的目标输出长度、可见生成上限与理想继承块数；引擎独占目标输出长度。`InferenceRequest` 携带 `prompt_len`、`max_new_tokens`、`inherited_prefix_ids`（仅继承的完整页 ID）及请求身份，不携带目标 `output_len` 或整条 `input_chunk_ids`。`RequestCompletion` 携带请求 ID、完成时间和实际 `generated_tokens`。新页始终通过 `logical_chunk_id(request_id, index, inherited_prefix_ids)` 按需推导，无需物化整条身份序列。
 
-- 记 `P=prompt_len`、`O=output_len`、`B=block_size_tokens`、`I=P//B`、`N=(P+O)//B`。`input_chunk_ids` 恰含 `I` 个完整输入块 ID，供 `probe`、准入校验和 prefill 发布使用；请求不携带、计划也不预生成输出块 ID。运行期间填满的输出块数为 `N-I`，序号为 `I` 到 `N-1`（包括由输入尾部与输出拼成的块），并不一定等于 `O//B`。
-- 输入末尾不足 `B` 时，物理 KV 仍分配 `ceil(P/B)` 块，其中尾块持有 `P%B` 个有效 token；输出先填充此块，填满才生成并发布序号 `I` 的 ID。完成时若 `(P+O)%B != 0`，最终尾块保留有效 token 数并在释放时回收，不生成可复用 ID。物理容量和未来增长仍按 `ceil((P+O)/B)` 规划，不能用 `N` 代替物理块数。例如 `B=4, P=3, O=3`：输入 ID 数为 0，产出第 1 个输出 token 时形成序号 0 的完整块，最后 2 个 token 是无可复用 ID 的尾块。
-- 输入/输出长度是显式字段；配置中不接受 `session.content_seed` 或跨 session 共享开关，未知字段由 schema 校验拒绝。每场使用新 cache，不同仿真即使请求 ID 相同也不会共享 KV；结果不回显内部块 ID。同 session 父子轮次仍可继承完整块并按 L1 的连续前缀探测规则复用。
+- 记 `P=prompt_len`、实际生成数 `O=generated_tokens`、`B=page_size`。首次 Prefill 只建立 `P` 个 KV token 并采样第一个输出；每次后续 Decode 才建立上一输出 token。完成时建立长度 **`K=P+O-1`**，完整可继承页数为 `floor(K/B)`；逻辑 KV 总占页数为 `ceil(K/B)`，不足一页的私有尾页只占一页并在完成时回收。子轮最多继承 `min(floor((P_parent+O_parent-1)/B), floor((P_child-1)/B))` 页。
+- 例如 `B=4, P=3, O=3`：Prefill 时尚无完整输入页；第一次 Decode 建立输出的第一个 token，形成序号 0 的完整页；第二次 Decode 后 `K=5`，剩余 1 token 是私有尾页。第三个（最后采样的）输出 token 不建立 KV。完成时才发布 Decode 形成的完整页，然后回收尾页。
+- 配置不接受 `session.content_seed` 或跨 session 共享开关，未知字段由 schema 校验拒绝。每场新建缓存，不同仿真即使请求 ID 相同也不共享 KV；结果不回显块 ID。
 
 ## 生成与发布时机
 
-- `workload.build_plan` 不预生成块 ID。`ClientDriver.on_wakeup` 复制已完成父上下文的前 `K_i` 个完整块 ID，再对其余输入块调用 `encode(request_id, i)`；根请求所有完整输入块由自己编码。`on_request_completed` 使用已发送请求的输入块、已知 `P`、`O`、`B`，在完成回调后重建序号 `P//B` 到 `(P+O)//B-1` 的输出块，供子轮次继承。
-- 引擎对本步算完的完整输入块在 Prefill 步末发布；每个 output token 先计入物理 KV，若已产出 `t` 个且 `(P+t)%B==0`，步末发布 `encode(request_id, (P+t)//B-1)`。输入尾块可由输出补齐，最终不足块不发布。引擎在线发布与客户端完成后重建使用同一编码规则，不交换预生成的输出 ID。
-- `L1KVCache` 仅以完整页 ID 做连续前缀判等；`F001Scheduler` 按当前物理容量和预计未来增长控制准入，实际页只在计算时分配。生成新块时请求 ID 必须唯一。若今后真实输出长度或内容可能偏离计划，需要同时重新定义完成消息和客户端—引擎身份协议，不能仅替换编码函数。
+- `workload.build_plan` 不预生成 ID；`ClientDriver.on_wakeup` 从已完成父轮的继承前缀和父轮请求 ID 按页序号推导所需的前缀 ID，只发送这段 `inherited_prefix_ids`。根轮的该元组为空，新输入/输出页由引擎用当前请求 ID 和页序号按需编码。完成回调保存实际建立的 `P+generated_tokens-1` 长度，供子轮发送时再推导可继承页，而不是复制整条父轮块序列。
+- `L1KVCache` 的 Prefill 步末按请求 ID 发布已计算完整页；Decode 中新填满的完整页保持私有，完成事件的 `finish` 才发布，回撤则丢弃未发布私有页。输入尾页可由后续已建立输出 token 补齐，但未建立的末次采样 token 不形成页。连续前缀命中只比较已发布的完整页 ID，实际物理页只在计算时分配。

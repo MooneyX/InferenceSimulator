@@ -18,10 +18,10 @@ web/      前端：React + TypeScript + Vite + ECharts
 schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
 workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样；plan_from_arrivals 适配手写 Arrival（依赖 schemas、prefix_hash）
-client       ClientDriver：消费计划、维护已完成完整块 ID 上下文、发送时构造请求（依赖 schemas、prefix_hash）
+client       ClientDriver：消费计划、保存已完成请求身份与实际 KV 长度、发送时按需推导继承页 ID（依赖 schemas、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
-kv_cache     当前 L1 KV block、索引、容量与 LRU；L2/L3 仅预留配置与字段（依赖 schemas）
-scheduler    F001 FCFS 调度：按 KV 页状态选择 batch（依赖 kv_cache、schemas）
+kv_cache     当前 L1 KV 页、索引、容量与 LRU；L2/L3 仅有结果字段预留（依赖 schemas）
+scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
 engine       已到达请求、EngineStep、KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与引擎 trace 类型（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；路由 client 与 engine（依赖 client、engine、events）
@@ -51,8 +51,9 @@ runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、c
 |---|---|---|---|
 | `TurnPlan` / `WorkloadPlan` | `schemas`（由 `workload` 构造） | `client` | 不可变 session 拓扑、输入/输出长度与理想继承块数；不预生成块 ID |
 | `ClientWakeup` | `schemas`（由 `client` 构造） | `coordinator` | 未来客户端发送事件，只含 session/turn 身份和发送时刻 |
-| `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine` | wakeup 到时才构造的请求：显式长度和完整输入块 ID，不含未来到达时间 |
-| `RequestCompletion` | `schemas`（由 `engine` 构造） | `coordinator`、`client` | 仅请求 ID 与完成时刻；客户端据已知长度重建完整输出块 ID |
+| `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine` | 发送时构造：输入长度、可见生成上限和继承完整页 ID；不携带实际输出目标或新页 ID 列表 |
+| `RequestCompletion` | `schemas`（由 `engine` 构造） | `coordinator`、`client` | 请求 ID、完成时刻和实际生成数；客户端据此确定可继承 KV 长度 |
+| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model` | 不可变的 Prefill/Decode 工作量、阶段和实际申请页数；驱动单步经验成本 |
 | `AdmissionBatch` | `scheduler` | `engine` | F001 的准入、恢复、失败与预算估算（值对象） |
 | `L1Snapshot` | `kv_cache` | `engine`、`metrics` | L1 页容量与驻留状态的不可变汇总 |
 | `Event` / `EventKind` | `events` | `coordinator` | 全局事件队列载荷与同刻全序（值对象） |

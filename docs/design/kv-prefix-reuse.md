@@ -4,20 +4,16 @@
 
 ## 容量与状态
 
-`engine.page_size=B` 规定完整页身份与物理分配粒度；L1 容量为 `max_total_tokens/B` 页。准入时估算未来输出增长，但不预分配未来页；物理共享页只占一次容量，每个请求仍分别统计逻辑上下文，有效 token 与内部碎片分开计算。
+`engine.page_size=B` 同时规定完整页身份与物理分配粒度；`max_total_tokens` 必须是 `B` 的正整数倍，L1 容量为 `max_total_tokens/B` 页。全局索引只保存已发布完整页，页含引用数和 LRU 访问序号；请求仅保存已建立 KV 长度 `K` 和已发布且被引用的连续前沿 `F`，不维护物理地址页表。`F` 是 `B` 的整数倍，`0≤F≤K`；`[F,K)` 是私有 KV，其占页数为 `ceil(K/B)-F/B`。`resident_pages=已索引页数+各请求私有页数`，始终有 `free_pages+resident_pages=capacity_pages`。未来生成估算只进入调度预算，`reserved_future_blocks` 为零。
 
-缓存用完整页 ID 索引已发布页，为每个请求保存已计算长度 `K` 与已发布长度 `F`。只读 `probe` 查找连续命中前缀；`pin` 临时保护命中页，`cancel_pin` 撤销保护且不更新 LRU；确认准入后才刷新访问序号。未发布页是请求私有的，`publish` 遇到相同 ID 时合并物理页；无活动引用的已发布页可按访问顺序淘汰。
+## 连续命中与引用
 
-容量账本满足 `free_pages + resident_pages = capacity_pages`，未来输出只用于准入估算，不提前占用物理页。暂时不足时按 FCFS 等待或回撤运行请求；单请求无法执行时记录失败，不强制超预算分配。
+`probe` 顺序查找已发布完整页，到首个缺失页为止；首次输入最多命中 `floor((P-1)/B)*B` token，故至少重新计算一个输入 token。回撤恢复重算目标 `R=P+g-1`，最多命中 `floor(R/B)*B` token。页 ID 按逻辑位置由继承前缀或 `(request_id, 页序号)` 推导。`pin` 暂时为命中页加引用，失败时 `cancel_pin` 归还且不刷新 LRU；成功 `admit` 后才刷新访问序号。无引用的完整页仍驻留且可淘汰；驱逐按 `(last_access_seq, chunk_id)` 稳定升序，只有实际缺页时才按需取最旧页。`A=(free_pages+evictable_pages)*B` 是准入可用量，不等于当前空闲量；逐请求预算及回撤见 [kernel.md](kernel.md)。
 
-## 连续前缀命中与准入
-
-`probe(request, target_tokens)` 只读查找已发布页的最长连续前缀，首次准入始终留下最后一个输入 token 计算。`F001Scheduler` 按 FCFS 逐队头探测并 `pin` 命中页，结合运行请求、可用物理页与预计未来增长组成 `AdmissionBatch`；失败时 `cancel_pin`，不跳过队头。执行层 `admit` 确认候选后按需分配页，同一步新发布的页对本步其他候选不可见。
-
-`matched_cache_tokens` 是连续匹配的完整页 token 数，`actual_hit_tokens` 是实际跳过的 Prefill token；当前首次准入的 `probe` 已限制命中不超过 `prompt_len-1`。`actual_prefill_tokens = prompt_len-actual_hit_tokens`。命中前缀不会缩短 Decode 逻辑上下文；当前 L1 命中没有 restore 成本，也不单独计身份编码/lookup 的 CPU 成本。当前耗时估算见 [perf-model.md](perf-model.md)。
+成功请求首次准入时 `matched_cache_tokens=actual_hit_tokens`（均为连续 L1 命中），`actual_prefill_tokens=P-actual_hit_tokens`；回撤的额外 Prefill 单列为 `replayed_prefill_tokens`。共享物理页只占一页容量，不缩短 Decode 的逻辑上下文；L1 命中不计 restore 或查找 CPU 耗时。
 
 ## 发布、增长与释放
 
-准入请求的剩余输入在一个 Prefill step 内计算，`extend` 按实际计算长度申请物理页；步末 `publish_batch` 按请求 ID 顺序索引已完成的完整页，相同 ID 的页合并。首个输出 token 在该步生成，后续每个 Decode step 继续 `extend` 一个 token 并发布完整页。发布的 ID 及客户端重建规则由 [块身份文档](chunk-hash-encoding.md) 定义。
+Prefill 在一个 step 内完成本请求剩余输入，`extend` 只为实际新增 KV 申请页。Prefill 步末 `publish_batch` 按请求 ID 顺序发布完整私有页；同批首次算出的相同 ID 在发布前各占私有页，发布时合并并归还重复物理页。**Decode 中填满的页仍是私有页，不逐步发布**；请求完成的 `RequestDone` 时由 `finish` 发布剩余完整页、释放所有共享引用与未满尾页。回撤时 `withdraw` 直接回收未发布私有页、解除引用，不发布其完整私有页；已发布页无引用后仍可留作缓存。新发布页在下一步才可供其他请求命中，零思考时间子轮能在父轮完成、释放后继承完整页。
 
-完成时 `finish(request_id)` 发布剩余完整页并解除引用；回撤时 `withdraw(request_id)` 丢弃未发布页，已发布页保留为可淘汰缓存。父请求完成后，零 think time 的子轮次可以命中父页。当前输出与容量指标的计算口径见 [metrics.md](metrics.md)。
+当前只有 L1。结果中的 L2/L3 命中、restore bytes/time、promotion/demotion 字段为零值预留，**没有**启用低层缓存的输入配置或迁移路径；见 [KV3 计划](../plans/kv-cache.md)。容量和碎片指标见 [metrics.md](metrics.md)。

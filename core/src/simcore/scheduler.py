@@ -148,11 +148,12 @@ class F001Scheduler:
             ):
                 raise ValueError("运行请求身份或生成进度不合法")
             cache.state(request_id)
+        # 本步跨页的 Decode 请求需要申请新页。
         decode_new = block_size * sum(cache.state(key).k % block_size == 0 for key in decode_ids)
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
             for item in running.values()
-        )
+        )  # 未来输出只用于预算估算，不预占物理页
         active_count = len(running)
         selected: list[PrefillCandidate] = []
         restored: list[WaitingRequest] = []
@@ -190,8 +191,8 @@ class F001Scheduler:
             required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
             proposed_current = (
-                current_offset + required_tokens + block_size
-                + len(new_promotions) * block_size
+                current_offset + required_tokens + block_size  # 为后续增长再留一页
+                + len(new_promotions) * block_size  # 低层命中页先提升到 L1
             )
             proposed_total = proposed_current + selected_future + future + running_future
             compute_ok = not selected or not new_tokens or (
@@ -214,7 +215,7 @@ class F001Scheduler:
                 or not compute_ok
                 or not capacity_ok
             ):
-                cache.cancel_pin(request.request_id)
+                cache.cancel_pin(request.request_id)  # 未准入，撤销对命中页的临时保护
                 if (
                     not running
                     and not selected
@@ -227,7 +228,7 @@ class F001Scheduler:
                 ):
                     aborted.append(self._pop_head())
                     continue
-                blocked = True
+                blocked = True  # FCFS 不跳过当前队头去接纳后续请求
                 break
             if item.restoring and new_tokens == 0:
                 restore_only.append(item)
@@ -277,7 +278,8 @@ class F001Scheduler:
         elif withdrew and running:
             generated = sum(item.generated_tokens for item in running.values())
             limits = sum(item.request.max_new_tokens for item in running.values())
+            # 回撤后提高未来输出的预留比例。
             self._ratio = min(1.0, (generated + 20 * len(running)) / (limits + 1))
         elif decoded and not withdrew:
-            self._ratio = max(0.098, self._ratio - (0.7 - 0.098) / 600)
+            self._ratio = max(0.098, self._ratio - (0.7 - 0.098) / 600)  # 稳定解码时逐步放宽
         return self._ratio

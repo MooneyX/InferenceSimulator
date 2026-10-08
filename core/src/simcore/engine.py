@@ -222,12 +222,13 @@ class Engine:
         withdrawn: list[tuple[int, int]] = []
         cache = self._prefix_cache
         while remaining:
+            # 满页的请求本步需要新页。
             needed = sum(cache.state(key).k % cache.page_size == 0 for key in remaining)
             try:
                 cache.ensure_free(needed)
                 break
             except CacheCapacityError:
-                cache.ensure_free(cache.free_pages + cache.evictable_pages)
+                cache.ensure_free(cache.free_pages + cache.evictable_pages)  # 先腾尽可驱逐页
                 key = min(
                     remaining,
                     key=lambda candidate: (
@@ -235,10 +236,10 @@ class Engine:
                         -remaining[candidate].request.prompt_len,
                         candidate,
                     ),
-                )
+                )  # 进度少者先回撤；同进度优先释放长输入
                 generated = remaining[key].generated_tokens
                 if len(remaining) == 1:
-                    self._abort(key, now_ms, "decode_kv_exhausted")
+                    self._abort(key, now_ms, "decode_kv_exhausted")  # 单请求也放不下则失败
                 else:
                     self._retry_counts[key] = self._retry_counts.get(key, 0) + 1
                     withdrawn.append((key, generated))
@@ -263,6 +264,7 @@ class Engine:
         aborts_before = len(self._recent_aborts)
         withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
+            # 先试 Prefill，成功则本步不 Decode。
             selection = self._prefix_scheduler.select_prefill(running)
             if not selection.admitted and not selection.restore_only and running:
                 running, withdrawn = self._prepare_decode(running, now_ms)
@@ -272,7 +274,7 @@ class Engine:
                 () if selection.admitted or selection.restore_only else tuple(sorted(running))
             )
         else:
-            running, withdrawn = self._prepare_decode(running, now_ms)
+            running, withdrawn = self._prepare_decode(running, now_ms)  # 混合模式先为 Decode 腾页
             if withdrawn:
                 self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
@@ -351,14 +353,14 @@ class Engine:
             key = item.request.request_id
             cache.extend(key, item.target_tokens)
             if item.restoring:
-                self._running[key] = item.generated_tokens
+                self._running[key] = item.generated_tokens  # 重算 KV 不会额外生成输出
                 self._replayed_tokens[key] = (
                     self._replayed_tokens.get(key, 0) + candidate.new_tokens
                 )
             else:
                 self._prefill_start[key] = now_ms
                 self._prefill_end[key] = end
-                self._running[key] = 1
+                self._running[key] = 1  # 首个输出在 Prefill 步完成时已生成
                 if self._output_targets[key] == 1:
                     finished.append(key)
             if key not in self._admission_stats:
@@ -369,6 +371,7 @@ class Engine:
                     tuple(tier for _, tier in candidate.hit_sources).count("L2") * cache.page_size,
                     tuple(tier for _, tier in candidate.hit_sources).count("L3") * cache.page_size,
                 )
+        # 本步新页到步末才发布，留给后续步骤复用。
         cache.publish_batch(tuple(item.waiting.request.request_id for item in selection.admitted))
         finished.sort()
         if before is not None:
@@ -420,7 +423,7 @@ class Engine:
             )
         for key in finished:
             del self._running[key]
-            self._pending_done[key] = end
+            self._pending_done[key] = end  # KV 等 Done 事件结算时才释放
         for key, generated in withdrawn:
             self._prefix_scheduler.requeue(self._requests[key], end, generated)
         if not withdrawn:

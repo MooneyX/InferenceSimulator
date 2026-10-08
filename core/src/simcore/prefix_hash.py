@@ -22,8 +22,8 @@ def logical_chunk_id(
     if request_id < 0 or block_index < 0:
         raise ValueError("request_id 和 block_index 必须为非负整数")
     if block_index < len(inherited_prefix_ids):
-        return inherited_prefix_ids[block_index]
-    return encode(request_id, block_index)
+        return inherited_prefix_ids[block_index]  # 沿用父页身份才能命中缓存
+    return encode(request_id, block_index)  # 新页归当前请求
 
 
 def stable_derive(seed: int, domain: str) -> int:

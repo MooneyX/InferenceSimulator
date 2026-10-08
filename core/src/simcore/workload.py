@@ -69,6 +69,7 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:
 
 
 def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:
+    # 输入向上取整占页后再留一页，避免输出挤占最后的 KV 空间。
     prompt_pages = (prompt_len + engine.page_size - 1) // engine.page_size
     return max(
         0, min(configured_limit, engine.max_total_tokens - (prompt_pages + 1) * engine.page_size)
@@ -94,6 +95,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     roots: list[int] = []
     children: dict[int, tuple[int, ...]] = {}
     clock = 0.0
+    # 只采样根请求到达；每个会话平均 n/sessions 轮，折算成总目标 QPS。
     rate_per_ms = cfg.arrival_rate * sessions / n / _MS_PER_SECOND
     request_id = 0
     for session_id, count in enumerate(counts):
@@ -135,8 +137,8 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
             parent = turns[turn.parent_request_id]
             maxima[turn.request_id] = (
                 min(
-                    (parent.prompt_len + parent.output_len - 1) // block_size,
-                    (turn.prompt_len - 1) // block_size,
+                    (parent.prompt_len + parent.output_len - 1) // block_size,  # 父轮已写入的完整页
+                    (turn.prompt_len - 1) // block_size,  # 子轮至少留一个新输入 token
                 )
                 if parent.output_len > 0
                 else 0
@@ -149,17 +151,18 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     target = cfg.session.target_ideal_prefix_hit_rate
     if target > r_max + 1e-12:
         raise ValueError(f"理想前缀命中率不可行: target={target}, r_max={r_max}")
-    raw = target * total_input / block_size
+    raw = target * total_input / block_size  # 目标命中 token 换算成整页数
     lower = math.floor(raw)
-    desired = min(maximum, lower + int(raw - lower > 0.5))
+    desired = min(maximum, lower + int(raw - lower > 0.5))  # 量化后不超过可继承上限
     if maximum:
+        # 理想复用整页按可继承上限分摊，余数平局用独立随机流打破。
         shares = {key: desired * cap / maximum for key, cap in maxima.items()}
         assigned = {key: math.floor(value) for key, value in shares.items()}
         ties = list(turns)
         allocation_rng.shuffle(ties)
         tie_order = {key: index for index, key in enumerate(ties)}
         ranked = sorted(turns, key=lambda key: (-(shares[key] - assigned[key]), tie_order[key]))
-        for key in ranked[: desired - sum(assigned.values())]:
+        for key in ranked[: desired - sum(assigned.values())]:  # 剩余页先给小数余量最大的轮次
             assigned[key] += 1
     else:
         assigned = dict.fromkeys(turns, 0)

@@ -77,7 +77,7 @@ class ClientDriver:
             raise ValueError("完成的生成数超出请求可见上限")
         self._finished[request.request_id] = (
             request,
-            request.prompt_len + completion.generated_tokens - 1,
+            request.prompt_len + completion.generated_tokens - 1,  # 最后一个输出尚未写入 KV
         )
         del self._inflight[completion.request_id]
         wakeups: list[ClientWakeup] = []
@@ -85,7 +85,7 @@ class ClientDriver:
             child = self.plan.turns[child_id]
             if child.think_time_ms is None:
                 raise ValueError("子轮次缺少 think time")
-            time = completion.finish_time_ms + child.think_time_ms
+            time = completion.finish_time_ms + child.think_time_ms  # 子轮以实际完成时间为起点
             wakeups.append(ClientWakeup(child.session_id, child_id, time))
         return tuple(wakeups)
 

@@ -101,7 +101,7 @@ def restore_bytes(workload: StepWorkload, cfg: PerfModelConfig) -> int:
         raise ValueError("恢复计费须配置 kv_bytes_per_token")
     l3 = sum(source == "L3" for _, source in workload.restore_sources)
     return (
-        (len(workload.restore_sources) + l3)
+        (len(workload.restore_sources) + l3)  # L3 页在两段链路上各传一次
         * workload.restore_page_size
         * cfg.kv_bytes_per_token
     )
@@ -115,10 +115,10 @@ def restore_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
         raise ValueError("恢复计费须配置 KV 字节大小与 L2 到 L1 带宽")
     l3 = sum(source == "L3" for _, source in workload.restore_sources)
     page_bytes = workload.restore_page_size * cfg.kv_bytes_per_token
-    duration = cfg.l2_latency_ms + (
+    duration = cfg.l2_latency_ms + (  # 所有恢复页都经过 L2 → L1
         len(workload.restore_sources) * page_bytes / cfg.l2_to_l1_bandwidth_bytes_per_ms
     )
-    if l3:
+    if l3:  # L3 页还需另走 L3 → L2，固定延迟仅收一次
         if cfg.l3_to_l2_bandwidth_bytes_per_ms is None:
             raise ValueError("L3 恢复计费须配置 L3 到 L2 带宽")
         duration += cfg.l3_latency_ms + l3 * page_bytes / cfg.l3_to_l2_bandwidth_bytes_per_ms
@@ -143,7 +143,7 @@ def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelCon
     if context_before < 0 or new_prefill_tokens < 1:
         raise ValueError("context_before 须 >= 0 且 new_prefill_tokens 须 >= 1")
     return cfg.prefill_c1 * new_prefill_tokens + cfg.prefill_c2 * new_prefill_tokens * (
-        2 * context_before + new_prefill_tokens
+        2 * context_before + new_prefill_tokens  # (旧上下文 + 新输入)² − 旧上下文²
     )
 
 

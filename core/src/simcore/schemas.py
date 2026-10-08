@@ -248,6 +248,7 @@ class WorkloadPlan:
     constructed_ideal_prefix_hit_rate: float = 0.0
 
     def __post_init__(self) -> None:
+        # 先拷贝再冻结，避免外部字典改写计划。
         object.__setattr__(self, "turns", MappingProxyType(dict(self.turns)))
         object.__setattr__(self, "children", MappingProxyType(dict(self.children)))
 
@@ -331,7 +332,7 @@ class RequestRecord(_Record):
             )
         if self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens != self.actual_hit_tokens:
             raise ValueError("请求级分层复用与实际命中 token 不守恒")
-        if self.actual_prefill_tokens is not None and not (
+        if self.actual_prefill_tokens is not None and not (  # 每个输入 token 要么命中，要么重算
             self.actual_hit_tokens <= self.ideal_reuse_tokens <= self.prompt_len
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.prompt_len
         ):
@@ -429,7 +430,7 @@ class Metrics(_Record):
 
     @model_validator(mode="after")
     def _check_cache_conservation(self) -> Self:
-        if not (
+        if not (  # 输入 token 分为命中与重算；物理页分为驻留与空闲
             self.actual_hit_tokens <= self.ideal_hit_tokens <= self.total_input_tokens
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.total_input_tokens
             and self.saved_prefill_tokens == self.actual_hit_tokens

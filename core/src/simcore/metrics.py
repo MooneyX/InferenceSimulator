@@ -119,12 +119,13 @@ def compute_metrics(
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
     ttft_mean = math.fsum(ttfts) / len(ttfts)
 
+    # 首 token 已在 Prefill 生成，单 token 请求不参与 TPOT。
     tpots = [(r.finish - r.prefill_end) / (r.output_len - 1) for r in records if r.output_len > 1]
     tpot_mean = math.fsum(tpots) / len(tpots) if tpots else None
 
     sim_start = min(r.arrival for r in records)
     if earliest_sent_arrival is not None:
-        sim_start = min(sim_start, earliest_sent_arrival)
+        sim_start = min(sim_start, earliest_sent_arrival)  # 失败请求也可能更早到达
     sim_end = max(r.finish for r in records)
     makespan = sim_end - sim_start
     throughput = len(records) / (makespan / _MS_PER_SECOND) if makespan > 0 else None
@@ -142,7 +143,7 @@ def compute_metrics(
     fully_cached = sum(
         0 < (record.prompt_len // block_size) * block_size == record.matched_cache_tokens
         for record in records
-    )
+    )  # 完全缓存只看输入中的完整页，末尾不足一页不算
     if actual > ideal or prefill + actual != input_tokens:
         raise ValueError("理想/实际命中和 Prefill token 守恒不成立")
 

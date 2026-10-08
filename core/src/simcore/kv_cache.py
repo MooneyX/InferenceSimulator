@@ -229,12 +229,12 @@ class TieredKVCache:
 
     def extend(self, request_id: int, target_tokens: int) -> int:
         """申请真正新增的页并将 K 推进到目标；未来输出不占容量。"""
-        state = self.state(request_id)
+        state = self.state(request_id)  # k 是已写入量，f 是已发布的整页前缀
         if target_tokens <= state.k:
             raise ValueError("KV 目标长度必须大于当前 K")
         new_pages = (target_tokens + self.page_size - 1) // self.page_size - (
             state.k + self.page_size - 1
-        ) // self.page_size
+        ) // self.page_size  # 尾部私有页未写满时继续使用，不再申请新页
         self.ensure_free(new_pages)
         self._private_pages += new_pages
         l1 = self._tiers["L1"]
@@ -260,11 +260,11 @@ class TieredKVCache:
                 self._access_seq += 1
                 self._entries[chunk_id] = CacheEntry(chunk_id, "L1", 1, self._access_seq)
                 self._tiers["L1"].ids.add(chunk_id)
-            elif existing.tier == "L1":
+            elif existing.tier == "L1":  # 同 ID 私有页并入已有共享页，退还多占的一页
                 self._add_ref(chunk_id, refresh=True)
                 self._tiers["L1"].resident -= 1
                 freed += 1
-            else:
+            else:  # 低层旧页被新计算出的 L1 页替换
                 lower = self._tiers[existing.tier]
                 lower.ids.remove(chunk_id)
                 lower.resident -= 1
@@ -351,7 +351,7 @@ class TieredKVCache:
             self._entries[chunk_id].tier == "L1" for chunk_id in needed
         ):
             return self._entries, [], (), self._access_seq
-        entries = dict(self._entries)
+        entries = dict(self._entries)  # 先在副本上试迁移，容量不足时不改真实缓存
         ids = {tier: set(state.ids) for tier, state in self._tiers.items()}
         seq = self._access_seq
         private = self._private_pages
@@ -369,7 +369,7 @@ class TieredKVCache:
                 raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
             lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
             if lower is not None and self._tiers[lower].capacity:
-                free_slot(lower)
+                free_slot(lower)  # 下层满时逐层腾位，再降级本页
             ids[tier].remove(victim.chunk_id)
             if lower is None or not self._tiers[lower].capacity:
                 del entries[victim.chunk_id]
@@ -433,7 +433,7 @@ class TieredKVCache:
                 self.l3_promotions += 1
         for tier, state in self._tiers.items():
             state.ids.clear()
-            state.heap.clear()
+            state.heap.clear()  # 提交迁移后重建 LRU，避免旧层级的堆项残留
             state.queued.clear()
             state.resident = self._private_pages if tier == "L1" else 0
             state.evictable = 0

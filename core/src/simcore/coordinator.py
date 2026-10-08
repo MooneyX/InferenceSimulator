@@ -43,7 +43,7 @@ class Coordinator:
 
     def _schedule_step(self, now_ms: float) -> None:
         if not self._step_pending:
-            time = max(now_ms, self._busy_until)
+            time = max(now_ms, self._busy_until)  # 引擎忙时到达的请求等当前步结束
             heapq.heappush(self._heap, self._factory.engine_step(time, self._next_step))
             self._step_pending = True
 
@@ -52,13 +52,13 @@ class Coordinator:
             event = heapq.heappop(self._heap)
             now_ms = event.time
             if event.kind is EventKind.REQUEST_DONE:
-                completion = self.engine.complete(now_ms, event.ref)
+                completion = self.engine.complete(now_ms, event.ref)  # 先结算并释放 KV
                 self._completions[event.ref] = completion
                 heapq.heappush(
                     self._heap,
                     self._factory.client_completion(now_ms, event.ref),
                 )
-            elif event.kind is EventKind.CLIENT_COMPLETION:
+            elif event.kind is EventKind.CLIENT_COMPLETION:  # 回调可在同刻唤醒子轮
                 completion = self._completions.pop(event.ref)
                 self._enqueue_wakeups(
                     self.client.on_request_completed(completion), completed_at_ms=now_ms
@@ -68,7 +68,7 @@ class Coordinator:
                 accepted = self.engine.submit(self.client.on_wakeup(wakeup), now_ms)
                 self._process_aborts()
                 if accepted:
-                    self._schedule_step(now_ms)
+                    self._schedule_step(now_ms)  # 同刻发送先全部入队，再执行引擎步
             elif event.kind is EventKind.ENGINE_STEP:
                 self._step_pending = False
                 duration, finished = self.engine.step(now_ms, event.ref)

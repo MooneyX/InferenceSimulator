@@ -4,15 +4,16 @@
 
 | 路径 | 内容 |
 |---|---|
-| [frontend-style/](frontend-style/) | 前端视觉与布局风格参考（旧版 KV Cache 建模平台前端） |
+| [KVCacheModeling/](KVCacheModeling/) | KV Cache 建模平台源码参考（Git 子模块）；包括参数导入导出的前端交互、页面布局和样式 |
 | [sglang/](sglang/) | SGLang 官方源码浅克隆；调研 Prefill-first、P/D 互斥、mixed chunk 和 Decode retraction |
 | [vllm/](vllm/) | vLLM 官方源码浅克隆；对比 V1 running-first、mixed batching、chunked prefill 和 preemption |
 
-## frontend-style/
+## KVCacheModeling/
 
 | 文件 | 简介 |
 |---|---|
-| [index.html](frontend-style/index.html) | 页面结构参考：顶部栏 + 侧边导航 + 卡片式内容区；参数表单（`form-row` / `preset-tag`）、结果网格（`result-grid`）、图表容器、公式框等组织方式 |
-| [styles.css](frontend-style/styles.css) | 样式参考：深色主题 CSS 变量（`--bg` / `--surface` / `--accent` 等）、卡片、表单控件、按钮、结果卡片、响应式断点 |
+| [index.html](KVCacheModeling/index.html) | 页面结构与参数导入导出入口参考 |
+| [src/ui/parameters.js](KVCacheModeling/src/ui/parameters.js) | 参数 JSON 收集、复制与导入交互参考 |
+| [src/ui/styles.css](KVCacheModeling/src/ui/styles.css) | 深色主题、卡片、表单控件、按钮和响应式样式参考 |
 
-> 用途：新前端（React + TypeScript + Vite + ECharts，见 [../docs/design/frontend.md](../docs/design/frontend.md)）复用其**视觉风格与布局范式**，不照搬其多 Tab 结构与业务逻辑。
+> 用途：新前端（React + TypeScript + Vite + ECharts，见 [../docs/design/frontend.md](../docs/design/frontend.md)）借鉴其交互与布局范式，不照搬其业务逻辑。

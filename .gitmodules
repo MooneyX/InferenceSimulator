@@ -4,3 +4,6 @@
 [submodule "refs/vllm"]
 	path = refs/vllm
 	url = https://github.com/vllm-project/vllm.git
+[submodule "refs/KVCacheModeling"]
+	path = refs/KVCacheModeling
+	url = https://github.com/MooneyX/KVCacheModeling.git

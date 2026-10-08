@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from simcore.kv_cache import L1KVCache
+from simcore.kv_cache import CacheCapacityError, L1KVCache, TieredKVCache
 from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
@@ -43,6 +43,7 @@ class PrefillCandidate:
     reused_tokens: int
     new_tokens: int
     required_pages: int
+    hit_sources: tuple[tuple[str, str], ...] = ()
 
     @property
     def context_after(self) -> int:
@@ -60,14 +61,24 @@ class AdmissionBatch:
     decode_new_tokens: int
     current_offset: int
     total_offset: float
+    restore_only: tuple[WaitingRequest, ...] = ()
+    promote_ids: tuple[str, ...] = ()
+    restore_hits: tuple[tuple[int, tuple[tuple[str, str], ...]], ...] = ()
 
 
 class F001Scheduler:
     """按当前 KV 状态逐队头准入；预算只估算未来页，不预分配。"""
 
-    def __init__(self, engine: EngineConfig, cache: L1KVCache) -> None:
+    def __init__(self, engine: EngineConfig, cache: L1KVCache | TieredKVCache) -> None:
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:
             raise ValueError("L1 页配置与引擎配置不一致")
+        if (
+            cache.tier_snapshot("L2").capacity_blocks
+            != engine.l2_capacity_tokens // engine.page_size
+            or cache.tier_snapshot("L3").capacity_blocks
+            != engine.l3_capacity_tokens // engine.page_size
+        ):
+            raise ValueError("低层页配置与引擎配置不一致")
         self._engine = engine
         self._cache = cache
         self._waiting: deque[WaitingRequest] = deque()
@@ -145,19 +156,29 @@ class F001Scheduler:
         active_count = len(running)
         selected: list[PrefillCandidate] = []
         restored: list[WaitingRequest] = []
+        restore_only: list[WaitingRequest] = []
+        restore_hits: list[tuple[int, tuple[tuple[str, str], ...]]] = []
+        promotions: set[str] = set()
         aborted: list[WaitingRequest] = []
         current_offset = decode_new
         selected_future = 0
         selected_pages_tokens = 0
         blocked = False
+        tiered = self._engine.l2_capacity_tokens > 0
         while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
             item = self._waiting[0]
             request = item.request
             target = item.target_tokens
             hit = cache.probe(request, target, restoring=item.restoring)
+            sources = cache.probe_sources(request, hit) if tiered else ()
             cache.pin(request, hit)
             new_tokens = target - hit
-            if item.restoring and new_tokens == 0:
+            new_promotions = {
+                chunk_id for chunk_id, tier in sources if tier != "L1"
+            } - promotions
+            if item.restoring and new_tokens == 0 and not any(
+                tier != "L1" for _, tier in sources
+            ):
                 cache.admit(request.request_id)
                 self._pop_head()
                 restored.append(item)
@@ -168,22 +189,37 @@ class F001Scheduler:
                 continue
             required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
-            proposed_current = current_offset + required_tokens + block_size
+            proposed_current = (
+                current_offset + required_tokens + block_size
+                + len(new_promotions) * block_size
+            )
             proposed_total = proposed_current + selected_future + future + running_future
-            compute_ok = not selected or (
+            compute_ok = not selected or not new_tokens or (
                 required_tokens
                 < self._engine.max_prefill_tokens - len(decode_ids) - selected_pages_tokens
             )
+            planned_promotions = tuple(sorted(promotions | new_promotions))
+            planned_new_pages = decode_new // block_size + sum(
+                candidate.required_pages for candidate in selected
+            ) + required_tokens // block_size
+            capacity_ok = True
+            if tiered:
+                try:
+                    cache.plan(planned_promotions, planned_new_pages)
+                except CacheCapacityError:
+                    capacity_ok = False
             if (
                 proposed_current > cache.available_tokens
                 or proposed_total > cache.available_tokens
                 or not compute_ok
+                or not capacity_ok
             ):
                 cache.cancel_pin(request.request_id)
                 if (
                     not running
                     and not selected
                     and not restored
+                    and not restore_only
                     and (
                         (target + block_size - 1) // block_size * block_size + block_size + future
                         > self._engine.max_total_tokens
@@ -193,11 +229,20 @@ class F001Scheduler:
                     continue
                 blocked = True
                 break
-            selected.append(PrefillCandidate(item, hit, new_tokens, required_tokens // block_size))
+            if item.restoring and new_tokens == 0:
+                restore_only.append(item)
+                restore_hits.append((request.request_id, sources))
+                active_count += 1
+                running_future += future * self._ratio
+            else:
+                selected.append(PrefillCandidate(
+                    item, hit, new_tokens, required_tokens // block_size, sources
+                ))
+                selected_future += future
+                selected_pages_tokens += required_tokens
             self._pop_head()
+            promotions.update(new_promotions)
             current_offset = proposed_current
-            selected_future += future
-            selected_pages_tokens += required_tokens
         if self._waiting and active_count + len(selected) >= self._engine.max_running_requests:
             blocked = True
         return AdmissionBatch(
@@ -208,6 +253,9 @@ class F001Scheduler:
             decode_new,
             current_offset,
             current_offset + selected_future + running_future,
+            tuple(sorted(restore_only, key=lambda item: item.request.request_id)),
+            tuple(sorted(promotions)),
+            tuple(sorted(restore_hits)),
         )
 
     def _pop_head(self) -> WaitingRequest:

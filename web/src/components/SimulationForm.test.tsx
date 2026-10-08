@@ -23,6 +23,9 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(128);
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
     expect(screen.getByLabelText("L1 KV 总容量（token）")).toHaveValue(65_536);
+    expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(0);
+    expect(screen.getByLabelText("L3 KV 容量（token，0 为关闭）")).toHaveValue(0);
+    expect(screen.queryByLabelText("L2 → L1 带宽（字节/ms）")).not.toBeInTheDocument();
     expect(screen.getByLabelText("单次 Prefill 额度（token）")).toHaveValue(16_384);
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(64);
     expect(screen.getByLabelText(/Prefill \/ Decode 分步执行/)).toBeChecked();
@@ -56,6 +59,8 @@ describe("SimulationForm", () => {
       engine: {
         max_running_requests: 32,
         max_total_tokens: 65_536,
+        l2_capacity_tokens: 0,
+        l3_capacity_tokens: 0,
         max_prefill_tokens: 16_384,
         page_size: 64,
         pd_mutually_exclusive: true,
@@ -65,6 +70,11 @@ describe("SimulationForm", () => {
         prefill_c2: 0.000_01,
         decode_d1: 8,
         decode_d2: 0.002,
+        kv_bytes_per_token: null,
+        l2_to_l1_bandwidth_bytes_per_ms: null,
+        l3_to_l2_bandwidth_bytes_per_ms: null,
+        l2_latency_ms: 0,
+        l3_latency_ms: 0,
       },
     });
     const submittedSession = onSubmit.mock.calls[0][0].workload.synthetic.session;
@@ -147,11 +157,39 @@ describe("SimulationForm", () => {
     });
   });
 
+  it("exposes L2/L3 links only when enabled and submits valid transfer settings", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("L2 KV 容量（token，0 为关闭）"), { target: { value: "128" } });
+    expect(screen.getByLabelText("KV 每 token 字节数")).toBeInTheDocument();
+    expect(screen.queryByLabelText("L3 → L2 带宽（字节/ms）")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("L3 KV 容量（token，0 为关闭）"), { target: { value: "64" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("KV 每 token 字节数")).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(screen.getByLabelText("KV 每 token 字节数"), { target: { value: "4096" } });
+    fireEvent.change(screen.getByLabelText("L2 → L1 带宽（字节/ms）"), { target: { value: "1024" } });
+    fireEvent.change(screen.getByLabelText("L3 → L2 带宽（字节/ms）"), { target: { value: "512" } });
+    fireEvent.change(screen.getByLabelText("L3 链路固定延迟（ms）"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      engine: expect.objectContaining({ l2_capacity_tokens: 128, l3_capacity_tokens: 64 }),
+      perf_model: expect.objectContaining({
+        kv_bytes_per_token: 4096,
+        l2_to_l1_bandwidth_bytes_per_ms: 1024,
+        l3_to_l2_bandwidth_bytes_per_ms: 512,
+        l3_latency_ms: 1.5,
+      }),
+    }));
+  });
+
   it.each([
     ["会话数量（根请求数）", "1001", "会话数量不能超过请求数量"],
     ["轮次间平均思考时间（ms，指数分布）", "-1", "必须是大于或等于 0 的有限数值"],
     ["目标理想前缀命中率（0–1）", "1.1", "必须是 0 到 1 之间的有限数值"],
     ["L1 KV 总容量（token）", "130", "必须是页大小的整数倍"],
+    ["L2 KV 容量（token，0 为关闭）", "65", "容量必须是页大小的非负整数倍"],
+    ["L3 KV 容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
     ["每页 token 数", "0", "必须是大于或等于 1 的整数"],
     ["每请求生成上限（token）", "0", "必须是大于或等于 1 的整数"],
   ])("blocks invalid %s with an accessible field error", (label, value, message) => {
@@ -218,6 +256,13 @@ describe("SimulationForm", () => {
     config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
     config.engine.page_size = 128;
+    config.engine.l2_capacity_tokens = 256;
+    config.engine.l3_capacity_tokens = 128;
+    config.perf_model.kv_bytes_per_token = 2048;
+    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 1024;
+    config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 512;
+    config.perf_model.l2_latency_ms = 1;
+    config.perf_model.l3_latency_ms = 2;
     config.perf_model.prefill_c1 = 0.1;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
 
@@ -231,6 +276,13 @@ describe("SimulationForm", () => {
     expect(within(screen.getByRole("group", { name: "输出长度" })).getByLabelText("形状参数（sigma）"))
       .toHaveValue(2);
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(128);
+    expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(256);
+    expect(screen.getByLabelText("L3 KV 容量（token，0 为关闭）")).toHaveValue(128);
+    expect(screen.getByLabelText("KV 每 token 字节数")).toHaveValue(2048);
+    expect(screen.getByLabelText("L2 → L1 带宽（字节/ms）")).toHaveValue(1024);
+    expect(screen.getByLabelText("L3 → L2 带宽（字节/ms）")).toHaveValue(512);
+    expect(screen.getByLabelText("L2 链路固定延迟（ms）")).toHaveValue(1);
+    expect(screen.getByLabelText("L3 链路固定延迟（ms）")).toHaveValue(2);
     expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.1);
     expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));

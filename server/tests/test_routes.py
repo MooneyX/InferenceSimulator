@@ -53,6 +53,32 @@ class TestSuccess:
         assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
         assert body["aborted_requests"] == body["skipped_requests"] == []
 
+    def test_enabled_tiers_use_existing_route_and_echo_metrics(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 3}
+        payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
+        payload["workload"]["synthetic"]["max_new_tokens"] = 1
+        payload["engine"].update(
+            max_running_requests=1,
+            max_total_tokens=12,
+            page_size=4,
+            l2_capacity_tokens=4,
+            l3_capacity_tokens=8,
+        )
+        payload["perf_model"].update(
+            kv_bytes_per_token=16,
+            l2_to_l1_bandwidth_bytes_per_ms=64,
+            l3_to_l2_bandwidth_bytes_per_ms=32,
+        )
+        response = client.post(URL, json=payload)
+        assert response.status_code == 200
+        result = SimResult.model_validate_json(response.content)
+        assert result.meta.num_completed == 1
+        assert result.meta.config.engine.l2_capacity_tokens == 4
+        assert result.meta.config.engine.l3_capacity_tokens == 8
+        assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
+        assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
+
     def test_returns_full_result(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload())
         assert response.status_code == 200
@@ -153,6 +179,38 @@ class TestErrors:
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert "max_total_tokens" in response.text
+
+    @pytest.mark.parametrize(
+        ("engine_updates", "perf_updates", "message"),
+        [
+            ({"l2_capacity_tokens": 3}, {}, "l2_capacity_tokens"),
+            ({"l3_capacity_tokens": 2}, {}, "l3_capacity_tokens"),
+            ({"l2_capacity_tokens": 2}, {}, "kv_bytes_per_token"),
+            (
+                {"l2_capacity_tokens": 2},
+                {"kv_bytes_per_token": 16},
+                "l2_to_l1_bandwidth_bytes_per_ms",
+            ),
+            (
+                {"l2_capacity_tokens": 2, "l3_capacity_tokens": 2},
+                {"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128},
+                "l3_to_l2_bandwidth_bytes_per_ms",
+            ),
+        ],
+    )
+    def test_invalid_tiered_configuration_returns_422(
+        self,
+        client: TestClient,
+        engine_updates: dict[str, int],
+        perf_updates: dict[str, int],
+        message: str,
+    ) -> None:
+        payload = make_payload(num_requests=1)
+        payload["engine"].update(engine_updates)
+        payload["perf_model"].update(perf_updates)
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert message in response.text
 
     @pytest.mark.parametrize("legacy", ["max_batch_size", "kv_token_budget", "prefix_cache"])
     def test_legacy_engine_inputs_are_rejected(self, client: TestClient, legacy: str) -> None:

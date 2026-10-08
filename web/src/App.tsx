@@ -68,7 +68,7 @@ export default function App() {
     <>
       <header className="topbar">
         <a className="brand" href="#overview"><span>KV Cache</span> 推理服务仿真器</a>
-        <span className="topbar-caption">单 GPU · L1 仿真工作台</span>
+        <span className="topbar-caption">单 GPU · 分层 KV 仿真工作台</span>
       </header>
 
       <nav className="sidebar" aria-label="建模模块">

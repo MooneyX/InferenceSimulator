@@ -23,6 +23,7 @@ from simcore.schemas import (
     SkippedRequest,
     SyntheticWorkloadConfig,
     WorkloadConfig,
+    validate_kv_config,
 )
 
 LENGTH_DIST = TypeAdapter[LengthDist](LengthDist)
@@ -109,6 +110,10 @@ class TestConfigValidation:
             {"max_total_tokens": 130},
             {"max_prefill_tokens": 0},
             {"page_size": 0},
+            {"l2_capacity_tokens": -64},
+            {"l2_capacity_tokens": 1},
+            {"l3_capacity_tokens": 1},
+            {"l3_capacity_tokens": 64},
         ],
     )
     def test_engine_bounds(self, overrides: dict[str, int]) -> None:
@@ -125,6 +130,8 @@ class TestConfigValidation:
             "max_total_tokens": 4096,
             "max_prefill_tokens": 16_384,
             "page_size": 64,
+            "l2_capacity_tokens": 0,
+            "l3_capacity_tokens": 0,
             "pd_mutually_exclusive": True,
         }
         assert make_config(max_total_tokens=128).engine.capacity_pages == 2
@@ -143,7 +150,87 @@ class TestConfigValidation:
             synthetic.model_validate({**synthetic.model_dump(), "max_new_tokens": 0})
 
     def test_prefill_c2_defaults_to_zero(self) -> None:
-        assert make_config().perf_model.prefill_c2 == 0.0
+        perf = make_config().perf_model
+        assert perf.prefill_c2 == perf.l2_latency_ms == perf.l3_latency_ms == 0.0
+        assert perf.kv_bytes_per_token is None
+        assert perf.l2_to_l1_bandwidth_bytes_per_ms is None
+        assert perf.l3_to_l2_bandwidth_bytes_per_ms is None
+
+    @pytest.mark.parametrize(
+        ("field", "invalid"),
+        [
+            ("kv_bytes_per_token", 0),
+            ("kv_bytes_per_token", -1),
+            ("kv_bytes_per_token", 1.5),
+            ("l2_to_l1_bandwidth_bytes_per_ms", 0),
+            ("l3_to_l2_bandwidth_bytes_per_ms", -1),
+            ("l2_to_l1_bandwidth_bytes_per_ms", float("inf")),
+            ("l3_to_l2_bandwidth_bytes_per_ms", float("nan")),
+            ("l2_latency_ms", -1),
+            ("l3_latency_ms", -1),
+            ("l2_latency_ms", float("inf")),
+            ("l3_latency_ms", float("nan")),
+        ],
+    )
+    def test_invalid_tiered_perf_coefficients_rejected(self, field: str, invalid: float) -> None:
+        payload = make_config().perf_model.model_dump()
+        with pytest.raises(ValidationError):
+            PerfModelConfig.model_validate({**payload, field: invalid})
+
+    @pytest.mark.parametrize(
+        ("tier", "perf_updates", "missing"),
+        [
+            ("l2", {}, "kv_bytes_per_token"),
+            ("l2", {"kv_bytes_per_token": 16}, "l2_to_l1_bandwidth_bytes_per_ms"),
+            (
+                "l3",
+                {"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128},
+                "l3_to_l2_bandwidth_bytes_per_ms",
+            ),
+        ],
+    )
+    def test_enabled_tier_requires_transfer_params(
+        self, tier: str, perf_updates: dict[str, float], missing: str
+    ) -> None:
+        payload = make_config().model_dump()
+        payload["engine"]["l2_capacity_tokens"] = 64
+        if tier == "l3":
+            payload["engine"]["l3_capacity_tokens"] = 128
+        payload["perf_model"].update(perf_updates)
+        with pytest.raises(ValidationError, match=missing):
+            SimConfig.model_validate(payload)
+
+    def test_shared_kv_config_validator(self) -> None:
+        engine = EngineConfig(
+            max_running_requests=1, max_total_tokens=128, l2_capacity_tokens=64
+        )
+        perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)
+        with pytest.raises(ValueError, match="kv_bytes_per_token"):
+            validate_kv_config(engine, perf)
+        valid_perf = perf.model_copy(
+            update={"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128.0}
+        )
+        validate_kv_config(engine, valid_perf)
+
+    def test_enabled_tiers_roundtrip_and_disabled_tiers_need_no_bandwidth(self) -> None:
+        payload = make_config().model_dump()
+        payload["engine"].update(l2_capacity_tokens=64, l3_capacity_tokens=128)
+        payload["perf_model"].update(
+            kv_bytes_per_token=16,
+            l2_to_l1_bandwidth_bytes_per_ms=128,
+            l3_to_l2_bandwidth_bytes_per_ms=64,
+            l2_latency_ms=0.5,
+            l3_latency_ms=1.5,
+        )
+        config = SimConfig.model_validate(payload)
+        assert SimConfig.model_validate_json(config.model_dump_json()) == config
+        payload["engine"].update(l2_capacity_tokens=0, l3_capacity_tokens=0)
+        payload["perf_model"].update(
+            kv_bytes_per_token=None,
+            l2_to_l1_bandwidth_bytes_per_ms=None,
+            l3_to_l2_bandwidth_bytes_per_ms=None,
+        )
+        assert SimConfig.model_validate(payload).engine.l2_capacity_tokens == 0
 
     @pytest.mark.parametrize(
         "field",

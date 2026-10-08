@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from simcore.engine import Engine
+from simcore.engine import Engine, run_engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
 from simcore.runner import simulate
@@ -44,6 +44,17 @@ def config() -> SimConfig:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0),
     )
+
+
+def test_direct_engine_and_run_engine_reject_missing_transfer_config() -> None:
+    engine = EngineConfig(
+        max_running_requests=1, max_total_tokens=8, page_size=4, l2_capacity_tokens=4
+    )
+    perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
+    with pytest.raises(ValueError, match="kv_bytes_per_token"):
+        Engine(engine, perf, output_targets={})
+    with pytest.raises(ValueError, match="kv_bytes_per_token"):
+        run_engine(engine, perf, [])
 
 
 def mixed_plan() -> WorkloadPlan:
@@ -344,3 +355,23 @@ def test_physical_capacity_rejects_future_reservation_or_inconsistent_counts(
     assert Metrics.model_validate(valid).l1_capacity_blocks == 4
     with pytest.raises(ValidationError, match="守恒"):
         Metrics.model_validate({**valid, **override})
+
+
+@pytest.mark.parametrize("tier", ["l2", "l3"])
+@pytest.mark.parametrize("field", ["free", "active", "peak_resident"])
+def test_lower_tier_capacity_rejects_inconsistent_counts(tier: str, field: str) -> None:
+    valid = {
+        "ttft_mean": None,
+        "ttft_p50": None,
+        "ttft_p99": None,
+        "makespan": 0,
+        f"{tier}_capacity_blocks": 3,
+        f"{tier}_resident_blocks": 1,
+        f"{tier}_active_blocks": 0,
+        f"{tier}_evictable_blocks": 1,
+        f"{tier}_free_blocks": 2,
+        f"{tier}_peak_resident_blocks": 2,
+    }
+    assert Metrics.model_validate(valid).model_dump()[f"{tier}_resident_blocks"] == 1
+    with pytest.raises(ValidationError, match="容量不守恒"):
+        Metrics.model_validate({**valid, f"{tier}_{field}_blocks": 1 if field == "active" else 0})

@@ -39,6 +39,7 @@ __all__ = [
     "WorkloadConfig",
     "WorkloadMode",
     "WorkloadPlan",
+    "validate_kv_config",
 ]
 
 
@@ -155,12 +156,19 @@ class EngineConfig(_Frozen):
     max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
     max_prefill_tokens: int = Field(default=16_384, ge=1, description="单次 Prefill 的新计算额度")
     page_size: int = Field(default=64, ge=1, description="每个 KV 页的 token 数")
+    l2_capacity_tokens: int = Field(default=0, ge=0, description="L2 KV 的 token 容量；0 表示关闭")
+    l3_capacity_tokens: int = Field(default=0, ge=0, description="L3 KV 的 token 容量；0 表示关闭")
     pd_mutually_exclusive: bool = Field(default=True, description="Prefill 与 Decode 分步执行")
 
     @model_validator(mode="after")
     def _check_capacity(self) -> Self:
         if self.max_total_tokens < self.page_size or self.max_total_tokens % self.page_size:
             raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
+        for tier in ("l2", "l3"):
+            if getattr(self, f"{tier}_capacity_tokens") % self.page_size:
+                raise ValueError(f"{tier}_capacity_tokens 必须是 page_size 的整数倍")
+        if self.l3_capacity_tokens and not self.l2_capacity_tokens:
+            raise ValueError("l3_capacity_tokens > 0 要求 l2_capacity_tokens > 0")
         return self
 
     @property
@@ -179,6 +187,28 @@ class PerfModelConfig(_Frozen):
     prefill_c2: float = Field(default=0.0, ge=0)
     decode_d1: float = Field(ge=0)
     decode_d2: float = Field(ge=0)
+    kv_bytes_per_token: int | None = Field(default=None, gt=0)
+    l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
+    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
+    l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:
+    """同时供 SimConfig、Engine 与 run_engine 检查 KV 层与传输参数。"""
+    if engine.l2_capacity_tokens and (
+        perf.kv_bytes_per_token is None or perf.l2_to_l1_bandwidth_bytes_per_ms is None
+    ):
+        raise ValueError(
+            "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 "
+            "l2_to_l1_bandwidth_bytes_per_ms 为正"
+        )
+    if engine.l3_capacity_tokens and perf.l3_to_l2_bandwidth_bytes_per_ms is None:
+        raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
 
 
 class SimConfig(_Frozen):
@@ -187,6 +217,11 @@ class SimConfig(_Frozen):
     workload: WorkloadConfig
     engine: EngineConfig
     perf_model: PerfModelConfig
+
+    @model_validator(mode="after")
+    def _check_tiered_config(self) -> Self:
+        validate_kv_config(self.engine, self.perf_model)
+        return self
 
 
 # ---------------------------------------------------------------- 内部不可变计划与消息
@@ -294,11 +329,11 @@ class RequestRecord(_Record):
                 f"arrival={self.arrival} prefill_start={self.prefill_start} "
                 f"prefill_end={self.prefill_end} finish={self.finish}"
             )
+        if self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens != self.actual_hit_tokens:
+            raise ValueError("请求级分层复用与实际命中 token 不守恒")
         if self.actual_prefill_tokens is not None and not (
             self.actual_hit_tokens <= self.ideal_reuse_tokens <= self.prompt_len
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.prompt_len
-            and self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens
-            == self.actual_hit_tokens
         ):
             raise ValueError("请求级理想命中、分层复用与 Prefill token 不守恒")
         return self
@@ -377,6 +412,20 @@ class Metrics(_Record):
     l1_free_blocks: int = Field(default=0, ge=0)
     l1_reserved_future_blocks: int = Field(default=0, ge=0)
     l1_internal_fragmentation_tokens: int = Field(default=0, ge=0)
+    l2_evictions: int = Field(default=0, ge=0)
+    l2_peak_resident_blocks: int = Field(default=0, ge=0)
+    l2_capacity_blocks: int = Field(default=0, ge=0)
+    l2_resident_blocks: int = Field(default=0, ge=0)
+    l2_active_blocks: int = Field(default=0, ge=0)
+    l2_evictable_blocks: int = Field(default=0, ge=0)
+    l2_free_blocks: int = Field(default=0, ge=0)
+    l3_evictions: int = Field(default=0, ge=0)
+    l3_peak_resident_blocks: int = Field(default=0, ge=0)
+    l3_capacity_blocks: int = Field(default=0, ge=0)
+    l3_resident_blocks: int = Field(default=0, ge=0)
+    l3_active_blocks: int = Field(default=0, ge=0)
+    l3_evictable_blocks: int = Field(default=0, ge=0)
+    l3_free_blocks: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _check_cache_conservation(self) -> Self:
@@ -392,6 +441,17 @@ class Metrics(_Record):
             and self.l1_resident_blocks <= self.l1_peak_resident_blocks <= self.l1_capacity_blocks
         ):
             raise ValueError("全场前缀命中、Prefill 或 L1 物理块容量不守恒")
+        for tier in ("l2", "l3"):
+            capacity = getattr(self, f"{tier}_capacity_blocks")
+            resident = getattr(self, f"{tier}_resident_blocks")
+            active = getattr(self, f"{tier}_active_blocks")
+            evictable = getattr(self, f"{tier}_evictable_blocks")
+            free = getattr(self, f"{tier}_free_blocks")
+            peak = getattr(self, f"{tier}_peak_resident_blocks")
+            if free + resident != capacity or active + evictable != resident or not (
+                resident <= peak <= capacity
+            ):
+                raise ValueError(f"{tier.upper()} 物理块容量不守恒")
         return self
 
 

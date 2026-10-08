@@ -83,6 +83,18 @@ export interface components {
              */
             page_size: number;
             /**
+             * L2 Capacity Tokens
+             * @description L2 KV 的 token 容量；0 表示关闭
+             * @default 0
+             */
+            l2_capacity_tokens: number;
+            /**
+             * L3 Capacity Tokens
+             * @description L3 KV 的 token 容量；0 表示关闭
+             * @default 0
+             */
+            l3_capacity_tokens: number;
+            /**
              * Pd Mutually Exclusive
              * @description Prefill 与 Decode 分步执行
              * @default true
@@ -315,6 +327,76 @@ export interface components {
              * @default 0
              */
             l1_internal_fragmentation_tokens: number;
+            /**
+             * L2 Evictions
+             * @default 0
+             */
+            l2_evictions: number;
+            /**
+             * L2 Peak Resident Blocks
+             * @default 0
+             */
+            l2_peak_resident_blocks: number;
+            /**
+             * L2 Capacity Blocks
+             * @default 0
+             */
+            l2_capacity_blocks: number;
+            /**
+             * L2 Resident Blocks
+             * @default 0
+             */
+            l2_resident_blocks: number;
+            /**
+             * L2 Active Blocks
+             * @default 0
+             */
+            l2_active_blocks: number;
+            /**
+             * L2 Evictable Blocks
+             * @default 0
+             */
+            l2_evictable_blocks: number;
+            /**
+             * L2 Free Blocks
+             * @default 0
+             */
+            l2_free_blocks: number;
+            /**
+             * L3 Evictions
+             * @default 0
+             */
+            l3_evictions: number;
+            /**
+             * L3 Peak Resident Blocks
+             * @default 0
+             */
+            l3_peak_resident_blocks: number;
+            /**
+             * L3 Capacity Blocks
+             * @default 0
+             */
+            l3_capacity_blocks: number;
+            /**
+             * L3 Resident Blocks
+             * @default 0
+             */
+            l3_resident_blocks: number;
+            /**
+             * L3 Active Blocks
+             * @default 0
+             */
+            l3_active_blocks: number;
+            /**
+             * L3 Evictable Blocks
+             * @default 0
+             */
+            l3_evictable_blocks: number;
+            /**
+             * L3 Free Blocks
+             * @default 0
+             */
+            l3_free_blocks: number;
         };
         /**
          * PerfModelConfig
@@ -335,6 +417,22 @@ export interface components {
             decode_d1: number;
             /** Decode D2 */
             decode_d2: number;
+            /** Kv Bytes Per Token */
+            kv_bytes_per_token?: number | null;
+            /** L2 To L1 Bandwidth Bytes Per Ms */
+            l2_to_l1_bandwidth_bytes_per_ms?: number | null;
+            /** L3 To L2 Bandwidth Bytes Per Ms */
+            l3_to_l2_bandwidth_bytes_per_ms?: number | null;
+            /**
+             * L2 Latency Ms
+             * @default 0
+             */
+            l2_latency_ms: number;
+            /**
+             * L3 Latency Ms
+             * @default 0
+             */
+            l3_latency_ms: number;
         };
         /**
          * PoissonLength

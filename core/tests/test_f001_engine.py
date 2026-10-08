@@ -1,5 +1,7 @@
 """F001 单步引擎：P/D 互斥、融合、KV 增长、发布和确定性。"""
 
+from dataclasses import fields
+
 import pytest
 
 from simcore.engine import Engine, run_engine
@@ -219,3 +221,238 @@ def test_empty_step_is_rejected_without_advancing_clock() -> None:
     with pytest.raises(RuntimeError, match="没有可执行"):
         engine.step(0, 0)
     assert engine.num_steps == 0 and tuple(engine._log.steps()) == ()
+
+
+def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> None:
+    config = EngineConfig(
+        max_running_requests=3, max_total_tokens=28, page_size=4,
+        l2_capacity_tokens=8,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=5, decode_d2=1,
+        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        l2_latency_ms=3,
+    )
+    engine = Engine(config, perf, output_targets={1: 1, 2: 1})
+    cache = engine._prefix_cache
+    parent = request(0, prompt=4)
+    cache.pin(parent, 0)
+    cache.admit(0)
+    cache.extend(0, 4)
+    cache.publish(0)
+    cache.finish(0)
+    filler = request(99, prompt=28)
+    cache.pin(filler, 0)
+    cache.admit(99)
+    cache.extend(99, 28)
+    cache.publish(99)
+    cache.finish(99)
+    shared = encode(0, 0)
+    demoted = cache.page(shared)
+    assert demoted is not None and demoted.tier == "L2"
+    for key in (1, 2):
+        engine.submit(request(key, prompt=5, maximum=1, inherited=(shared,)), 0)
+    assert engine.step(0, 0) == (7, (1, 2))
+    trace = next(engine._log.steps())
+    assert trace.phase == "PREFILL" and trace.restore_sources == ((shared, "L2"),)
+    assert (trace.promotions, trace.restore_bytes, trace.restore_time_ms) == (1, 8, 5)
+    promoted_page = cache.page(shared)
+    assert promoted_page is not None and promoted_page.tier == "L1"
+    assert promoted_page.ref_count == 2
+    engine.complete(7, 1)
+    engine.complete(7, 2)
+    run = engine.finalize()
+    assert run.promotions == 1 and run.restore_bytes == 8 and run.restore_time_ms == 5
+    assert [(record.l1_hit_tokens, record.l2_hit_tokens, record.l3_hit_tokens)
+            for record in run.records] == [(0, 4, 0), (0, 4, 0)]
+    assert run.l2_snapshot is not None
+    assert run.l2_snapshot.free_blocks + run.l2_snapshot.resident_blocks == 2
+
+
+def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=16, page_size=4,
+        l2_capacity_tokens=8,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=5, decode_d2=1,
+        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        l2_latency_ms=3,
+    )
+    engine = Engine(config, perf, output_targets={0: 2})
+    item = request(0, prompt=4, maximum=2)
+    engine.submit(item, 0)
+    assert engine.step(0, 0) == (4, ())
+    cache = engine._prefix_cache
+    cache.withdraw(0)
+    del engine._running[0]
+    engine._prefix_scheduler.requeue(item, 4, generated_tokens=1)
+    filler = request(99, prompt=16)
+    cache.pin(filler, 0)
+    cache.admit(99)
+    cache.extend(99, 16)
+    cache.publish(99)
+    cache.finish(99)
+    demoted_page = cache.page(encode(0, 0))
+    assert demoted_page is not None and demoted_page.tier == "L2"
+    assert engine.step(4, 1) == (5, ())
+    trace = list(engine._log.steps())[-1]
+    assert trace.phase == "RESTORE" and trace.restored == (0,)
+    assert trace.num_decoding == 0 and trace.admitted == ()
+    assert trace.restore_sources == ((encode(0, 0), "L2"),)
+    assert engine._running[0] == 1 and engine._prefill_end[0] == 4
+    assert engine.step(9, 2) == (10, (0,))
+    engine.complete(19, 0)
+    run = engine.finalize()
+    assert run.records[0].finish == 19
+    assert run.records[0].replayed_prefill_tokens == 0
+    assert run.restore_time_ms == 5 and run.restore_bytes == 8
+
+
+def test_fused_decode_and_restore_share_step_without_decoding_restored_request() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=28, page_size=4,
+        l2_capacity_tokens=8, pd_mutually_exclusive=False,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=5, decode_d2=1,
+        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        l2_latency_ms=3,
+    )
+    engine = Engine(config, perf, output_targets={0: 2, 1: 2})
+    item = request(0, prompt=4, maximum=2)
+    active = request(1, prompt=4, maximum=2)
+    engine.submit(item, 0)
+    engine.submit(active, 0)
+    assert engine.step(0, 0) == (8, ())
+    cache = engine._prefix_cache
+    cache.withdraw(0)
+    del engine._running[0]
+    engine._prefix_scheduler.requeue(item, 8, generated_tokens=1)
+    filler = request(99, prompt=24)
+    cache.pin(filler, 0)
+    cache.admit(99)
+    cache.extend(99, 24)
+    cache.publish(99)
+    cache.finish(99)
+    demoted_page = cache.page(encode(0, 0))
+    assert demoted_page is not None and demoted_page.tier == "L2"
+    assert engine.step(8, 1) == (15, (1,))
+    trace = list(engine._log.steps())[-1]
+    assert trace.phase == "DECODE" and trace.num_decoding == 1
+    assert trace.restored == (0,) and trace.restore_time_ms == 5
+    assert engine._running[0] == 1 and 1 not in engine._running
+    assert engine._prefill_end[0] == 8
+    engine.complete(23, 1)
+    duration, finished = engine.step(23, 2)
+    assert finished == (0,)
+    engine.complete(23 + duration, 0)
+    assert engine.finalize().records[0].replayed_prefill_tokens == 0
+
+
+def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=16, page_size=4,
+        l2_capacity_tokens=4, l3_capacity_tokens=4,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=5, decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l2_latency_ms=3, l3_latency_ms=5,
+    )
+    engine = Engine(config, perf, output_targets={1: 1})
+    cache = engine._prefix_cache
+    for key, size in ((0, 4), (99, 16), (98, 4)):
+        seed = request(key, prompt=size)
+        cache.pin(seed, 0)
+        cache.admit(key)
+        cache.extend(key, size)
+        cache.publish(key)
+        cache.finish(key)
+    shared = encode(0, 0)
+    demoted_page = cache.page(shared)
+    assert demoted_page is not None and demoted_page.tier == "L3"
+    engine.submit(request(1, prompt=5, maximum=1, inherited=(shared,)), 0)
+    assert engine.step(0, 0) == (15, (1,))
+    trace = next(engine._log.steps())
+    assert trace.restore_sources == ((shared, "L3"),)
+    assert (trace.restore_bytes, trace.restore_time_ms, trace.promotions) == (16, 14, 1)
+    engine.complete(15, 1)
+    run = engine.finalize()
+    assert run.records[0].l3_hit_tokens == 4
+    assert run.restore_bytes == 16 and run.restore_time_ms == 14
+    assert run.l3_snapshot is not None
+    assert run.l3_snapshot.free_blocks + run.l3_snapshot.resident_blocks == 1
+
+
+def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=36, page_size=4,
+        l2_capacity_tokens=8,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=0, decode_d2=0,
+        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+    )
+    engine = Engine(config, perf, output_targets={1: 1, 2: 1})
+    cache = engine._prefix_cache
+    for key, size in ((0, 4), (99, 36)):
+        seed = request(key, prompt=size)
+        cache.pin(seed, 0)
+        cache.admit(key)
+        cache.extend(key, size)
+        cache.publish(key)
+        cache.finish(key)
+    shared = encode(0, 0)
+    demoted_page = cache.page(shared)
+    assert demoted_page is not None and demoted_page.tier == "L2"
+    engine.submit(request(1, prompt=5, maximum=1, inherited=(shared,)), 0)
+    engine.submit(request(
+        2, prompt=9, maximum=1, inherited=(encode(77, 0), shared),
+    ), 0)
+    assert engine.step(0, 0) == (12, (1, 2))
+    published = cache.page(shared)
+    assert published is not None and published.tier == "L1"
+    assert published.ref_count == 2
+    assert cache.promotions == 1
+    engine.complete(12, 1)
+    engine.complete(12, 2)
+    assert cache.page(shared) is not None
+    assert [(r.l2_hit_tokens, r.replayed_prefill_tokens)
+            for r in engine.finalize().records] == [(4, 0), (0, 0)]
+
+
+@pytest.mark.parametrize("exclusive", [True, False])
+def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -> None:
+    legacy = EngineConfig(
+        max_running_requests=2, max_total_tokens=32, page_size=4,
+        pd_mutually_exclusive=exclusive,
+    )
+    explicitly_disabled = EngineConfig(
+        max_running_requests=2, max_total_tokens=32, page_size=4,
+        l2_capacity_tokens=0, l3_capacity_tokens=0,
+        pd_mutually_exclusive=exclusive,
+    )
+    extra_perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=5, decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l2_latency_ms=3, l3_latency_ms=5,
+    )
+    arrivals = (
+        Arrival(request_id=0, sim_time=0, prompt_len=5, output_len=3, max_new_tokens=3),
+        Arrival(request_id=1, sim_time=5, prompt_len=4, output_len=2, max_new_tokens=2),
+    )
+    old = run_engine(legacy, PERF, arrivals)
+    new = run_engine(explicitly_disabled, extra_perf, arrivals)
+    for field in fields(old):
+        if field.name != "trace":
+            assert getattr(old, field.name) == getattr(new, field.name), field.name
+    assert tuple(old.trace) == tuple(new.trace)
+    assert [record.model_dump() for record in old.records] == [
+        record.model_dump() for record in new.records
+    ]
+    assert new.promotions == new.demotions == new.restore_bytes == new.restore_time_ms == 0

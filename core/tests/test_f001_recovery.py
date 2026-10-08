@@ -1,7 +1,7 @@
 """F001 Decode 缺页、回撤重算与请求级失败的闭环验收。"""
 
 from simcore.engine import Engine, run_engine
-from simcore.kv_cache import L1KVCache
+from simcore.kv_cache import L1KVCache, TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.runner import simulate
 from simcore.scheduler import F001Scheduler
@@ -24,7 +24,7 @@ def request(key: int, *, prompt: int = 4, maximum: int = 3) -> InferenceRequest:
     return InferenceRequest(key, key, None, prompt, maximum, (), 0)
 
 
-def occupy(cache: L1KVCache, key: int, length: int) -> None:
+def occupy(cache: TieredKVCache, key: int, length: int) -> None:
     holder = request(key, prompt=length)
     cache.pin(holder, 0)
     cache.admit(key)

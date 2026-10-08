@@ -94,7 +94,8 @@ describe("RequestGantt", () => {
 
     expect(tooltip).toContain("请求 #7");
     expect(tooltip).toContain("会话：#7 / 父请求：无");
-    expect(tooltip).toContain("实际 L1 复用：0 token / 实际 Prefill：16 token");
+    expect(tooltip).toContain("实际复用（总计）：0 token / 实际 Prefill：16 token");
+    expect(tooltip).toContain("来源 L1：0 token / L2：0 token / L3：0 token");
     expect(tooltip).toContain("阶段：排队");
     expect(tooltip).toContain("TTFT：5 ms");
     expect(tooltip).toContain("Decode 时长：6 ms");
@@ -108,13 +109,15 @@ describe("RequestGantt", () => {
     render(<RequestGantt requests={[{
       ...request(9), session_id: 3, parent_request_id: 4,
       ideal_reuse_tokens: 8, matched_cache_tokens: 6,
-      actual_hit_tokens: 6, l1_hit_tokens: 6, actual_prefill_tokens: 10,
+      actual_hit_tokens: 6, l1_hit_tokens: 2, l2_hit_tokens: 3, l3_hit_tokens: 1,
+      actual_prefill_tokens: 10,
     }]} />);
     const option = chart.setOption.mock.calls[0][0];
     const tooltip = option.tooltip.formatter({ value: option.series[0].data[0] });
     expect(tooltip).toContain("会话：#3 / 父请求：#4");
     expect(tooltip).toContain("理想复用：8 token / 物理匹配：6 token");
-    expect(tooltip).toContain("实际 L1 复用：6 token / 实际 Prefill：10 token");
+    expect(tooltip).toContain("实际复用（总计）：6 token / 实际 Prefill：10 token");
+    expect(tooltip).toContain("来源 L1：2 token / L2：3 token / L3：1 token");
   });
 
   it("updates data without recreating the chart and disposes it on unmount", () => {

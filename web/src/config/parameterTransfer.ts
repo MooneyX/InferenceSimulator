@@ -77,19 +77,32 @@ export function parseSimConfigJson(json: string): SimConfig {
   ]);
 
   const engine = objectWithKeys(root.engine, "engine", [
-    "max_running_requests", "max_total_tokens", "max_prefill_tokens", "page_size", "pd_mutually_exclusive",
+    "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
+    "max_prefill_tokens", "page_size", "pd_mutually_exclusive",
   ]);
   numericFields(engine, "engine", [
-    "max_running_requests", "max_total_tokens", "max_prefill_tokens", "page_size",
+    "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
+    "max_prefill_tokens", "page_size",
   ]);
   if (typeof engine.pd_mutually_exclusive !== "boolean") {
     throw new Error("engine.pd_mutually_exclusive 必须是布尔值");
   }
 
   const perfModel = objectWithKeys(root.perf_model, "perf_model", [
-    "prefill_c1", "prefill_c2", "decode_d1", "decode_d2",
+    "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "kv_bytes_per_token",
+    "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
+    "l2_latency_ms", "l3_latency_ms",
   ]);
-  numericFields(perfModel, "perf_model", ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"]);
+  numericFields(perfModel, "perf_model", [
+    "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "l2_latency_ms", "l3_latency_ms",
+  ]);
+  for (const key of [
+    "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
+  ]) {
+    if (perfModel[key] !== null && typeof perfModel[key] !== "number") {
+      throw new Error(`perf_model.${key} 必须是数值或 null`);
+    }
+  }
 
   const config = parsed as SimConfig;
   const error = validateSimConfig(config)[0];
@@ -100,6 +113,10 @@ export function parseSimConfigJson(json: string): SimConfig {
 }
 
 export function serializeSimConfig(config: SimConfig): string {
+  const error = validateSimConfig(config)[0];
+  if (error) {
+    throw new Error(`${error.field}：${error.message}`);
+  }
   const json = JSON.stringify(config);
   parseSimConfigJson(json);
   return json;

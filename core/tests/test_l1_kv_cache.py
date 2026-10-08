@@ -2,7 +2,7 @@
 
 import pytest
 
-from simcore.kv_cache import CacheCapacityError, L1KVCache
+from simcore.kv_cache import CacheCapacityError, CacheEntry, L1KVCache, TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.schemas import InferenceRequest
 
@@ -19,13 +19,13 @@ def request(request_id: int, prompt_len: int, inherited: tuple[str, ...] = ()) -
     )
 
 
-def assert_conserved(cache: L1KVCache) -> None:
+def assert_conserved(cache: TieredKVCache) -> None:
     assert cache.free_pages + cache.resident_pages == cache.capacity_pages
     assert cache.active_pages + cache.evictable_pages == cache.resident_pages
     assert cache.available_tokens == (cache.free_pages + cache.evictable_pages) * cache.page_size
 
 
-def run_prefill(cache: L1KVCache, req: InferenceRequest) -> None:
+def run_prefill(cache: TieredKVCache, req: InferenceRequest) -> None:
     hit = cache.probe(req, req.prompt_len)
     cache.pin(req, hit)
     cache.admit(req.request_id)
@@ -225,3 +225,128 @@ def test_full_hit_restores_without_allocating_or_prefill() -> None:
     assert cache.private_pages == 0 and cache.resident_pages == 1
     cache.withdraw(0)
     assert_conserved(cache)
+
+
+def tier_page(cache: TieredKVCache, chunk_id: str) -> CacheEntry:
+    page = cache.page(chunk_id)
+    assert page is not None
+    return page
+
+
+def assert_tiers_conserved(cache: TieredKVCache) -> None:
+    entries = cache._entries
+    assert sum(snapshot.resident_blocks for snapshot in cache.tier_snapshots().values()) == (
+        len(entries) + cache.private_pages
+    )
+    for tier, snapshot in cache.tier_snapshots().items():
+        assert snapshot.free_blocks + snapshot.resident_blocks == snapshot.capacity_blocks
+        assert snapshot.active_blocks + snapshot.evictable_blocks == snapshot.resident_blocks
+        assert snapshot.evictable_blocks == sum(
+            entry.tier == tier and entry.ref_count == 0 for entry in entries.values()
+        )
+        assert snapshot.resident_blocks == sum(
+            entry.tier == tier for entry in entries.values()
+        ) + (cache.private_pages if tier == "L1" else 0)
+
+
+def test_tiered_lru_demotes_one_level_at_a_time_and_deletes_last_tier() -> None:
+    cache = TieredKVCache(2, 1, 1, 1)
+    for request_id in range(5):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+        assert_tiers_conserved(cache)
+    assert cache.page(encode(0, 0)) is None
+    assert tier_page(cache, encode(1, 0)).tier == "L3"
+    assert tier_page(cache, encode(2, 0)).tier == "L2"
+    assert tier_page(cache, encode(3, 0)).tier == "L1"
+    assert tier_page(cache, encode(4, 0)).tier == "L1"
+    assert (cache.evictions, cache.demotions, cache.deletions) == (3, 5, 1)
+    assert cache.tier_snapshot("L3").evictions == 1
+
+
+def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None:
+    cache = TieredKVCache(2, 1, 1)
+    for request_id in range(3):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    shared = encode(0, 0)
+    first = request(3, 2, (shared,))
+    second = request(4, 2, (shared,))
+    assert cache.probe(first, first.prompt_len) == 1
+    assert cache.probe_sources(first, 1) == ((shared, "L2"),)
+    for item in (first, second):
+        cache.pin(item, 1)
+    assert tier_page(cache, shared).ref_count == 2
+    assert cache.plan((shared, shared), reserve_pages=1) == ((shared, "L2"),)
+    assert tier_page(cache, shared).tier == "L2"
+    assert cache.prepare_batch((shared, shared), reserve_pages=1) == ((shared, "L2"),)
+    assert cache.promotions == 1
+    assert tier_page(cache, shared).tier == "L1"
+    assert tier_page(cache, shared).ref_count == 2
+    for item in (first, second):
+        cache.admit(item.request_id)
+        cache.withdraw(item.request_id)
+    assert_tiers_conserved(cache)
+
+
+def test_tiered_plan_failure_and_cancel_pin_are_side_effect_free() -> None:
+    cache = TieredKVCache(1, 1, 1)
+    run_prefill(cache, request(0, 1))
+    cache.finish(0)
+    run_prefill(cache, request(1, 1))
+    shared = encode(0, 0)
+    contender = request(2, 2, (shared,))
+    cache.pin(contender, 1)
+    page = tier_page(cache, shared)
+    snapshots = cache.tier_snapshots()
+    counters = (cache.promotions, cache.demotions, cache.deletions)
+    with pytest.raises(CacheCapacityError):
+        cache.plan((shared,), reserve_pages=1)
+    assert cache.page(shared) == page
+    assert cache.tier_snapshots() == snapshots
+    assert (cache.promotions, cache.demotions, cache.deletions) == counters
+    cache.cancel_pin(contender.request_id)
+    assert tier_page(cache, shared).last_access_seq == page.last_access_seq
+    cache.withdraw(1)
+    assert_tiers_conserved(cache)
+
+
+def test_tiered_recomputed_low_id_keeps_new_l1_page_without_restore() -> None:
+    cache = TieredKVCache(3, 1, 3)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    shared = encode(0, 0)
+    assert tier_page(cache, shared).tier == "L2"
+    recompute = request(4, 2, (shared,))
+    cache.pin(recompute, 0)
+    cache.admit(recompute.request_id)
+    cache.extend(recompute.request_id, 2)
+    old_promotions = cache.promotions
+    cache.publish(recompute.request_id)
+    assert tier_page(cache, shared).tier == "L1"
+    assert tier_page(cache, shared).ref_count == 1
+    assert cache.promotions == old_promotions
+    cache.finish(recompute.request_id)
+    assert_tiers_conserved(cache)
+
+
+def test_tiered_l3_promotion_uses_source_slot_for_two_level_cascade() -> None:
+    cache = TieredKVCache(2, 1, 1, 1)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    shared = encode(0, 0)
+    assert tier_page(cache, shared).tier == "L3"
+    contender = request(4, 2, (shared,))
+    cache.pin(contender, 1)
+    promotions = cache.plan((shared,), reserve_pages=1)
+    assert promotions == ((shared, "L3"),)
+    assert tier_page(cache, shared).tier == "L3"
+    assert cache.promote((shared,), reserve_pages=1) == promotions
+    assert tier_page(cache, shared).tier == "L1"
+    assert cache.l3_promotions == 1
+    assert cache.free_pages == 1
+    cache.admit(contender.request_id)
+    cache.withdraw(contender.request_id)
+    assert_tiers_conserved(cache)

@@ -2,7 +2,7 @@
 
 import pytest
 
-from simcore.kv_cache import L1KVCache
+from simcore.kv_cache import L1KVCache, TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
@@ -33,7 +33,7 @@ def request(
     return InferenceRequest(key, 0, None, prompt, maximum, inherited, len(inherited))
 
 
-def hold(cache: L1KVCache, item: InferenceRequest, length: int | None = None) -> None:
+def hold(cache: TieredKVCache, item: InferenceRequest, length: int | None = None) -> None:
     hit = cache.probe(item, item.prompt_len)
     cache.pin(item, hit)
     cache.admit(item.request_id)
@@ -241,3 +241,57 @@ def test_exclusive_mode_rejects_mixed_budget_in_same_step() -> None:
     with pytest.raises(ValueError, match="互斥"):
         scheduler.select_prefill({0: RunningRequest(active, 1)}, (0,))
     assert cache.resident_pages == 1 and scheduler.num_waiting == 1
+
+
+def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> None:
+    config = EngineConfig(
+        max_running_requests=3, max_total_tokens=28, page_size=4,
+        l2_capacity_tokens=8,
+    )
+    cache = TieredKVCache(28, 4, 8)
+    parent = request(0, prompt=4)
+    hold(cache, parent)
+    cache.finish(0)
+    filler = request(99, prompt=28)
+    hold(cache, filler)
+    cache.finish(99)
+    shared = encode(0, 0)
+    initial_page = cache.page(shared)
+    assert initial_page is not None and initial_page.tier == "L2"
+    scheduler = F001Scheduler(config, cache)
+    for key in (1, 2):
+        scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 1)
+    batch = scheduler.select_prefill({})
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
+    assert [item.hit_sources for item in batch.admitted] == [((shared, "L2"),)] * 2
+    assert batch.promote_ids == (shared,)
+    assert batch.current_offset == 20
+    pinned_page = cache.page(shared)
+    assert pinned_page is not None and pinned_page.ref_count == 2 and pinned_page.tier == "L2"
+    assert cache.plan(batch.promote_ids, 2) == ((shared, "L2"),)
+    assert cache.promotions == 0
+
+
+def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=8, page_size=4,
+        l2_capacity_tokens=4,
+    )
+    cache = TieredKVCache(8, 4, 4)
+    parent = request(0, prompt=4)
+    hold(cache, parent)
+    cache.finish(0)
+    filler = request(99, prompt=8)
+    hold(cache, filler)
+    shared = encode(0, 0)
+    before = cache.page(shared)
+    assert before is not None and before.tier == "L2"
+    counters = (cache.promotions, cache.demotions)
+    scheduler = F001Scheduler(config, cache)
+    scheduler.enqueue(request(1, prompt=5, inherited=(shared,)), 1)
+    scheduler.enqueue(request(2, prompt=1), 1)
+    batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})
+    after = cache.page(shared)
+    assert batch.admitted == () and batch.blocked and scheduler.num_waiting == 2
+    assert after == before and (cache.promotions, cache.demotions) == counters
+    assert cache.tier_snapshot("L2").resident_blocks == 1

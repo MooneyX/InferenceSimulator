@@ -20,7 +20,7 @@ prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部
 workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样；plan_from_arrivals 适配手写 Arrival（依赖 schemas、prefix_hash）
 client       ClientDriver：消费计划、保存已完成请求身份与实际 KV 长度、发送时按需推导继承页 ID（依赖 schemas、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
-kv_cache     当前 L1 KV 页、索引、容量与 LRU；L2/L3 仅有结果字段预留（依赖 schemas）
+kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU 与迁移；L1KVCache 兼容入口（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
 engine       已到达请求、EngineStep、KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与引擎 trace 类型（依赖 schemas）
@@ -53,18 +53,18 @@ runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、c
 | `ClientWakeup` | `schemas`（由 `client` 构造） | `coordinator` | 未来客户端发送事件，只含 session/turn 身份和发送时刻 |
 | `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine` | 发送时构造：输入长度、可见生成上限和继承完整页 ID；不携带实际输出目标或新页 ID 列表 |
 | `RequestCompletion` | `schemas`（由 `engine` 构造） | `coordinator`、`client` | 请求 ID、完成时刻和实际生成数；客户端据此确定可继承 KV 长度 |
-| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model` | 不可变的 Prefill/Decode 工作量、阶段和实际申请页数；驱动单步经验成本 |
-| `AdmissionBatch` | `scheduler` | `engine` | F001 的准入、恢复、失败与预算估算（值对象） |
-| `L1Snapshot` | `kv_cache` | `engine`、`metrics` | L1 页容量与驻留状态的不可变汇总 |
+| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model` | 不可变的 Prefill/Decode/restore 工作量、阶段和实际申请页数；驱动单步经验成本 |
+| `AdmissionBatch` | `scheduler` | `engine` | FCFS 准入、恢复、失败、唯一提升与预算估算（值对象） |
+| `L1Snapshot` 与分层快照 | `kv_cache` | `engine`、`metrics` | 各层页容量、驻留及峰值的不可变汇总 |
 | `Event` / `EventKind` | `events` | `coordinator` | 全局事件队列载荷与同刻全序（值对象） |
 | `EventFactory` | `events` | `coordinator` | 事件序号分配器，由协调器实例化并独占持有 |
 | `TraceRecord` | `events` | `engine` | Arrival、Step 和 Done 记录；不含 ClientSend 或客户端回调记录 |
 | `EventLog` | `events` | `engine` | 引擎持有的事件流容器，可关闭记录以减少开销 |
-| `EngineRun` | `engine` | `coordinator`、`runner` | 协调器返回给 runner 的请求区间、告警、步数与 L1 快照 |
+| `EngineRun` | `engine` | `coordinator`、`runner` | 协调器返回的请求区间、告警、步数、分层快照及迁移/restore 计数 |
 
 协作者注入：
 
-- `L1KVCache`：由 `engine` 构造并持有所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 选择连续队头；引擎在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`。完整页 ID 索引与 LRU 由缓存维护；当前仅实现 L1。
+- `TieredKVCache`：由 `engine` 构造并持有唯一所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 保护连续队头并预检分层预算；引擎提交提升与逐级腾位，在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`。完整页 ID 的唯一索引、各层 LRU 及迁移计数均由缓存维护；`L1KVCache` 仅是零低层容量的兼容入口。
 
 引擎可在内部记录 `ArrivalTrace`、`StepTrace`、`DoneTrace`；顶层 `simulate` 默认关闭逐步记录，HTTP API 不暴露 `EventLog`。如需未来的决策溯源，应另行定义对外 schema，不把当前内部事件流误认为已有公共响应。
 

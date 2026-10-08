@@ -162,9 +162,18 @@ class StepTrace:
     l1_evictable_after: int = 0
     l1_free_after: int = 0
     l1_internal_fragmentation_tokens: int = 0
-    phase: Literal["PREFILL", "DECODE", "MIXED"] | None = None
+    phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"] | None = None
     withdrawn: tuple[int, ...] = ()
     aborted: tuple[int, ...] = ()
+    restored: tuple[int, ...] = ()
+    restore_sources: tuple[tuple[str, str], ...] = ()
+    restore_bytes: int = 0
+    restore_time_ms: float = 0.0
+    l1_evictions: int = 0
+    l2_evictions: int = 0
+    l3_evictions: int = 0
+    promotions: int = 0
+    demotions: int = 0
 
     @property
     def end(self) -> float:
@@ -232,6 +241,10 @@ class EventLog:
             match r:
                 case ArrivalTrace() | DoneTrace() if r.request_id == request_id:
                     out.append(r)
-                case StepTrace() if request_id in r.admitted or request_id in r.finished:
+                case StepTrace() if (
+                    request_id in r.admitted
+                    or request_id in r.restored
+                    or request_id in r.finished
+                ):
                     out.append(r)
         return out

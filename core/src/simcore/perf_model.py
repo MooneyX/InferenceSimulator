@@ -18,6 +18,8 @@ __all__ = [
     "StepWorkload",
     "decode_step_time",
     "prefill_cost",
+    "restore_bytes",
+    "restore_time",
     "workload_time",
 ]
 
@@ -48,26 +50,79 @@ class DecodeWork:
 
 @dataclass(frozen=True, slots=True)
 class StepWorkload:
-    phase: Literal["PREFILL", "DECODE", "MIXED"]
+    phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"]
     prefill: tuple[PrefillWork, ...]
     decode: tuple[DecodeWork, ...]
     allocated_pages: int
     batch_requests: int
+    restore_sources: tuple[tuple[str, str], ...] = ()
+    restore_page_size: int = 0
+    restore_only: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         prefill_ids = tuple(item.request_id for item in self.prefill)
         decode_ids = tuple(item.request_id for item in self.decode)
-        phase = "MIXED" if prefill_ids and decode_ids else "PREFILL" if prefill_ids else "DECODE"
-        if (not prefill_ids and not decode_ids) or self.phase != phase:
-            raise ValueError("单步阶段须与非空 Prefill/Decode 集合一致")
+        phase = (
+            "MIXED" if prefill_ids and decode_ids else
+            "PREFILL" if prefill_ids else
+            "DECODE" if decode_ids else "RESTORE"
+        )
+        if (not prefill_ids and not decode_ids and not self.restore_only) or self.phase != phase:
+            raise ValueError("单步阶段须与非空 Prefill/Decode/Restore 集合一致")
         if (
             prefill_ids != tuple(sorted(set(prefill_ids)))
             or decode_ids != tuple(sorted(set(decode_ids)))
             or set(prefill_ids) & set(decode_ids)
+            or self.restore_only != tuple(sorted(set(self.restore_only)))
+            or (set(self.restore_only) & (set(prefill_ids) | set(decode_ids)))
         ):
-            raise ValueError("Prefill/Decode 请求须各自按 ID 排序且不可重叠")
-        if self.allocated_pages < 0 or self.batch_requests != len(prefill_ids) + len(decode_ids):
+            raise ValueError("Prefill/Decode/Restore 请求须各自按 ID 排序且不可重叠")
+        if self.allocated_pages < 0 or self.batch_requests != (
+            len(prefill_ids) + len(decode_ids) + len(self.restore_only)
+        ):
             raise ValueError("单步页申请量或批内请求数不合法")
+        if (
+            self.restore_sources != tuple(sorted(self.restore_sources))
+            or len({chunk_id for chunk_id, _ in self.restore_sources}) != len(self.restore_sources)
+            or any(source not in ("L2", "L3") for _, source in self.restore_sources)
+            or self.restore_page_size < 0
+            or (bool(self.restore_sources) != (self.restore_page_size > 0))
+        ):
+            raise ValueError("恢复来源须唯一有序、来自低层并具有正页大小")
+        if self.phase == "RESTORE" and not self.restore_sources:
+            raise ValueError("纯 Restore 步须实际传输缓存页")
+
+
+def restore_bytes(workload: StepWorkload, cfg: PerfModelConfig) -> int:
+    """上行链路字节数；L3 命中需要经过两条链路。"""
+    if not workload.restore_sources:
+        return 0
+    if cfg.kv_bytes_per_token is None:
+        raise ValueError("恢复计费须配置 kv_bytes_per_token")
+    l3 = sum(source == "L3" for _, source in workload.restore_sources)
+    return (
+        (len(workload.restore_sources) + l3)
+        * workload.restore_page_size
+        * cfg.kv_bytes_per_token
+    )
+
+
+def restore_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
+    """每步每条实际使用的链路只计一次固定延迟。"""
+    if not workload.restore_sources:
+        return 0.0
+    if cfg.kv_bytes_per_token is None or cfg.l2_to_l1_bandwidth_bytes_per_ms is None:
+        raise ValueError("恢复计费须配置 KV 字节大小与 L2 到 L1 带宽")
+    l3 = sum(source == "L3" for _, source in workload.restore_sources)
+    page_bytes = workload.restore_page_size * cfg.kv_bytes_per_token
+    duration = cfg.l2_latency_ms + (
+        len(workload.restore_sources) * page_bytes / cfg.l2_to_l1_bandwidth_bytes_per_ms
+    )
+    if l3:
+        if cfg.l3_to_l2_bandwidth_bytes_per_ms is None:
+            raise ValueError("L3 恢复计费须配置 L3 到 L2 带宽")
+        duration += cfg.l3_latency_ms + l3 * page_bytes / cfg.l3_to_l2_bandwidth_bytes_per_ms
+    return duration
 
 
 def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:

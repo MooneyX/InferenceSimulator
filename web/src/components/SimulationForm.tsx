@@ -398,6 +398,28 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             })}
           />
           <NumberField
+            id="l2-capacity-tokens"
+            name="engine.l2_capacity_tokens"
+            label="L2 KV 容量（token，0 为关闭）"
+            value={config.engine.l2_capacity_tokens}
+            integer
+            error={errorByField.get("engine.l2_capacity_tokens")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, l2_capacity_tokens: value },
+            })}
+          />
+          <NumberField
+            id="l3-capacity-tokens"
+            name="engine.l3_capacity_tokens"
+            label="L3 KV 容量（token，0 为关闭）"
+            value={config.engine.l3_capacity_tokens}
+            integer
+            error={errorByField.get("engine.l3_capacity_tokens")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, l3_capacity_tokens: value },
+            })}
+          />
+          <NumberField
             id="max-prefill-tokens"
             name="engine.max_prefill_tokens"
             label="单次 Prefill 额度（token）"
@@ -456,6 +478,69 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <p>所有时间系数的单位均为毫秒</p>
         </div>
 
+        {config.engine.l2_capacity_tokens > 0 ? (
+          <div className="form-grid" style={{ marginBottom: 14 }}>
+            <NumberField
+              id="kv-bytes-per-token"
+              name="perf_model.kv_bytes_per_token"
+              label="KV 每 token 字节数"
+              value={config.perf_model.kv_bytes_per_token ?? NaN}
+              integer
+              min={1}
+              error={errorByField.get("perf_model.kv_bytes_per_token")}
+              onChange={(value) => setConfig({
+                ...config,
+                perf_model: { ...config.perf_model, kv_bytes_per_token: Number.isNaN(value) ? null : value },
+              })}
+            />
+            <NumberField
+              id="l2-to-l1-bandwidth"
+              name="perf_model.l2_to_l1_bandwidth_bytes_per_ms"
+              label="L2 → L1 带宽（字节/ms）"
+              value={config.perf_model.l2_to_l1_bandwidth_bytes_per_ms ?? NaN}
+              error={errorByField.get("perf_model.l2_to_l1_bandwidth_bytes_per_ms")}
+              onChange={(value) => setConfig({
+                ...config,
+                perf_model: { ...config.perf_model, l2_to_l1_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value },
+              })}
+            />
+            <NumberField
+              id="l2-latency-ms"
+              name="perf_model.l2_latency_ms"
+              label="L2 链路固定延迟（ms）"
+              value={config.perf_model.l2_latency_ms}
+              error={errorByField.get("perf_model.l2_latency_ms")}
+              onChange={(value) => setConfig({
+                ...config, perf_model: { ...config.perf_model, l2_latency_ms: value },
+              })}
+            />
+            {config.engine.l3_capacity_tokens > 0 ? (
+              <>
+                <NumberField
+                  id="l3-to-l2-bandwidth"
+                  name="perf_model.l3_to_l2_bandwidth_bytes_per_ms"
+                  label="L3 → L2 带宽（字节/ms）"
+                  value={config.perf_model.l3_to_l2_bandwidth_bytes_per_ms ?? NaN}
+                  error={errorByField.get("perf_model.l3_to_l2_bandwidth_bytes_per_ms")}
+                  onChange={(value) => setConfig({
+                    ...config,
+                    perf_model: { ...config.perf_model, l3_to_l2_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value },
+                  })}
+                />
+                <NumberField
+                  id="l3-latency-ms"
+                  name="perf_model.l3_latency_ms"
+                  label="L3 链路固定延迟（ms）"
+                  value={config.perf_model.l3_latency_ms}
+                  error={errorByField.get("perf_model.l3_latency_ms")}
+                  onChange={(value) => setConfig({
+                    ...config, perf_model: { ...config.perf_model, l3_latency_ms: value },
+                  })}
+                />
+              </>
+            ) : null}
+          </div>
+        ) : null}
         <div className="form-grid">
           <NumberField
             id="prefill-c1"

@@ -8,8 +8,15 @@ from dataclasses import dataclass
 from typing import Literal
 
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
-from simcore.kv_cache import CacheCapacityError, L1KVCache, L1Snapshot
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, workload_time
+from simcore.kv_cache import CacheCapacityError, L1Snapshot, TieredKVCache, TierSnapshot
+from simcore.perf_model import (
+    DecodeWork,
+    PrefillWork,
+    StepWorkload,
+    restore_bytes,
+    restore_time,
+    workload_time,
+)
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
@@ -20,6 +27,7 @@ from simcore.schemas import (
     RequestCompletion,
     RequestRecord,
     SkippedRequest,
+    validate_kv_config,
 )
 
 __all__ = ["Engine", "EngineRun", "run_engine"]
@@ -51,6 +59,21 @@ class EngineRun:
     aborted_requests: tuple[AbortedRequest, ...] = ()
     skipped_requests: tuple[SkippedRequest, ...] = ()
     replayed_prefill_tokens: int = 0
+    l2_snapshot: TierSnapshot | None = None
+    l3_snapshot: TierSnapshot | None = None
+    l2_evictions: int = 0
+    l3_evictions: int = 0
+    l2_peak_resident_blocks: int = 0
+    l3_peak_resident_blocks: int = 0
+    promotions: int = 0
+    demotions: int = 0
+    l2_promotions: int = 0
+    l3_promotions: int = 0
+    l1_to_l2_demotions: int = 0
+    l2_to_l3_demotions: int = 0
+    cache_deletions: int = 0
+    restore_bytes: int = 0
+    restore_time_ms: float = 0.0
 
 
 def run_engine(
@@ -76,6 +99,7 @@ def run_engine(
     from simcore.coordinator import Coordinator
     from simcore.workload import plan_from_arrivals
 
+    validate_kv_config(engine, perf)
     plan = plan_from_arrivals(arrivals, engine)
     client = ClientDriver(plan, engine)
     return Coordinator(
@@ -100,12 +124,19 @@ class Engine:
         output_targets: Mapping[int, int],
         record_trace: bool = True,
     ) -> None:
+        validate_kv_config(engine, perf)
         self._output_targets = dict(output_targets)
         self._engine_config = engine
         self._perf = perf
-        self._prefix_cache = L1KVCache(engine.max_total_tokens, engine.page_size)
+        self._prefix_cache = TieredKVCache(
+            engine.max_total_tokens, engine.page_size,
+            engine.l2_capacity_tokens, engine.l3_capacity_tokens,
+        )
         self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
+        self._admission_tiers: dict[int, tuple[int, int, int]] = {}
+        self._restore_bytes = 0
+        self._restore_time_ms = 0.0
         self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
@@ -225,15 +256,21 @@ class Engine:
         }
         before = cache.snapshot() if self._log.enabled else None
         evictions_before = cache.evictions
+        l2_evictions_before = cache.tier_snapshot("L2").evictions
+        l3_evictions_before = cache.tier_snapshot("L3").evictions
+        promotions_before = cache.promotions
+        demotions_before = cache.demotions
         aborts_before = len(self._recent_aborts)
         withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
             selection = self._prefix_scheduler.select_prefill(running)
-            if not selection.admitted and running:
+            if not selection.admitted and not selection.restore_only and running:
                 running, withdrawn = self._prepare_decode(running, now_ms)
                 if withdrawn:
                     self._prefix_scheduler.advance_ratio(running, withdrew=True)
-            decode_ids = () if selection.admitted else tuple(sorted(running))
+            decode_ids = (
+                () if selection.admitted or selection.restore_only else tuple(sorted(running))
+            )
         else:
             running, withdrawn = self._prepare_decode(running, now_ms)
             if withdrawn:
@@ -262,7 +299,7 @@ class Engine:
             DecodeWork(key, self._requests[key].prompt_len + running[key].generated_tokens)
             for key in decode_ids
         )
-        if not prefill and not decode:
+        if not prefill and not decode and not selection.restore_only:
             for key, generated in withdrawn:
                 self._prefix_scheduler.requeue(self._requests[key], now_ms, generated)
             if not self.has_work and not self._pending_done:
@@ -270,19 +307,38 @@ class Engine:
             if selection.aborted or selection.restored or withdrawn or self._recent_aborts:
                 return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
-        phase: Literal["PREFILL", "DECODE", "MIXED"] = (
-            "MIXED" if prefill and decode else "PREFILL" if prefill else "DECODE"
+        phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"] = (
+            "MIXED" if prefill and decode else
+            "PREFILL" if prefill else
+            "DECODE" if decode else "RESTORE"
         )
         decode_new_pages = sum(cache.state(key).k % cache.page_size == 0 for key in decode_ids)
         allocated_pages = decode_new_pages + sum(
             candidate.required_pages for candidate in selection.admitted
         )
-        workload = StepWorkload(phase, prefill, decode, allocated_pages, len(prefill) + len(decode))
-        duration = workload_time(workload, self._perf)
+        if self._engine_config.l2_capacity_tokens:
+            cache.plan(selection.promote_ids, allocated_pages)
+            promoted = cache.promote(selection.promote_ids, allocated_pages)
+        else:
+            cache.ensure_free(allocated_pages)
+            promoted = ()
+        workload = StepWorkload(
+            phase, prefill, decode, allocated_pages,
+            len(prefill) + len(decode) + len(selection.restore_only),
+            tuple(sorted(promoted)), cache.page_size if promoted else 0,
+            tuple(item.request.request_id for item in selection.restore_only),
+        )
+        transfer_time = restore_time(workload, self._perf)
+        transferred_bytes = restore_bytes(workload, self._perf)
+        duration = workload_time(workload, self._perf) + transfer_time
+        self._restore_time_ms += transfer_time
+        self._restore_bytes += transferred_bytes
         end = now_ms + duration
-        cache.ensure_free(workload.allocated_pages)
         for candidate in selection.admitted:
             cache.admit(candidate.waiting.request.request_id)
+        for item in selection.restore_only:
+            cache.admit(item.request.request_id)
+            self._running[item.request.request_id] = item.generated_tokens
         finished: list[int] = []
         for key in decode_ids:
             previous = running[key].generated_tokens
@@ -305,9 +361,14 @@ class Engine:
                 self._running[key] = 1
                 if self._output_targets[key] == 1:
                     finished.append(key)
-            self._admission_stats.setdefault(
-                key, (candidate.reused_tokens, candidate.reused_tokens)
-            )
+            if key not in self._admission_stats:
+                self._admission_stats[key] = (candidate.reused_tokens, candidate.reused_tokens)
+                self._admission_tiers[key] = (
+                    tuple(tier for _, tier in candidate.hit_sources).count("L1") * cache.page_size
+                    if candidate.hit_sources else candidate.reused_tokens,
+                    tuple(tier for _, tier in candidate.hit_sources).count("L2") * cache.page_size,
+                    tuple(tier for _, tier in candidate.hit_sources).count("L3") * cache.page_size,
+                )
         cache.publish_batch(tuple(item.waiting.request.request_id for item in selection.admitted))
         finished.sort()
         if before is not None:
@@ -343,6 +404,18 @@ class Engine:
                     phase=workload.phase,
                     withdrawn=tuple(key for key, _ in withdrawn),
                     aborted=tuple(sorted(self._recent_aborts[aborts_before:])),
+                    restored=tuple(sorted(
+                        item.request.request_id
+                        for item in (*selection.restored, *selection.restore_only)
+                    )),
+                    restore_sources=workload.restore_sources,
+                    restore_bytes=transferred_bytes,
+                    restore_time_ms=transfer_time,
+                    l1_evictions=cache.evictions - evictions_before,
+                    l2_evictions=cache.tier_snapshot("L2").evictions - l2_evictions_before,
+                    l3_evictions=cache.tier_snapshot("L3").evictions - l3_evictions_before,
+                    promotions=cache.promotions - promotions_before,
+                    demotions=cache.demotions - demotions_before,
                 )
             )
         for key in finished:
@@ -398,7 +471,9 @@ class Engine:
                 ),
                 replayed_prefill_tokens=self._replayed_tokens.get(request_id, 0),
                 retry_count=self._retry_counts.get(request_id, 0),
-                l1_hit_tokens=self._admission_stats.get(request_id, (0, 0))[1],
+                l1_hit_tokens=self._admission_tiers.get(request_id, (0, 0, 0))[0],
+                l2_hit_tokens=self._admission_tiers.get(request_id, (0, 0, 0))[1],
+                l3_hit_tokens=self._admission_tiers.get(request_id, (0, 0, 0))[2],
                 logical_context_tokens=(
                     arrivals[request_id].prompt_len + arrivals[request_id].output_len
                 ),
@@ -423,4 +498,19 @@ class Engine:
             aborted_requests=tuple(self._aborted[key] for key in sorted(self._aborted)),
             skipped_requests=tuple(self._skipped[key] for key in sorted(self._skipped)),
             replayed_prefill_tokens=sum(self._replayed_tokens.values()),
+            l2_snapshot=self._prefix_cache.tier_snapshot("L2"),
+            l3_snapshot=self._prefix_cache.tier_snapshot("L3"),
+            l2_evictions=self._prefix_cache.tier_snapshot("L2").evictions,
+            l3_evictions=self._prefix_cache.tier_snapshot("L3").evictions,
+            l2_peak_resident_blocks=self._prefix_cache.tier_snapshot("L2").peak_resident_blocks,
+            l3_peak_resident_blocks=self._prefix_cache.tier_snapshot("L3").peak_resident_blocks,
+            promotions=self._prefix_cache.promotions,
+            demotions=self._prefix_cache.demotions,
+            l2_promotions=self._prefix_cache.l2_promotions,
+            l3_promotions=self._prefix_cache.l3_promotions,
+            l1_to_l2_demotions=self._prefix_cache.l1_to_l2_demotions,
+            l2_to_l3_demotions=self._prefix_cache.l2_to_l3_demotions,
+            cache_deletions=self._prefix_cache.deletions,
+            restore_bytes=self._restore_bytes,
+            restore_time_ms=self._restore_time_ms,
         )

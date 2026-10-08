@@ -18,6 +18,8 @@ const config: SimConfig = {
   engine: {
     max_running_requests: 4,
     max_total_tokens: 4096,
+    l2_capacity_tokens: 0,
+    l3_capacity_tokens: 0,
     max_prefill_tokens: 16_384,
     page_size: 64,
     pd_mutually_exclusive: true,
@@ -27,6 +29,11 @@ const config: SimConfig = {
     prefill_c2: 0,
     decode_d1: 0.2,
     decode_d2: 0.001,
+    kv_bytes_per_token: null,
+    l2_to_l1_bandwidth_bytes_per_ms: null,
+    l3_to_l2_bandwidth_bytes_per_ms: null,
+    l2_latency_ms: 0,
+    l3_latency_ms: 0,
   },
 };
 
@@ -77,6 +84,20 @@ const result: SimResult = {
     l1_free_blocks: 4072,
     l1_reserved_future_blocks: 0,
     l1_internal_fragmentation_tokens: 0,
+    l2_evictions: 0,
+    l2_peak_resident_blocks: 0,
+    l2_capacity_blocks: 0,
+    l2_resident_blocks: 0,
+    l2_active_blocks: 0,
+    l2_evictable_blocks: 0,
+    l2_free_blocks: 0,
+    l3_evictions: 0,
+    l3_peak_resident_blocks: 0,
+    l3_capacity_blocks: 0,
+    l3_resident_blocks: 0,
+    l3_active_blocks: 0,
+    l3_evictable_blocks: 0,
+    l3_free_blocks: 0,
   },
   requests: [
     {

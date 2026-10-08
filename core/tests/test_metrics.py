@@ -2,6 +2,7 @@
 
 import pytest
 
+from simcore.kv_cache import TierSnapshot
 from simcore.metrics import compute_metrics, percentile
 from simcore.schemas import (
     EngineConfig,
@@ -202,6 +203,39 @@ class TestEdgeCases:
         assert result.ttft_mean is None and result.ttft_p50 is None
         assert result.ttft_p99 is None and result.tpot_mean is None
         assert result.throughput is None and result.makespan == 0
+
+    @pytest.mark.parametrize("has_success", [False, True])
+    def test_tiered_metrics_survive_with_and_without_success(self, has_success: bool) -> None:
+        l2 = TierSnapshot(3, 2, 1, 1, 1, 3, 4)
+        l3 = TierSnapshot(2, 1, 0, 1, 1, 1, 2)
+        records = [rec(0, 0.0, 10.0, 20.0, 2)] if has_success else []
+        metrics = compute_metrics(
+            records,
+            l2_snapshot=l2,
+            l3_snapshot=l3,
+            promotions=5,
+            demotions=6,
+            restore_bytes=1024,
+            restore_time_ms=4.5,
+        )
+        assert (metrics.l2_capacity_blocks, metrics.l2_resident_blocks) == (3, 2)
+        assert (metrics.l2_active_blocks, metrics.l2_evictable_blocks) == (1, 1)
+        assert (metrics.l2_free_blocks, metrics.l2_peak_resident_blocks, metrics.l2_evictions) == (
+            1,
+            3,
+            4,
+        )
+        assert (metrics.l3_capacity_blocks, metrics.l3_resident_blocks) == (2, 1)
+        assert (metrics.l3_active_blocks, metrics.l3_evictable_blocks) == (0, 1)
+        assert (metrics.l3_free_blocks, metrics.l3_peak_resident_blocks, metrics.l3_evictions) == (
+            1,
+            1,
+            2,
+        )
+        assert (metrics.promotions, metrics.demotions) == (5, 6)
+        assert (metrics.restore_bytes, metrics.restore_time_ms) == (1024, 4.5)
+        assert metrics.ttft_mean == (10.0 if has_success else None)
+        assert metrics.model_validate_json(metrics.model_dump_json()) == metrics
 
     def test_accepts_tuple(self) -> None:
         m = compute_metrics((rec(0, 0.0, 10.0, 30.0, 3),))

@@ -42,6 +42,20 @@ const metrics: Metrics = {
   l1_free_blocks: 156,
   l1_reserved_future_blocks: 0,
   l1_internal_fragmentation_tokens: 3,
+  l2_evictions: 3,
+  l2_peak_resident_blocks: 18,
+  l2_capacity_blocks: 32,
+  l2_resident_blocks: 12,
+  l2_active_blocks: 0,
+  l2_evictable_blocks: 12,
+  l2_free_blocks: 20,
+  l3_evictions: 1,
+  l3_peak_resident_blocks: 8,
+  l3_capacity_blocks: 16,
+  l3_resident_blocks: 4,
+  l3_active_blocks: 0,
+  l3_evictable_blocks: 4,
+  l3_free_blocks: 12,
 };
 
 function metricValue(label: string): HTMLElement {
@@ -74,6 +88,39 @@ describe("MetricsPanel", () => {
     expect(metricValue("重算 Prefill")).toHaveTextContent("4 token");
     expect(metricValue("L1 容量")).toHaveTextContent("256 页");
     expect(metricValue("L1 驱逐")).toHaveTextContent("4 次");
+    expect(metricValue("L2 容量")).toHaveTextContent("32 页");
+    expect(metricValue("L2 驻留")).toHaveTextContent("12 页");
+    expect(metricValue("L2 空闲")).toHaveTextContent("20 页");
+    expect(metricValue("L2 峰值驻留")).toHaveTextContent("18 页");
+    expect(metricValue("L2 驱逐")).toHaveTextContent("3 次");
+    expect(metricValue("L3 容量")).toHaveTextContent("16 页");
+    expect(metricValue("L3 驻留")).toHaveTextContent("4 页");
+    expect(metricValue("L3 空闲")).toHaveTextContent("12 页");
+    expect(metricValue("L3 峰值驻留")).toHaveTextContent("8 页");
+    expect(metricValue("L3 驱逐")).toHaveTextContent("1 次");
+  });
+
+  it("separates aggregate cache hits from tier attribution and restore costs", () => {
+    render(<MetricsPanel metrics={{
+      ...metrics,
+      actual_hit_tokens: 170,
+      l1_hit_tokens: 50,
+      l2_hit_tokens: 100,
+      l3_hit_tokens: 20,
+      promotions: 3,
+      demotions: 5,
+      restore_bytes: 8192,
+      restore_time_ms: 15.5,
+    }} />);
+
+    expect(metricValue("总实际命中")).toHaveTextContent("170 token");
+    expect(metricValue("L1 命中")).toHaveTextContent("50 token");
+    expect(metricValue("L2 命中")).toHaveTextContent("100 token");
+    expect(metricValue("L3 命中")).toHaveTextContent("20 token");
+    expect(metricValue("提升到 L1")).toHaveTextContent("3 次");
+    expect(metricValue("逐级降级")).toHaveTextContent("5 次");
+    expect(metricValue("Restore 传输量")).toHaveTextContent("8,192 字节");
+    expect(metricValue("Restore 耗时")).toHaveTextContent("15.5 ms");
   });
 
   it("shows undefined instead of coercing nullable metrics to zero", () => {

@@ -154,6 +154,42 @@ class TestEndToEnd:
         assert all(item.reason == "input_exceeds_kv_capacity" for item in result.aborted_requests)
         assert result.metrics.ttft_mean is None
 
+    def test_enabled_tiers_propagate_capacity_and_zero_transfer(self) -> None:
+        cfg = SimConfig(
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=1,
+                    arrival_rate=1,
+                    prompt_len=FixedLength(value=3),
+                    output_len=FixedLength(value=1),
+                    max_new_tokens=1,
+                    seed=0,
+                )
+            ),
+            engine=EngineConfig(
+                max_running_requests=1,
+                max_total_tokens=12,
+                page_size=4,
+                l2_capacity_tokens=4,
+                l3_capacity_tokens=8,
+            ),
+            perf_model=PerfModelConfig(
+                prefill_c1=1,
+                decode_d1=0,
+                decode_d2=0,
+                kv_bytes_per_token=16,
+                l2_to_l1_bandwidth_bytes_per_ms=64,
+                l3_to_l2_bandwidth_bytes_per_ms=32,
+            ),
+        )
+        result = simulate(cfg)
+        assert result.meta.num_completed == 1
+        assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
+        assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
+        assert result.metrics.restore_bytes == result.metrics.restore_time_ms == 0
+        assert result.metrics.promotions == result.metrics.demotions == 0
+        assert SimResult.model_validate_json(result.model_dump_json()) == result
+
     def test_json_roundtrip(self, result: SimResult) -> None:
         """服务层将直接序列化该对象，必须 JSON 往返无损。"""
         assert SimResult.model_validate_json(result.model_dump_json()) == result

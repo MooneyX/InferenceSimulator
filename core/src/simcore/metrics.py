@@ -12,7 +12,7 @@
 import math
 from collections.abc import Sequence
 
-from simcore.kv_cache import L1Snapshot
+from simcore.kv_cache import L1Snapshot, TierSnapshot
 from simcore.schemas import Metrics, RequestRecord, SimConfig, WorkloadPlan
 
 __all__ = ["compute_metrics", "percentile"]
@@ -52,8 +52,14 @@ def compute_metrics(
     plan: WorkloadPlan | None = None,
     config: SimConfig | None = None,
     cache_snapshot: L1Snapshot | None = None,
+    l2_snapshot: TierSnapshot | None = None,
+    l3_snapshot: TierSnapshot | None = None,
     l1_evictions: int = 0,
     l1_peak_resident_blocks: int = 0,
+    promotions: int = 0,
+    demotions: int = 0,
+    restore_bytes: int = 0,
+    restore_time_ms: float = 0.0,
     earliest_sent_arrival: float | None = None,
     replayed_prefill_tokens: int = 0,
 ) -> Metrics:
@@ -77,6 +83,10 @@ def compute_metrics(
             constructed_ideal_prefix_hit_rate=constructed,
             ideal_hit_quantization_error=quantization_error,
             replayed_prefill_tokens=replayed_prefill_tokens,
+            restore_bytes=restore_bytes,
+            restore_time_ms=restore_time_ms,
+            promotions=promotions,
+            demotions=demotions,
             l1_evictions=l1_evictions,
             l1_peak_resident_blocks=peak_resident,
             l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
@@ -90,6 +100,20 @@ def compute_metrics(
             l1_internal_fragmentation_tokens=(
                 cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
             ),
+            l2_evictions=l2_snapshot.evictions if l2_snapshot else 0,
+            l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks if l2_snapshot else 0,
+            l2_capacity_blocks=l2_snapshot.capacity_blocks if l2_snapshot else 0,
+            l2_resident_blocks=l2_snapshot.resident_blocks if l2_snapshot else 0,
+            l2_active_blocks=l2_snapshot.active_blocks if l2_snapshot else 0,
+            l2_evictable_blocks=l2_snapshot.evictable_blocks if l2_snapshot else 0,
+            l2_free_blocks=l2_snapshot.free_blocks if l2_snapshot else 0,
+            l3_evictions=l3_snapshot.evictions if l3_snapshot else 0,
+            l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks if l3_snapshot else 0,
+            l3_capacity_blocks=l3_snapshot.capacity_blocks if l3_snapshot else 0,
+            l3_resident_blocks=l3_snapshot.resident_blocks if l3_snapshot else 0,
+            l3_active_blocks=l3_snapshot.active_blocks if l3_snapshot else 0,
+            l3_evictable_blocks=l3_snapshot.evictable_blocks if l3_snapshot else 0,
+            l3_free_blocks=l3_snapshot.free_blocks if l3_snapshot else 0,
         )
 
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
@@ -146,6 +170,10 @@ def compute_metrics(
         actual_prefill_tokens=prefill,
         replayed_prefill_tokens=replayed_prefill_tokens,
         saved_prefill_tokens=input_tokens - prefill,
+        restore_bytes=restore_bytes,
+        restore_time_ms=restore_time_ms,
+        promotions=promotions,
+        demotions=demotions,
         l1_evictions=l1_evictions,
         l1_peak_resident_blocks=peak_resident,
         l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
@@ -157,4 +185,18 @@ def compute_metrics(
         l1_internal_fragmentation_tokens=(
             cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
         ),
+        l2_evictions=l2_snapshot.evictions if l2_snapshot else 0,
+        l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks if l2_snapshot else 0,
+        l2_capacity_blocks=l2_snapshot.capacity_blocks if l2_snapshot else 0,
+        l2_resident_blocks=l2_snapshot.resident_blocks if l2_snapshot else 0,
+        l2_active_blocks=l2_snapshot.active_blocks if l2_snapshot else 0,
+        l2_evictable_blocks=l2_snapshot.evictable_blocks if l2_snapshot else 0,
+        l2_free_blocks=l2_snapshot.free_blocks if l2_snapshot else 0,
+        l3_evictions=l3_snapshot.evictions if l3_snapshot else 0,
+        l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks if l3_snapshot else 0,
+        l3_capacity_blocks=l3_snapshot.capacity_blocks if l3_snapshot else 0,
+        l3_resident_blocks=l3_snapshot.resident_blocks if l3_snapshot else 0,
+        l3_active_blocks=l3_snapshot.active_blocks if l3_snapshot else 0,
+        l3_evictable_blocks=l3_snapshot.evictable_blocks if l3_snapshot else 0,
+        l3_free_blocks=l3_snapshot.free_blocks if l3_snapshot else 0,
     )

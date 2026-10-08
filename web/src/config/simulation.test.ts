@@ -26,6 +26,8 @@ describe("createDefaultSimConfig", () => {
       engine: {
         max_running_requests: 32,
         max_total_tokens: 65_536,
+        l2_capacity_tokens: 0,
+        l3_capacity_tokens: 0,
         max_prefill_tokens: 16_384,
         page_size: 64,
         pd_mutually_exclusive: true,
@@ -35,6 +37,11 @@ describe("createDefaultSimConfig", () => {
         prefill_c2: 0.000_01,
         decode_d1: 8,
         decode_d2: 0.002,
+        kv_bytes_per_token: null,
+        l2_to_l1_bandwidth_bytes_per_ms: null,
+        l3_to_l2_bandwidth_bytes_per_ms: null,
+        l2_latency_ms: 0,
+        l3_latency_ms: 0,
       },
     });
     const session = createDefaultSimConfig().workload.synthetic!.session!;
@@ -109,6 +116,53 @@ describe("validateSimConfig", () => {
     config.engine.page_size = 1;
     config.engine.pd_mutually_exclusive = false;
     expect(validateSimConfig(config)).toEqual([]);
+  });
+
+  it("requires whole-page L2/L3 capacities and L2 before L3", () => {
+    const config = createDefaultSimConfig();
+    config.engine.l2_capacity_tokens = 65;
+    config.engine.l3_capacity_tokens = 130;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.l2_capacity_tokens",
+      "engine.l3_capacity_tokens",
+      "perf_model.kv_bytes_per_token",
+      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
+      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+    ]);
+    config.engine.l2_capacity_tokens = 0;
+    config.engine.l3_capacity_tokens = 128;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "engine.l3_capacity_tokens",
+      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+    ]);
+  });
+
+  it("validates only enabled tier links as required and accepts a complete three-tier config", () => {
+    const config = createDefaultSimConfig();
+    config.engine.l2_capacity_tokens = 128;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "perf_model.kv_bytes_per_token",
+      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
+    ]);
+    config.perf_model.kv_bytes_per_token = 4096;
+    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 1024;
+    expect(validateSimConfig(config)).toEqual([]);
+    config.engine.l3_capacity_tokens = 64;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+    ]);
+    config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 128;
+    config.perf_model.l2_latency_ms = 0.5;
+    config.perf_model.l3_latency_ms = 1;
+    expect(validateSimConfig(config)).toEqual([]);
+    config.perf_model.kv_bytes_per_token = 1.5;
+    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 0;
+    config.perf_model.l3_latency_ms = -1;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "perf_model.kv_bytes_per_token",
+      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
+      "perf_model.l3_latency_ms",
+    ]);
   });
 
   it("rejects the unsupported trace mode", () => {

@@ -135,6 +135,20 @@
             "description": "每个 KV 页的 token 数",
             "default": 64
           },
+          "l2_capacity_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Capacity Tokens",
+            "description": "L2 KV 的 token 容量；0 表示关闭",
+            "default": 0
+          },
+          "l3_capacity_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Capacity Tokens",
+            "description": "L3 KV 的 token 容量；0 表示关闭",
+            "default": 0
+          },
           "pd_mutually_exclusive": {
             "type": "boolean",
             "title": "Pd Mutually Exclusive",
@@ -480,6 +494,90 @@
             "minimum": 0.0,
             "title": "L1 Internal Fragmentation Tokens",
             "default": 0
+          },
+          "l2_evictions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Evictions",
+            "default": 0
+          },
+          "l2_peak_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Peak Resident Blocks",
+            "default": 0
+          },
+          "l2_capacity_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Capacity Blocks",
+            "default": 0
+          },
+          "l2_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Resident Blocks",
+            "default": 0
+          },
+          "l2_active_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Active Blocks",
+            "default": 0
+          },
+          "l2_evictable_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Evictable Blocks",
+            "default": 0
+          },
+          "l2_free_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Free Blocks",
+            "default": 0
+          },
+          "l3_evictions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Evictions",
+            "default": 0
+          },
+          "l3_peak_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Peak Resident Blocks",
+            "default": 0
+          },
+          "l3_capacity_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Capacity Blocks",
+            "default": 0
+          },
+          "l3_resident_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Resident Blocks",
+            "default": 0
+          },
+          "l3_active_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Active Blocks",
+            "default": 0
+          },
+          "l3_evictable_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Evictable Blocks",
+            "default": 0
+          },
+          "l3_free_blocks": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Free Blocks",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -515,6 +613,54 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Decode D2"
+          },
+          "kv_bytes_per_token": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kv Bytes Per Token"
+          },
+          "l2_to_l1_bandwidth_bytes_per_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 To L1 Bandwidth Bytes Per Ms"
+          },
+          "l3_to_l2_bandwidth_bytes_per_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L3 To L2 Bandwidth Bytes Per Ms"
+          },
+          "l2_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L2 Latency Ms",
+            "default": 0.0
+          },
+          "l3_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Latency Ms",
+            "default": 0.0
           }
         },
         "additionalProperties": false,

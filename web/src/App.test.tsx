@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { simulate, SimulationApiError } from "./api/client";
@@ -110,6 +110,22 @@ describe("App", () => {
       "单 GPUSynthetic workloadFCFS 调度",
     );
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
+  });
+
+  it("navigates to real configuration and result sections", () => {
+    render(<App />);
+
+    const navigation = screen.getByRole("navigation", { name: "建模模块" });
+    const engineLink = within(navigation).getByRole("link", { name: "引擎配置" });
+    expect(engineLink).toHaveAttribute("href", "#engine-heading");
+    fireEvent.click(engineLink);
+    expect(engineLink).toHaveAttribute("aria-current", "location");
+    expect(screen.getByRole("heading", { name: "引擎配置" })).toHaveAttribute("id", "engine-heading");
+
+    const resultsLink = within(navigation).getByRole("link", { name: "仿真结果" });
+    fireEvent.click(resultsLink);
+    expect(resultsLink).toHaveAttribute("aria-current", "location");
+    expect(document.querySelectorAll("#results-heading")).toHaveLength(1);
   });
 
   it("runs a simulation and renders every result section", async () => {

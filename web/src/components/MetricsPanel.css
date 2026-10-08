@@ -1,92 +1,62 @@
 .metrics-panel {
-  padding: 24px;
-  border: 1px solid #203249;
-  border-radius: 16px;
-  background: rgb(12 25 43 / 88%);
-  box-shadow: 0 18px 60px rgb(0 0 0 / 16%);
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
 }
 
 .metrics-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .metrics-heading h2 {
-  margin-bottom: 0;
-  font-size: 1.15rem;
+  margin-bottom: 2px;
+  font-size: 1.05rem;
 }
 
 .metrics-heading > p {
   margin: 0;
-  color: #7f93ad;
-  font-size: 0.82rem;
+  color: var(--text-dim);
+  font-size: 0.75rem;
 }
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
   margin: 0;
 }
 
 .metric-card {
   min-width: 0;
-  padding: 16px;
-  border: 1px solid #263b55;
-  border-radius: 12px;
-  background: linear-gradient(145deg, #0d1c30, #091525);
-  transition: border-color 160ms ease, transform 160ms ease;
-}
-
-.metric-card:hover {
-  border-color: #365475;
-  transform: translateY(-1px);
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--surface2);
 }
 
 .metric-card dt {
-  color: #8ea3bd;
-  font-size: 0.78rem;
-  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
 }
 
 .metric-card dd {
-  margin: 8px 0 6px;
-  color: #eaf2ff;
-  font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+  margin: 2px 0;
+  color: var(--accent2);
+  font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 750;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .metric-card p {
   margin: 0;
-  color: #71869f;
-  font-size: 0.72rem;
-  line-height: 1.45;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  line-height: 1.4;
 }
 
-@media (max-width: 760px) {
-  .metrics-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .metrics-panel {
-    padding: 18px;
-  }
-
-  .metrics-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .metrics-heading {
-    display: block;
-  }
-
-  .metrics-heading > p {
-    margin-top: 8px;
-  }
+@media (max-width: 700px) {
+  .metrics-panel { padding: 16px 14px; }
+  .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

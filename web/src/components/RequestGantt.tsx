@@ -47,9 +47,9 @@ const PHASE_LABELS: Record<GanttPhase, string> = {
 };
 
 const PHASE_COLORS: Record<GanttPhase, string> = {
-  queue: "#64748b",
-  prefill: "#3b82f6",
-  decode: "#22c55e",
+  queue: "#9ca0b0",
+  prefill: "#fb923c",
+  decode: "#6c63ff",
 };
 
 const numberFormatter = new Intl.NumberFormat("zh-CN", {
@@ -109,7 +109,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
   return {
     animation: false,
     textStyle: {
-      color: "#a9bad0",
+      color: "#9ca0b0",
     },
     grid: {
       top: 16,
@@ -129,25 +129,25 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
       name: "仿真时钟（ms）",
       nameLocation: "middle",
       nameGap: 38,
-      nameTextStyle: { color: "#8ea3bd" },
-      axisLine: { lineStyle: { color: "#415874" } },
-      axisTick: { lineStyle: { color: "#415874" } },
+      nameTextStyle: { color: "#9ca0b0" },
+      axisLine: { lineStyle: { color: "#2e3347" } },
+      axisTick: { lineStyle: { color: "#2e3347" } },
       axisLabel: {
-        color: "#8ea3bd",
+        color: "#9ca0b0",
         formatter: (value: number) => numberFormatter.format(value),
       },
       splitLine: {
-        lineStyle: { color: "#1e324a" },
+        lineStyle: { color: "#2e3347" },
       },
     },
     yAxis: {
       type: "category",
       inverse: true,
       data: model.rows.map(({ id }) => `#${id}`),
-      axisLine: { lineStyle: { color: "#415874" } },
-      axisTick: { lineStyle: { color: "#415874" } },
+      axisLine: { lineStyle: { color: "#2e3347" } },
+      axisTick: { lineStyle: { color: "#2e3347" } },
       axisLabel: {
-        color: "#8ea3bd",
+        color: "#9ca0b0",
         interval: 0,
       },
     },

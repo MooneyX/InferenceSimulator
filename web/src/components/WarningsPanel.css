@@ -1,12 +1,12 @@
 .warnings-panel {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 14px;
-  padding: 18px 20px;
+  gap: 12px;
+  padding: 16px 20px;
   border: 1px solid #854d0e;
-  border-radius: 14px;
+  border-radius: 10px;
   color: #fde68a;
-  background: rgb(120 53 15 / 22%);
+  background: var(--surface);
 }
 
 .warnings-icon {

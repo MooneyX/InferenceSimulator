@@ -63,9 +63,13 @@ class StepWorkload:
         prefill_ids = tuple(item.request_id for item in self.prefill)
         decode_ids = tuple(item.request_id for item in self.decode)
         phase = (
-            "MIXED" if prefill_ids and decode_ids else
-            "PREFILL" if prefill_ids else
-            "DECODE" if decode_ids else "RESTORE"
+            "MIXED"
+            if prefill_ids and decode_ids
+            else "PREFILL"
+            if prefill_ids
+            else "DECODE"
+            if decode_ids
+            else "RESTORE"
         )
         if (not prefill_ids and not decode_ids and not self.restore_only) or self.phase != phase:
             raise ValueError("单步阶段须与非空 Prefill/Decode/Restore 集合一致")

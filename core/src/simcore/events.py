@@ -242,9 +242,7 @@ class EventLog:
                 case ArrivalTrace() | DoneTrace() if r.request_id == request_id:
                     out.append(r)
                 case StepTrace() if (
-                    request_id in r.admitted
-                    or request_id in r.restored
-                    or request_id in r.finished
+                    request_id in r.admitted or request_id in r.restored or request_id in r.finished
                 ):
                     out.append(r)
         return out

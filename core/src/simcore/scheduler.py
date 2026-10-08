@@ -174,12 +174,8 @@ class F001Scheduler:
             hit = len(sources) * block_size
             cache.pin(request, hit)
             new_tokens = target - hit
-            new_promotions = {
-                chunk_id for chunk_id, tier in sources if tier != "L1"
-            } - promotions
-            if item.restoring and new_tokens == 0 and not any(
-                tier != "L1" for _, tier in sources
-            ):
+            new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
+            if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources):
                 cache.admit(request.request_id)
                 self._pop_head()
                 restored.append(item)
@@ -191,18 +187,26 @@ class F001Scheduler:
             required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
             proposed_current = (
-                current_offset + required_tokens + block_size  # 为后续增长再留一页
+                current_offset
+                + required_tokens
+                + block_size  # 为后续增长再留一页
                 + len(new_promotions) * block_size  # 低层命中页先提升到 L1
             )
             proposed_total = proposed_current + selected_future + future + running_future
-            compute_ok = not selected or not new_tokens or (
-                required_tokens
-                < self._engine.max_prefill_tokens - len(decode_ids) - selected_pages_tokens
+            compute_ok = (
+                not selected
+                or not new_tokens
+                or (
+                    required_tokens
+                    < self._engine.max_prefill_tokens - len(decode_ids) - selected_pages_tokens
+                )
             )
             planned_promotions = tuple(sorted(promotions | new_promotions))
-            planned_new_pages = decode_new // block_size + sum(
-                candidate.required_pages for candidate in selected
-            ) + required_tokens // block_size
+            planned_new_pages = (
+                decode_new // block_size
+                + sum(candidate.required_pages for candidate in selected)
+                + required_tokens // block_size
+            )
             capacity_ok = True
             if tiered:
                 try:
@@ -236,9 +240,9 @@ class F001Scheduler:
                 active_count += 1
                 running_future += future * self._ratio
             else:
-                selected.append(PrefillCandidate(
-                    item, hit, new_tokens, required_tokens // block_size, sources
-                ))
+                selected.append(
+                    PrefillCandidate(item, hit, new_tokens, required_tokens // block_size, sources)
+                )
                 selected_future += future
                 selected_pages_tokens += required_tokens
             self._pop_head()

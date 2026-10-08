@@ -8,8 +8,14 @@ from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import InferenceRequest
 
 __all__ = [
-    "CacheCapacityError", "CacheEntry", "KVRequestState", "L1KVCache", "L1Page",
-    "L1Snapshot", "TierSnapshot", "TieredKVCache",
+    "CacheCapacityError",
+    "CacheEntry",
+    "KVRequestState",
+    "L1KVCache",
+    "L1Page",
+    "L1Snapshot",
+    "TierSnapshot",
+    "TieredKVCache",
 ]
 
 
@@ -73,14 +79,21 @@ class TieredKVCache:
     """每页只在全局索引中出现一次；各层只管理身份、计数和 LRU。"""
 
     def __init__(
-        self, max_total_tokens: int, page_size: int,
-        l2_capacity_tokens: int = 0, l3_capacity_tokens: int = 0,
+        self,
+        max_total_tokens: int,
+        page_size: int,
+        l2_capacity_tokens: int = 0,
+        l3_capacity_tokens: int = 0,
     ) -> None:
         if page_size < 1 or max_total_tokens < page_size or max_total_tokens % page_size:
             raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
-        if (l2_capacity_tokens < 0 or l3_capacity_tokens < 0
-                or l2_capacity_tokens % page_size or l3_capacity_tokens % page_size
-                or (l3_capacity_tokens and not l2_capacity_tokens)):
+        if (
+            l2_capacity_tokens < 0
+            or l3_capacity_tokens < 0
+            or l2_capacity_tokens % page_size
+            or l3_capacity_tokens % page_size
+            or (l3_capacity_tokens and not l2_capacity_tokens)
+        ):
             raise ValueError("低层容量必须是 page_size 的非负整数倍，L3 启用时须启用 L2")
         self.page_size = page_size
         self.capacity_pages = max_total_tokens // page_size
@@ -133,8 +146,13 @@ class TieredKVCache:
     def tier_snapshot(self, tier: str) -> TierSnapshot:
         state = self._tiers[tier]
         return TierSnapshot(
-            state.capacity, state.resident, state.resident - state.evictable,
-            state.evictable, state.capacity - state.resident, state.peak, state.evictions,
+            state.capacity,
+            state.resident,
+            state.resident - state.evictable,
+            state.evictable,
+            state.capacity - state.resident,
+            state.peak,
+            state.evictions,
         )
 
     def tier_snapshots(self) -> dict[str, TierSnapshot]:
@@ -327,15 +345,17 @@ class TieredKVCache:
 
     def _touch(self, chunk_id: str) -> None:
         self._access_seq += 1
-        self._entries[chunk_id] = replace(
-            self._entries[chunk_id], last_access_seq=self._access_seq
-        )
+        self._entries[chunk_id] = replace(self._entries[chunk_id], last_access_seq=self._access_seq)
 
     def _migration_plan(
-        self, promote_ids: Iterable[str], reserve_pages: int,
+        self,
+        promote_ids: Iterable[str],
+        reserve_pages: int,
     ) -> tuple[
-        dict[str, CacheEntry], list[tuple[str, str, str | None]],
-        tuple[tuple[str, str], ...], int,
+        dict[str, CacheEntry],
+        list[tuple[str, str, str | None]],
+        tuple[tuple[str, str], ...],
+        int,
     ]:
         """在局部副本上模拟完整批次，不碰全局项、LRU 堆及计数。"""
         if reserve_pages < 0:
@@ -362,7 +382,8 @@ class TieredKVCache:
             nonlocal seq
             victims = (entries[key] for key in ids[tier] if not entries[key].ref_count)
             victim = min(
-                victims, key=lambda page: (page.last_access_seq, page.chunk_id),
+                victims,
+                key=lambda page: (page.last_access_seq, page.chunk_id),
                 default=None,
             )
             if victim is None:
@@ -400,13 +421,17 @@ class TieredKVCache:
         return entries, actions, tuple(promoted), seq
 
     def plan(
-        self, promote_ids: Iterable[str] = (), reserve_pages: int = 0,
+        self,
+        promote_ids: Iterable[str] = (),
+        reserve_pages: int = 0,
     ) -> tuple[tuple[str, str], ...]:
         """预检提升和新增私有页所需容量；失败无任何状态副作用。"""
         return self._migration_plan(promote_ids, reserve_pages)[2]
 
     def promote(
-        self, promote_ids: Iterable[str] = (), reserve_pages: int = 0,
+        self,
+        promote_ids: Iterable[str] = (),
+        reserve_pages: int = 0,
     ) -> tuple[tuple[str, str], ...]:
         """全批次容量预检通过后一次性提交提升、降级及末层删除。"""
         entries, actions, promoted, seq = self._migration_plan(promote_ids, reserve_pages)
@@ -451,7 +476,9 @@ class TieredKVCache:
         return promoted
 
     def prepare_batch(
-        self, promote_ids: Iterable[str] = (), reserve_pages: int = 0,
+        self,
+        promote_ids: Iterable[str] = (),
+        reserve_pages: int = 0,
     ) -> tuple[tuple[str, str], ...]:
         """与 promote 等价，供引擎原子提交本批容量及恢复页。"""
         return self.promote(promote_ids, reserve_pages)

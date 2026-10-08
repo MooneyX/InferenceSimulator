@@ -188,12 +188,8 @@ class PerfModelConfig(_Frozen):
     decode_d1: float = Field(ge=0)
     decode_d2: float = Field(ge=0)
     kv_bytes_per_token: int | None = Field(default=None, gt=0)
-    l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(
-        default=None, gt=0, allow_inf_nan=False
-    )
-    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(
-        default=None, gt=0, allow_inf_nan=False
-    )
+    l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
@@ -204,8 +200,7 @@ def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:
         perf.kv_bytes_per_token is None or perf.l2_to_l1_bandwidth_bytes_per_ms is None
     ):
         raise ValueError(
-            "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 "
-            "l2_to_l1_bandwidth_bytes_per_ms 为正"
+            "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 l2_to_l1_bandwidth_bytes_per_ms 为正"
         )
     if engine.l3_capacity_tokens and perf.l3_to_l2_bandwidth_bytes_per_ms is None:
         raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
@@ -449,8 +444,10 @@ class Metrics(_Record):
             evictable = getattr(self, f"{tier}_evictable_blocks")
             free = getattr(self, f"{tier}_free_blocks")
             peak = getattr(self, f"{tier}_peak_resident_blocks")
-            if free + resident != capacity or active + evictable != resident or not (
-                resident <= peak <= capacity
+            if (
+                free + resident != capacity
+                or active + evictable != resident
+                or not (resident <= peak <= capacity)
             ):
                 raise ValueError(f"{tier.upper()} 物理块容量不守恒")
         return self

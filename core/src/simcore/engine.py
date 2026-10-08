@@ -129,8 +129,10 @@ class Engine:
         self._engine_config = engine
         self._perf = perf
         self._prefix_cache = TieredKVCache(
-            engine.max_total_tokens, engine.page_size,
-            engine.l2_capacity_tokens, engine.l3_capacity_tokens,
+            engine.max_total_tokens,
+            engine.page_size,
+            engine.l2_capacity_tokens,
+            engine.l3_capacity_tokens,
         )
         self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
@@ -310,9 +312,13 @@ class Engine:
                 return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
         phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"] = (
-            "MIXED" if prefill and decode else
-            "PREFILL" if prefill else
-            "DECODE" if decode else "RESTORE"
+            "MIXED"
+            if prefill and decode
+            else "PREFILL"
+            if prefill
+            else "DECODE"
+            if decode
+            else "RESTORE"
         )
         decode_new_pages = sum(cache.state(key).k % cache.page_size == 0 for key in decode_ids)
         allocated_pages = decode_new_pages + sum(
@@ -325,9 +331,13 @@ class Engine:
             cache.ensure_free(allocated_pages)
             promoted = ()
         workload = StepWorkload(
-            phase, prefill, decode, allocated_pages,
+            phase,
+            prefill,
+            decode,
+            allocated_pages,
             len(prefill) + len(decode) + len(selection.restore_only),
-            tuple(sorted(promoted)), cache.page_size if promoted else 0,
+            tuple(sorted(promoted)),
+            cache.page_size if promoted else 0,
             tuple(item.request.request_id for item in selection.restore_only),
         )
         transfer_time = restore_time(workload, self._perf)
@@ -367,7 +377,8 @@ class Engine:
                 self._admission_stats[key] = (candidate.reused_tokens, candidate.reused_tokens)
                 self._admission_tiers[key] = (
                     tuple(tier for _, tier in candidate.hit_sources).count("L1") * cache.page_size
-                    if candidate.hit_sources else candidate.reused_tokens,
+                    if candidate.hit_sources
+                    else candidate.reused_tokens,
                     tuple(tier for _, tier in candidate.hit_sources).count("L2") * cache.page_size,
                     tuple(tier for _, tier in candidate.hit_sources).count("L3") * cache.page_size,
                 )
@@ -407,10 +418,12 @@ class Engine:
                     phase=workload.phase,
                     withdrawn=tuple(key for key, _ in withdrawn),
                     aborted=tuple(sorted(self._recent_aborts[aborts_before:])),
-                    restored=tuple(sorted(
-                        item.request.request_id
-                        for item in (*selection.restored, *selection.restore_only)
-                    )),
+                    restored=tuple(
+                        sorted(
+                            item.request.request_id
+                            for item in (*selection.restored, *selection.restore_only)
+                        )
+                    ),
                     restore_sources=workload.restore_sources,
                     restore_bytes=transferred_bytes,
                     restore_time_ms=transfer_time,

@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createDefaultSimConfig } from "../config/simulation";
 import { SimulationForm } from "./SimulationForm";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("SimulationForm", () => {
   it("renders every synthetic configuration group with defaults", () => {
@@ -181,9 +184,85 @@ describe("SimulationForm", () => {
     expect(error).toHaveTextContent("必须是大于或等于 1 的整数");
   });
 
-  it("disables submission while a simulation is running", () => {
+  it("exports edited parameters to the JSON box and copies them", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    render(<SimulationForm onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+
+    const json = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(json)).toMatchObject({ workload: { synthetic: {
+      num_requests: 25, session: { num_sessions: 25 },
+    } } });
+    expect(JSON.parse(json)).not.toHaveProperty("metrics");
+    expect(writeText).toHaveBeenCalledWith(json);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已生成并复制"));
+  });
+
+  it("keeps exported JSON available when clipboard copying is unavailable", () => {
+    vi.stubGlobal("navigator", {});
+    render(<SimulationForm onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    expect((screen.getByLabelText("参数 JSON") as HTMLInputElement).value).toContain('"workload"');
+    expect(screen.getByRole("status")).toHaveTextContent("可手动复制");
+  });
+
+  it("imports a valid JSON config into all form groups without running a simulation", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    const config = createDefaultSimConfig();
+    config.workload.synthetic!.num_requests = 20;
+    config.workload.synthetic!.session!.num_sessions = 5;
+    config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
+    config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
+    config.engine.page_size = 128;
+    config.perf_model.prefill_c1 = 0.1;
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("参数已导入");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(20);
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(5);
+    expect(within(screen.getByRole("group", { name: "Prompt 长度" })).getByLabelText("固定长度（token）"))
+      .toHaveValue(256);
+    expect(within(screen.getByRole("group", { name: "输出长度" })).getByLabelText("形状参数（sigma）"))
+      .toHaveValue(2);
+    expect(screen.getByLabelText("每页 token 数")).toHaveValue(128);
+    expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).toHaveBeenCalledWith(config);
+  });
+
+  it("preserves the current form when JSON is invalid or incomplete", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: '{"workload":{}}' } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("参数导入失败");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(20);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.calls[0][0].workload.synthetic.num_requests).toBe(20);
+  });
+
+  it("rejects exporting invalid drafts without replacing the JSON box", () => {
+    render(<SimulationForm onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: "previous" } });
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("参数导出失败");
+    expect(screen.getByLabelText("参数 JSON")).toHaveValue("previous");
+  });
+
+  it("disables submission and parameter transfer while a simulation is running", () => {
     render(<SimulationForm onSubmit={vi.fn()} disabled />);
 
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导入参数" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "导出参数" })).toBeDisabled();
   });
 });

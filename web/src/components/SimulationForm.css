@@ -47,6 +47,76 @@
   font-size: 0.82rem;
 }
 
+.parameter-transfer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.transfer-button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #f5f3ff;
+  background: #6554b8;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.transfer-button:hover:not(:disabled) {
+  background: #7968d1;
+}
+
+.transfer-button:focus-visible,
+.parameter-transfer input:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
+}
+
+.transfer-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.transfer-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.parameter-transfer input {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #314966;
+  border-radius: 8px;
+  color: #e5edf8;
+  background: #0b1829;
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+
+.parameter-transfer input[aria-invalid="true"] {
+  border-color: #f87171;
+}
+
+.transfer-note {
+  color: #a5b4fc;
+  font-size: 0.78rem;
+}
+
+.transfer-note-error {
+  color: #fca5a5;
+}
+
 .form-grid,
 .distribution-grid {
   display: grid;

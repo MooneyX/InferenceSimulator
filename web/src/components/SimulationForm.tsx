@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 
 import type { SimConfig } from "../api/types";
+import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
   validateSimConfig,
@@ -70,6 +71,9 @@ function NumberField({
 export function SimulationForm({ onSubmit, disabled = false }: SimulationFormProps) {
   const [config, setConfig] = useState<SimConfig>(createDefaultSimConfig);
   const [showValidation, setShowValidation] = useState(false);
+  const [paramsJson, setParamsJson] = useState("");
+  const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
+  const paramsInputRef = useRef<HTMLInputElement>(null);
   const validationErrors = showValidation ? validateSimConfig(config) : [];
   const errorByField = new Map(
     validationErrors.map(({ field, message }) => [field, message]),
@@ -90,6 +94,45 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
     }
   }
 
+  function handleExport(): void {
+    try {
+      const json = serializeSimConfig(config);
+      setParamsJson(json);
+      setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
+      paramsInputRef.current?.focus();
+      paramsInputRef.current?.select();
+      if (navigator.clipboard?.writeText) {
+        try {
+          void navigator.clipboard.writeText(json).then(() => {
+            setTransferNote((note) => note?.message === "已生成参数 JSON，可手动复制"
+              ? { message: "已生成并复制参数 JSON", error: false } : note);
+          }).catch(() => {});
+        } catch {
+          setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
+        }
+      }
+    } catch (error) {
+      setTransferNote({
+        message: `参数导出失败：${error instanceof Error ? error.message : "未知错误"}`,
+        error: true,
+      });
+    }
+  }
+
+  function handleImport(): void {
+    try {
+      const imported = parseSimConfigJson(paramsJson.trim());
+      setConfig(imported);
+      setShowValidation(false);
+      setTransferNote({ message: "参数已导入，可检查后运行仿真", error: false });
+    } catch (error) {
+      setTransferNote({
+        message: `参数导入失败：${error instanceof Error ? error.message : "未知错误"}`,
+        error: true,
+      });
+    }
+  }
+
   return (
     <form className="simulation-form" noValidate onSubmit={handleSubmit}>
       <section className="form-section" aria-labelledby="workload-heading">
@@ -99,6 +142,38 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             <h2 id="workload-heading">负载配置</h2>
           </div>
           <p>泊松到达过程与请求长度分布</p>
+        </div>
+
+        <div className="parameter-transfer" role="group" aria-label="参数导入导出">
+          <button type="button" className="transfer-button" onClick={handleExport} disabled={disabled}>
+            导出参数
+          </button>
+          <button type="button" className="transfer-button" onClick={handleImport} disabled={disabled}>
+            导入参数
+          </button>
+          <label className="transfer-label" htmlFor="params-json">参数 JSON</label>
+          <input
+            id="params-json"
+            ref={paramsInputRef}
+            type="text"
+            value={paramsJson}
+            placeholder="参数 JSON 在此粘贴/生成"
+            onChange={(event) => {
+              setParamsJson(event.currentTarget.value);
+              setTransferNote(null);
+            }}
+            aria-invalid={transferNote?.error || undefined}
+            aria-describedby={transferNote ? "parameter-transfer-note" : undefined}
+          />
+          {transferNote ? (
+            <span
+              id="parameter-transfer-note"
+              className={transferNote.error ? "transfer-note transfer-note-error" : "transfer-note"}
+              role={transferNote.error ? "alert" : "status"}
+            >
+              {transferNote.message}
+            </span>
+          ) : null}
         </div>
 
         <div className="form-grid">

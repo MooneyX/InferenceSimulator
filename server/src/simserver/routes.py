@@ -32,6 +32,8 @@ class HardwareCatalogEntry(BaseModel):
     name: str
     gpu_count: int
     memory_bytes_per_gpu: int
+    peak_fp16_tflops: float
+    peak_hbm_gb_s: float
 
 
 class ScenarioCatalogEntry(BaseModel):

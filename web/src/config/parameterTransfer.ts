@@ -1,4 +1,4 @@
-import type { SimConfig } from "../api/types";
+import type { ResolvedRequest, SimConfig } from "../api/types";
 import { validateSimConfig } from "./simulation";
 
 function objectWithKeys(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
@@ -110,6 +110,41 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error(`${error.field}：${error.message}`);
   }
   return config;
+}
+
+export function parseResolvedRequestJson(json: string): ResolvedRequest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error("JSON 格式不正确");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("自动解析参数必须为 JSON 对象");
+  }
+  const root = parsed as Record<string, unknown>;
+  const config = parseSimConfigJson(JSON.stringify(root.config));
+  for (const part of ["model", "hardware", "storage"] as const) {
+    if (root[part] === null || typeof root[part] !== "object" || Array.isArray(root[part])) {
+      throw new Error(`${part} 必须为 JSON 对象`);
+    }
+  }
+  const model = root.model as Record<string, unknown>;
+  const hardware = root.hardware as Record<string, unknown>;
+  const storage = root.storage as Record<string, unknown>;
+  if (typeof model.name !== "string" || !model.name ||
+      typeof hardware.name !== "string" || !hardware.name) {
+    throw new Error("模型和 GPU 名称不能为空");
+  }
+  numericFields(model, "model", ["num_layers", "hidden_size", "num_attention_heads",
+    "num_kv_heads", "head_dim", "ffn_intermediate_size", "total_parameters"]);
+  numericFields(hardware, "hardware", ["gpu_count", "memory_bytes_per_gpu",
+    "effective_fp16_tflops", "effective_hbm_gb_s"]);
+  numericFields(storage, "storage", ["l1_available_gb", "l2_available_gb", "l3_available_gb"]);
+  if (root.timing !== undefined && root.timing !== "analytical" && root.timing !== "empirical") {
+    throw new Error("timing 不支持该计时模式");
+  }
+  return { ...root, config, timing: root.timing ?? "analytical" } as ResolvedRequest;
 }
 
 export function serializeSimConfig(config: SimConfig): string {

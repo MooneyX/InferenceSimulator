@@ -445,13 +445,23 @@
           "memory_bytes_per_gpu": {
             "type": "integer",
             "title": "Memory Bytes Per Gpu"
+          },
+          "peak_fp16_tflops": {
+            "type": "number",
+            "title": "Peak Fp16 Tflops"
+          },
+          "peak_hbm_gb_s": {
+            "type": "number",
+            "title": "Peak Hbm Gb S"
           }
         },
         "type": "object",
         "required": [
           "name",
           "gpu_count",
-          "memory_bytes_per_gpu"
+          "memory_bytes_per_gpu",
+          "peak_fp16_tflops",
+          "peak_hbm_gb_s"
         ],
         "title": "HardwareCatalogEntry"
       },

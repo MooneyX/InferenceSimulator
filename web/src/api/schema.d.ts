@@ -256,6 +256,10 @@ export interface components {
             gpu_count: number;
             /** Memory Bytes Per Gpu */
             memory_bytes_per_gpu: number;
+            /** Peak Fp16 Tflops */
+            peak_fp16_tflops: number;
+            /** Peak Hbm Gb S */
+            peak_hbm_gb_s: number;
         };
         /**
          * HardwareSpec

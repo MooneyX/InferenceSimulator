@@ -289,6 +289,51 @@ describe("SimulationForm", () => {
     expect(onSubmit).toHaveBeenCalledWith(config);
   });
 
+  it("exports and imports the complete automatic configuration from the top transfer controls", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
+    fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "10.5" } });
+    fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(exported)).toMatchObject({
+      timing: "empirical", model: { total_parameters: 10_500_000_000 },
+      hardware: { memory_bytes_per_gpu: 300_000_000_000 },
+      config: { workload: { synthetic: { num_requests: 20 } } },
+    });
+    fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(10.5);
+    expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
+    expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
+    fireEvent.click(screen.getByRole("button", { name: "运行自动解析仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
+      timing: "empirical", model: expect.objectContaining({ total_parameters: 10_500_000_000 }),
+      hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
+    }));
+  });
+
+  it("accepts legacy config JSON and rejects incomplete physical specs without changing the form", () => {
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    const config = createDefaultSimConfig();
+    config.workload.synthetic!.num_requests = 12;
+    config.workload.synthetic!.session!.num_sessions = 12;
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("请求数量")).toHaveValue(12);
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify({
+      config, model: { name: "incomplete" }, hardware: {}, storage: {}, timing: "analytical",
+    }) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("参数导入失败");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(12);
+    expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(8.2);
+  });
+
   it("preserves the current form when JSON is invalid or incomplete", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);

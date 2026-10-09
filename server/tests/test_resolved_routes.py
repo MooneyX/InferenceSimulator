@@ -62,6 +62,11 @@ def test_presets_and_unsupported_modes() -> None:
         "Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B",
     }
     assert catalog.json()["hardware"][0]["gpu_count"] == 8
+    assert catalog.json()["hardware"][0]["memory_bytes_per_gpu"] == 288_000_000_000
+    assert catalog.json()["hardware"][0]["peak_fp16_tflops"] == 2250
+    assert catalog.json()["hardware"][0]["peak_hbm_gb_s"] == 8000
+    assert catalog.json()["models"][0]["total_parameters"] == 8_200_000_000
+    assert catalog.json()["models"][1]["active_parameters"] == 22_000_000_000
     assert catalog.json()["scenarios"][1]["stage"] == "requires_tp_ep"
     request = payload()
     request["hardware"]["gpu_count"] = 8

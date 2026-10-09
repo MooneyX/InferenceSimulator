@@ -1,13 +1,13 @@
 import { useRef, useState, type FormEvent } from "react";
 
 import type { ResolvedRequest, SimConfig } from "../api/types";
-import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
+import { parseResolvedRequestJson, parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
   validateSimConfig,
   type ConfigField,
 } from "../config/simulation";
-import { AutomaticConfig } from "./AutomaticConfig";
+import { AutomaticConfig, initialHardware, initialModel, initialStorage } from "./AutomaticConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
 import "./SimulationForm.css";
 
@@ -72,6 +72,10 @@ function NumberField({
 
 export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: SimulationFormProps) {
   const [config, setConfig] = useState<SimConfig>(createDefaultSimConfig);
+  const [model, setModel] = useState<ResolvedRequest["model"]>(initialModel);
+  const [hardware, setHardware] = useState<ResolvedRequest["hardware"]>(initialHardware);
+  const [storage, setStorage] = useState<ResolvedRequest["storage"]>(initialStorage);
+  const [timing, setTiming] = useState<ResolvedRequest["timing"]>("analytical");
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
@@ -98,7 +102,10 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
 
   function handleExport(): void {
     try {
-      const json = serializeSimConfig(config);
+      const serializedConfig = serializeSimConfig(config);
+      const json = onSubmitAuto
+        ? JSON.stringify({ config: JSON.parse(serializedConfig), model, hardware, storage, timing })
+        : serializedConfig;
       setParamsJson(json);
       setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
       paramsInputRef.current?.focus();
@@ -123,8 +130,17 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
 
   function handleImport(): void {
     try {
-      const imported = parseSimConfigJson(paramsJson.trim());
-      setConfig(imported);
+      const value: unknown = JSON.parse(paramsJson.trim());
+      if (value !== null && typeof value === "object" && "config" in value) {
+        const imported = parseResolvedRequestJson(paramsJson.trim());
+        setConfig(imported.config);
+        setModel(imported.model);
+        setHardware(imported.hardware);
+        setStorage(imported.storage);
+        setTiming(imported.timing);
+      } else {
+        setConfig(parseSimConfigJson(paramsJson.trim()));
+      }
       setShowValidation(false);
       setTransferNote({ message: "参数已导入，可检查后运行仿真", error: false });
     } catch (error) {
@@ -479,6 +495,14 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           </div>
           <p>所有时间系数的单位均为毫秒</p>
         </div>
+        {onSubmitAuto && <div className="form-grid" style={{ marginBottom: 14 }}>
+          <div className="form-field"><label htmlFor="auto-timing">计时模式</label>
+            <select id="auto-timing" value={timing} onChange={(event) =>
+              setTiming(event.target.value as ResolvedRequest["timing"])}>
+              <option value="analytical">逐步 Roofline 估计</option>
+              <option value="empirical">原四系数经验模型</option>
+            </select></div>
+        </div>}
 
         {config.engine.l2_capacity_tokens > 0 ? (
           <div className="form-grid" style={{ marginBottom: 14 }}>
@@ -599,8 +623,9 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         </div>
       </section>
 
-      {onSubmitAuto && <AutomaticConfig config={config} disabled={disabled}
-        onRun={onSubmitAuto} onImportConfig={setConfig} />}
+      {onSubmitAuto && <AutomaticConfig config={config} model={model} hardware={hardware}
+        storage={storage} timing={timing} disabled={disabled} onRun={onSubmitAuto}
+        onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
 
       <div className="form-actions">
         <button className="run-button" type="submit" disabled={disabled}>

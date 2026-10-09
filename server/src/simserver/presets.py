@@ -1,7 +1,10 @@
-"""仅提供结构/标称容量的目录；有效性能与驻留权重由使用者填写。"""
+"""预置结构与标称规格；仿真用有效性能及驻留权重由使用者填写。"""
 
 from simcore.schemas import ModelSpec
 
+# Qwen 官方模型卡及 config.json：
+# https://huggingface.co/Qwen/Qwen3-8B
+# https://huggingface.co/Qwen/Qwen3-235B-A22B
 MODELS = (
     ModelSpec(
         name="Qwen/Qwen3-8B", num_layers=36, hidden_size=4096,
@@ -17,6 +20,11 @@ MODELS = (
     ),
 )
 
+# 单卡显存：https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html
+# 稠密 BF16 和 HBM 标称峰值：https://inferencex.semianalysis.com/zh/chips/b300
 HARDWARE = (
-    {"name": "NVIDIA B300", "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000},
+    {
+        "name": "NVIDIA B300", "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
+        "peak_fp16_tflops": 2250, "peak_hbm_gb_s": 8000,
+    },
 )

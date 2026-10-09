@@ -110,7 +110,7 @@ export default function App() {
           <div>
             <p className="eyebrow">基础参数 / 单实例推理</p>
             <h1>推理服务仿真器</h1>
-            <p className="hero-description">配置合成负载、KV 页池和性能系数，运行仿真并查看请求生命周期。</p>
+            <p className="hero-description">选择手动配置或自动解析，设置仿真参数并查看请求生命周期。</p>
           </div>
           <div className="hero-badges" aria-label="当前仿真范围">
             <span>单 GPU</span>

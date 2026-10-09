@@ -1,14 +1,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { simulate, SimulationApiError } from "./api/client";
-import type { SimResult } from "./api/types";
+import { simulate, simulateAutomatic, SimulationApiError } from "./api/client";
+import type { ResolvedRun, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
-  return { ...actual, simulate: vi.fn() };
+  return { ...actual, simulate: vi.fn(), simulateAutomatic: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -107,9 +107,11 @@ const result: SimResult = {
 };
 
 const simulateMock = vi.mocked(simulate);
+const simulateAutomaticMock = vi.mocked(simulateAutomatic);
 
 beforeEach(() => {
   simulateMock.mockReset();
+  simulateAutomaticMock.mockReset();
 });
 
 describe("App", () => {
@@ -154,6 +156,31 @@ describe("App", () => {
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 0 · 跳过 0");
     expect(screen.queryByRole("heading", { name: "等待仿真结果" })).not.toBeInTheDocument();
+  });
+
+  it("routes the single run button to the resolved API in automatic mode", async () => {
+    simulateAutomaticMock.mockResolvedValue({
+      result,
+      resolution: {
+        timing: "analytical",
+        model: { name: "Qwen/Qwen3-8B" },
+        hardware: { name: "NVIDIA B300" },
+        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
+        config: result.meta.config,
+      },
+      analysis: null,
+    } as ResolvedRun);
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({
+      timing: "analytical", tp_size: 1,
+      config: expect.objectContaining({ workload: expect.objectContaining({ mode: "synthetic" }) }),
+    }));
+    expect(simulateMock).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(screen.getByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
   });
 
   it("shows abort and skip reasons but charts completed requests only", async () => {

@@ -28,25 +28,23 @@ describe("AutomaticConfig", () => {
     vi.mocked(resolveAutomatic).mockResolvedValue(resolution);
   });
 
-  it("previews server-resolved capacity and submits physical specs", async () => {
-    const onRun = vi.fn();
+  it("previews server-resolved capacity without a separate run button", async () => {
     render(<AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
       hardware={initialHardware} storage={initialStorage} timing="analytical" tpSize={1}
       onTpSizeChange={vi.fn()} onModelChange={vi.fn()} onHardwareChange={vi.fn()} onStorageChange={vi.fn()}
-      disabled={false} onRun={onRun} />);
+      disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1,024 token"));
-    fireEvent.click(screen.getByRole("button", { name: "运行自动解析仿真" }));
-    expect(onRun).toHaveBeenCalledWith(expect.objectContaining({
+    expect(resolveAutomatic).toHaveBeenCalledWith(expect.objectContaining({
       timing: "analytical",
       model: expect.objectContaining({ name: "Qwen/Qwen3-8B", num_layers: 36 }),
       hardware: expect.objectContaining({ gpu_count: 1 }),
       config: expect.objectContaining({ engine: expect.objectContaining({ l2_capacity_tokens: 0 }) }),
     }));
+    expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
-  it("shows TP rank preview and disables multi-GPU execution", async () => {
-    const onRun = vi.fn();
+  it("shows TP rank preview and the multi-GPU limitation", async () => {
     const preview = {
       ...resolution, tp_size: 4, runnable: false,
       capacity: { ...resolution.capacity, unassigned_parameters: 50,
@@ -59,13 +57,11 @@ describe("AutomaticConfig", () => {
       hardware={{ ...initialHardware, gpu_count: 4 }} storage={initialStorage}
       timing="analytical" tpSize={4} onTpSizeChange={vi.fn()}
       onModelChange={vi.fn()} onHardwareChange={vi.fn()} onStorageChange={vi.fn()}
-      disabled={false} onRun={onRun} />);
+      disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("GPU 0"));
     expect(resolveAutomatic).toHaveBeenCalledWith(expect.objectContaining({ tp_size: 4 }));
-    expect(screen.getByRole("button", { name: "运行自动解析仿真" })).toBeDisabled();
     expect(screen.getByText(/逐步通信计时尚未接入/)).toBeInTheDocument();
-    expect(onRun).not.toHaveBeenCalled();
   });
 
   it("separates model and hardware cards and converts B/GB inputs to API units", async () => {
@@ -82,7 +78,7 @@ describe("AutomaticConfig", () => {
     render(<AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
       hardware={initialHardware} storage={initialStorage} timing="analytical" tpSize={1}
       onTpSizeChange={vi.fn()} onModelChange={onModelChange} onHardwareChange={onHardwareChange}
-      onStorageChange={onStorageChange} disabled={false} onRun={vi.fn()} />);
+      onStorageChange={onStorageChange} disabled={false} />);
     await waitFor(() => expect(screen.getByRole("combobox", { name: "GPU 选择" })).toHaveValue("NVIDIA B300"));
     expect(screen.getByRole("heading", { name: "模型参数" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "硬件配置" })).toBeInTheDocument();

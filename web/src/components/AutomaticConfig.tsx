@@ -19,7 +19,6 @@ interface Props {
   onHardwareChange: (value: Hardware) => void;
   onStorageChange: (value: Storage) => void;
   disabled: boolean;
-  onRun: (request: ResolvedRequest) => void;
 }
 
 export const initialModel: Model = {
@@ -56,7 +55,7 @@ function Input({ label, value, onChange, optional = false }: {
 }
 
 export function AutomaticConfig({ config, model, hardware, storage, timing, tpSize,
-  onTpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled, onRun }: Props) {
+  onTpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled }: Props) {
   const [catalog, setCatalog] = useState<PresetCatalog | null>(null);
   const [preview, setPreview] = useState<ResolvedConfig | null>(null);
   const [previewKey, setPreviewKey] = useState("");
@@ -197,12 +196,8 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       上述有效值为独立的仿真假设。</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
-      <button type="button" className="run-button" disabled={disabled || tpSize !== 1}
-        onClick={() => onRun(request)}>
-        {disabled ? "正在运行自动解析…" : "运行自动解析仿真"}
-      </button>
-      {tpSize > 1 && <p>TP&gt;1 目前仅支持容量预览；逐步通信计时尚未接入。</p>}
     </div>
+    {tpSize > 1 && <p>TP&gt;1 目前仅支持容量预览；逐步通信计时尚未接入。</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端解析：</strong>KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；

@@ -33,6 +33,37 @@ function inputValue(value: number): number | "" {
   return Number.isNaN(value) ? "" : value;
 }
 
+const defaultConfig = createDefaultSimConfig();
+
+function configForAutomaticResolution(config: SimConfig, timing: ResolvedRequest["timing"]): SimConfig {
+  const perfModel = {
+    ...config.perf_model,
+    kv_bytes_per_token: null,
+    l2_to_l1_bandwidth_bytes_per_ms: null,
+    l3_to_l2_bandwidth_bytes_per_ms: null,
+    l2_latency_ms: 0,
+    l3_latency_ms: 0,
+  };
+  if (timing === "analytical") {
+    for (const field of ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"] as const) {
+      if (!Number.isFinite(perfModel[field]) || perfModel[field] < 0) {
+        perfModel[field] = defaultConfig.perf_model[field];
+      }
+    }
+  }
+  const pageSize = config.engine.page_size;
+  return {
+    ...config,
+    engine: {
+      ...config.engine,
+      max_total_tokens: Number.isInteger(pageSize) && pageSize > 0 ? pageSize : defaultConfig.engine.max_total_tokens,
+      l2_capacity_tokens: 0,
+      l3_capacity_tokens: 0,
+    },
+    perf_model: perfModel,
+  };
+}
+
 function NumberField({
   id,
   name,
@@ -71,7 +102,11 @@ function NumberField({
 }
 
 export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: SimulationFormProps) {
-  const [config, setConfig] = useState<SimConfig>(createDefaultSimConfig);
+  const [mode, setMode] = useState<"manual" | "automatic">("manual");
+  const [manualConfig, setManualConfig] = useState<SimConfig>(createDefaultSimConfig);
+  const [automaticConfig, setAutomaticConfig] = useState<SimConfig>(createDefaultSimConfig);
+  const config = mode === "automatic" ? automaticConfig : manualConfig;
+  const setConfig = mode === "automatic" ? setAutomaticConfig : setManualConfig;
   const [model, setModel] = useState<ResolvedRequest["model"]>(initialModel);
   const [hardware, setHardware] = useState<ResolvedRequest["hardware"]>(initialHardware);
   const [storage, setStorage] = useState<ResolvedRequest["storage"]>(initialStorage);
@@ -81,7 +116,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
   const paramsInputRef = useRef<HTMLInputElement>(null);
-  const validationErrors = showValidation ? validateSimConfig(config) : [];
+  const submissionConfig = mode === "automatic" ? configForAutomaticResolution(config, timing) : config;
+  const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
   const errorByField = new Map(
     validationErrors.map(({ field, message }) => [field, message]),
   );
@@ -96,15 +132,19 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
     event.preventDefault();
     setShowValidation(true);
 
-    if (validateSimConfig(config).length === 0) {
-      onSubmit(config);
+    if (validateSimConfig(submissionConfig).length === 0) {
+      if (mode === "automatic") {
+        onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize });
+      } else {
+        onSubmit(submissionConfig);
+      }
     }
   }
 
   function handleExport(): void {
     try {
-      const serializedConfig = serializeSimConfig(config);
-      const json = onSubmitAuto
+      const serializedConfig = serializeSimConfig(submissionConfig);
+      const json = mode === "automatic"
         ? JSON.stringify({ config: JSON.parse(serializedConfig), model, hardware, storage, timing, tp_size: tpSize })
         : serializedConfig;
       setParamsJson(json);
@@ -134,14 +174,17 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
       const value: unknown = JSON.parse(paramsJson.trim());
       if (value !== null && typeof value === "object" && "config" in value) {
         const imported = parseResolvedRequestJson(paramsJson.trim());
-        setConfig(imported.config);
+        if (!onSubmitAuto) throw new Error("当前页面不支持自动解析参数");
+        setAutomaticConfig(imported.config);
         setModel(imported.model);
         setHardware(imported.hardware);
         setStorage(imported.storage);
         setTiming(imported.timing);
         setTpSize(imported.tp_size);
+        setMode("automatic");
       } else {
-        setConfig(parseSimConfigJson(paramsJson.trim()));
+        setManualConfig(parseSimConfigJson(paramsJson.trim()));
+        setMode("manual");
       }
       setShowValidation(false);
       setTransferNote({ message: "参数已导入，可检查后运行仿真", error: false });
@@ -155,6 +198,20 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
 
   return (
     <form className="simulation-form" noValidate onSubmit={handleSubmit}>
+      {onSubmitAuto && <fieldset className="configuration-mode" disabled={disabled}>
+        <legend>配置方式</legend>
+        <label className={mode === "manual" ? "mode-option selected" : "mode-option"}>
+          <input type="radio" name="configuration-mode" value="manual" checked={mode === "manual"}
+            onChange={() => { setMode("manual"); setShowValidation(false); setTransferNote(null); }} />
+          <span><strong>手动配置</strong><small>直接填写容量与经验计时参数</small></span>
+        </label>
+        <label className={mode === "automatic" ? "mode-option selected" : "mode-option"}>
+          <input type="radio" name="configuration-mode" value="automatic" checked={mode === "automatic"}
+            onChange={() => { setMode("automatic"); setShowValidation(false); setTransferNote(null); }} />
+          <span><strong>自动解析</strong><small>根据模型与硬件推算容量及链路参数</small></span>
+        </label>
+      </fieldset>}
+      <div className="configuration-panel" role="group" aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
           <div>
@@ -383,6 +440,11 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         </div>
       </section>
 
+      {mode === "automatic" && <AutomaticConfig config={submissionConfig} model={model} hardware={hardware}
+        storage={storage} timing={timing} tpSize={tpSize} onTpSizeChange={setTpSize}
+        disabled={disabled}
+        onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
+
       <section className="form-section" aria-labelledby="engine-heading">
         <div className="section-heading">
           <div>
@@ -405,6 +467,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               ...config, engine: { ...config.engine, max_running_requests: value },
             })}
           />
+          {mode === "manual" && <>
           <NumberField
             id="max-total-tokens"
             name="engine.max_total_tokens"
@@ -436,9 +499,10 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             integer
             error={errorByField.get("engine.l3_capacity_tokens")}
             onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, l3_capacity_tokens: value },
+              ...config,                 engine: { ...config.engine, l3_capacity_tokens: value },
             })}
           />
+          </>}
           <NumberField
             id="max-prefill-tokens"
             name="engine.max_prefill_tokens"
@@ -479,14 +543,14 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             Prefill / Decode 分步执行（关闭后允许融合步）
           </label>
         </div>
-        <p>
+        {mode === "manual" && <p>
           L1 容量：{Number.isInteger(config.engine.max_total_tokens) &&
           Number.isInteger(config.engine.page_size) && config.engine.page_size > 0 &&
           config.engine.max_total_tokens >= config.engine.page_size &&
           config.engine.max_total_tokens % config.engine.page_size === 0
             ? `${config.engine.max_total_tokens / config.engine.page_size} 页`
             : "请填写至少一页且为整页倍数的容量"}
-        </p>
+        </p>}
       </section>
 
       <section className="form-section" aria-labelledby="performance-heading">
@@ -497,7 +561,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           </div>
           <p>所有时间系数的单位均为毫秒</p>
         </div>
-        {onSubmitAuto && <div className="form-grid" style={{ marginBottom: 14 }}>
+        {mode === "automatic" && <div className="form-grid" style={{ marginBottom: 14 }}>
           <div className="form-field"><label htmlFor="auto-timing">计时模式</label>
             <select id="auto-timing" value={timing} onChange={(event) =>
               setTiming(event.target.value as ResolvedRequest["timing"])}>
@@ -505,8 +569,10 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               <option value="empirical">原四系数经验模型</option>
             </select></div>
         </div>}
+        {mode === "automatic" && timing === "analytical" &&
+          <p>使用模型与硬件规格估算计时；KV 容量和链路参数由自动解析生成。</p>}
 
-        {config.engine.l2_capacity_tokens > 0 ? (
+        {mode === "manual" && config.engine.l2_capacity_tokens > 0 ? (
           <div className="form-grid" style={{ marginBottom: 14 }}>
             <NumberField
               id="kv-bytes-per-token"
@@ -569,7 +635,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             ) : null}
           </div>
         ) : null}
-        <div className="form-grid">
+        {(mode === "manual" || timing === "empirical") && <div className="form-grid">
           <NumberField
             id="prefill-c1"
             name="perf_model.prefill_c1"
@@ -622,16 +688,12 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               })
             }
           />
-        </div>
+        </div>}
       </section>
-
-      {onSubmitAuto && <AutomaticConfig config={config} model={model} hardware={hardware}
-        storage={storage} timing={timing} tpSize={tpSize} onTpSizeChange={setTpSize}
-        disabled={disabled} onRun={onSubmitAuto}
-        onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
+      </div>
 
       <div className="form-actions">
-        <button className="run-button" type="submit" disabled={disabled}>
+        <button className="run-button" type="submit" disabled={disabled || (mode === "automatic" && tpSize !== 1)}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
       </div>

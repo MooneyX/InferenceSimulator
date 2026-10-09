@@ -292,6 +292,7 @@ describe("SimulationForm", () => {
   it("exports and imports the complete automatic configuration from the top transfer controls", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "10.5" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
@@ -306,19 +307,108 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "8" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(10.5);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
     expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
-    fireEvent.click(screen.getByRole("button", { name: "运行自动解析仿真" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       timing: "empirical", model: expect.objectContaining({ total_parameters: 10_500_000_000 }),
       hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
     }));
   });
 
+  it("keeps a complete, independent set of parameters for each panel", () => {
+    const onSubmit = vi.fn();
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} onSubmitAuto={onSubmitAuto} />);
+    expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
+    expect(screen.getByRole("group", { name: "手动配置参数" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
+    fireEvent.change(screen.getByLabelText("最多同时运行请求"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("L1 KV 总容量（token）"), { target: { value: "128" } });
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.getByRole("group", { name: "自动解析参数" })).toBeInTheDocument();
+    expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
+    expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
+    expect(screen.queryByLabelText("L1 KV 总容量（token）")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "40" } });
+    fireEvent.change(screen.getByLabelText("最多同时运行请求"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("每页 token 数"), { target: { value: "100" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
+      timing: "analytical", config: expect.objectContaining({
+        workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 40 }) }),
+        engine: expect.objectContaining({ max_running_requests: 8, page_size: 100,
+          max_total_tokens: 100, l2_capacity_tokens: 0, l3_capacity_tokens: 0 }),
+      }),
+    }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
+    expect(screen.getByLabelText("请求数量")).toHaveValue(25);
+    expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(12);
+    expect(screen.getByLabelText("L1 KV 总容量（token）")).toHaveValue(128);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 25 }) }),
+      engine: expect.objectContaining({ max_running_requests: 12, max_total_tokens: 128 }),
+    }));
+  });
+
+  it("imports a manual config from the automatic panel without losing the automatic draft", () => {
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
+    const manual = createDefaultSimConfig();
+    manual.workload.synthetic!.num_requests = 12;
+    manual.workload.synthetic!.session!.num_sessions = 12;
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(manual) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
+    expect(screen.getByLabelText("请求数量")).toHaveValue(12);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.getByLabelText("请求数量")).toHaveValue(30);
+  });
+
+  it("shows empirical coefficients only when automatic timing uses them", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
+    fireEvent.change(screen.getByLabelText("Prefill C1"), { target: { value: "0.2" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
+      timing: "empirical", config: expect.objectContaining({
+        perf_model: expect.objectContaining({ prefill_c1: 0.2 }),
+      }),
+    }));
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledTimes(2);
+    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
+      timing: "analytical", config: expect.objectContaining({
+        perf_model: expect.objectContaining({ prefill_c1: 0.2 }),
+      }),
+    }));
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
+    expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.2);
+    fireEvent.change(screen.getByLabelText("Prefill C1"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
+      timing: "analytical", config: expect.objectContaining({
+        perf_model: expect.objectContaining({ prefill_c1: 0.05 }),
+      }),
+    }));
+  });
+
   it("round-trips TP preview topology without enabling multi-GPU execution", () => {
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "4" },
     });
@@ -339,7 +429,9 @@ describe("SimulationForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByLabelText("TP 数（必须等于 GPU 卡数）")).toHaveValue(4);
-    expect(screen.getByRole("button", { name: "运行自动解析仿真" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
   });
 
@@ -357,6 +449,9 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("alert")).toHaveTextContent("参数导入失败");
     expect(screen.getByLabelText("请求数量")).toHaveValue(12);
+    expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
+    expect(screen.queryByLabelText("总参数量（B，含全部专家）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(8.2);
   });
 

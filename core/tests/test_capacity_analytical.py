@@ -97,7 +97,7 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
 
 def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
     original = example_request()
-    with pytest.raises(ValueError, match="单 GPU"):
+    with pytest.raises(ValueError, match="TP 数"):
         resolve_config(original.model_copy(update={
             "hardware": original.hardware.model_copy(update={"gpu_count": 8})
         }))
@@ -113,6 +113,77 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
         resolve_config(original.model_copy(update={
             "storage": original.storage.model_copy(update={"l1_available_gb": 0.000001})
         }))
+
+
+def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
+    request = example_request()
+    model = ModelSpec(
+        name="Qwen3-8B", num_layers=36, hidden_size=4096,
+        num_attention_heads=32, num_kv_heads=8, head_dim=128,
+        ffn_intermediate_size=12288, vocab_size=151936, total_parameters=8_200_000_000,
+    )
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": 4, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1,
+    })
+    storage = request.storage.model_copy(update={
+        "l1_available_gb": 20, "l2_available_gb": 1, "l3_available_gb": 0.5,
+    })
+    result = resolve_config(request.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage, "tp_size": 4,
+    }))
+    report = result.capacity
+    assert not result.runnable and result.tp_size == 4
+    assert len(report.rank_reports) == 4
+    assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {36 * 1024}
+    assert report.kv_bytes_per_token == 144 * 1024
+    assert report.unassigned_parameters == 9_264_640
+    for rank in report.rank_reports:
+        assert (rank.sharded_weights_bytes + rank.replicated_weights_bytes
+                + rank.l1_kv_budget_bytes + storage.runtime_reserve_bytes) == 20_000_000_000
+        assert rank.l1_capacity_pages == rank.l1_kv_budget_bytes // (rank.kv_bytes_per_token * 4)
+    assert result.config.engine.max_total_tokens == min(
+        rank.l1_capacity_pages for rank in report.rank_reports
+    ) * 4
+    assert report.l2_capacity_pages == 1_000_000_000 // (4 * report.kv_bytes_per_token)
+    assert report.l3_capacity_pages == 500_000_000 // (4 * report.kv_bytes_per_token)
+
+
+def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
+    request = example_request()
+    model = ModelSpec(
+        name="dense-kv4", num_layers=94, hidden_size=4096,
+        num_attention_heads=64, num_kv_heads=4, head_dim=128,
+        ffn_intermediate_size=12288, vocab_size=151936, total_parameters=30_000_000_000,
+    )
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1,
+    })
+    storage = request.storage.model_copy(update={
+        "l1_available_gb": 50, "l2_available_gb": 1, "l3_available_gb": 0,
+    })
+    tp = request.model_copy(update={
+        "tp_size": 8, "model": model, "hardware": hardware, "storage": storage,
+    })
+    report = resolve_config(tp).capacity
+    assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {48_128}
+    assert report.kv_bytes_per_token == 8 * 48_128
+    with pytest.raises(ValueError, match="MoE"):
+        resolve_config(tp.model_copy(update={"model": model.model_copy(update={"moe_layers": 94})}))
+
+
+def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
+    request = example_request()
+    with pytest.raises(ValueError, match="TP 数"):
+        resolve_config(request.model_copy(update={"tp_size": 4}))
+    hardware = request.hardware.model_copy(update={"gpu_count": 4})
+    with pytest.raises(ValueError, match="互联带宽"):
+        resolve_config(request.model_copy(update={"tp_size": 4, "hardware": hardware}))
+    hardware = hardware.model_copy(update={"effective_interconnect_gb_s": 100,
+                                   "collective_latency_ms": 0.1})
+    with pytest.raises(ValueError, match="vocab_size"):
+        resolve_config(request.model_copy(update={"tp_size": 4, "hardware": hardware}))
 
 
 def test_token_bandwidth_matches_physical_two_hop_transfer() -> None:

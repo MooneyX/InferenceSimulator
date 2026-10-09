@@ -18,7 +18,7 @@
 
 - 所有字段给出默认值，提交前校验范围与必填项；L1 至少一页，L2/L3 均须为 `page_size` 的非负整数倍，启用 L3 要求启用 L2；启用低层时对应 KV 字节/token 和链路带宽须为正，延迟非负。未启用的链路可保持空值，配置非法时表单提示，服务端同样返回 422。不提供 chunked prefill 选项。
 - 手填表单值序列化为 config JSON，作为 `POST /api/simulate` 的请求体；字段类型来自 `openapi-typescript` 生成的 TS 类型，禁止手写。
-- **自动配置区（单 GPU）**：编辑 Dense 全注意力 GQA/MQA 的模型结构、权重/KV 精度、总参数或实际驻留 bytes、单卡显存与有效算力/HBM 带宽，以及三级可用物理容量和传输带宽/延迟；可选择参考模型或预置组合。参考的 Qwen3-235B-A22B × 8 B300 标为待 TP/EP，不可提交为当前可运行单卡配置。预览调用 `/api/resolve`，运行调用 `/api/simulate/resolved` 由服务端重新解析；旧手填容量与计时不受自动区导入导出影响。前端不计算容量、Roofline 或每 token 带宽，导入的自动 JSON 经服务端校验。
+- **自动配置区（单 GPU 运行／TP 容量预览）**：编辑 Dense 全注意力 GQA/MQA 的模型结构、权重/KV 精度、总参数或实际驻留 bytes、单卡显存与有效算力/HBM 带宽，以及三级可用物理容量和传输带宽/延迟。TP 容量预览额外填写 `tp_size`、本实例 GPU 卡数、词表及共享权重规则、单 rank 有效互联带宽和每次集合通信固定延迟；TP/GPU 数须相等。预览调用 `/api/resolve` 展示逐 rank 权重/KV 和整组容量，TP>1 禁用自动运行按钮；Qwen3-235B-A22B × 8 B300 因 MoE 尚未完成 EP 放置仍不可运行。TP1 运行调用 `/api/simulate/resolved` 重新解析；旧手填容量与计时不受自动区导入导出影响。前端不计算容量、Roofline 或每 token 带宽。
 
 ## 输出：指标与告警
 

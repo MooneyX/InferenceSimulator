@@ -76,6 +76,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
   const [hardware, setHardware] = useState<ResolvedRequest["hardware"]>(initialHardware);
   const [storage, setStorage] = useState<ResolvedRequest["storage"]>(initialStorage);
   const [timing, setTiming] = useState<ResolvedRequest["timing"]>("analytical");
+  const [tpSize, setTpSize] = useState(1);
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
@@ -104,7 +105,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
     try {
       const serializedConfig = serializeSimConfig(config);
       const json = onSubmitAuto
-        ? JSON.stringify({ config: JSON.parse(serializedConfig), model, hardware, storage, timing })
+        ? JSON.stringify({ config: JSON.parse(serializedConfig), model, hardware, storage, timing, tp_size: tpSize })
         : serializedConfig;
       setParamsJson(json);
       setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
@@ -138,6 +139,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         setHardware(imported.hardware);
         setStorage(imported.storage);
         setTiming(imported.timing);
+        setTpSize(imported.tp_size);
       } else {
         setConfig(parseSimConfigJson(paramsJson.trim()));
       }
@@ -624,7 +626,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
       </section>
 
       {onSubmitAuto && <AutomaticConfig config={config} model={model} hardware={hardware}
-        storage={storage} timing={timing} disabled={disabled} onRun={onSubmitAuto}
+        storage={storage} timing={timing} tpSize={tpSize} onTpSizeChange={setTpSize}
+        disabled={disabled} onRun={onSubmitAuto}
         onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
 
       <div className="form-actions">

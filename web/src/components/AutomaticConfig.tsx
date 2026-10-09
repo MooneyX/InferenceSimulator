@@ -13,6 +13,8 @@ interface Props {
   hardware: Hardware;
   storage: Storage;
   timing: ResolvedRequest["timing"];
+  tpSize: number;
+  onTpSizeChange: (value: number) => void;
   onModelChange: (value: Model) => void;
   onHardwareChange: (value: Hardware) => void;
   onStorageChange: (value: Storage) => void;
@@ -24,6 +26,7 @@ export const initialModel: Model = {
   name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
   num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
   ffn_intermediate_size: 12288, total_parameters: 8_200_000_000,
+  vocab_size: 151_936, tie_word_embeddings: false,
   weight_dtype: "bf16", kv_dtype: "bf16", resident_weights_bytes: null,
   moe_layers: 0, expert_parameters_total: null, active_parameters: null,
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
@@ -52,8 +55,8 @@ function Input({ label, value, onChange, optional = false }: {
   </label></div>;
 }
 
-export function AutomaticConfig({ config, model, hardware, storage, timing,
-  onModelChange, onHardwareChange, onStorageChange, disabled, onRun }: Props) {
+export function AutomaticConfig({ config, model, hardware, storage, timing, tpSize,
+  onTpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled, onRun }: Props) {
   const [catalog, setCatalog] = useState<PresetCatalog | null>(null);
   const [preview, setPreview] = useState<ResolvedConfig | null>(null);
   const [previewKey, setPreviewKey] = useState("");
@@ -67,7 +70,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
     return () => { active = false; };
   }, []);
 
-  const request: ResolvedRequest = { model, hardware, storage, timing, config };
+  const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, config };
   const key = JSON.stringify(request);
   const selectedModel = catalog?.models.find((entry) => entry.name === model.name &&
     Object.entries(entry).every(([field, value]) => model[field as keyof Model] === value));
@@ -105,6 +108,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
       ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
       ["head_dim", "每头维度"], ["ffn_intermediate_size", "FFN 中间维度"],
+      ["vocab_size", "词表大小（TP 容量预览必填）"],
       ["total_parameters", "总参数量（B，含全部专家）"], ["moe_layers", "MoE 层数"],
       ["expert_parameters_total", "全部专家参数量（B）"], ["active_parameters", "激活参数量（B，可选）"],
       ["num_experts", "专家数"], ["experts_per_token", "每 token 激活专家数"],
@@ -115,8 +119,9 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
         field === "active_parameters" || field === "resident_weights_bytes";
       return <Input key={field} label={label}
         value={inBillions && model[field] != null ? model[field] / 1e9 : model[field]}
-        optional={field === "expert_parameters_total" || field === "active_parameters" ||
-          field === "expert_intermediate_size" || field === "resident_weights_bytes"}
+        optional={field === "vocab_size" || field === "expert_parameters_total" ||
+          field === "active_parameters" || field === "expert_intermediate_size" ||
+          field === "resident_weights_bytes"}
         onChange={(value) => onModelChange({ ...model, name: "自定义模型",
           [field]: inBillions && value !== null ? value * 1e9 : value })} />;
     })}
@@ -128,6 +133,10 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
         onModelChange({ ...model, name: "自定义模型", kv_dtype: event.target.value as Model["kv_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
       </select></label></div>
+      <div className="form-field"><label>输入输出词嵌入共享
+        <input type="checkbox" checked={model.tie_word_embeddings} onChange={(event) =>
+          onModelChange({ ...model, name: "自定义模型", tie_word_embeddings: event.target.checked })} />
+      </label></div>
     </div>
     </section>
     <section className="form-section" aria-labelledby="auto-hardware-heading">
@@ -140,23 +149,28 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
             onHardwareChange(selected ? { ...hardware, name: selected.name,
-              gpu_count: 1, memory_bytes_per_gpu: selected.memory_bytes_per_gpu } :
+              memory_bytes_per_gpu: selected.memory_bytes_per_gpu } :
               { ...hardware, name: "自定义 GPU" });
           }}>{catalog?.hardware.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
       </div></div>
-    <div className="form-grid">{([
-      ["gpu_count", "GPU 卡数（首阶段须为 1）"],
+    <div className="form-grid">
+      <Input label="TP 数（必须等于 GPU 卡数）" value={tpSize} onChange={(value) =>
+        onTpSizeChange(value ?? NaN)} />
+      {([
+      ["gpu_count", "本实例 GPU 卡数"],
       ["memory_bytes_per_gpu", "单卡标称显存（GB）"],
       ["effective_fp16_tflops", "有效 FP16/BF16 算力（TFLOPS）"],
       ["effective_fp8_tflops", "有效 FP8 算力（TFLOPS，可选）"],
       ["effective_hbm_gb_s", "有效 HBM 带宽（GB/s）"],
-      ["effective_interconnect_gb_s", "有效互联带宽（GB/s，可选）"],
+      ["effective_interconnect_gb_s", "单 rank 有效互联带宽（GB/s，TP>1 必填）"],
+      ["collective_latency_ms", "每次集合通信固定延迟（ms，TP>1 必填）"],
       ["kernel_overhead_ms", "单算子固定开销（ms）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={field === "memory_bytes_per_gpu" ? hardware[field] / 1e9 : hardware[field]}
-      optional={field === "effective_fp8_tflops" || field === "effective_interconnect_gb_s"}
+      optional={field === "effective_fp8_tflops" || field === "effective_interconnect_gb_s" ||
+        field === "collective_latency_ms"}
       onChange={(value) => onHardwareChange({ ...hardware,
         ...(field === "memory_bytes_per_gpu" ? { name: "自定义 GPU" } : {}),
         [field]: field === "memory_bytes_per_gpu" && value !== null ? value * 1e9 : value })} />)}
@@ -183,18 +197,31 @@ export function AutomaticConfig({ config, model, hardware, storage, timing,
       上述有效值为独立的仿真假设。</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
-      <button type="button" className="run-button" disabled={disabled} onClick={() => onRun(request)}>
+      <button type="button" className="run-button" disabled={disabled || tpSize !== 1}
+        onClick={() => onRun(request)}>
         {disabled ? "正在运行自动解析…" : "运行自动解析仿真"}
       </button>
+      {tpSize > 1 && <p>TP&gt;1 目前仅支持容量预览；逐步通信计时尚未接入。</p>}
     </div>
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端解析：</strong>KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
-      权重 { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
+      {preview.tp_size > 1 ? "整组权重" : "权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
       L1 {preview.capacity.l1_capacity_pages.toLocaleString()} 页 / {preview.config.engine.max_total_tokens.toLocaleString()} token；
       L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页；
       L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页。
-      {timing === "analytical" && " 时延为未经校准的 Roofline 估计。"}
+      {(preview.capacity.rank_reports ?? []).length > 0 && <>
+        <p>TP{preview.tp_size} 仅容量预览：每个逻辑 token 的整组 KV 物理成本为
+          {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；
+          未归属参数 {(preview.capacity.unassigned_parameters ?? 0).toLocaleString()} 按逐卡复制保守计入。</p>
+        {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
+          GPU {rank.rank}：分片权重 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB；
+          复制及未归属权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
+          KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token；
+          L1 {rank.l1_capacity_pages.toLocaleString()} 页。
+        </p>)}
+      </>}
+      {preview.runnable && timing === "analytical" && " 时延为未经校准的 Roofline 估计。"}
     </div>}
   </section>
   </>;

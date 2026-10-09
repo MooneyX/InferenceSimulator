@@ -9,7 +9,7 @@
 | `F003` | 完整块 ID 的前缀复用 | **已实现** 跨层连续复用；不包括真实内容哈希 | [身份](../design/chunk-hash-encoding.md)、[分层 KV](../design/kv-prefix-reuse.md)、[负载](../design/workload.md) |
 | `F001` | 单实例连续调度主干 | **已实现** 两种 P/D 模式、FCFS 预算、回撤、三类结果及服务/页面接入；不含 chunked prefill | [引擎设计](../design/kernel.md)、[API](../design/api.md)、[前端](../design/frontend.md) |
 | `F002` | 可配置、可解释和可校准的性能模型 | **部分实现** 四系数计时及单卡 Dense/GQA 逐步 Roofline 估计；形状校准、解析 MoE 与单机 TP 未实现 | [现行经验模型](../design/perf-model.md)、[剩余计划](perf-model.md)、[模型/硬件预置与 KV 容量子计划](model-hardware-kv-capacity.md) |
-| `F004` | 单实例 TP + EP | **第一阶段已接入** 单 GPU 自定义规格、三级容量解析与逐步 Roofline；TP 逐 rank 和 EP/DeepEP 待实现；DPA 不在首期 | [三阶段计划](expert-parallelism.md)、[单卡容量](model-hardware-kv-capacity.md)、[解析计时](perf-model.md) |
+| `F004` | 单实例 TP + EP | **第一阶段及 TP 容量预览已接入** 单 GPU 解析计时与 TP 逐 rank 权重/KV 账单；TP 计时/运行和 EP/DeepEP 待实现；DPA 不在首期 | [三阶段计划](expert-parallelism.md)、[单卡容量](model-hardware-kv-capacity.md)、[解析计时](perf-model.md) |
 | `KV3` | 多级 KV 缓存 | **已实现** 单实例 L1/L2/L3 分层准入、逐级迁移与 restore 计时；低层默认关闭 | [分层 KV](../design/kv-prefix-reuse.md)、[计时](../design/perf-model.md)、[指标](../design/metrics.md) |
 
 ```text

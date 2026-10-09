@@ -31,6 +31,7 @@ __all__ = [
     "ModelSpec",
     "PerfModelConfig",
     "PoissonLength",
+    "RankCapacityReport",
     "RequestCompletion",
     "RequestRecord",
     "ResolvedConfig",
@@ -239,6 +240,8 @@ class ModelSpec(_Frozen):
     head_dim: int = Field(ge=1)
     ffn_intermediate_size: int = Field(ge=1)
     total_parameters: int = Field(ge=1)
+    vocab_size: int | None = Field(default=None, ge=1)
+    tie_word_embeddings: bool = False
     weight_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
     kv_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
     resident_weights_bytes: int | None = Field(default=None, gt=0)
@@ -269,6 +272,7 @@ class HardwareSpec(_Frozen):
     effective_fp8_tflops: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     effective_hbm_gb_s: float = Field(gt=0, allow_inf_nan=False)
     effective_interconnect_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    collective_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     kernel_overhead_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
@@ -293,6 +297,16 @@ class ResolvedRequest(_Frozen):
     hardware: HardwareSpec
     storage: StorageSpec
     timing: Literal["empirical", "analytical"] = "analytical"
+    tp_size: int = Field(default=1, ge=1)
+
+
+class RankCapacityReport(_Record):
+    rank: int
+    sharded_weights_bytes: int
+    replicated_weights_bytes: int
+    kv_bytes_per_token: int
+    l1_kv_budget_bytes: int
+    l1_capacity_pages: int
 
 
 class CapacityReport(_Record):
@@ -308,6 +322,8 @@ class CapacityReport(_Record):
     l3_capacity_pages: int
     l2_to_l1_tokens_per_ms: float | None = None
     l3_to_l2_tokens_per_ms: float | None = None
+    rank_reports: list[RankCapacityReport] = Field(default_factory=list)
+    unassigned_parameters: int = 0
 
 
 class ResolvedConfig(_Record):
@@ -317,6 +333,8 @@ class ResolvedConfig(_Record):
     storage: StorageSpec
     timing: Literal["empirical", "analytical"]
     capacity: CapacityReport
+    tp_size: int = 1
+    runnable: bool = True
 
 
 class AnalyticalSummary(_Record):

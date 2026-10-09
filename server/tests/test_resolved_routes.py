@@ -54,6 +54,34 @@ def test_preview_and_run_resolve_identically() -> None:
     assert client.post("/api/simulate/resolved", json=request).json()["analysis"] is None
 
 
+def test_tp_preview_available_but_run_returns_not_implemented() -> None:
+    client = TestClient(create_app())
+    request = payload()
+    request["model"].update({
+        "name": "Qwen3-8B", "num_layers": 36, "hidden_size": 4096,
+        "num_attention_heads": 32, "num_kv_heads": 8, "head_dim": 128,
+        "ffn_intermediate_size": 12288, "total_parameters": 8_200_000_000,
+        "vocab_size": 151936, "tie_word_embeddings": False,
+    })
+    request["hardware"].update({
+        "gpu_count": 4, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1,
+    })
+    request["storage"].update({"l1_available_gb": 20, "l2_available_gb": 1,
+                               "l3_available_gb": 0.5})
+    request["tp_size"] = 4
+    preview = client.post("/api/resolve", json=request)
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["runnable"] is False
+    assert body["tp_size"] == 4
+    assert len(body["capacity"]["rank_reports"]) == 4
+    request["timing"] = "empirical"
+    run = client.post("/api/simulate/resolved", json=request)
+    assert run.status_code == 501
+    assert "容量预览" in run.json()["detail"]
+
+
 def test_presets_and_unsupported_modes() -> None:
     client = TestClient(create_app())
     catalog = client.get("/api/presets")
@@ -72,7 +100,7 @@ def test_presets_and_unsupported_modes() -> None:
     request["hardware"]["gpu_count"] = 8
     response = client.post("/api/resolve", json=request)
     assert response.status_code == 422
-    assert "单 GPU" in response.json()["detail"]
+    assert "TP 数" in response.json()["detail"]
     request["hardware"]["gpu_count"] = 1
     request["model"]["moe_layers"] = 2
     assert client.post("/api/simulate/resolved", json=request).status_code == 422

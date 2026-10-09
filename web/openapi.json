@@ -306,6 +306,18 @@
               }
             ],
             "title": "L3 To L2 Tokens Per Ms"
+          },
+          "rank_reports": {
+            "items": {
+              "$ref": "#/components/schemas/RankCapacityReport"
+            },
+            "type": "array",
+            "title": "Rank Reports"
+          },
+          "unassigned_parameters": {
+            "type": "integer",
+            "title": "Unassigned Parameters",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -516,6 +528,18 @@
               }
             ],
             "title": "Effective Interconnect Gb S"
+          },
+          "collective_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collective Latency Ms"
           },
           "kernel_overhead_ms": {
             "type": "number",
@@ -964,6 +988,23 @@
             "minimum": 1.0,
             "title": "Total Parameters"
           },
+          "vocab_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vocab Size"
+          },
+          "tie_word_embeddings": {
+            "type": "boolean",
+            "title": "Tie Word Embeddings",
+            "default": false
+          },
           "weight_dtype": {
             "type": "string",
             "enum": [
@@ -1212,6 +1253,45 @@
         ],
         "title": "PresetCatalog"
       },
+      "RankCapacityReport": {
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "sharded_weights_bytes": {
+            "type": "integer",
+            "title": "Sharded Weights Bytes"
+          },
+          "replicated_weights_bytes": {
+            "type": "integer",
+            "title": "Replicated Weights Bytes"
+          },
+          "kv_bytes_per_token": {
+            "type": "integer",
+            "title": "Kv Bytes Per Token"
+          },
+          "l1_kv_budget_bytes": {
+            "type": "integer",
+            "title": "L1 Kv Budget Bytes"
+          },
+          "l1_capacity_pages": {
+            "type": "integer",
+            "title": "L1 Capacity Pages"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rank",
+          "sharded_weights_bytes",
+          "replicated_weights_bytes",
+          "kv_bytes_per_token",
+          "l1_kv_budget_bytes",
+          "l1_capacity_pages"
+        ],
+        "title": "RankCapacityReport"
+      },
       "RequestRecord": {
         "properties": {
           "id": {
@@ -1373,6 +1453,16 @@
           },
           "capacity": {
             "$ref": "#/components/schemas/CapacityReport"
+          },
+          "tp_size": {
+            "type": "integer",
+            "title": "Tp Size",
+            "default": 1
+          },
+          "runnable": {
+            "type": "boolean",
+            "title": "Runnable",
+            "default": true
           }
         },
         "additionalProperties": false,
@@ -1409,6 +1499,12 @@
             ],
             "title": "Timing",
             "default": "analytical"
+          },
+          "tp_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Tp Size",
+            "default": 1
           }
         },
         "additionalProperties": false,

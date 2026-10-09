@@ -317,6 +317,32 @@ describe("SimulationForm", () => {
     }));
   });
 
+  it("round-trips TP preview topology without enabling multi-GPU execution", () => {
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("单 rank 有效互联带宽（GB/s，TP>1 必填）"), {
+      target: { value: "100" },
+    });
+    fireEvent.change(screen.getByLabelText("每次集合通信固定延迟（ms，TP>1 必填）"), {
+      target: { value: "0.1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(exported)).toMatchObject({
+      tp_size: 4, hardware: { gpu_count: 4, collective_latency_ms: 0.1 },
+    });
+    fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("TP 数（必须等于 GPU 卡数）")).toHaveValue(4);
+    expect(screen.getByRole("button", { name: "运行自动解析仿真" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
+  });
+
   it("accepts legacy config JSON and rejects incomplete physical specs without changing the form", () => {
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
     const config = createDefaultSimConfig();

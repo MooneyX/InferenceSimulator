@@ -144,7 +144,12 @@ export function parseResolvedRequestJson(json: string): ResolvedRequest {
   if (root.timing !== undefined && root.timing !== "analytical" && root.timing !== "empirical") {
     throw new Error("timing 不支持该计时模式");
   }
-  return { ...root, config, timing: root.timing ?? "analytical" } as ResolvedRequest;
+  if (root.tp_size !== undefined &&
+      (!Number.isInteger(root.tp_size) || (root.tp_size as number) < 1)) {
+    throw new Error("tp_size 必须是正整数");
+  }
+  return { ...root, config, timing: root.timing ?? "analytical",
+    tp_size: root.tp_size ?? 1 } as ResolvedRequest;
 }
 
 export function serializeSimConfig(config: SimConfig): string {

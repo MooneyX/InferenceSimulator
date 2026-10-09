@@ -170,6 +170,13 @@ export interface components {
             l2_to_l1_tokens_per_ms?: number | null;
             /** L3 To L2 Tokens Per Ms */
             l3_to_l2_tokens_per_ms?: number | null;
+            /** Rank Reports */
+            rank_reports?: components["schemas"]["RankCapacityReport"][];
+            /**
+             * Unassigned Parameters
+             * @default 0
+             */
+            unassigned_parameters: number;
         };
         /**
          * EngineConfig
@@ -283,6 +290,8 @@ export interface components {
             effective_hbm_gb_s: number;
             /** Effective Interconnect Gb S */
             effective_interconnect_gb_s?: number | null;
+            /** Collective Latency Ms */
+            collective_latency_ms?: number | null;
             /**
              * Kernel Overhead Ms
              * @default 0
@@ -578,6 +587,13 @@ export interface components {
             ffn_intermediate_size: number;
             /** Total Parameters */
             total_parameters: number;
+            /** Vocab Size */
+            vocab_size?: number | null;
+            /**
+             * Tie Word Embeddings
+             * @default false
+             */
+            tie_word_embeddings: boolean;
             /**
              * Weight Dtype
              * @default bf16
@@ -681,6 +697,21 @@ export interface components {
             /** Scenarios */
             scenarios: components["schemas"]["ScenarioCatalogEntry"][];
         };
+        /** RankCapacityReport */
+        RankCapacityReport: {
+            /** Rank */
+            rank: number;
+            /** Sharded Weights Bytes */
+            sharded_weights_bytes: number;
+            /** Replicated Weights Bytes */
+            replicated_weights_bytes: number;
+            /** Kv Bytes Per Token */
+            kv_bytes_per_token: number;
+            /** L1 Kv Budget Bytes */
+            l1_kv_budget_bytes: number;
+            /** L1 Capacity Pages */
+            l1_capacity_pages: number;
+        };
         /**
          * RequestRecord
          * @description 单请求的生命周期区间记录，供甘特图与指标汇总消费。
@@ -773,6 +804,16 @@ export interface components {
              */
             timing: "empirical" | "analytical";
             capacity: components["schemas"]["CapacityReport"];
+            /**
+             * Tp Size
+             * @default 1
+             */
+            tp_size: number;
+            /**
+             * Runnable
+             * @default true
+             */
+            runnable: boolean;
         };
         /**
          * ResolvedRequest
@@ -789,6 +830,11 @@ export interface components {
              * @enum {string}
              */
             timing: "empirical" | "analytical";
+            /**
+             * Tp Size
+             * @default 1
+             */
+            tp_size: number;
         };
         /** ResolvedRun */
         ResolvedRun: {

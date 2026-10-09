@@ -89,11 +89,11 @@ warnings:          # 非致命告警；不代替请求级失败状态
 
 `metrics` 包含 TTFT、TPOT、完成吞吐、makespan、L1/L2/L3 命中与驻留、驱逐/提升/降级及恢复字节和时间；`requests` 的分层命中只记录首次准入。计算与空值口径统一见 [metrics.md](metrics.md)。
 
-## 自动解析入口（单 GPU）
+## 自动解析与 TP 容量预览
 
 - `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 的标称单卡显存；不提供已测有效算力或模型修订认证，目录条目不等于多卡可运行。
-- `POST /api/resolve` 接受 `ResolvedRequest`：旧 `SimConfig` 作为负载/手动模式基础，加上显式 `ModelSpec`、`HardwareSpec`、`StorageSpec` 和 `timing`。自动解析仅支持单卡 Dense 全注意力 GQA/MQA、BF16/FP16；L1 输入是包含权重的 GB（十进制）可用预算，扣除驻留权重和显式运行时预留后按 KV 整页折算；L2/L3 输入只供 KV 使用，容量各自取整页。缺失带宽、容量不足或不支持的拓扑返回 422。
-- `POST /api/simulate/resolved` **再次解析**物理输入后执行，返回 `ResolvedRun`，其 `result` 是原 `SimResult`，`resolution` 回显解析账单、输入规格与有效 `SimConfig`，`analysis` 仅在解析计时模式返回单步成本汇总。前端不得将上一次 `/api/resolve` 的 token 结果直接作为未经验证的有效配置提交；总参数量推导的 BF16/FP16 权重字节数是用户规格假设，可用实际驻留权重覆盖。
+- `POST /api/resolve` 接受 `ResolvedRequest`：旧 `SimConfig` 作为负载/手动模式基础，加上显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing` 与默认 1 的 `tp_size`。TP 数须等于分配给当前实例的 GPU 卡数；仅支持 Dense 全注意力 GQA/MQA、BF16/FP16。TP>1 时须给出词表大小、输入/输出权重共享规则、单 rank 有效互联带宽和集合通信固定延迟。L1 输入为**每卡**含权重可用预算，按 rank 扣权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅供 KV 使用的物理容量，按所有 rank 的 KV 副本合计字节数换算。报告包括每 rank 分片/复制权重、KV 字节与页数；未归属参数保守地按逐卡复制计入。缺失规格、显存不足或不支持拓扑返回 422。TP>1 仅支持预览，响应 `runnable=false`；其有效 `config` 只是容量账单，不表示多卡运行可用。
+- `POST /api/simulate/resolved` **再次解析**物理输入后执行；TP>1 无论选择经验或解析计时均返回 501，不会以单卡步时长运行。TP1 返回 `ResolvedRun`，其 `result` 是原 `SimResult`，`resolution` 回显解析账单、输入规格与有效 `SimConfig`，`analysis` 仅在解析计时模式返回单步成本汇总。前端不得将上一次 `/api/resolve` 的 token 结果直接作为未经验证的有效配置提交；总参数量推导的 BF16/FP16 权重字节数是用户规格假设，可用实际驻留权重覆盖。
 - 手填旧 `/api/simulate` 的请求/响应字节结构保持不变；自动模式的四个旧经验系数只在 `timing=empirical` 时用于计算，`timing=analytical` 按 [单 GPU 解析计时](perf-model.md) 每步计算。
 
 ## 类型同步

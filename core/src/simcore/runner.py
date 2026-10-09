@@ -43,6 +43,8 @@ def simulate_analytical(
 
 def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
     """自动模式使用解析后的 token 容量和 token/ms 链路带宽。"""
+    if not resolution.runnable:
+        raise NotImplementedError("TP>1 目前只支持容量预览；逐步计时完成后才可运行")
     analytical = (
         (resolution.model, resolution.hardware) if resolution.timing == "analytical" else None
     )

@@ -11,7 +11,7 @@ from simcore.perf_model import (
     restore_time,
     restore_time_tokens,
 )
-from simcore.runner import simulate_analytical
+from simcore.runner import simulate_analytical, simulate_resolved
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -133,7 +133,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
         "model": model, "hardware": hardware, "storage": storage, "tp_size": 4,
     }))
     report = result.capacity
-    assert not result.runnable and result.tp_size == 4
+    assert result.runnable and result.tp_size == 4
     assert len(report.rank_reports) == 4
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {36 * 1024}
     assert report.kv_bytes_per_token == 144 * 1024
@@ -169,6 +169,10 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     report = resolve_config(tp).capacity
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {48_128}
     assert report.kv_bytes_per_token == 8 * 48_128
+    result, analysis = simulate_resolved(resolve_config(tp))
+    assert result.meta.num_completed == 1 and analysis is not None
+    assert analysis.collectives == 2 * 94 * analysis.steps
+    assert analysis.communication_ms > 0
     with pytest.raises(ValueError, match="MoE"):
         resolve_config(tp.model_copy(update={"model": model.model_copy(update={"moe_layers": 94})}))
 
@@ -225,6 +229,82 @@ def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
     assert step_cost(restore, model, hardware).duration_ms == 0
     decode = StepWorkload("DECODE", (), (DecodeWork(0, 12),), 0, 1)
     assert step_cost(decode, model, hardware).duration_ms > cost.duration_ms
+
+
+def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
+    model = ModelSpec(
+        name="toy", num_layers=1, hidden_size=2, num_attention_heads=2,
+        num_kv_heads=1, head_dim=1, ffn_intermediate_size=4,
+        total_parameters=1000,
+    )
+    hardware = HardwareSpec(
+        name="toy", gpu_count=2, memory_bytes_per_gpu=10000,
+        effective_fp16_tflops=1e-9, effective_hbm_gb_s=1e-6,
+        effective_interconnect_gb_s=1e-6, collective_latency_ms=0.3,
+        kernel_overhead_ms=0.2,
+    )
+    prefill = StepWorkload("PREFILL", (PrefillWork(0, 0, 1, 1),), (), 1, 1)
+    cost = step_cost(prefill, model, hardware, tp_size=2)
+    assert cost.flops == 44
+    assert cost.hbm_bytes == 48
+    assert cost.compute_ms == pytest.approx(44)
+    assert cost.memory_ms == pytest.approx(48)
+    assert cost.collectives == 2
+    assert cost.communication_bytes == 8
+    assert cost.communication_ms == pytest.approx(2 * (0.3 + 4))
+    assert cost.duration_ms == pytest.approx(48.8 + cost.communication_ms)
+    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
+    assert step_cost(restore, model, hardware, tp_size=2).collectives == 0
+
+
+def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> None:
+    base = example_request()
+    model = base.model.model_copy(update={
+        "vocab_size": 16, "total_parameters": 10_000,
+    })
+    hardware = base.hardware.model_copy(update={
+        "gpu_count": 2, "effective_interconnect_gb_s": 1e-6,
+        "collective_latency_ms": 0.1,
+    })
+    storage = base.storage.model_copy(update={
+        "l1_available_gb": 0.0002, "l2_available_gb": 0,
+        "l3_available_gb": 0,
+    })
+    request = base.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage, "tp_size": 2,
+    })
+    resolved = resolve_config(request)
+    result, analysis = simulate_resolved(resolved)
+    assert resolved.runnable and analysis is not None
+    assert result.meta.num_completed == 1
+    assert result.meta.num_aborted == result.meta.num_skipped == 0
+    assert analysis.steps == result.meta.num_engine_steps
+    assert analysis.collectives == 2 * model.num_layers * analysis.steps
+    assert analysis.communication_ms > 0
+    assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
+        analysis.device_ms + analysis.restore_ms
+    )
+    with pytest.raises(NotImplementedError, match="四系数"):
+        simulate_resolved(resolve_config(request.model_copy(update={"timing": "empirical"})))
+
+
+def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
+    model = ModelSpec(
+        name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
+        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, total_parameters=10_000,
+    )
+    hardware = HardwareSpec(
+        name="toy", gpu_count=2, memory_bytes_per_gpu=1_000_000,
+        effective_fp16_tflops=1, effective_hbm_gb_s=1,
+        effective_interconnect_gb_s=1, collective_latency_ms=0.25,
+    )
+    workload = StepWorkload(
+        "MIXED", (PrefillWork(1, 4, 2, 6),), (DecodeWork(0, 12),), 1, 2,
+    )
+    cost = step_cost(workload, model, hardware, tp_size=2)
+    assert cost.collectives == 4
+    assert cost.communication_bytes == 4 * (2 + 1) * 16 * 2
+    assert cost.communication_ms == pytest.approx(4 * 0.25 + cost.communication_bytes / 1e6)
 
 
 def test_prefill_kv_hbm_reads_scale_with_context_not_attention_pairs() -> None:

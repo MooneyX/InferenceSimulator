@@ -129,7 +129,7 @@ class Engine:
         *,
         output_targets: Mapping[int, int],
         record_trace: bool = True,
-        analytical: tuple[ModelSpec, HardwareSpec] | None = None,
+        analytical: tuple[ModelSpec, HardwareSpec, int] | None = None,
         token_bandwidths: tuple[float | None, float | None] | None = None,
     ) -> None:
         validate_kv_config(engine, perf)
@@ -373,6 +373,9 @@ class Engine:
                 self._analysis.memory_ms += cost.memory_ms
                 self._analysis.device_ms += device_time
                 self._analysis.restore_ms += transfer_time
+                self._analysis.communication_ms += cost.communication_ms
+                self._analysis.communication_bytes += cost.communication_bytes
+                self._analysis.collectives += cost.collectives
         duration = device_time + transfer_time
         self._restore_time_ms += transfer_time
         self._restore_bytes += transferred_bytes

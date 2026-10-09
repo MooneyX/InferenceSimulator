@@ -345,6 +345,9 @@ class AnalyticalSummary(_Record):
     memory_ms: float = 0.0
     device_ms: float = 0.0
     restore_ms: float = 0.0
+    communication_ms: float = 0.0
+    communication_bytes: float = 0.0
+    collectives: int = 0
 
 
 class ResolvedRun(_Record):

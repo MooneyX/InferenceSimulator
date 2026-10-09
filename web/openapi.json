@@ -26,7 +26,7 @@
     },
     "/api/resolve": {
       "post": {
-        "summary": "解析单卡容量与计时规格",
+        "summary": "解析单实例容量与计时规格",
         "operationId": "resolve_endpoint_api_resolve_post",
         "requestBody": {
           "content": {
@@ -64,7 +64,7 @@
     },
     "/api/simulate/resolved": {
       "post": {
-        "summary": "按解析规格运行单卡仿真",
+        "summary": "按解析规格运行单实例仿真",
         "operationId": "simulate_resolved_endpoint_api_simulate_resolved_post",
         "requestBody": {
           "content": {
@@ -237,6 +237,21 @@
             "type": "number",
             "title": "Restore Ms",
             "default": 0.0
+          },
+          "communication_ms": {
+            "type": "number",
+            "title": "Communication Ms",
+            "default": 0.0
+          },
+          "communication_bytes": {
+            "type": "number",
+            "title": "Communication Bytes",
+            "default": 0.0
+          },
+          "collectives": {
+            "type": "integer",
+            "title": "Collectives",
+            "default": 0
           }
         },
         "additionalProperties": false,

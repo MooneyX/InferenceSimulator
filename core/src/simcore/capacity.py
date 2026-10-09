@@ -148,7 +148,7 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
         storage=storage,
         timing=request.timing,
         tp_size=tp_size,
-        runnable=tp_size == 1,
+        runnable=tp_size == 1 or request.timing == "analytical",
         capacity=CapacityReport(
             kv_bytes_per_token=group_kv_bytes,
             kv_bytes_per_page=page_bytes,

@@ -693,7 +693,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
       </div>
 
       <div className="form-actions">
-        <button className="run-button" type="submit" disabled={disabled || (mode === "automatic" && tpSize !== 1)}>
+        <button className="run-button" type="submit"
+          disabled={disabled || (mode === "automatic" && tpSize > 1 && timing === "empirical")}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
       </div>

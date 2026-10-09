@@ -406,8 +406,9 @@ describe("SimulationForm", () => {
     }));
   });
 
-  it("round-trips TP preview topology without enabling multi-GPU execution", () => {
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+  it("round-trips TP topology and runs analytical multi-GPU only", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "4" },
@@ -430,6 +431,12 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByLabelText("TP 数（必须等于 GPU 卡数）")).toHaveValue(4);
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
+      tp_size: 4, timing: "analytical", hardware: expect.objectContaining({ gpu_count: 4 }),
+    }));
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();

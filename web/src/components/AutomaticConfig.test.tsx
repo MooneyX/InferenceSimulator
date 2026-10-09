@@ -44,9 +44,9 @@ describe("AutomaticConfig", () => {
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
-  it("shows TP rank preview and the multi-GPU limitation", async () => {
+  it("shows TP rank preview and the analytical timing scope", async () => {
     const preview = {
-      ...resolution, tp_size: 4, runnable: false,
+      ...resolution, tp_size: 4, runnable: true,
       capacity: { ...resolution.capacity, unassigned_parameters: 50,
         rank_reports: [{ rank: 0, sharded_weights_bytes: 1000,
           replicated_weights_bytes: 200, kv_bytes_per_token: 36864,
@@ -61,7 +61,7 @@ describe("AutomaticConfig", () => {
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("GPU 0"));
     expect(resolveAutomatic).toHaveBeenCalledWith(expect.objectContaining({ tp_size: 4 }));
-    expect(screen.getByText(/逐步通信计时尚未接入/)).toBeInTheDocument();
+    expect(screen.getByText(/每层两次等效同步/)).toBeInTheDocument();
   });
 
   it("separates model and hardware cards and converts B/GB inputs to API units", async () => {

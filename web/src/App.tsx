@@ -86,7 +86,7 @@ export default function App() {
     <>
       <header className="topbar">
         <a className="brand" href="#overview"><span>KV Cache</span> 推理服务仿真器</a>
-        <span className="topbar-caption">单 GPU · 分层 KV 仿真工作台</span>
+        <span className="topbar-caption">单实例 · 分层 KV 仿真工作台</span>
       </header>
 
       <nav className="sidebar" aria-label="建模模块">
@@ -113,7 +113,7 @@ export default function App() {
             <p className="hero-description">选择手动配置或自动解析，设置仿真参数并查看请求生命周期。</p>
           </div>
           <div className="hero-badges" aria-label="当前仿真范围">
-            <span>单 GPU</span>
+            <span>单实例 · TP 可选</span>
             <span>Synthetic workload</span>
             <span>FCFS 调度</span>
           </div>
@@ -170,17 +170,24 @@ export default function App() {
                 ) : null}
               </section>
               {automatic && <section className="simulation-status" aria-label="解析配置与成本">
-                <h3>自动解析 · {automatic.resolution.timing === "analytical" ? "未经校准的 Roofline 估计" : "经验计时"}</h3>
+                <h3>自动解析 · TP{automatic.resolution.tp_size} · {automatic.resolution.timing === "analytical" ? "未经校准的 Roofline 估计" : "经验计时"}</h3>
                 <p>模型 {automatic.resolution.model.name} · GPU {automatic.resolution.hardware.name} ·
                   权重 {(automatic.resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
                 <p>每 token KV {automatic.resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
                   L1 {automatic.resolution.config.engine.max_total_tokens.toLocaleString()} token ·
                   L2 {automatic.resolution.config.engine.l2_capacity_tokens.toLocaleString()} token ·
                   L3 {automatic.resolution.config.engine.l3_capacity_tokens.toLocaleString()} token</p>
-                {automatic.analysis && <p>解析步骤 {automatic.analysis.steps} · FLOPs {automatic.analysis.flops.toExponential(3)} ·
-                  HBM { (automatic.analysis.hbm_bytes / 1e9).toFixed(3) } GB ·
+                {automatic.analysis && <p>解析步骤 {automatic.analysis.steps} ·
+                  {automatic.resolution.tp_size > 1 ? "单 rank FLOPs" : "FLOPs"} {automatic.analysis.flops.toExponential(3)} ·
+                  {automatic.resolution.tp_size > 1 ? "单 rank HBM" : "HBM"} { (automatic.analysis.hbm_bytes / 1e9).toFixed(3) } GB ·
                   GPU 计时 {automatic.analysis.device_ms.toFixed(2)} ms ·
-                  KV 传输 {automatic.analysis.restore_ms.toFixed(2)} ms</p>}
+                  KV 传输 {automatic.analysis.restore_ms.toFixed(2)} ms
+                  {automatic.resolution.tp_size > 1 && <>
+                    {" · "}TP 同步 {automatic.analysis.communication_ms.toFixed(2)} ms
+                    （已含于 GPU 计时） · {automatic.analysis.collectives} 次 ·
+                    单 rank 流量 {(automatic.analysis.communication_bytes / 1e9).toFixed(3)} GB
+                  </>}
+                </p>}
               </section>}
               <MetricsPanel metrics={result.metrics} />
               <WarningsPanel warnings={result.warnings} />

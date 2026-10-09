@@ -197,7 +197,9 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>
-    {tpSize > 1 && <p>TP&gt;1 目前仅支持容量预览；逐步通信计时尚未接入。</p>}
+    {tpSize > 1 && <p>{timing === "analytical"
+        ? "TP 解析计时已接入：每层两次等效同步，未按实测校准。"
+        : "TP>1 不支持四系数计时，请切换到解析计时。"}</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端解析：</strong>KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
@@ -206,7 +208,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页；
       L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页。
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
-        <p>TP{preview.tp_size} 仅容量预览：每个逻辑 token 的整组 KV 物理成本为
+        <p>TP{preview.tp_size} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
           {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；
           未归属参数 {(preview.capacity.unassigned_parameters ?? 0).toLocaleString()} 按逐卡复制保守计入。</p>
         {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>

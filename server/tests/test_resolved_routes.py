@@ -54,7 +54,7 @@ def test_preview_and_run_resolve_identically() -> None:
     assert client.post("/api/simulate/resolved", json=request).json()["analysis"] is None
 
 
-def test_tp_preview_available_but_run_returns_not_implemented() -> None:
+def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:
     client = TestClient(create_app())
     request = payload()
     request["model"].update({
@@ -73,13 +73,21 @@ def test_tp_preview_available_but_run_returns_not_implemented() -> None:
     preview = client.post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
     body = preview.json()
-    assert body["runnable"] is False
+    assert body["runnable"] is True
     assert body["tp_size"] == 4
     assert len(body["capacity"]["rank_reports"]) == 4
-    request["timing"] = "empirical"
     run = client.post("/api/simulate/resolved", json=request)
-    assert run.status_code == 501
-    assert "容量预览" in run.json()["detail"]
+    assert run.status_code == 200, run.text
+    data = run.json()
+    assert data["resolution"] == body
+    assert data["result"]["meta"]["num_completed"] == 1
+    assert data["analysis"]["communication_ms"] > 0
+    assert data["analysis"]["collectives"] == 2 * 36 * data["analysis"]["steps"]
+    request["timing"] = "empirical"
+    assert client.post("/api/resolve", json=request).json()["runnable"] is False
+    refused = client.post("/api/simulate/resolved", json=request)
+    assert refused.status_code == 501
+    assert "四系数" in refused.json()["detail"]
 
 
 def test_presets_and_unsupported_modes() -> None:

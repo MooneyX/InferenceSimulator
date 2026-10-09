@@ -68,7 +68,7 @@ def presets_endpoint() -> PresetCatalog:
     )
 
 
-@router.post("/resolve", response_model=ResolvedConfig, summary="解析单卡容量与计时规格")
+@router.post("/resolve", response_model=ResolvedConfig, summary="解析单实例容量与计时规格")
 def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
     try:
         return resolve_config(request)
@@ -76,7 +76,7 @@ def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/simulate/resolved", response_model=ResolvedRun, summary="按解析规格运行单卡仿真")
+@router.post("/simulate/resolved", response_model=ResolvedRun, summary="按解析规格运行单实例仿真")
 def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
     try:
         resolution = resolve_config(request)

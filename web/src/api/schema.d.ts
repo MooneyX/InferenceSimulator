@@ -30,7 +30,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 解析单卡容量与计时规格 */
+        /** 解析单实例容量与计时规格 */
         post: operations["resolve_endpoint_api_resolve_post"];
         delete?: never;
         options?: never;
@@ -47,7 +47,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按解析规格运行单卡仿真 */
+        /** 按解析规格运行单实例仿真 */
         post: operations["simulate_resolved_endpoint_api_simulate_resolved_post"];
         delete?: never;
         options?: never;
@@ -143,6 +143,21 @@ export interface components {
              * @default 0
              */
             restore_ms: number;
+            /**
+             * Communication Ms
+             * @default 0
+             */
+            communication_ms: number;
+            /**
+             * Communication Bytes
+             * @default 0
+             */
+            communication_bytes: number;
+            /**
+             * Collectives
+             * @default 0
+             */
+            collectives: number;
         };
         /** CapacityReport */
         CapacityReport: {

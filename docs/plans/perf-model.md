@@ -44,7 +44,7 @@ Prefill 使用实际输入、历史上下文、算子与新 KV 读写；Decode �
 1. **PM1 剩余：可解释成本分解。** 在已接通的 `StepWorkload` 四系数计时基础上定义 `StepCostBreakdown` 与对应结果明细；目前只有步时长，没有逐阶段/逐 rank 的成本分解输出。
 2. **PM2：单 GPU 解析（基础已接通）。** 当前已支持 Dense/GQA 规格、三级 KV 容量和 Prefill/Decode 的投影、注意力、FFN 逐步 Roofline 估计及总量汇总；后续补词表投影、更多算子与可校准的逐阶段瓶颈明细。
 3. **PM3：校准。** 按模型、GPU、dtype、runtime 和 shape 建有效算力/带宽及固定开销 profile，记录版本/适用范围；微基准与端到端误差报告覆盖 Prefill/Decode、batch、context 和饱和负载；超出 profile 范围给低置信度告警；微基准与端到端误差报告须分别覆盖互斥及融合执行的适用范围。
-4. **PM4：单机 TP。** TP1/2/4/8 的权重/KV 分片、通信、rank placement 和关键路径，补充多 rank 明细与展示；不隐式加入跨节点拓扑。
+4. **PM4：单机 TP（Dense 基线已接通）。** 单实例同构 TP1/2/4/8 已支持逐卡权重/KV 容量、均匀本地 Roofline 和每层两次 Ring 等效同步计时；下一步校准 collective 形态、真实链路效率、非均匀 rank 工作量及逐 rank/逐阶段成本明细，不隐式加入跨节点拓扑。
 
 ## 验收与外部交付边界
 

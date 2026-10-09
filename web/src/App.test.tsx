@@ -123,7 +123,7 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
     expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
-      "单 GPUSynthetic workloadFCFS 调度",
+      "单实例 · TP 可选Synthetic workloadFCFS 调度",
     );
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
   });
@@ -163,6 +163,7 @@ describe("App", () => {
       result,
       resolution: {
         timing: "analytical",
+        tp_size: 1,
         model: { name: "Qwen/Qwen3-8B" },
         hardware: { name: "NVIDIA B300" },
         capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
@@ -181,6 +182,33 @@ describe("App", () => {
     expect(simulateMock).not.toHaveBeenCalled();
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
+  });
+
+  it("shows TP communication inside the existing resolved result card", async () => {
+    simulateAutomaticMock.mockResolvedValue({
+      result,
+      resolution: {
+        timing: "analytical", tp_size: 4,
+        model: { name: "Qwen/Qwen3-8B" }, hardware: { name: "NVIDIA B300" },
+        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
+        config: result.meta.config,
+      },
+      analysis: {
+        steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
+        memory_ms: 0.2, device_ms: 5, restore_ms: 0,
+        communication_ms: 1.25, communication_bytes: 500_000_000, collectives: 144,
+      },
+    } as ResolvedRun);
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({ tp_size: 4 }));
+    const summary = await screen.findByLabelText("解析配置与成本");
+    expect(summary).toHaveTextContent("TP4");
+    expect(summary).toHaveTextContent("TP 同步 1.25 ms");
+    expect(summary).toHaveTextContent("144 次");
   });
 
   it("shows abort and skip reasons but charts completed requests only", async () => {

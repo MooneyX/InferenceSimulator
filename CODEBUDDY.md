@@ -21,6 +21,12 @@
 - 更改 `core` 的 Pydantic 模型、服务 API 契约或 `web/openapi.json` / `web/src/api/schema.d.ts` 时，针对性检查 `core/tests/test_schemas.py`、`server/tests/test_openapi_export.py` 及受影响的路由测试；需要校验生成类型时在 `web` 运行 `npm run check:types`，影响 TS 使用时再运行 `npm run typecheck`。`check:types` 不能替代 Python 侧 OpenAPI 新鲜度测试。
 - 只有用户明确要求全量验收，或跨层大范围改动无法界定影响范围时，才考虑全量测试/构建；性能基准与含 10,000 请求的浏览器场景仅在性能或端到端交付相关任务中运行。报告实际运行的检查、结果及未覆盖的范围，不把局部通过表述成全量通过。
 
+## 并行仿真阶段边界
+
+- 多卡开发按 `docs/plans/expert-parallelism.md` 的“模型与硬件参数配置 → TP → EP”顺序推进；开始编码下一阶段前先确认对应的模型放置、KV 容量和计时契约。当前单 GPU Dense/GQA 的自动解析与 Roofline 只是第一阶段，不把参考模型/设备目录或 `Qwen3-235B-A22B × 8 B300` 标为已支持的 TP/EP 部署。
+- 新增容量模式时，必须在规划负载与创建 `Engine` 之前解析物理规格；内核继续以整页 token 容量和现有 `page_size` 为唯一生效口径。解析性能须标明未经校准，不将标称硬件数据视作实测吞吐。
+- 已实现行为以 `docs/design/`、代码和对应测试为准，`docs/plans/` 只记录未交付部分；阶段落地后同步状态与对外契约，不提前展示尚未实现的并行组合。
+
 ## Node.js 环境（Windows）
 
 - 前端使用 Node.js 22（见 `README.md`）。当前开发环境已确认有 IDE 托管的 Node.js `22.22.2`，即使 `node` / `npm` 不在系统 `PATH` 中，也不要据此判断未安装。

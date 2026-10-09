@@ -20,6 +20,7 @@ __all__ = [
     "prefill_cost",
     "restore_bytes",
     "restore_time",
+    "restore_time_tokens",
     "workload_time",
 ]
 
@@ -126,6 +127,30 @@ def restore_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
         if cfg.l3_to_l2_bandwidth_bytes_per_ms is None:
             raise ValueError("L3 恢复计费须配置 L3 到 L2 带宽")
         duration += cfg.l3_latency_ms + l3 * page_bytes / cfg.l3_to_l2_bandwidth_bytes_per_ms
+    return duration
+
+
+def restore_time_tokens(
+    workload: StepWorkload,
+    *,
+    l2_tokens_per_ms: float | None,
+    l3_tokens_per_ms: float | None,
+    l2_latency_ms: float,
+    l3_latency_ms: float,
+) -> float:
+    """自动模式按实际经过的链路与整页 token 量计费。"""
+    if not workload.restore_sources:
+        return 0.0
+    if l2_tokens_per_ms is None:
+        raise ValueError("缺少 L2 → L1 token 带宽")
+    l3 = sum(source == "L3" for _, source in workload.restore_sources)
+    duration = l2_latency_ms + (
+        len(workload.restore_sources) * workload.restore_page_size / l2_tokens_per_ms
+    )
+    if l3:
+        if l3_tokens_per_ms is None:
+            raise ValueError("缺少 L3 → L2 token 带宽")
+        duration += l3_latency_ms + l3 * workload.restore_page_size / l3_tokens_per_ms
     return duration
 
 

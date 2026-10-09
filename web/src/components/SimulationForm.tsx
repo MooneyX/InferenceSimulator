@@ -1,17 +1,19 @@
 import { useRef, useState, type FormEvent } from "react";
 
-import type { SimConfig } from "../api/types";
+import type { ResolvedRequest, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
   validateSimConfig,
   type ConfigField,
 } from "../config/simulation";
+import { AutomaticConfig } from "./AutomaticConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
+  onSubmitAuto?: (request: ResolvedRequest) => void;
   disabled?: boolean;
 }
 
@@ -68,7 +70,7 @@ function NumberField({
   );
 }
 
-export function SimulationForm({ onSubmit, disabled = false }: SimulationFormProps) {
+export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: SimulationFormProps) {
   const [config, setConfig] = useState<SimConfig>(createDefaultSimConfig);
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
@@ -596,6 +598,9 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           />
         </div>
       </section>
+
+      {onSubmitAuto && <AutomaticConfig config={config} disabled={disabled}
+        onRun={onSubmitAuto} onImportConfig={setConfig} />}
 
       <div className="form-actions">
         <button className="run-button" type="submit" disabled={disabled}>

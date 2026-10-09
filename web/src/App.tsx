@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 
-import { simulate, SimulationApiError } from "./api/client";
-import type { SimConfig, SimResult } from "./api/types";
+import { simulate, simulateAutomatic, SimulationApiError } from "./api/client";
+import type { ResolvedRequest, ResolvedRun, SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
 import { WarningsPanel } from "./components/WarningsPanel";
@@ -42,6 +42,7 @@ function presentError(error: unknown): PresentationError {
 
 export default function App() {
   const [result, setResult] = useState<SimResult | null>(null);
+  const [automatic, setAutomatic] = useState<ResolvedRun | null>(null);
   const [error, setError] = useState<PresentationError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [activeSection, setActiveSection] = useState(() =>
@@ -54,9 +55,26 @@ export default function App() {
     setIsRunning(true);
     setError(null);
     setResult(null);
+    setAutomatic(null);
 
     try {
       setResult(await simulate(config));
+    } catch (cause) {
+      setError(presentError(cause));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  async function handleSubmitAuto(request: ResolvedRequest): Promise<void> {
+    setIsRunning(true);
+    setError(null);
+    setResult(null);
+    setAutomatic(null);
+    try {
+      const response = await simulateAutomatic(request);
+      setAutomatic(response);
+      setResult(response.result);
     } catch (cause) {
       setError(presentError(cause));
     } finally {
@@ -101,7 +119,7 @@ export default function App() {
           </div>
         </header>
 
-        <SimulationForm onSubmit={handleSubmit} disabled={isRunning} />
+        <SimulationForm onSubmit={handleSubmit} onSubmitAuto={handleSubmitAuto} disabled={isRunning} />
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">
@@ -151,6 +169,19 @@ export default function App() {
                   </ul>
                 ) : null}
               </section>
+              {automatic && <section className="simulation-status" aria-label="解析配置与成本">
+                <h3>自动解析 · {automatic.resolution.timing === "analytical" ? "未经校准的 Roofline 估计" : "经验计时"}</h3>
+                <p>模型 {automatic.resolution.model.name} · GPU {automatic.resolution.hardware.name} ·
+                  权重 {(automatic.resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
+                <p>每 token KV {automatic.resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
+                  L1 {automatic.resolution.config.engine.max_total_tokens.toLocaleString()} token ·
+                  L2 {automatic.resolution.config.engine.l2_capacity_tokens.toLocaleString()} token ·
+                  L3 {automatic.resolution.config.engine.l3_capacity_tokens.toLocaleString()} token</p>
+                {automatic.analysis && <p>解析步骤 {automatic.analysis.steps} · FLOPs {automatic.analysis.flops.toExponential(3)} ·
+                  HBM { (automatic.analysis.hbm_bytes / 1e9).toFixed(3) } GB ·
+                  GPU 计时 {automatic.analysis.device_ms.toFixed(2)} ms ·
+                  KV 传输 {automatic.analysis.restore_ms.toFixed(2)} ms</p>}
+              </section>}
               <MetricsPanel metrics={result.metrics} />
               <WarningsPanel warnings={result.warnings} />
               {(result.requests?.length ?? 0) > 0 ? (

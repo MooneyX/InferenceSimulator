@@ -17,11 +17,12 @@
 规则：
 
 - 所有字段给出默认值，提交前校验范围与必填项；L1 至少一页，L2/L3 均须为 `page_size` 的非负整数倍，启用 L3 要求启用 L2；启用低层时对应 KV 字节/token 和链路带宽须为正，延迟非负。未启用的链路可保持空值，配置非法时表单提示，服务端同样返回 422。不提供 chunked prefill 选项。
-- 表单值序列化为 config JSON，作为 `POST /api/simulate` 的请求体；字段类型来自 `openapi-typescript` 生成的 TS 类型，禁止手写。
+- 手填表单值序列化为 config JSON，作为 `POST /api/simulate` 的请求体；字段类型来自 `openapi-typescript` 生成的 TS 类型，禁止手写。
+- **自动配置区（单 GPU）**：编辑 Dense 全注意力 GQA/MQA 的模型结构、权重/KV 精度、总参数或实际驻留 bytes、单卡显存与有效算力/HBM 带宽，以及三级可用物理容量和传输带宽/延迟；可选择参考模型或预置组合。参考的 Qwen3-235B-A22B × 8 B300 标为待 TP/EP，不可提交为当前可运行单卡配置。预览调用 `/api/resolve`，运行调用 `/api/simulate/resolved` 由服务端重新解析；旧手填容量与计时不受自动区导入导出影响。前端不计算容量、Roofline 或每 token 带宽，导入的自动 JSON 经服务端校验。
 
 ## 输出：指标与告警
 
-- **指标卡片**：展示响应提供的时延、实测吞吐、目标/构造/实际前缀命中、Prefill 工作量及 L1/L2/L3 分层命中、容量/驻留/驱逐/峰值、提升/降级与 restore 字节/时长；总命中不误标为 L1 命中。`arrival_rate` 是输入目标到达 QPS，不把完成吞吐误标为目标达成的到达率。字段及计算口径见 [metrics.md](metrics.md)。
+- **指标卡片**：展示响应提供的时延、仿真完成吞吐、目标/构造/实际前缀命中、Prefill 工作量及 L1/L2/L3 分层命中、容量/驻留/驱逐/峰值、提升/降级与 restore 字节/时长；总命中不误标为 L1 命中。自动解析模式额外展示服务端解析的权重、有效 KV token 容量及总 FLOPs、HBM bytes 和计算/传输时长；解析结果未经校准，不称为 GPU 实测。`arrival_rate` 是输入目标到达 QPS，不把完成吞吐误标为目标达成的到达率。字段及计算口径见 [metrics.md](metrics.md)。
 - **状态与原因**：展示 `meta.num_completed/num_aborted/num_skipped`；分别列出 `aborted_requests`、`skipped_requests` 的请求 ID 及原因。运行中的请求级容量失败属于 200 结果，不作为整场 HTTP 422；父轮失败导致未发送后代跳过。
 - **告警列表**：`warnings` 非空时逐条展示，为空不渲染；全失败时空指标按响应空值展示，不伪造时延或吞吐。
 - **甘特图**：只使用 `requests` 中的已完成区间；若没有成功请求，显示无法绘制的空态而不绘制失败/跳过记录。见下节。
@@ -42,7 +43,7 @@ MVP 只有一个解释性视图——请求生命周期甘特图。
 
 - 甘特图采用 canvas 渲染，区间交由 ECharts 管理，缩放平移由 dataZoom 承载。
 - 技术栈：React + TypeScript + Vite + ECharts。
-- 前端不自行计算任何指标，全部消费 `POST /api/simulate` 响应（见 [api.md](api.md)）。
+- 前端不自行计算任何指标，手动模式消费 `POST /api/simulate`，自动模式消费 `POST /api/simulate/resolved` 的 `result` 与 `resolution`（见 [api.md](api.md)）。
 - ECharts 仅注册甘特图使用的模块；甘特图在仿真结果返回后异步加载，不阻塞配置页首屏。
 
 ## 运行状态与验收

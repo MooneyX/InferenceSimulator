@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/api/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型与硬件参考目录 */
+        get: operations["presets_endpoint_api_presets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 解析单卡容量与计时规格 */
+        post: operations["resolve_endpoint_api_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/simulate/resolved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 按解析规格运行单卡仿真 */
+        post: operations["simulate_resolved_endpoint_api_simulate_resolved_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/simulate": {
         parameters: {
             query?: never;
@@ -54,6 +105,71 @@ export interface components {
             generated_tokens: number;
             /** Retry Count */
             retry_count: number;
+        };
+        /** AnalyticalSummary */
+        AnalyticalSummary: {
+            /**
+             * Steps
+             * @default 0
+             */
+            steps: number;
+            /**
+             * Flops
+             * @default 0
+             */
+            flops: number;
+            /**
+             * Hbm Bytes
+             * @default 0
+             */
+            hbm_bytes: number;
+            /**
+             * Compute Ms
+             * @default 0
+             */
+            compute_ms: number;
+            /**
+             * Memory Ms
+             * @default 0
+             */
+            memory_ms: number;
+            /**
+             * Device Ms
+             * @default 0
+             */
+            device_ms: number;
+            /**
+             * Restore Ms
+             * @default 0
+             */
+            restore_ms: number;
+        };
+        /** CapacityReport */
+        CapacityReport: {
+            /** Kv Bytes Per Token */
+            kv_bytes_per_token: number;
+            /** Kv Bytes Per Page */
+            kv_bytes_per_page: number;
+            /** Weights Resident Bytes */
+            weights_resident_bytes: number;
+            /** L1 Budget Bytes */
+            l1_budget_bytes: number;
+            /** L1 Kv Budget Bytes */
+            l1_kv_budget_bytes: number;
+            /** L2 Budget Bytes */
+            l2_budget_bytes: number;
+            /** L3 Budget Bytes */
+            l3_budget_bytes: number;
+            /** L1 Capacity Pages */
+            l1_capacity_pages: number;
+            /** L2 Capacity Pages */
+            l2_capacity_pages: number;
+            /** L3 Capacity Pages */
+            l3_capacity_pages: number;
+            /** L2 To L1 Tokens Per Ms */
+            l2_to_l1_tokens_per_ms?: number | null;
+            /** L3 To L2 Tokens Per Ms */
+            l3_to_l2_tokens_per_ms?: number | null;
         };
         /**
          * EngineConfig
@@ -131,6 +247,43 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HardwareCatalogEntry */
+        HardwareCatalogEntry: {
+            /** Name */
+            name: string;
+            /** Gpu Count */
+            gpu_count: number;
+            /** Memory Bytes Per Gpu */
+            memory_bytes_per_gpu: number;
+        };
+        /**
+         * HardwareSpec
+         * @description 单卡容量及用户假设的有效性能，不使用标称峰值代入。
+         */
+        HardwareSpec: {
+            /** Name */
+            name: string;
+            /**
+             * Gpu Count
+             * @default 1
+             */
+            gpu_count: number;
+            /** Memory Bytes Per Gpu */
+            memory_bytes_per_gpu: number;
+            /** Effective Fp16 Tflops */
+            effective_fp16_tflops: number;
+            /** Effective Fp8 Tflops */
+            effective_fp8_tflops?: number | null;
+            /** Effective Hbm Gb S */
+            effective_hbm_gb_s: number;
+            /** Effective Interconnect Gb S */
+            effective_interconnect_gb_s?: number | null;
+            /**
+             * Kernel Overhead Ms
+             * @default 0
+             */
+            kernel_overhead_ms: number;
         };
         /**
          * LognormalLength
@@ -399,6 +552,71 @@ export interface components {
             l3_free_blocks: number;
         };
         /**
+         * ModelSpec
+         * @description 单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。
+         */
+        ModelSpec: {
+            /** Name */
+            name: string;
+            /** Revision */
+            revision?: string | null;
+            /** Num Layers */
+            num_layers: number;
+            /** Hidden Size */
+            hidden_size: number;
+            /** Num Attention Heads */
+            num_attention_heads: number;
+            /** Num Kv Heads */
+            num_kv_heads: number;
+            /** Head Dim */
+            head_dim: number;
+            /** Ffn Intermediate Size */
+            ffn_intermediate_size: number;
+            /** Total Parameters */
+            total_parameters: number;
+            /**
+             * Weight Dtype
+             * @default bf16
+             * @enum {string}
+             */
+            weight_dtype: "bf16" | "fp16" | "fp8";
+            /**
+             * Kv Dtype
+             * @default bf16
+             * @enum {string}
+             */
+            kv_dtype: "bf16" | "fp16" | "fp8";
+            /** Resident Weights Bytes */
+            resident_weights_bytes?: number | null;
+            /**
+             * Moe Layers
+             * @default 0
+             */
+            moe_layers: number;
+            /** Expert Parameters Total */
+            expert_parameters_total?: number | null;
+            /** Active Parameters */
+            active_parameters?: number | null;
+            /**
+             * Num Experts
+             * @default 0
+             */
+            num_experts: number;
+            /**
+             * Experts Per Token
+             * @default 0
+             */
+            experts_per_token: number;
+            /** Expert Intermediate Size */
+            expert_intermediate_size?: number | null;
+            /**
+             * Attention Layout
+             * @default full_gqa
+             * @enum {string}
+             */
+            attention_layout: "full_gqa" | "other";
+        };
+        /**
          * PerfModelConfig
          * @description 性能模型系数，单位 ms。
          *
@@ -449,6 +667,15 @@ export interface components {
              * @description 分布均值（token）
              */
             mean: number;
+        };
+        /** PresetCatalog */
+        PresetCatalog: {
+            /** Models */
+            models: components["schemas"]["ModelSpec"][];
+            /** Hardware */
+            hardware: components["schemas"]["HardwareCatalogEntry"][];
+            /** Scenarios */
+            scenarios: components["schemas"]["ScenarioCatalogEntry"][];
         };
         /**
          * RequestRecord
@@ -529,6 +756,54 @@ export interface components {
              * @default 0
              */
             l3_hit_tokens: number;
+        };
+        /** ResolvedConfig */
+        ResolvedConfig: {
+            config: components["schemas"]["SimConfig"];
+            model: components["schemas"]["ModelSpec"];
+            hardware: components["schemas"]["HardwareSpec"];
+            storage: components["schemas"]["StorageSpec"];
+            /**
+             * Timing
+             * @enum {string}
+             */
+            timing: "empirical" | "analytical";
+            capacity: components["schemas"]["CapacityReport"];
+        };
+        /**
+         * ResolvedRequest
+         * @description 物理规格与现有负载/调度输入；engine 容量在解析时被替换。
+         */
+        ResolvedRequest: {
+            config: components["schemas"]["SimConfig"];
+            model: components["schemas"]["ModelSpec"];
+            hardware: components["schemas"]["HardwareSpec"];
+            storage: components["schemas"]["StorageSpec"];
+            /**
+             * Timing
+             * @default analytical
+             * @enum {string}
+             */
+            timing: "empirical" | "analytical";
+        };
+        /** ResolvedRun */
+        ResolvedRun: {
+            result: components["schemas"]["SimResult"];
+            resolution: components["schemas"]["ResolvedConfig"];
+            analysis?: components["schemas"]["AnalyticalSummary"] | null;
+        };
+        /** ScenarioCatalogEntry */
+        ScenarioCatalogEntry: {
+            /** Id */
+            id: string;
+            /** Model Name */
+            model_name: string;
+            /** Hardware Name */
+            hardware_name: string;
+            /** Gpu Count */
+            gpu_count: number;
+            /** Stage */
+            stage: string;
         };
         /**
          * SessionConfig
@@ -630,6 +905,43 @@ export interface components {
             reason: "parent_not_completed";
         };
         /**
+         * StorageSpec
+         * @description GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。
+         */
+        StorageSpec: {
+            /** L1 Available Gb */
+            l1_available_gb: number;
+            /**
+             * L2 Available Gb
+             * @default 0
+             */
+            l2_available_gb: number;
+            /**
+             * L3 Available Gb
+             * @default 0
+             */
+            l3_available_gb: number;
+            /**
+             * Runtime Reserve Bytes
+             * @default 0
+             */
+            runtime_reserve_bytes: number;
+            /** L2 To L1 Gb S */
+            l2_to_l1_gb_s?: number | null;
+            /** L3 To L2 Gb S */
+            l3_to_l2_gb_s?: number | null;
+            /**
+             * L2 Latency Ms
+             * @default 0
+             */
+            l2_latency_ms: number;
+            /**
+             * L3 Latency Ms
+             * @default 0
+             */
+            l3_latency_ms: number;
+        };
+        /**
          * SyntheticWorkloadConfig
          * @description 合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。
          */
@@ -696,6 +1008,92 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    presets_endpoint_api_presets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PresetCatalog"];
+                };
+            };
+        };
+    };
+    resolve_endpoint_api_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolvedRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    simulate_resolved_endpoint_api_simulate_resolved_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolvedRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedRun"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     simulate_endpoint_api_simulate_post: {
         parameters: {
             query?: never;

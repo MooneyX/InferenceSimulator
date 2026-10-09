@@ -23,6 +23,8 @@
 |---|---|
 | [plans/feature-roadmap.md](plans/feature-roadmap.md) | 功能状态、依赖及按模块组织的计划入口 |
 | [plans/perf-model.md](plans/perf-model.md) | F002：可解释性能模型、容量、校准及单机 TP |
+| [plans/model-hardware-kv-capacity.md](plans/model-hardware-kv-capacity.md) | F002 子计划：模型/硬件预置、单卡 KV 容量与支持边界 |
+| [plans/expert-parallelism.md](plans/expert-parallelism.md) | F004：模型/硬件参数配置与逐步 Roofline → TP → EP 三阶段实施 |
 | [plans/server-api.md](plans/server-api.md) | 各阶段服务/API 契约与类型交付 |
 | [plans/frontend.md](plans/frontend.md) | 各阶段配置交互与结果展示 |
 

@@ -8,6 +8,10 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult, simulate
+from simcore.capacity import resolve_config
+from simcore.runner import simulate_resolved
+from simcore.schemas import ModelSpec, ResolvedConfig, ResolvedRequest, ResolvedRun
+from simserver.presets import HARDWARE, MODELS
 
 __all__ = ["ErrorResponse", "router"]
 
@@ -22,6 +26,64 @@ class ErrorResponse(BaseModel):
 
 
 router = APIRouter(prefix="/api")
+
+
+class HardwareCatalogEntry(BaseModel):
+    name: str
+    gpu_count: int
+    memory_bytes_per_gpu: int
+
+
+class ScenarioCatalogEntry(BaseModel):
+    id: str
+    model_name: str
+    hardware_name: str
+    gpu_count: int
+    stage: str
+
+
+class PresetCatalog(BaseModel):
+    models: list[ModelSpec]
+    hardware: list[HardwareCatalogEntry]
+    scenarios: list[ScenarioCatalogEntry]
+
+
+@router.get("/presets", response_model=PresetCatalog, summary="模型与硬件参考目录")
+def presets_endpoint() -> PresetCatalog:
+    return PresetCatalog(
+        models=list(MODELS),
+        hardware=[HardwareCatalogEntry.model_validate(item) for item in HARDWARE],
+        scenarios=[
+            ScenarioCatalogEntry(
+                id="qwen3-8b-b300-1", model_name="Qwen/Qwen3-8B",
+                hardware_name="NVIDIA B300", gpu_count=1, stage="single_gpu_example",
+            ),
+            ScenarioCatalogEntry(
+                id="qwen3-235b-b300-8", model_name="Qwen/Qwen3-235B-A22B",
+                hardware_name="NVIDIA B300", gpu_count=8, stage="requires_tp_ep",
+            ),
+        ],
+    )
+
+
+@router.post("/resolve", response_model=ResolvedConfig, summary="解析单卡容量与计时规格")
+def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
+    try:
+        return resolve_config(request)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+@router.post("/simulate/resolved", response_model=ResolvedRun, summary="按解析规格运行单卡仿真")
+def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
+    try:
+        resolution = resolve_config(request)
+        result, analysis = simulate_resolved(resolution)
+        return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
+    except NotImplementedError as exc:
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
 @router.post(

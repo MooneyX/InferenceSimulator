@@ -17,23 +17,31 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "AbortedRequest",
+    "AnalyticalSummary",
     "Arrival",
+    "CapacityReport",
     "ClientWakeup",
     "EngineConfig",
     "FixedLength",
+    "HardwareSpec",
     "InferenceRequest",
     "LengthDist",
     "LognormalLength",
     "Metrics",
+    "ModelSpec",
     "PerfModelConfig",
     "PoissonLength",
     "RequestCompletion",
     "RequestRecord",
+    "ResolvedConfig",
+    "ResolvedRequest",
+    "ResolvedRun",
     "SessionConfig",
     "SimConfig",
     "SimMeta",
     "SimResult",
     "SkippedRequest",
+    "StorageSpec",
     "SyntheticWorkloadConfig",
     "TurnPlan",
     "WorkloadConfig",
@@ -217,6 +225,114 @@ class SimConfig(_Frozen):
     def _check_tiered_config(self) -> Self:
         validate_kv_config(self.engine, self.perf_model)
         return self
+
+
+class ModelSpec(_Frozen):
+    """单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。"""
+
+    name: str = Field(min_length=1)
+    revision: str | None = None
+    num_layers: int = Field(ge=1)
+    hidden_size: int = Field(ge=1)
+    num_attention_heads: int = Field(ge=1)
+    num_kv_heads: int = Field(ge=1)
+    head_dim: int = Field(ge=1)
+    ffn_intermediate_size: int = Field(ge=1)
+    total_parameters: int = Field(ge=1)
+    weight_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
+    kv_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
+    resident_weights_bytes: int | None = Field(default=None, gt=0)
+    moe_layers: int = Field(default=0, ge=0)
+    expert_parameters_total: int | None = Field(default=None, gt=0)
+    active_parameters: int | None = Field(default=None, ge=1)
+    num_experts: int = Field(default=0, ge=0)
+    experts_per_token: int = Field(default=0, ge=0)
+    expert_intermediate_size: int | None = Field(default=None, gt=0)
+    attention_layout: Literal["full_gqa", "other"] = "full_gqa"
+
+    @model_validator(mode="after")
+    def _check_heads(self) -> Self:
+        if self.num_attention_heads % self.num_kv_heads:
+            raise ValueError("注意力头数须是 KV 头数的整数倍")
+        if self.moe_layers > self.num_layers:
+            raise ValueError("MoE 层数不得超过总层数")
+        return self
+
+
+class HardwareSpec(_Frozen):
+    """单卡容量及用户假设的有效性能，不使用标称峰值代入。"""
+
+    name: str = Field(min_length=1)
+    gpu_count: int = Field(default=1, ge=1)
+    memory_bytes_per_gpu: int = Field(gt=0)
+    effective_fp16_tflops: float = Field(gt=0, allow_inf_nan=False)
+    effective_fp8_tflops: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    effective_hbm_gb_s: float = Field(gt=0, allow_inf_nan=False)
+    effective_interconnect_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    kernel_overhead_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class StorageSpec(_Frozen):
+    """GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。"""
+
+    l1_available_gb: float = Field(gt=0, allow_inf_nan=False)
+    l2_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    runtime_reserve_bytes: int = Field(default=0, ge=0)
+    l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class ResolvedRequest(_Frozen):
+    """物理规格与现有负载/调度输入；engine 容量在解析时被替换。"""
+
+    config: SimConfig
+    model: ModelSpec
+    hardware: HardwareSpec
+    storage: StorageSpec
+    timing: Literal["empirical", "analytical"] = "analytical"
+
+
+class CapacityReport(_Record):
+    kv_bytes_per_token: int
+    kv_bytes_per_page: int
+    weights_resident_bytes: int
+    l1_budget_bytes: int
+    l1_kv_budget_bytes: int
+    l2_budget_bytes: int
+    l3_budget_bytes: int
+    l1_capacity_pages: int
+    l2_capacity_pages: int
+    l3_capacity_pages: int
+    l2_to_l1_tokens_per_ms: float | None = None
+    l3_to_l2_tokens_per_ms: float | None = None
+
+
+class ResolvedConfig(_Record):
+    config: SimConfig
+    model: ModelSpec
+    hardware: HardwareSpec
+    storage: StorageSpec
+    timing: Literal["empirical", "analytical"]
+    capacity: CapacityReport
+
+
+class AnalyticalSummary(_Record):
+    steps: int = 0
+    flops: float = 0.0
+    hbm_bytes: float = 0.0
+    compute_ms: float = 0.0
+    memory_ms: float = 0.0
+    device_ms: float = 0.0
+    restore_ms: float = 0.0
+
+
+class ResolvedRun(_Record):
+    result: "SimResult"
+    resolution: ResolvedConfig
+    analysis: AnalyticalSummary | None = None
 
 
 # ---------------------------------------------------------------- 内部不可变计划与消息

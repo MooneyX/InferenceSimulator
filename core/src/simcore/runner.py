@@ -10,18 +10,53 @@ from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.metrics import compute_metrics
-from simcore.schemas import SimConfig, SimMeta, SimResult, SyntheticWorkloadConfig
+from simcore.schemas import (
+    AnalyticalSummary,
+    HardwareSpec,
+    ModelSpec,
+    ResolvedConfig,
+    SimConfig,
+    SimMeta,
+    SimResult,
+    SyntheticWorkloadConfig,
+)
 from simcore.workload import build_plan
 
 __all__ = ["simulate"]
 
 
 def simulate(config: SimConfig) -> SimResult:
-    """执行一场完整仿真。
+    """沿用单实例经验模型的完整仿真入口。"""
+    result, _ = _simulate(config, None)
+    return result
 
-    Raises:
-        NotImplementedError: ``workload.mode='trace'``（预留接缝，MVP 不实现）。
-    """
+
+def simulate_analytical(
+    config: SimConfig, model: ModelSpec, hardware: HardwareSpec
+) -> tuple[SimResult, AnalyticalSummary]:
+    """单 GPU Roofline 模式使用相同的调度与 KV 生命周期。"""
+    result, analysis = _simulate(config, (model, hardware))
+    if analysis is None:
+        raise RuntimeError("解析运行未生成成本汇总")
+    return result, analysis
+
+
+def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
+    """自动模式使用解析后的 token 容量和 token/ms 链路带宽。"""
+    analytical = (
+        (resolution.model, resolution.hardware) if resolution.timing == "analytical" else None
+    )
+    return _simulate(
+        resolution.config, analytical,
+        (resolution.capacity.l2_to_l1_tokens_per_ms,
+         resolution.capacity.l3_to_l2_tokens_per_ms),
+    )
+
+
+def _simulate(
+    config: SimConfig, analytical: tuple[ModelSpec, HardwareSpec] | None,
+    token_bandwidths: tuple[float | None, float | None] | None = None,
+) -> tuple[SimResult, AnalyticalSummary | None]:
     if config.workload.mode == "trace":
         raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
     synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
@@ -33,10 +68,12 @@ def simulate(config: SimConfig) -> SimResult:
             config.perf_model,
             output_targets={key: turn.output_len for key, turn in plan.turns.items()},
             record_trace=False,
+            analytical=analytical,
+            token_bandwidths=token_bandwidths,
         ),
         client,
     ).run()
-    return SimResult(
+    result = SimResult(
         meta=SimMeta(
             config=config,
             num_requests=len(plan.turns),
@@ -68,3 +105,4 @@ def simulate(config: SimConfig) -> SimResult:
         skipped_requests=list(run.skipped_requests),
         warnings=list(run.warnings),
     )
+    return result, run.analysis

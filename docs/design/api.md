@@ -46,11 +46,11 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-`arrival_rate` 是所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成负载按 `max_new_tokens` 与输入大小的安全余量截断实际输出目标；手工 `Arrival.max_new_tokens` 默认 128。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。配置未提供独立 `prefix_cache`、硬件或校准模式。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与直接构造 `Engine`/`run_engine` 时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
+`arrival_rate` 是所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成负载按 `max_new_tokens` 与输入大小的安全余量截断实际输出目标；手工 `Arrival.max_new_tokens` 默认 128。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。旧 `SimConfig` 未提供独立 `prefix_cache`、硬件或校准模式；自动规格单独走下文 `ResolvedRequest`。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与直接构造 `Engine`/`run_engine` 时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
 
 ## API
 
-MVP 唯一端点：
+旧配置的同步仿真端点：
 
 ```
 POST /api/simulate
@@ -88,6 +88,13 @@ warnings:          # 非致命告警；不代替请求级失败状态
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。
 
 `metrics` 包含 TTFT、TPOT、完成吞吐、makespan、L1/L2/L3 命中与驻留、驱逐/提升/降级及恢复字节和时间；`requests` 的分层命中只记录首次准入。计算与空值口径统一见 [metrics.md](metrics.md)。
+
+## 自动解析入口（单 GPU）
+
+- `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 的标称单卡显存；不提供已测有效算力或模型修订认证，目录条目不等于多卡可运行。
+- `POST /api/resolve` 接受 `ResolvedRequest`：旧 `SimConfig` 作为负载/手动模式基础，加上显式 `ModelSpec`、`HardwareSpec`、`StorageSpec` 和 `timing`。自动解析仅支持单卡 Dense 全注意力 GQA/MQA、BF16/FP16；L1 输入是包含权重的 GB（十进制）可用预算，扣除驻留权重和显式运行时预留后按 KV 整页折算；L2/L3 输入只供 KV 使用，容量各自取整页。缺失带宽、容量不足或不支持的拓扑返回 422。
+- `POST /api/simulate/resolved` **再次解析**物理输入后执行，返回 `ResolvedRun`，其 `result` 是原 `SimResult`，`resolution` 回显解析账单、输入规格与有效 `SimConfig`，`analysis` 仅在解析计时模式返回单步成本汇总。前端不得将上一次 `/api/resolve` 的 token 结果直接作为未经验证的有效配置提交；总参数量推导的 BF16/FP16 权重字节数是用户规格假设，可用实际驻留权重覆盖。
+- 手填旧 `/api/simulate` 的请求/响应字节结构保持不变；自动模式的四个旧经验系数只在 `timing=empirical` 时用于计算，`timing=analytical` 按 [单 GPU 解析计时](perf-model.md) 每步计算。
 
 ## 类型同步
 

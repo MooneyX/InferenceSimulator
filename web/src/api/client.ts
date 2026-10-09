@@ -1,6 +1,10 @@
 import type {
   ErrorResponse,
   HTTPValidationError,
+  PresetCatalog,
+  ResolvedConfig,
+  ResolvedRequest,
+  ResolvedRun,
   SimConfig,
   SimResult,
   ValidationError,
@@ -124,4 +128,40 @@ export async function simulate(
       status: response.status,
     },
   );
+}
+
+async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(endpoint, body ? {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    } : undefined);
+  } catch (cause) {
+    throw new SimulationApiError("无法连接仿真服务", { kind: "network", cause });
+  }
+  const payload = await readJson(response);
+  if (response.ok && payload !== undefined) return payload as T;
+  if (response.status === 422) {
+    const detail = (payload as HTTPValidationError | undefined)?.detail;
+    throw new SimulationApiError(getErrorDetail(payload) ?? "模型或硬件规格校验失败", {
+      kind: "validation", status: 422, validationErrors: Array.isArray(detail) ? detail : [],
+    });
+  }
+  throw new SimulationApiError(getErrorDetail(payload) ?? `请求失败（HTTP ${response.status}）`, {
+    kind: response.ok ? "invalid_response" : "http", status: response.status,
+  });
+}
+
+export function getPresets(): Promise<PresetCatalog> {
+  return requestAuto<PresetCatalog>("/api/presets");
+}
+
+export function resolveAutomatic(request: ResolvedRequest): Promise<ResolvedConfig> {
+  return requestAuto<ResolvedConfig>("/api/resolve", request);
+}
+
+export function simulateAutomatic(request: ResolvedRequest): Promise<ResolvedRun> {
+  return requestAuto<ResolvedRun>("/api/simulate/resolved", request);
 }

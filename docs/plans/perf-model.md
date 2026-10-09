@@ -1,10 +1,12 @@
 # 性能模型实施计划（F002）
 
-**状态：部分实现。** 四系数成本、`StepWorkload` 及两种 P/D 模式的计时已接通，见 [经验模型设计](../design/perf-model.md)；本计划只记录尚未实现的成本分解、解析模型、设备、内存、算子、通信与校准，不为 F001 增加实现前提。
+**状态：部分实现。** 四系数及单 GPU Dense/GQA 逐步 Roofline 估计已接通，见 [现行计时设计](../design/perf-model.md)；本计划继续跟踪逐阶段/逐 rank 成本分解、未覆盖算子、形状校准、TP/EP 通信和实测误差，不为 F001 增加实现前提。
 
 ## 目标与首期范围
 
-从可配置的模型结构、硬件、运行时和并行策略推导单步时间、显存占用和瓶颈，给出可解释、可校准的成本分解。首期支持 decoder-only Dense/GQA、BF16/FP16、同构 NVIDIA GPU、单 GPU；单 GPU 模型稳定后支持单机 TP1/2/4/8。PP、DP、EP、PD 分离、跨节点、异构设备、KV offload、多级存储、speculative decoding 与自动在线 profiling **不属于本次验收**，不得以规划字段冒充已可用模式。
+从可配置的模型结构、硬件、运行时和并行策略推导单步时间、显存占用和瓶颈，给出可解释、可校准的成本分解。第一阶段与 [F004 三阶段计划](expert-parallelism.md) 共用模型/硬件配置和单 GPU Roofline 步成本接口，先支持 decoder-only Dense/GQA、BF16/FP16、同构 NVIDIA GPU；通用单机 TP1/2/4/8 的性能建模为 F004 第二阶段提供基础。MoE 单实例 TP + EP 的组合验收由 F004 管理；本计划不单独定义 MoE 并行拓扑或 EP 公式。PP、DP、PD 分离、跨节点、异构设备、KV offload、多级存储、speculative decoding 与自动在线 profiling **不属于本次验收**，不得以规划字段冒充已可用模式。
+
+模型/硬件预置及单卡 KV 容量的分阶段边界见 [模型与硬件容量子计划](model-hardware-kv-capacity.md)：可浏览的预置不等于可计算或可运行；非 NVIDIA 型号在该子计划中只作为待核验的容量资料，不扩展本计划首期解析性能模型的硬件范围。
 
 ## 待冻结的配置和接口
 
@@ -33,12 +35,14 @@ t_memory = HBM_bytes / effective_HBM_BW(shape)
 t_device = t_fixed + max(t_compute, t_memory)
 ```
 
+模型结构、权重/KV 字节数、设备的有效性能和固定开销在仿真前解析为静态输入；每个仿真步再根据 `StepWorkload` 的实际 batch、复用长度与上下文生成相应算子工作量并应用 Roofline。上述 `max` 仅用于同一可重叠的计算/访存阶段；顺序依赖的层和通信按关键路径合成，不将整场工作量预先压成四个经验系数。未经校准的输出标为解析估计。
+
 Prefill 使用实际输入、历史上下文、算子与新 KV 读写；Decode 使用每请求逻辑 context、batch 权重读取、attention KV 读取和 kernel shape。`StepWorkload` 的纯阶段按该阶段耗时推进时钟；融合阶段分别计算 P/D 子工作量，经验后端取 `max(t_prefill, t_decode)`，解析/校准模式需要显式定义共享设备上的融合关键路径，不能把两项无条件相加。`effective` 来源于适用 shape 的默认/校准数据，不直接等于理论峰值。单机 TP 增加 collective 次数、传输 bytes 和互联带宽，基础通信项为 `latency*rounds + bytes/bandwidth`；重叠系数 `eta` 在 `[0,1]` 内，总成本初期为 `t_device+t_comm-eta*min(t_device,t_comm)`，最慢 rank 决定 critical path。DP/PP/EP/PD 的公式不在此首期提前冻结。
 
 ## 实施阶段与交付
 
 1. **PM1 剩余：可解释成本分解。** 在已接通的 `StepWorkload` 四系数计时基础上定义 `StepCostBreakdown` 与对应结果明细；目前只有步时长，没有逐阶段/逐 rank 的成本分解输出。
-2. **PM2：单 GPU 解析。** 新增模型/硬件/运行时解析配置、Dense/GQA 参数与 KV bytes/token、容量预算、Prefill/Decode FLOPs、HBM Roofline 与瓶颈解释。
+2. **PM2：单 GPU 解析（基础已接通）。** 当前已支持 Dense/GQA 规格、三级 KV 容量和 Prefill/Decode 的投影、注意力、FFN 逐步 Roofline 估计及总量汇总；后续补词表投影、更多算子与可校准的逐阶段瓶颈明细。
 3. **PM3：校准。** 按模型、GPU、dtype、runtime 和 shape 建有效算力/带宽及固定开销 profile，记录版本/适用范围；微基准与端到端误差报告覆盖 Prefill/Decode、batch、context 和饱和负载；超出 profile 范围给低置信度告警；微基准与端到端误差报告须分别覆盖互斥及融合执行的适用范围。
 4. **PM4：单机 TP。** TP1/2/4/8 的权重/KV 分片、通信、rank placement 和关键路径，补充多 rank 明细与展示；不隐式加入跨节点拓扑。
 

@@ -9,3 +9,7 @@ export type ErrorResponse = SimulateOperation["responses"][501]["content"]["appl
 export type ValidationError = components["schemas"]["ValidationError"];
 export type RequestRecord = components["schemas"]["RequestRecord"];
 export type LengthDistribution = components["schemas"]["SyntheticWorkloadConfig"]["prompt_len"];
+export type ResolvedRequest = components["schemas"]["ResolvedRequest"];
+export type ResolvedConfig = components["schemas"]["ResolvedConfig"];
+export type ResolvedRun = components["schemas"]["ResolvedRun"];
+export type PresetCatalog = components["schemas"]["PresetCatalog"];

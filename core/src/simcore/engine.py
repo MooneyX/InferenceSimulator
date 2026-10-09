@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from simcore.analytical import step_cost
 from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
 from simcore.kv_cache import CacheCapacityError, L1Snapshot, TieredKVCache, TierSnapshot
 from simcore.perf_model import (
@@ -15,14 +16,18 @@ from simcore.perf_model import (
     StepWorkload,
     restore_bytes,
     restore_time,
+    restore_time_tokens,
     workload_time,
 )
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
+    AnalyticalSummary,
     Arrival,
     EngineConfig,
+    HardwareSpec,
     InferenceRequest,
+    ModelSpec,
     PerfModelConfig,
     RequestCompletion,
     RequestRecord,
@@ -74,6 +79,7 @@ class EngineRun:
     cache_deletions: int = 0
     restore_bytes: int = 0
     restore_time_ms: float = 0.0
+    analysis: AnalyticalSummary | None = None
 
 
 def run_engine(
@@ -123,8 +129,13 @@ class Engine:
         *,
         output_targets: Mapping[int, int],
         record_trace: bool = True,
+        analytical: tuple[ModelSpec, HardwareSpec] | None = None,
+        token_bandwidths: tuple[float | None, float | None] | None = None,
     ) -> None:
         validate_kv_config(engine, perf)
+        self._token_bandwidths = token_bandwidths
+        self._analytical = analytical
+        self._analysis = AnalyticalSummary() if analytical else None
         self._output_targets = dict(output_targets)
         self._engine_config = engine
         self._perf = perf
@@ -340,9 +351,29 @@ class Engine:
             cache.page_size if promoted else 0,
             tuple(item.request.request_id for item in selection.restore_only),
         )
-        transfer_time = restore_time(workload, self._perf)
+        if self._token_bandwidths is None:
+            transfer_time = restore_time(workload, self._perf)
+        else:
+            transfer_time = restore_time_tokens(
+                workload, l2_tokens_per_ms=self._token_bandwidths[0],
+                l3_tokens_per_ms=self._token_bandwidths[1],
+                l2_latency_ms=self._perf.l2_latency_ms, l3_latency_ms=self._perf.l3_latency_ms,
+            )
         transferred_bytes = restore_bytes(workload, self._perf)
-        duration = workload_time(workload, self._perf) + transfer_time
+        if self._analytical is None:
+            device_time = workload_time(workload, self._perf)
+        else:
+            cost = step_cost(workload, *self._analytical)
+            device_time = cost.duration_ms
+            if self._analysis is not None:
+                self._analysis.steps += 1
+                self._analysis.flops += cost.flops
+                self._analysis.hbm_bytes += cost.hbm_bytes
+                self._analysis.compute_ms += cost.compute_ms
+                self._analysis.memory_ms += cost.memory_ms
+                self._analysis.device_ms += device_time
+                self._analysis.restore_ms += transfer_time
+        duration = device_time + transfer_time
         self._restore_time_ms += transfer_time
         self._restore_bytes += transferred_bytes
         end = now_ms + duration
@@ -529,4 +560,5 @@ class Engine:
             cache_deletions=self._prefix_cache.deletions,
             restore_bytes=self._restore_bytes,
             restore_time_ms=self._restore_time_ms,
+            analysis=self._analysis,
         )

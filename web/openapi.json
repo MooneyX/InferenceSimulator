@@ -6,6 +6,100 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/presets": {
+      "get": {
+        "summary": "模型与硬件参考目录",
+        "operationId": "presets_endpoint_api_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetCatalog"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resolve": {
+      "post": {
+        "summary": "解析单卡容量与计时规格",
+        "operationId": "resolve_endpoint_api_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedConfig"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulate/resolved": {
+      "post": {
+        "summary": "按解析规格运行单卡仿真",
+        "operationId": "simulate_resolved_endpoint_api_simulate_resolved_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedRun"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/simulate": {
       "post": {
         "summary": "同步执行一场仿真",
@@ -106,6 +200,129 @@
         ],
         "title": "AbortedRequest",
         "description": "已发送但执行失败的请求；失败不终止其他请求。"
+      },
+      "AnalyticalSummary": {
+        "properties": {
+          "steps": {
+            "type": "integer",
+            "title": "Steps",
+            "default": 0
+          },
+          "flops": {
+            "type": "number",
+            "title": "Flops",
+            "default": 0.0
+          },
+          "hbm_bytes": {
+            "type": "number",
+            "title": "Hbm Bytes",
+            "default": 0.0
+          },
+          "compute_ms": {
+            "type": "number",
+            "title": "Compute Ms",
+            "default": 0.0
+          },
+          "memory_ms": {
+            "type": "number",
+            "title": "Memory Ms",
+            "default": 0.0
+          },
+          "device_ms": {
+            "type": "number",
+            "title": "Device Ms",
+            "default": 0.0
+          },
+          "restore_ms": {
+            "type": "number",
+            "title": "Restore Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AnalyticalSummary"
+      },
+      "CapacityReport": {
+        "properties": {
+          "kv_bytes_per_token": {
+            "type": "integer",
+            "title": "Kv Bytes Per Token"
+          },
+          "kv_bytes_per_page": {
+            "type": "integer",
+            "title": "Kv Bytes Per Page"
+          },
+          "weights_resident_bytes": {
+            "type": "integer",
+            "title": "Weights Resident Bytes"
+          },
+          "l1_budget_bytes": {
+            "type": "integer",
+            "title": "L1 Budget Bytes"
+          },
+          "l1_kv_budget_bytes": {
+            "type": "integer",
+            "title": "L1 Kv Budget Bytes"
+          },
+          "l2_budget_bytes": {
+            "type": "integer",
+            "title": "L2 Budget Bytes"
+          },
+          "l3_budget_bytes": {
+            "type": "integer",
+            "title": "L3 Budget Bytes"
+          },
+          "l1_capacity_pages": {
+            "type": "integer",
+            "title": "L1 Capacity Pages"
+          },
+          "l2_capacity_pages": {
+            "type": "integer",
+            "title": "L2 Capacity Pages"
+          },
+          "l3_capacity_pages": {
+            "type": "integer",
+            "title": "L3 Capacity Pages"
+          },
+          "l2_to_l1_tokens_per_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 To L1 Tokens Per Ms"
+          },
+          "l3_to_l2_tokens_per_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L3 To L2 Tokens Per Ms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kv_bytes_per_token",
+          "kv_bytes_per_page",
+          "weights_resident_bytes",
+          "l1_budget_bytes",
+          "l1_kv_budget_bytes",
+          "l2_budget_bytes",
+          "l3_budget_bytes",
+          "l1_capacity_pages",
+          "l2_capacity_pages",
+          "l3_capacity_pages"
+        ],
+        "title": "CapacityReport"
       },
       "EngineConfig": {
         "properties": {
@@ -214,6 +431,99 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HardwareCatalogEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "gpu_count": {
+            "type": "integer",
+            "title": "Gpu Count"
+          },
+          "memory_bytes_per_gpu": {
+            "type": "integer",
+            "title": "Memory Bytes Per Gpu"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "gpu_count",
+          "memory_bytes_per_gpu"
+        ],
+        "title": "HardwareCatalogEntry"
+      },
+      "HardwareSpec": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "gpu_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Gpu Count",
+            "default": 1
+          },
+          "memory_bytes_per_gpu": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Memory Bytes Per Gpu"
+          },
+          "effective_fp16_tflops": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Effective Fp16 Tflops"
+          },
+          "effective_fp8_tflops": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Fp8 Tflops"
+          },
+          "effective_hbm_gb_s": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Effective Hbm Gb S"
+          },
+          "effective_interconnect_gb_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Interconnect Gb S"
+          },
+          "kernel_overhead_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Kernel Overhead Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "memory_bytes_per_gpu",
+          "effective_fp16_tflops",
+          "effective_hbm_gb_s"
+        ],
+        "title": "HardwareSpec",
+        "description": "单卡容量及用户假设的有效性能，不使用标称峰值代入。"
       },
       "LognormalLength": {
         "properties": {
@@ -591,6 +901,170 @@
         "title": "Metrics",
         "description": "全场指标。``None`` 表示该指标在本场仿真中无定义。"
       },
+      "ModelSpec": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "num_layers": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Layers"
+          },
+          "hidden_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Hidden Size"
+          },
+          "num_attention_heads": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Attention Heads"
+          },
+          "num_kv_heads": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Kv Heads"
+          },
+          "head_dim": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Head Dim"
+          },
+          "ffn_intermediate_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ffn Intermediate Size"
+          },
+          "total_parameters": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Total Parameters"
+          },
+          "weight_dtype": {
+            "type": "string",
+            "enum": [
+              "bf16",
+              "fp16",
+              "fp8"
+            ],
+            "title": "Weight Dtype",
+            "default": "bf16"
+          },
+          "kv_dtype": {
+            "type": "string",
+            "enum": [
+              "bf16",
+              "fp16",
+              "fp8"
+            ],
+            "title": "Kv Dtype",
+            "default": "bf16"
+          },
+          "resident_weights_bytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resident Weights Bytes"
+          },
+          "moe_layers": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Moe Layers",
+            "default": 0
+          },
+          "expert_parameters_total": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expert Parameters Total"
+          },
+          "active_parameters": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Parameters"
+          },
+          "num_experts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Experts",
+            "default": 0
+          },
+          "experts_per_token": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Experts Per Token",
+            "default": 0
+          },
+          "expert_intermediate_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expert Intermediate Size"
+          },
+          "attention_layout": {
+            "type": "string",
+            "enum": [
+              "full_gqa",
+              "other"
+            ],
+            "title": "Attention Layout",
+            "default": "full_gqa"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "num_layers",
+          "hidden_size",
+          "num_attention_heads",
+          "num_kv_heads",
+          "head_dim",
+          "ffn_intermediate_size",
+          "total_parameters"
+        ],
+        "title": "ModelSpec",
+        "description": "单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。"
+      },
       "PerfModelConfig": {
         "properties": {
           "prefill_c1": {
@@ -695,6 +1169,38 @@
         ],
         "title": "PoissonLength",
         "description": "泊松分布长度。"
+      },
+      "PresetCatalog": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelSpec"
+            },
+            "type": "array",
+            "title": "Models"
+          },
+          "hardware": {
+            "items": {
+              "$ref": "#/components/schemas/HardwareCatalogEntry"
+            },
+            "type": "array",
+            "title": "Hardware"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioCatalogEntry"
+            },
+            "type": "array",
+            "title": "Scenarios"
+          }
+        },
+        "type": "object",
+        "required": [
+          "models",
+          "hardware",
+          "scenarios"
+        ],
+        "title": "PresetCatalog"
       },
       "RequestRecord": {
         "properties": {
@@ -832,6 +1338,139 @@
         ],
         "title": "RequestRecord",
         "description": "单请求的生命周期区间记录，供甘特图与指标汇总消费。\n\n不变式：``arrival <= prefill_start <= prefill_end <= finish``；\n``prefill_end`` 同时是 decode 阶段起点。"
+      },
+      "ResolvedConfig": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SimConfig"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelSpec"
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/HardwareSpec"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageSpec"
+          },
+          "timing": {
+            "type": "string",
+            "enum": [
+              "empirical",
+              "analytical"
+            ],
+            "title": "Timing"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/CapacityReport"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "config",
+          "model",
+          "hardware",
+          "storage",
+          "timing",
+          "capacity"
+        ],
+        "title": "ResolvedConfig"
+      },
+      "ResolvedRequest": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SimConfig"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelSpec"
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/HardwareSpec"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageSpec"
+          },
+          "timing": {
+            "type": "string",
+            "enum": [
+              "empirical",
+              "analytical"
+            ],
+            "title": "Timing",
+            "default": "analytical"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "config",
+          "model",
+          "hardware",
+          "storage"
+        ],
+        "title": "ResolvedRequest",
+        "description": "物理规格与现有负载/调度输入；engine 容量在解析时被替换。"
+      },
+      "ResolvedRun": {
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/SimResult"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/ResolvedConfig"
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalyticalSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "result",
+          "resolution"
+        ],
+        "title": "ResolvedRun"
+      },
+      "ScenarioCatalogEntry": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name"
+          },
+          "hardware_name": {
+            "type": "string",
+            "title": "Hardware Name"
+          },
+          "gpu_count": {
+            "type": "integer",
+            "title": "Gpu Count"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "model_name",
+          "hardware_name",
+          "gpu_count",
+          "stage"
+        ],
+        "title": "ScenarioCatalogEntry"
       },
       "SessionConfig": {
         "properties": {
@@ -1028,6 +1667,76 @@
         ],
         "title": "SkippedRequest",
         "description": "父轮未成功，因而从未发送的子轮。"
+      },
+      "StorageSpec": {
+        "properties": {
+          "l1_available_gb": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "L1 Available Gb"
+          },
+          "l2_available_gb": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L2 Available Gb",
+            "default": 0.0
+          },
+          "l3_available_gb": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Available Gb",
+            "default": 0.0
+          },
+          "runtime_reserve_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Runtime Reserve Bytes",
+            "default": 0
+          },
+          "l2_to_l1_gb_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 To L1 Gb S"
+          },
+          "l3_to_l2_gb_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L3 To L2 Gb S"
+          },
+          "l2_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L2 Latency Ms",
+            "default": 0.0
+          },
+          "l3_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "l1_available_gb"
+        ],
+        "title": "StorageSpec",
+        "description": "GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。"
       },
       "SyntheticWorkloadConfig": {
         "properties": {

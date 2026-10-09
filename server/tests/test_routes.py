@@ -116,16 +116,14 @@ class TestSuccess:
             "prefill_end",
             "finish",
         }
+        result = SimResult.model_validate_json(response.content)
+        assert result.meta.config == SimConfig.model_validate(make_payload())
 
     def test_matches_kernel_serialization(self, client: TestClient) -> None:
         """响应字节即内核 ``SimResult`` 的 JSON 序列化。"""
         payload = make_payload(seed=3)
         expected = simulate(SimConfig.model_validate(payload)).model_dump_json()
         assert client.post(URL, json=payload).text == expected
-
-    def test_response_validates_as_sim_result(self, client: TestClient) -> None:
-        result = SimResult.model_validate_json(client.post(URL, json=make_payload()).content)
-        assert result.meta.config == SimConfig.model_validate(make_payload())
 
     def test_same_seed_bit_identical(self, client: TestClient) -> None:
         payload = make_payload(seed=7)

@@ -203,11 +203,9 @@ class TestTraceSeam:
 
 
 class TestReproducibility:
-    def test_same_seed_json_bit_identical(self) -> None:
+    def test_same_seed_json_bit_identical(self, result: SimResult) -> None:
         """M1 验收线：同种子两次运行结果逐字节一致。"""
-        assert simulate(make_config(seed=11)).model_dump_json() == (
-            simulate(make_config(seed=11)).model_dump_json()
-        )
+        assert result.model_dump_json() == simulate(make_config()).model_dump_json()
 
     def test_different_seed_differs(self) -> None:
         assert simulate(make_config(seed=1)).requests != simulate(make_config(seed=2)).requests

@@ -285,14 +285,13 @@ class TestInvariants:
 
 
 class TestReproducibility:
-    def test_same_seed_bit_identical(self) -> None:
-        a, b = synthetic_run(seed=3), synthetic_run(seed=3)
-        assert [r.model_dump() for r in a.records] == [r.model_dump() for r in b.records]
-        assert a.warnings == b.warnings and list(a.trace) == list(b.trace)
+    def test_same_seed_bit_identical(self, result: EngineRun) -> None:
+        rerun = synthetic_run()
+        assert [r.model_dump() for r in result.records] == [r.model_dump() for r in rerun.records]
+        assert result.warnings == rerun.warnings and list(result.trace) == list(rerun.trace)
 
-    def test_trace_toggle_does_not_change_results(self) -> None:
-        with_trace = synthetic_run(seed=5)
-        without = synthetic_run(seed=5, record_trace=False)
-        assert with_trace.records == without.records
-        assert with_trace.warnings == without.warnings
-        assert len(without.trace) == 0 and len(with_trace.trace) > 0
+    def test_trace_toggle_does_not_change_results(self, result: EngineRun) -> None:
+        without = synthetic_run(record_trace=False)
+        assert result.records == without.records
+        assert result.warnings == without.warnings
+        assert len(without.trace) == 0 and len(result.trace) > 0

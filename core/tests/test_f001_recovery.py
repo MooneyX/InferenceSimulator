@@ -269,7 +269,10 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
     assert result.skipped_requests[1].parent_request_id == 1
     assert result.metrics.ttft_mean is None and result.metrics.throughput is None
     assert result.metrics.makespan == 0
-    assert result.model_dump_json() == simulate(config).model_dump_json()
+    exclude = {"meta": {"wall_clock_ms"}}
+    assert result.model_dump_json(exclude=exclude) == simulate(config).model_dump_json(
+        exclude=exclude
+    )
 
 
 def test_requeue_after_future_step_end_preserves_fcfs_of_midstep_arrival() -> None:

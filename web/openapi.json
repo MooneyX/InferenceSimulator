@@ -1772,6 +1772,12 @@
             "minimum": 0.0,
             "title": "Sim End",
             "description": "末请求完成时刻（ms）"
+          },
+          "wall_clock_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Wall Clock Ms",
+            "description": "从生成请求计划至汇总指标的内核实际运行耗时（ms），不含配置解析与响应序列化"
           }
         },
         "additionalProperties": false,
@@ -1784,7 +1790,8 @@
           "num_skipped",
           "num_engine_steps",
           "sim_start",
-          "sim_end"
+          "sim_end",
+          "wall_clock_ms"
         ],
         "title": "SimMeta",
         "description": "配置回显与仿真规模信息。"

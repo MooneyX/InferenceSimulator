@@ -610,6 +610,10 @@ class SimMeta(_Record):
     num_engine_steps: int = Field(ge=0, description="引擎迭代步数")
     sim_start: float = Field(ge=0, description="首请求到达时刻（ms）")
     sim_end: float = Field(ge=0, description="末请求完成时刻（ms）")
+    wall_clock_ms: float = Field(
+        ge=0,
+        description="从生成请求计划至汇总指标的内核实际运行耗时（ms），不含配置解析与响应序列化",
+    )
 
     @model_validator(mode="after")
     def _check_window(self) -> Self:

@@ -71,7 +71,7 @@ function metricValue(label: string): HTMLElement {
 
 describe("MetricsPanel", () => {
   it("renders every service metric with deterministic units", () => {
-    render(<MetricsPanel metrics={metrics} />);
+    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} />);
 
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(metricValue("TTFT 均值")).toHaveTextContent("12.35 ms");
@@ -80,6 +80,7 @@ describe("MetricsPanel", () => {
     expect(metricValue("TPOT 均值")).toHaveTextContent("2.5 ms");
     expect(metricValue("端到端吞吐")).toHaveTextContent("1,234.57 请求/秒");
     expect(metricValue("Makespan")).toHaveTextContent("800.25 ms");
+    expect(metricValue("实际运行耗时")).toHaveTextContent("42.5 ms");
     expect(metricValue("目标理想命中率")).toHaveTextContent("30 %");
     expect(metricValue("构造理想命中率")).toHaveTextContent("28 %");
     expect(metricValue("实际前缀命中率")).toHaveTextContent("17 %");
@@ -101,7 +102,7 @@ describe("MetricsPanel", () => {
   });
 
   it("separates aggregate cache hits from tier attribution and restore costs", () => {
-    render(<MetricsPanel metrics={{
+    render(<MetricsPanel wallClockMs={42.5} metrics={{
       ...metrics,
       actual_hit_tokens: 170,
       l1_hit_tokens: 50,
@@ -126,6 +127,7 @@ describe("MetricsPanel", () => {
   it("shows undefined instead of coercing nullable metrics to zero", () => {
     render(
       <MetricsPanel
+        wallClockMs={42.5}
         metrics={{
           ...metrics,
           tpot_mean: null,
@@ -141,6 +143,7 @@ describe("MetricsPanel", () => {
   it("displays values supplied by the service without recomputing them", () => {
     render(
       <MetricsPanel
+        wallClockMs={42.5}
         metrics={{
           ...metrics,
           ttft_mean: 901,

@@ -1,5 +1,7 @@
 """runner 模块单测：端到端串联、元信息一致性、trace 接缝与可复现性。"""
 
+from unittest.mock import patch
+
 import pytest
 
 import simcore
@@ -55,6 +57,13 @@ class TestEndToEnd:
         assert meta.num_engine_steps > 0
         assert meta.sim_start == min(r.arrival for r in result.requests)
         assert meta.sim_end == max(r.finish for r in result.requests)
+
+    def test_wall_clock_measures_kernel_run(self) -> None:
+        with patch("simcore.runner.perf_counter", side_effect=[10.0, 10.125]) as clock:
+            result = simulate(make_config(num_requests=1))
+        assert clock.call_count == 2
+        assert result.meta.wall_clock_ms == pytest.approx(125.0)
+        assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_metrics_consistent_with_records(self, result: SimResult) -> None:
         baseline = compute_metrics(result.requests)
@@ -204,8 +213,11 @@ class TestTraceSeam:
 
 class TestReproducibility:
     def test_same_seed_json_bit_identical(self, result: SimResult) -> None:
-        """M1 验收线：同种子两次运行结果逐字节一致。"""
-        assert result.model_dump_json() == simulate(make_config()).model_dump_json()
+        """同种子仿真结果（除运行耗时）逐字节一致。"""
+        exclude = {"meta": {"wall_clock_ms"}}
+        assert result.model_dump_json(exclude=exclude) == simulate(make_config()).model_dump_json(
+            exclude=exclude
+        )
 
     def test_different_seed_differs(self) -> None:
         assert simulate(make_config(seed=1)).requests != simulate(make_config(seed=2)).requests

@@ -1,6 +1,7 @@
 """routes 模块单测：``POST /api/simulate`` 的成功路径、可复现性、错误映射与 OpenAPI 登记。"""
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -97,6 +98,7 @@ class TestSuccess:
             not in body["meta"]["config"]["workload"]["synthetic"]["session"]
         )
         assert body["meta"]["num_requests"] == 100
+        assert body["meta"]["wall_clock_ms"] >= 0
         assert body["meta"]["num_completed"] == len(body["requests"])
         assert (
             body["meta"]["num_completed"]
@@ -120,14 +122,19 @@ class TestSuccess:
         assert result.meta.config == SimConfig.model_validate(make_payload())
 
     def test_matches_kernel_serialization(self, client: TestClient) -> None:
-        """响应字节即内核 ``SimResult`` 的 JSON 序列化。"""
+        """响应字节即本次内核 ``SimResult`` 的 JSON 序列化。"""
         payload = make_payload(seed=3)
-        expected = simulate(SimConfig.model_validate(payload)).model_dump_json()
-        assert client.post(URL, json=payload).text == expected
+        expected = simulate(SimConfig.model_validate(payload))
+        with patch("simserver.routes.simulate", return_value=expected):
+            response = client.post(URL, json=payload)
+        assert response.text == expected.model_dump_json()
 
     def test_same_seed_bit_identical(self, client: TestClient) -> None:
         payload = make_payload(seed=7)
-        assert client.post(URL, json=payload).content == client.post(URL, json=payload).content
+        first = SimResult.model_validate_json(client.post(URL, json=payload).content)
+        second = SimResult.model_validate_json(client.post(URL, json=payload).content)
+        exclude = {"meta": {"wall_clock_ms"}}
+        assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
 
     def test_multi_turn_prefix_metrics_returned(self, client: TestClient) -> None:
         payload = make_payload(num_requests=2, budget=80)

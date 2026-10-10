@@ -993,6 +993,11 @@ export interface components {
              * @description 末请求完成时刻（ms）
              */
             sim_end: number;
+            /**
+             * Wall Clock Ms
+             * @description 从生成请求计划至汇总指标的内核实际运行耗时（ms），不含配置解析与响应序列化
+             */
+            wall_clock_ms: number;
         };
         /**
          * SimResult

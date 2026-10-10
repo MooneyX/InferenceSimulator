@@ -47,6 +47,7 @@ const result: SimResult = {
     num_engine_steps: 8,
     sim_start: 0,
     sim_end: 3,
+    wall_clock_ms: 42.5,
   },
   metrics: {
     ttft_mean: 1,

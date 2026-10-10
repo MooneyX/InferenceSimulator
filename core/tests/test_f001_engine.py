@@ -209,7 +209,8 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
     )
     first = simulate(config)
     second = simulate(config)
-    assert first.model_dump_json() == second.model_dump_json()
+    exclude = {"meta": {"wall_clock_ms"}}
+    assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert first.meta.num_completed == first.meta.num_requests == 3
     assert first.metrics.actual_hit_tokens == 64
     assert first.metrics.l1_reserved_future_blocks == 0

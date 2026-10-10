@@ -4,6 +4,7 @@
 事件流不经 API 暴露，默认关闭记录；旧长度 Arrival 由 ``engine.run_engine`` 适配。
 """
 
+from time import perf_counter
 from typing import cast
 
 from simcore.client import ClientDriver
@@ -64,6 +65,7 @@ def _simulate(
 ) -> tuple[SimResult, AnalyticalSummary | None]:
     if config.workload.mode == "trace":
         raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
+    started_at = perf_counter()
     synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
     plan = build_plan(synthetic, config.engine)
     client = ClientDriver(plan, config.engine)
@@ -78,6 +80,23 @@ def _simulate(
         ),
         client,
     ).run()
+    metrics = compute_metrics(
+        run.records,
+        plan=plan,
+        config=config,
+        cache_snapshot=run.cache_snapshot,
+        l2_snapshot=run.l2_snapshot,
+        l3_snapshot=run.l3_snapshot,
+        l1_evictions=run.l1_evictions,
+        l1_peak_resident_blocks=run.l1_peak_resident_blocks,
+        promotions=run.promotions,
+        demotions=run.demotions,
+        restore_bytes=run.restore_bytes,
+        restore_time_ms=run.restore_time_ms,
+        earliest_sent_arrival=run.sim_start,
+        replayed_prefill_tokens=run.replayed_prefill_tokens,
+    )
+    wall_clock_ms = (perf_counter() - started_at) * 1000
     result = SimResult(
         meta=SimMeta(
             config=config,
@@ -88,23 +107,9 @@ def _simulate(
             num_engine_steps=run.num_engine_steps,
             sim_start=run.sim_start,
             sim_end=run.sim_end,
+            wall_clock_ms=wall_clock_ms,
         ),
-        metrics=compute_metrics(
-            run.records,
-            plan=plan,
-            config=config,
-            cache_snapshot=run.cache_snapshot,
-            l2_snapshot=run.l2_snapshot,
-            l3_snapshot=run.l3_snapshot,
-            l1_evictions=run.l1_evictions,
-            l1_peak_resident_blocks=run.l1_peak_resident_blocks,
-            promotions=run.promotions,
-            demotions=run.demotions,
-            restore_bytes=run.restore_bytes,
-            restore_time_ms=run.restore_time_ms,
-            earliest_sent_arrival=run.sim_start,
-            replayed_prefill_tokens=run.replayed_prefill_tokens,
-        ),
+        metrics=metrics,
         requests=list(run.records),
         aborted_requests=list(run.aborted_requests),
         skipped_requests=list(run.skipped_requests),

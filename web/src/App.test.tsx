@@ -27,6 +27,7 @@ const result: SimResult = {
     num_engine_steps: 8,
     sim_start: 0,
     sim_end: 3,
+    wall_clock_ms: 42.5,
   },
   metrics: {
     ttft_mean: 1,
@@ -154,6 +155,7 @@ describe("App", () => {
 
     expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
     expect(screen.getByRole("heading", { name: "仿真告警" })).toBeInTheDocument();
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 0 · 跳过 0");
@@ -183,6 +185,7 @@ describe("App", () => {
     }));
     expect(simulateMock).not.toHaveBeenCalled();
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
     expect(screen.getByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
   });
 

@@ -5,6 +5,7 @@ type Metrics = SimResult["metrics"];
 
 export interface MetricsPanelProps {
   metrics: Metrics;
+  wallClockMs: SimResult["meta"]["wall_clock_ms"];
 }
 
 interface MetricCardProps {
@@ -36,7 +37,7 @@ function MetricCard({ label, value, unit, description }: MetricCardProps) {
   );
 }
 
-export function MetricsPanel({ metrics }: MetricsPanelProps) {
+export function MetricsPanel({ metrics, wallClockMs }: MetricsPanelProps) {
   return (
     <section className="metrics-panel" aria-labelledby="metrics-heading">
       <div className="metrics-heading">
@@ -82,7 +83,13 @@ export function MetricsPanel({ metrics }: MetricsPanelProps) {
           label="Makespan"
           value={metrics.makespan}
           unit="ms"
-          description="最早已发送请求到达至末成功请求完成的时间"
+          description="最早已发送请求到达至末成功请求完成的仿真时间"
+        />
+        <MetricCard
+          label="实际运行耗时"
+          value={wallClockMs}
+          unit="ms"
+          description="内核生成请求计划至汇总指标的墙钟时间，不含配置解析、网络传输和页面渲染"
         />
         <MetricCard label="目标理想命中率" value={metrics.target_ideal_prefix_hit_rate} unit="%" description="用户设置的所有请求输入 token 加权目标" />
         <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="按计划继承块数和完整块粒度量化的理想前缀" />

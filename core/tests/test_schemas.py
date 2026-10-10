@@ -355,6 +355,21 @@ class TestResult:
                 num_engine_steps=1,
                 sim_start=5.0,
                 sim_end=4.0,
+                wall_clock_ms=0.0,
+            )
+
+    def test_negative_wall_clock_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="wall_clock_ms"):
+            SimMeta(
+                config=make_config(),
+                num_requests=0,
+                num_completed=0,
+                num_aborted=0,
+                num_skipped=0,
+                num_engine_steps=0,
+                sim_start=0,
+                sim_end=0,
+                wall_clock_ms=-1,
             )
 
     def test_tpot_may_be_absent(self) -> None:
@@ -372,6 +387,7 @@ class TestResult:
                 num_engine_steps=0,
                 sim_start=0.0,
                 sim_end=0.0,
+                wall_clock_ms=0.0,
             ),
             metrics=Metrics(
                 ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
@@ -394,6 +410,7 @@ class TestResult:
                 num_engine_steps=0,
                 sim_start=1.0,
                 sim_end=1.0,
+                wall_clock_ms=0.0,
             ),
             metrics=Metrics(
                 ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
@@ -424,6 +441,7 @@ class TestResult:
                 num_engine_steps=0,
                 sim_start=0.0,
                 sim_end=0.0,
+                wall_clock_ms=0.0,
             )
 
     def test_json_schema_generates(self) -> None:

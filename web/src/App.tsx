@@ -205,7 +205,7 @@ export default function App() {
                 </p>}
                 {automatic.resolution.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
               </section>}
-              <MetricsPanel metrics={result.metrics} />
+              <MetricsPanel metrics={result.metrics} wallClockMs={result.meta.wall_clock_ms} />
               <WarningsPanel warnings={result.warnings} />
               {(result.requests?.length ?? 0) > 0 ? (
                 <Suspense

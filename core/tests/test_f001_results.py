@@ -77,7 +77,8 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     with patch("simcore.runner.build_plan", return_value=mixed_plan()):
         result = simulate(settings)
         second = simulate(settings)
-    assert result.model_dump_json() == second.model_dump_json()
+    exclude = {"meta": {"wall_clock_ms"}}
+    assert result.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert (result.meta.num_requests, result.meta.num_completed) == (4, 2)
     assert (result.meta.num_aborted, result.meta.num_skipped, result.meta.num_engine_steps) == (
         1,
@@ -236,6 +237,7 @@ def test_status_result_rejects_duplicates_and_successful_parent_skip() -> None:
         num_engine_steps=1,
         sim_start=0,
         sim_end=1,
+        wall_clock_ms=0,
     )
     with pytest.raises(ValidationError, match="不可同时"):
         SimResult(meta=meta, metrics=metrics, requests=[record], aborted_requests=[aborted])
@@ -276,6 +278,7 @@ def test_result_rejects_metrics_inconsistent_with_success_count() -> None:
         num_engine_steps=0,
         sim_start=0,
         sim_end=0,
+        wall_clock_ms=0,
     )
     with pytest.raises(ValidationError, match="无成功"):
         SimResult(

@@ -49,9 +49,12 @@ def test_preview_and_run_resolve_identically() -> None:
     assert data["result"]["meta"]["config"] == data["resolution"]["config"]
     assert data["analysis"]["steps"] == data["result"]["meta"]["num_engine_steps"]
     assert data["result"]["meta"]["num_completed"] == 1
+    assert data["result"]["meta"]["wall_clock_ms"] >= 0
     assert client.post("/api/simulate", json=request["config"]).status_code == 200
     request["timing"] = "empirical"
-    assert client.post("/api/simulate/resolved", json=request).json()["analysis"] is None
+    empirical = client.post("/api/simulate/resolved", json=request).json()
+    assert empirical["analysis"] is None
+    assert empirical["result"]["meta"]["wall_clock_ms"] >= 0
 
 
 def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:

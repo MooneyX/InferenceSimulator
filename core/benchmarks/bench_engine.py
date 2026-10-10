@@ -130,7 +130,10 @@ def test_scale_report(num_requests: int, exclusive: bool) -> None:
 @pytest.mark.parametrize("exclusive", [True, False], ids=["exclusive", "fused"])
 def test_acceptance_same_seed_byte_identical(exclusive: bool) -> None:
     cfg = bench_config(100, seed=42, exclusive=exclusive)
-    assert simulate(cfg).model_dump_json() == simulate(cfg).model_dump_json()
+    exclude = {"meta": {"wall_clock_ms"}}
+    assert simulate(cfg).model_dump_json(exclude=exclude) == simulate(cfg).model_dump_json(
+        exclude=exclude
+    )
 
 
 # ---------------------------------------------------------------- 脚本入口

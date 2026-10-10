@@ -136,6 +136,10 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     }))
     report = result.capacity
     assert result.runnable and result.tp_size == 4
+    assert not resolve_config(request.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage,
+        "tp_size": 4, "timing": "empirical",
+    })).runnable
     assert len(report.rank_reports) == 4
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {36 * 1024}
     assert report.kv_bytes_per_token == 144 * 1024
@@ -177,6 +181,10 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     assert analysis.communication_ms > 0
     with pytest.raises(ValueError, match="MoE"):
         resolve_config(tp.model_copy(update={"model": model.model_copy(update={"moe_layers": 94})}))
+    with pytest.raises(ValueError, match="MoE"):
+        resolve_config(tp.model_copy(update={"model": model.model_copy(update={
+            "num_experts": 128, "expert_parameters_total": 1_000_000,
+        })}))
 
 
 def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:

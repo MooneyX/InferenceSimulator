@@ -112,6 +112,7 @@ try {
     Wait-ForUrl 'http://127.0.0.1:8000/openapi.json'
     Wait-ForUrl 'http://127.0.0.1:5173/'
     $body = @{
+        num_instances = 1
         workload = @{ mode = 'synthetic'; synthetic = @{
             num_requests = 2; session_rate = 50.0; seed = 0
             prompt_len = @{ dist = 'lognormal'; mean = 16; sigma = 1.0 }

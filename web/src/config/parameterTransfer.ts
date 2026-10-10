@@ -112,6 +112,126 @@ export function parseSimConfigJson(json: string): SimConfig {
   return config;
 }
 
+function physicalObject(value: unknown, path: string, required: string[], optional: string[]): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${path} 必须为 JSON 对象`);
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of required) {
+    if (!Object.hasOwn(record, key) || record[key] === undefined) {
+      throw new Error(`缺少参数：${path}.${key}`);
+    }
+  }
+  for (const key of Object.keys(record)) {
+    if (![...required, ...optional].includes(key)) throw new Error(`不支持的参数：${path}.${key}`);
+  }
+  return record;
+}
+
+function physicalNumber(record: Record<string, unknown>, path: string, key: string,
+  minimum: number, integer = false, nullable = false): void {
+  const value = record[key];
+  if (value === undefined || (nullable && value === null)) return;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum ||
+      (integer && !Number.isInteger(value))) {
+    throw new Error(`${path}.${key} 必须是${integer ? "整数且" : ""}不小于 ${minimum} 的有限数值${nullable ? "或 null" : ""}`);
+  }
+}
+
+function validateResolvedRequest(value: unknown): ResolvedRequest {
+  const root = physicalObject(value, "自动解析参数", ["config", "model", "hardware", "storage"],
+    ["timing", "tp_size", "ep_size"]);
+  const config = parseSimConfigJson(JSON.stringify(root.config));
+  const model = physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
+    "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "total_parameters"],
+    ["revision", "vocab_size", "tie_word_embeddings", "weight_dtype", "kv_dtype",
+      "resident_weights_bytes", "moe_layers", "expert_parameters_total", "active_parameters",
+      "num_experts", "experts_per_token", "expert_intermediate_size", "attention_layout"]);
+  const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
+    "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
+    "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
+    "kernel_overhead_ms"]);
+  const storage = physicalObject(root.storage, "storage", ["l1_available_gb"],
+    ["l2_available_gb", "l3_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
+      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]);
+  for (const [part, record] of [["model", model], ["hardware", hardware]] as const) {
+    if (typeof record.name !== "string" || !record.name.trim()) throw new Error(`${part}.name 不能为空`);
+  }
+  if (model.revision !== undefined && model.revision !== null && typeof model.revision !== "string") {
+    throw new Error("model.revision 必须是字符串或 null");
+  }
+  if (model.tie_word_embeddings !== undefined && typeof model.tie_word_embeddings !== "boolean") {
+    throw new Error("model.tie_word_embeddings 必须是布尔值");
+  }
+  for (const [key, allowed] of [["weight_dtype", ["bf16", "fp16", "fp8"]],
+    ["kv_dtype", ["bf16", "fp16", "fp8"]], ["attention_layout", ["full_gqa", "other"]]] as const) {
+    if (model[key] !== undefined && !allowed.includes(model[key] as never)) {
+      throw new Error(`model.${key} 不支持该配置`);
+    }
+  }
+  for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
+    "head_dim", "ffn_intermediate_size", "total_parameters"] as const) physicalNumber(model, "model", key, 1, true);
+  for (const key of ["moe_layers", "num_experts", "experts_per_token"] as const) {
+    physicalNumber(model, "model", key, 0, true);
+  }
+  for (const key of ["vocab_size", "expert_parameters_total", "active_parameters",
+    "expert_intermediate_size"] as const) physicalNumber(model, "model", key, 1, true, true);
+  physicalNumber(model, "model", "resident_weights_bytes", 1, true, true);
+  if (Number(model.num_attention_heads) % Number(model.num_kv_heads) ||
+      Number(model.moe_layers ?? 0) > Number(model.num_layers)) {
+    throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
+  }
+  if (model.weight_dtype === "fp8" || model.kv_dtype === "fp8" || model.attention_layout === "other") {
+    throw new Error("当前解析仅支持 BF16/FP16 与全注意力 GQA/MQA");
+  }
+  for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {
+    physicalNumber(hardware, "hardware", key, 1, true);
+  }
+  for (const key of ["effective_fp16_tflops", "effective_hbm_gb_s"] as const) {
+    physicalNumber(hardware, "hardware", key, Number.MIN_VALUE);
+  }
+  for (const key of ["effective_fp8_tflops", "effective_interconnect_gb_s"] as const) {
+    physicalNumber(hardware, "hardware", key, Number.MIN_VALUE, false, true);
+  }
+  for (const key of ["collective_latency_ms", "ep_communication_latency_ms"] as const) {
+    physicalNumber(hardware, "hardware", key, 0, false, true);
+  }
+  physicalNumber(hardware, "hardware", "kernel_overhead_ms", 0);
+  physicalNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
+  for (const key of ["l2_available_gb", "l3_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
+    physicalNumber(storage, "storage", key, 0);
+  }
+  physicalNumber(storage, "storage", "runtime_reserve_bytes", 0, true);
+  for (const key of ["l2_to_l1_gb_s", "l3_to_l2_gb_s"] as const) {
+    physicalNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
+  }
+  if (root.timing !== undefined && root.timing !== "analytical" && root.timing !== "empirical") {
+    throw new Error("timing 不支持该计时模式");
+  }
+  for (const field of ["tp_size", "ep_size"] as const) {
+    if (root[field] !== undefined && (!Number.isInteger(root[field]) || (root[field] as number) < 1)) {
+      throw new Error(`${field} 必须是正整数`);
+    }
+  }
+  const tpSize = Number(root.tp_size ?? 1);
+  const epSize = Number(root.ep_size ?? 1);
+  if (Number(hardware.gpu_count ?? 1) !== tpSize) throw new Error("TP 数必须等于 GPU 卡数");
+  if (Number(model.moe_layers ?? 0) > 0) {
+    if (epSize !== tpSize) throw new Error("MoE 的 EP 数必须等于 TP 数");
+    if (!model.vocab_size || !model.expert_intermediate_size ||
+        !model.num_experts || !model.experts_per_token ||
+        Number(model.experts_per_token) > Number(model.num_experts)) {
+      throw new Error("MoE 需要词表、专家数、激活专家数和专家中间维度");
+    }
+  } else if (epSize !== 1 || Number(model.num_experts ?? 0) > 0 ||
+             Number(model.experts_per_token ?? 0) > 0 || model.expert_intermediate_size != null ||
+             model.expert_parameters_total != null) {
+    throw new Error("Dense 模型不能设置 EP 或 MoE 专家参数");
+  }
+  return { ...root, config, timing: root.timing ?? "analytical",
+    tp_size: tpSize, ep_size: epSize } as ResolvedRequest;
+}
+
 export function parseResolvedRequestJson(json: string): ResolvedRequest {
   let parsed: unknown;
   try {
@@ -119,37 +239,13 @@ export function parseResolvedRequestJson(json: string): ResolvedRequest {
   } catch {
     throw new Error("JSON 格式不正确");
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("自动解析参数必须为 JSON 对象");
-  }
-  const root = parsed as Record<string, unknown>;
-  const config = parseSimConfigJson(JSON.stringify(root.config));
-  for (const part of ["model", "hardware", "storage"] as const) {
-    if (root[part] === null || typeof root[part] !== "object" || Array.isArray(root[part])) {
-      throw new Error(`${part} 必须为 JSON 对象`);
-    }
-  }
-  const model = root.model as Record<string, unknown>;
-  const hardware = root.hardware as Record<string, unknown>;
-  const storage = root.storage as Record<string, unknown>;
-  if (typeof model.name !== "string" || !model.name ||
-      typeof hardware.name !== "string" || !hardware.name) {
-    throw new Error("模型和 GPU 名称不能为空");
-  }
-  numericFields(model, "model", ["num_layers", "hidden_size", "num_attention_heads",
-    "num_kv_heads", "head_dim", "ffn_intermediate_size", "total_parameters"]);
-  numericFields(hardware, "hardware", ["gpu_count", "memory_bytes_per_gpu",
-    "effective_fp16_tflops", "effective_hbm_gb_s"]);
-  numericFields(storage, "storage", ["l1_available_gb", "l2_available_gb", "l3_available_gb"]);
-  if (root.timing !== undefined && root.timing !== "analytical" && root.timing !== "empirical") {
-    throw new Error("timing 不支持该计时模式");
-  }
-  if (root.tp_size !== undefined &&
-      (!Number.isInteger(root.tp_size) || (root.tp_size as number) < 1)) {
-    throw new Error("tp_size 必须是正整数");
-  }
-  return { ...root, config, timing: root.timing ?? "analytical",
-    tp_size: root.tp_size ?? 1 } as ResolvedRequest;
+  return validateResolvedRequest(parsed);
+}
+
+export function serializeResolvedRequest(request: ResolvedRequest): string {
+  serializeSimConfig(request.config);
+  validateResolvedRequest(request);
+  return JSON.stringify(request);
 }
 
 export function serializeSimConfig(config: SimConfig): string {

@@ -4,6 +4,13 @@
   gap: 16px;
 }
 
+.configuration-panel {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .configuration-mode {
   display: flex;
   flex-wrap: wrap;

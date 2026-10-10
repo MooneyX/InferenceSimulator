@@ -89,12 +89,12 @@ warnings:          # 非致命告警；不代替请求级失败状态
 
 `metrics` 包含 TTFT、TPOT、完成吞吐、makespan、L1/L2/L3 命中与驻留、驱逐/提升/降级及恢复字节和时间；`requests` 的分层命中只记录首次准入。计算与空值口径统一见 [metrics.md](metrics.md)。
 
-## 自动解析与 TP 容量预览
+## 自动解析与 TP/EP 容量预览
 
-- `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 的标称单卡显存；不提供已测有效算力或模型修订认证，目录条目不等于多卡可运行。
-- `POST /api/resolve` 接受 `ResolvedRequest`：旧 `SimConfig` 作为负载/手动模式基础，加上显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing` 与默认 1 的 `tp_size`。TP 数须等于分配给当前实例的 GPU 卡数；仅支持 Dense 全注意力 GQA/MQA、BF16/FP16。TP>1 时须给出词表大小、输入/输出权重共享规则、单 rank 有效互联带宽和集合通信固定延迟。L1 输入为**每卡**含权重可用预算，按 rank 扣权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅供 KV 使用的物理容量，按所有 rank 的 KV 副本合计字节数换算。报告包括每 rank 分片/复制权重、KV 字节与页数；未归属参数保守地按逐卡复制计入。缺失规格、显存不足或不支持拓扑返回 422。TP>1 使用解析计时时响应 `runnable=true`；选择经验计时时仍返回容量预览，但 `runnable=false`。
-- `POST /api/simulate/resolved` **再次解析**物理输入后执行；Dense TP>1 的解析计时可运行；TP>1 若选择经验四系数仍返回 501。成功时返回 `ResolvedRun`，其 `result` 是原 `SimResult`，`resolution` 回显逐 rank 容量账单、输入规格与有效 `SimConfig`，`analysis` 在解析计时模式返回步骤及通信成本汇总。前端不得将上一次 `/api/resolve` 的 token 结果直接作为未经验证的有效配置提交；总参数量推导的 BF16/FP16 权重字节数是用户规格假设，可用实际驻留权重覆盖。
-- 手填旧 `/api/simulate` 的请求/响应字节结构保持不变；自动模式的四个旧经验系数只在 `timing=empirical` 时用于计算，`timing=analytical` 按 [单 GPU 解析计时](perf-model.md) 每步计算。
+- `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 单卡显存、互联带宽标称值；不提供已测有效算力或模型修订认证，目录条目不等于已验证部署。B300 的 1800 GB/s 是单卡双向标称值，暂用作仿真有效带宽假设，非单向实测值。
+- `POST /api/resolve` 接受旧 `SimConfig` 加显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；仅支持全注意力 GQA/MQA 与 BF16/FP16。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅放 KV 的物理容量。报告含每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；未归属参数保守地逐卡复制。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
+- `POST /api/simulate/resolved` **再次解析**物理输入后执行；支持 Dense TP 与平均负载 MoE/EP 的解析计时，缺通信参数返回 422，TP/EP>1 经验四系数模式返回 501。成功返回 `ResolvedRun`：`resolution` 回显逐 rank 容量和有效 `SimConfig`，`analysis` 分列 TP 同步、EP dispatch/combine 的时间与逻辑流量；这些费用已计入 `device_ms`，KV 恢复时间独立。自动接口的 422 `detail` 可为字段错误列表或业务错误字符串，OpenAPI 同时登记两种格式。前端不复用上次容量预览的 token 数作为运行配置；总参数量和实际驻留权重为用户规格假设，未经部署核验。
+- 手填旧 `/api/simulate` 的请求/响应保持不变；四系数仅在 `timing=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。
 
 ## 类型同步
 

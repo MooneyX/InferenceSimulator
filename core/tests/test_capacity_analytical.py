@@ -4,6 +4,7 @@ import pytest
 
 from simcore.analytical import step_cost
 from simcore.capacity import resolve_config
+from simcore.engine import Engine
 from simcore.perf_model import (
     DecodeWork,
     PrefillWork,
@@ -16,6 +17,7 @@ from simcore.schemas import (
     EngineConfig,
     FixedLength,
     HardwareSpec,
+    InferenceRequest,
     ModelSpec,
     PerfModelConfig,
     ResolvedRequest,
@@ -101,7 +103,7 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
         resolve_config(original.model_copy(update={
             "hardware": original.hardware.model_copy(update={"gpu_count": 8})
         }))
-    with pytest.raises(ValueError, match="Dense"):
+    with pytest.raises(ValueError, match="MoE"):
         resolve_config(original.model_copy(update={
             "model": original.model.model_copy(update={"moe_layers": 1})
         }))
@@ -182,12 +184,215 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
     with pytest.raises(ValueError, match="TP 数"):
         resolve_config(request.model_copy(update={"tp_size": 4}))
     hardware = request.hardware.model_copy(update={"gpu_count": 4})
-    with pytest.raises(ValueError, match="互联带宽"):
-        resolve_config(request.model_copy(update={"tp_size": 4, "hardware": hardware}))
+    valid_model = request.model.model_copy(update={
+        "vocab_size": 16, "num_attention_heads": 4, "total_parameters": 10_000,
+    })
+    storage = request.storage.model_copy(update={"l2_available_gb": 0, "l3_available_gb": 0})
+    preview = resolve_config(request.model_copy(update={
+        "tp_size": 4, "hardware": hardware, "model": valid_model, "storage": storage,
+    }))
+    assert not preview.runnable and len(preview.capacity.rank_reports) == 4
+    with pytest.raises(ValueError, match="集合通信延迟"):
+        simulate_resolved(preview)
     hardware = hardware.model_copy(update={"effective_interconnect_gb_s": 100,
                                    "collective_latency_ms": 0.1})
+    assert resolve_config(request.model_copy(update={
+        "tp_size": 4, "hardware": hardware, "model": valid_model, "storage": storage,
+    })).runnable
     with pytest.raises(ValueError, match="vocab_size"):
         resolve_config(request.model_copy(update={"tp_size": 4, "hardware": hardware}))
+
+
+def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
+    base = example_request()
+    model = ModelSpec(
+        name="toy-moe", num_layers=2, moe_layers=1, hidden_size=16,
+        num_attention_heads=2, num_kv_heads=1, head_dim=8,
+        ffn_intermediate_size=32, expert_intermediate_size=8,
+        num_experts=4, experts_per_token=2, vocab_size=16,
+        total_parameters=5296, active_parameters=100,
+    )
+    hardware = base.hardware.model_copy(update={"gpu_count": 2})
+    storage = base.storage.model_copy(update={
+        "l1_available_gb": 0.00001, "l2_available_gb": 0,
+        "l3_available_gb": 0, "runtime_reserve_bytes": 0,
+    })
+    request = base.model_copy(update={
+        "tp_size": 2, "ep_size": 2, "model": model,
+        "hardware": hardware, "storage": storage,
+    })
+    preview = resolve_config(request)
+    assert preview.ep_size == preview.tp_size == 2
+    assert not preview.runnable
+    assert preview.capacity.kv_bytes_per_token == 128
+    assert preview.capacity.unassigned_parameters == 0
+    assert len(preview.capacity.rank_reports) == 2
+    for rank in preview.capacity.rank_reports:
+        assert rank.sharded_weights_bytes == 4096
+        assert rank.replicated_weights_bytes == 352
+        assert rank.expert_weights_bytes == 1536
+        assert rank.l1_kv_budget_bytes == 10000 - 4096 - 352 - 1536
+        assert rank.l1_capacity_pages == rank.l1_kv_budget_bytes // (64 * 4)
+    assert preview.capacity.weights_resident_bytes == 2 * (4096 + 352 + 1536)
+    assert preview.config.engine.max_total_tokens == 4 * preview.capacity.l1_capacity_pages
+    with pytest.raises(ValueError, match="EP 单次通信开销"):
+        simulate_resolved(preview)
+
+
+@pytest.mark.parametrize("updates, reason", [
+    ({"ep_size": 1}, "EP 数"),
+    ({"model": {"experts_per_token": 5}}, "激活专家数"),
+    ({"model": {"num_experts": 3}}, "专家数"),
+    ({"model": {"expert_parameters_total": 1}}, "全部专家参数量"),
+    ({"model": {"resident_weights_bytes": 1000}}, "驻留权重"),
+    ({"model": {"expert_intermediate_size": None}}, "专家中间维度"),
+])
+def test_moe_preview_rejects_inconsistent_layout(updates: dict, reason: str) -> None:
+    base = example_request()
+    model = base.model.model_copy(update={
+        "vocab_size": 16, "total_parameters": 10_000,
+        "moe_layers": 1, "num_experts": 4,
+        "experts_per_token": 2, "expert_intermediate_size": 8,
+        **updates.get("model", {}),
+    })
+    request = base.model_copy(update={
+        "model": model, "ep_size": updates.get("ep_size", 2),
+        "tp_size": 2, "hardware": base.hardware.model_copy(update={"gpu_count": 2}),
+    })
+    with pytest.raises(ValueError, match=reason):
+        resolve_config(request)
+
+
+def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
+    model = ModelSpec(
+        name="toy-moe", num_layers=2, moe_layers=1, hidden_size=16,
+        num_attention_heads=2, num_kv_heads=1, head_dim=8,
+        ffn_intermediate_size=32, expert_intermediate_size=8,
+        num_experts=4, experts_per_token=2, vocab_size=16, total_parameters=5296,
+    )
+    hardware = HardwareSpec(
+        name="two-gpu", gpu_count=2, memory_bytes_per_gpu=1_000_000,
+        effective_fp16_tflops=1, effective_hbm_gb_s=1,
+        effective_interconnect_gb_s=1, collective_latency_ms=0.3,
+        ep_communication_latency_ms=0.7,
+    )
+    prefill = StepWorkload("PREFILL", (PrefillWork(0, 0, 2, 2),), (), 0, 1)
+    decode = StepWorkload("DECODE", (), (DecodeWork(0, 10), DecodeWork(1, 11)), 0, 2)
+    mixed = StepWorkload(
+        "MIXED", (PrefillWork(2, 4, 1, 5),),
+        (DecodeWork(0, 10), DecodeWork(1, 11)), 0, 3,
+    )
+    normal = step_cost(prefill, model, hardware, tp_size=2, ep_size=2)
+    low_latency = step_cost(decode, model, hardware, tp_size=2, ep_size=2)
+    combined = step_cost(mixed, model, hardware, tp_size=2, ep_size=2)
+    assert normal.collectives == low_latency.collectives == combined.collectives == 3
+    assert normal.ep_exchanges == low_latency.ep_exchanges == combined.ep_exchanges == 2
+    assert normal.ep_dispatch_bytes == pytest.approx(2 * 0.5 * (5 / 6) * 32 + 2 * 0.5 * 8)
+    assert low_latency.ep_dispatch_bytes == pytest.approx(2 * 0.5 * (32 + 8))
+    assert combined.ep_dispatch_bytes == pytest.approx(3 * 0.5 * (5 / 6) * 32 + 3 * 0.5 * 8)
+    for cost in (normal, low_latency, combined):
+        assert cost.ep_combine_bytes == cost.ep_dispatch_bytes
+        assert cost.ep_dispatch_ms == pytest.approx(0.7 + cost.ep_dispatch_bytes / 1e6)
+        assert cost.ep_combine_ms == cost.ep_dispatch_ms
+        assert cost.communication_ms == pytest.approx(
+            cost.tp_communication_ms + cost.ep_dispatch_ms + cost.ep_combine_ms
+        )
+        assert cost.duration_ms >= cost.communication_ms
+    dense = model.model_copy(update={"moe_layers": 0})
+    assert step_cost(prefill, dense, hardware, tp_size=2).collectives == 4
+    assert normal.flops != step_cost(prefill, dense, hardware, tp_size=2).flops
+    slower_ep = step_cost(
+        prefill, model,
+        hardware.model_copy(update={"ep_communication_latency_ms": 1.7}),
+        tp_size=2, ep_size=2,
+    )
+    assert slower_ep.tp_communication_ms == normal.tp_communication_ms
+    assert slower_ep.duration_ms - normal.duration_ms == pytest.approx(2 * model.moe_layers)
+    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
+    assert step_cost(restore, model, hardware, tp_size=2, ep_size=2).duration_ms == 0
+    assert step_cost(restore, model, hardware, tp_size=2, ep_size=2).ep_exchanges == 0
+
+
+def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> None:
+    base = example_request()
+    model = base.model.model_copy(update={
+        "vocab_size": 16, "total_parameters": 5296, "moe_layers": 1,
+        "num_experts": 4, "experts_per_token": 2, "expert_intermediate_size": 8,
+    })
+    hardware = base.hardware.model_copy(update={
+        "gpu_count": 2, "effective_interconnect_gb_s": 1,
+        "collective_latency_ms": 0.3, "ep_communication_latency_ms": 0.7,
+    })
+    storage = base.storage.model_copy(update={
+        "l2_available_gb": 0, "l3_available_gb": 0,
+    })
+    request = base.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage,
+        "tp_size": 2, "ep_size": 2,
+    })
+    resolution = resolve_config(request)
+    assert resolution.runnable
+    result, summary = simulate_resolved(resolution)
+    assert summary is not None and result.meta.num_completed == 1
+    assert summary.steps == result.meta.num_engine_steps
+    assert summary.collectives == 3 * summary.steps
+    assert summary.ep_exchanges == 2 * summary.steps
+    assert summary.communication_ms == pytest.approx(
+        summary.tp_communication_ms + summary.ep_dispatch_ms + summary.ep_combine_ms
+    )
+    assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
+        summary.device_ms + summary.restore_ms
+    )
+    with pytest.raises(NotImplementedError, match="四系数"):
+        simulate_resolved(resolve_config(request.model_copy(update={"timing": "empirical"})))
+
+
+def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
+    model = ModelSpec(
+        name="mixed-moe", num_layers=2, moe_layers=1, hidden_size=16,
+        num_attention_heads=2, num_kv_heads=1, head_dim=8,
+        ffn_intermediate_size=32, num_experts=4, experts_per_token=2,
+        expert_intermediate_size=8, vocab_size=16, total_parameters=10000,
+    )
+    hardware = HardwareSpec(
+        name="two-gpu", gpu_count=2, memory_bytes_per_gpu=1_000_000,
+        effective_fp16_tflops=1, effective_hbm_gb_s=1,
+        effective_interconnect_gb_s=1, collective_latency_ms=0.3,
+        ep_communication_latency_ms=0.7,
+    )
+    engine = Engine(
+        EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=4,
+                     pd_mutually_exclusive=False),
+        PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=1),
+        output_targets={0: 2, 1: 2}, analytical=(model, hardware, 2, 2),
+    )
+    request0 = InferenceRequest(0, 0, None, 4, 2, (), 0)
+    request1 = InferenceRequest(1, 1, None, 4, 2, (), 0)
+    engine.submit(request0, 0)
+    first_duration, first_finished = engine.step(0, 0)
+    assert first_finished == ()
+    engine.submit(request1, first_duration)
+    mixed_duration, mixed_finished = engine.step(first_duration, 1)
+    assert list(engine._log.steps())[-1].phase == "MIXED"
+    assert mixed_finished == (0,)
+    expected = step_cost(
+        StepWorkload("MIXED", (PrefillWork(1, 0, 4, 4),), (DecodeWork(0, 5),), 2, 2),
+        model, hardware, tp_size=2, ep_size=2,
+    )
+    assert mixed_duration == pytest.approx(expected.duration_ms)
+    assert expected.ep_exchanges == 2 * model.moe_layers
+    engine.complete(first_duration + mixed_duration, 0)
+    last_duration, last_finished = engine.step(first_duration + mixed_duration, 2)
+    assert last_finished == (1,)
+    engine.complete(first_duration + mixed_duration + last_duration, 1)
+    run = engine.finalize()
+    assert [item.phase for item in run.trace.steps()] == ["PREFILL", "MIXED", "DECODE"]
+    assert run.analysis is not None
+    assert run.analysis.steps == 3
+    assert run.analysis.ep_exchanges == 3 * expected.ep_exchanges
+    assert run.analysis.device_ms == pytest.approx(first_duration + mixed_duration + last_duration)
+    assert run.records[-1].finish == pytest.approx(run.analysis.device_ms)
+    assert len(run.records) == 2 and not run.aborted_requests and not run.skipped_requests
 
 
 def test_token_bandwidth_matches_physical_two_hop_transfer() -> None:

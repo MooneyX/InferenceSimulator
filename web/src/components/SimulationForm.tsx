@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 
 import type { ResolvedRequest, SimConfig } from "../api/types";
-import { parseResolvedRequestJson, parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
+import { parseResolvedRequestJson, parseSimConfigJson, serializeResolvedRequest, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
   validateSimConfig,
@@ -112,6 +112,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
   const [storage, setStorage] = useState<ResolvedRequest["storage"]>(initialStorage);
   const [timing, setTiming] = useState<ResolvedRequest["timing"]>("analytical");
   const [tpSize, setTpSize] = useState(1);
+  const [epSize, setEpSize] = useState(1);
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
@@ -120,6 +121,16 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
   const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
   const errorByField = new Map(
     validationErrors.map(({ field, message }) => [field, message]),
+  );
+  const needsTpCommunication = tpSize > 1;
+  const needsEpCommunication = model.moe_layers > 0 && epSize > 1;
+  const automaticRunUnavailable = mode === "automatic" && (
+    (timing === "empirical" && (model.moe_layers > 0 || needsTpCommunication)) ||
+    tpSize !== hardware.gpu_count ||
+    (model.moe_layers > 0 ? epSize !== tpSize : epSize !== 1) ||
+    (needsTpCommunication && (hardware.effective_interconnect_gb_s == null ||
+      hardware.collective_latency_ms == null)) ||
+    (needsEpCommunication && hardware.ep_communication_latency_ms == null)
   );
   const synthetic = config.workload.synthetic;
 
@@ -132,9 +143,9 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
     event.preventDefault();
     setShowValidation(true);
 
-    if (validateSimConfig(submissionConfig).length === 0) {
+    if (validateSimConfig(submissionConfig).length === 0 && !automaticRunUnavailable) {
       if (mode === "automatic") {
-        onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize });
+        onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
       } else {
         onSubmit(submissionConfig);
       }
@@ -143,10 +154,10 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
 
   function handleExport(): void {
     try {
-      const serializedConfig = serializeSimConfig(submissionConfig);
       const json = mode === "automatic"
-        ? JSON.stringify({ config: JSON.parse(serializedConfig), model, hardware, storage, timing, tp_size: tpSize })
-        : serializedConfig;
+        ? serializeResolvedRequest({ config: submissionConfig, model, hardware, storage,
+          timing, tp_size: tpSize, ep_size: epSize })
+        : serializeSimConfig(submissionConfig);
       setParamsJson(json);
       setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
       paramsInputRef.current?.focus();
@@ -181,6 +192,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         setStorage(imported.storage);
         setTiming(imported.timing);
         setTpSize(imported.tp_size);
+        setEpSize(imported.ep_size);
         setMode("automatic");
       } else {
         setManualConfig(parseSimConfigJson(paramsJson.trim()));
@@ -211,7 +223,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           <span><strong>自动解析</strong><small>根据模型与硬件推算容量及链路参数</small></span>
         </label>
       </fieldset>}
-      <div className="configuration-panel" role="group" aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
+      <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
           <div>
@@ -441,8 +453,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
       </section>
 
       {mode === "automatic" && <AutomaticConfig config={submissionConfig} model={model} hardware={hardware}
-        storage={storage} timing={timing} tpSize={tpSize} onTpSizeChange={setTpSize}
-        disabled={disabled}
+        storage={storage} timing={timing} tpSize={tpSize} epSize={epSize}
+        onTpSizeChange={setTpSize} onEpSizeChange={setEpSize} disabled={disabled}
         onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
 
       <section className="form-section" aria-labelledby="engine-heading">
@@ -690,13 +702,13 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           />
         </div>}
       </section>
-      </div>
+      </fieldset>
 
       <div className="form-actions">
-        <button className="run-button" type="submit"
-          disabled={disabled || (mode === "automatic" && tpSize > 1 && timing === "empirical")}>
+        <button className="run-button" type="submit" disabled={disabled || automaticRunUnavailable}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
+        {automaticRunUnavailable && <p>当前配置尚不可运行；请核对 TP/EP 与 GPU 数、计时模式及通信参数。仍可预览容量。</p>}
       </div>
     </form>
   );

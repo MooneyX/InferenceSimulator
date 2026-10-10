@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getPresets, resolveAutomatic } from "../api/client";
+import { getPresets, resolveAutomatic, SimulationApiError } from "../api/client";
 import type { PresetCatalog, ResolvedConfig, ResolvedRequest, SimConfig } from "../api/types";
 
 export type Model = ResolvedRequest["model"];
@@ -14,7 +14,9 @@ interface Props {
   storage: Storage;
   timing: ResolvedRequest["timing"];
   tpSize: number;
+  epSize: number;
   onTpSizeChange: (value: number) => void;
+  onEpSizeChange: (value: number) => void;
   onModelChange: (value: Model) => void;
   onHardwareChange: (value: Hardware) => void;
   onStorageChange: (value: Storage) => void;
@@ -34,7 +36,8 @@ export const initialModel: Model = {
 export const initialHardware: Hardware = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
   effective_fp16_tflops: 100, effective_fp8_tflops: null,
-  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: null,
+  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 1800,
+  collective_latency_ms: null, ep_communication_latency_ms: null,
   kernel_overhead_ms: 0,
 };
 export const initialStorage: Storage = {
@@ -54,8 +57,8 @@ function Input({ label, value, onChange, optional = false }: {
   </label></div>;
 }
 
-export function AutomaticConfig({ config, model, hardware, storage, timing, tpSize,
-  onTpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled }: Props) {
+export function AutomaticConfig({ config, model, hardware, storage, timing, tpSize, epSize,
+  onTpSizeChange, onEpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled }: Props) {
   const [catalog, setCatalog] = useState<PresetCatalog | null>(null);
   const [preview, setPreview] = useState<ResolvedConfig | null>(null);
   const [previewKey, setPreviewKey] = useState("");
@@ -69,7 +72,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     return () => { active = false; };
   }, []);
 
-  const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, config };
+  const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize, config };
   const key = JSON.stringify(request);
   const selectedModel = catalog?.models.find((entry) => entry.name === model.name &&
     Object.entries(entry).every(([field, value]) => model[field as keyof Model] === value));
@@ -84,7 +87,10 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       setPreviewKey(key);
     } catch (cause) {
       setPreview(null);
-      setError(cause instanceof Error ? cause.message : "无法解析配置");
+      const fields = cause instanceof SimulationApiError
+        ? cause.validationErrors.map(({ loc, msg }) => `${loc.join(" → ")}：${msg}`)
+        : [];
+      setError(fields.length ? fields.join("；") : cause instanceof Error ? cause.message : "无法解析配置");
     }
   }
 
@@ -99,6 +105,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           onChange={(event) => {
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
             onModelChange(selected ?? { ...model, name: "自定义模型" });
+            if (selected) onEpSizeChange(selected.moe_layers ? tpSize : 1);
           }}>{catalog?.models.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
@@ -148,15 +155,20 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
             onHardwareChange(selected ? { ...hardware, name: selected.name,
-              memory_bytes_per_gpu: selected.memory_bytes_per_gpu } :
+              memory_bytes_per_gpu: selected.memory_bytes_per_gpu,
+              effective_interconnect_gb_s: selected.peak_interconnect_gb_s } :
               { ...hardware, name: "自定义 GPU" });
           }}>{catalog?.hardware.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
       </div></div>
     <div className="form-grid">
-      <Input label="TP 数（必须等于 GPU 卡数）" value={tpSize} onChange={(value) =>
-        onTpSizeChange(value ?? NaN)} />
+      <Input label="TP 数（必须等于 GPU 卡数）" value={tpSize} onChange={(value) => {
+        onTpSizeChange(value ?? NaN);
+        if (model.moe_layers) onEpSizeChange(value ?? NaN);
+      }} />
+      <Input label="EP 数（MoE 须等于 TP）" value={epSize} onChange={(value) =>
+        onEpSizeChange(value ?? NaN)} />
       {([
       ["gpu_count", "本实例 GPU 卡数"],
       ["memory_bytes_per_gpu", "单卡标称显存（GB）"],
@@ -164,12 +176,13 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       ["effective_fp8_tflops", "有效 FP8 算力（TFLOPS，可选）"],
       ["effective_hbm_gb_s", "有效 HBM 带宽（GB/s）"],
       ["effective_interconnect_gb_s", "单 rank 有效互联带宽（GB/s，TP>1 必填）"],
-      ["collective_latency_ms", "每次集合通信固定延迟（ms，TP>1 必填）"],
+      ["collective_latency_ms", "TP 每次集合通信固定延迟（ms，TP>1 运行必填）"],
+      ["ep_communication_latency_ms", "EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）"],
       ["kernel_overhead_ms", "单算子固定开销（ms）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={field === "memory_bytes_per_gpu" ? hardware[field] / 1e9 : hardware[field]}
       optional={field === "effective_fp8_tflops" || field === "effective_interconnect_gb_s" ||
-        field === "collective_latency_ms"}
+        field === "collective_latency_ms" || field === "ep_communication_latency_ms"}
       onChange={(value) => onHardwareChange({ ...hardware,
         ...(field === "memory_bytes_per_gpu" ? { name: "自定义 GPU" } : {}),
         [field]: field === "memory_bytes_per_gpu" && value !== null ? value * 1e9 : value })} />)}
@@ -190,14 +203,19 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     </div>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
-      {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽。
+      {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、
+      {selectedHardware.peak_interconnect_gb_s.toLocaleString()} GB/s 单卡 NVLink 双向标称带宽。
       <a href="https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html" target="_blank" rel="noreferrer">显存来源</a>、
-      <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>；
-      上述有效值为独立的仿真假设。</p>}
+      <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>、
+      <a href="https://www.nvidia.com/en-us/data-center/hgx/" target="_blank" rel="noreferrer">互联来源</a>；
+      暂以双向标称值作为有效互联带宽假设，非单向实测值，时延可能偏乐观。</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>
-    {tpSize > 1 && <p>{timing === "analytical"
+    {model.moe_layers ? <p>{timing === "analytical"
+      ? "MoE/EP 采用未经校准的平均负载解析计时：含 Prefill 用 normal，纯 Decode 用 low_latency；可先预览容量。"
+      : "MoE/EP 不支持四系数计时，请切换到解析计时。"}</p> :
+      tpSize > 1 && <p>{timing === "analytical"
         ? "TP 解析计时已接入：每层两次等效同步，未按实测校准。"
         : "TP>1 不支持四系数计时，请切换到解析计时。"}</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
@@ -208,17 +226,22 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页；
       L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页。
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
-        <p>TP{preview.tp_size} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
+        <p>TP{preview.tp_size}{preview.model.moe_layers ? ` + EP${preview.ep_size}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
           {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；
           未归属参数 {(preview.capacity.unassigned_parameters ?? 0).toLocaleString()} 按逐卡复制保守计入。</p>
         {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
           GPU {rank.rank}：分片权重 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB；
           复制及未归属权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
+          {preview.model.moe_layers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
           KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token；
           L1 {rank.l1_capacity_pages.toLocaleString()} 页。
         </p>)}
       </>}
-      {preview.runnable && timing === "analytical" && " 时延为未经校准的 Roofline 估计。"}
+      {!preview.runnable && timing === "analytical" && preview.tp_size > 1 &&
+        (preview.model.moe_layers
+          ? " 若要运行 TP/EP>1，请填写互联带宽、TP 集合通信延迟与 EP 单次通信开销。"
+          : " 多卡容量可预览；填写互联带宽和 TP 集合通信延迟后才能运行。")}
+      {preview.runnable && timing === "analytical" && " 时延为未经校准的平均负载/Roofline 估计。"}
     </div>}
   </section>
   </>;

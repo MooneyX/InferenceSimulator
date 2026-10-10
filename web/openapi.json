@@ -50,11 +50,19 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FieldValidationResponse"
+                    }
+                  ],
+                  "title": "Response 422 Resolve Endpoint Api Resolve Post"
                 }
               }
             }
@@ -88,11 +96,29 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FieldValidationResponse"
+                    }
+                  ],
+                  "title": "Response 422 Simulate Resolved Endpoint Api Simulate Resolved Post"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "此部署/计时模式尚未实现",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -251,6 +277,41 @@
           "collectives": {
             "type": "integer",
             "title": "Collectives",
+            "default": 0
+          },
+          "tp_communication_ms": {
+            "type": "number",
+            "title": "Tp Communication Ms",
+            "default": 0.0
+          },
+          "tp_communication_bytes": {
+            "type": "number",
+            "title": "Tp Communication Bytes",
+            "default": 0.0
+          },
+          "ep_dispatch_ms": {
+            "type": "number",
+            "title": "Ep Dispatch Ms",
+            "default": 0.0
+          },
+          "ep_combine_ms": {
+            "type": "number",
+            "title": "Ep Combine Ms",
+            "default": 0.0
+          },
+          "ep_dispatch_bytes": {
+            "type": "number",
+            "title": "Ep Dispatch Bytes",
+            "default": 0.0
+          },
+          "ep_combine_bytes": {
+            "type": "number",
+            "title": "Ep Combine Bytes",
+            "default": 0.0
+          },
+          "ep_exchanges": {
+            "type": "integer",
+            "title": "Ep Exchanges",
             "default": 0
           }
         },
@@ -423,6 +484,24 @@
         "title": "ErrorResponse",
         "description": "服务层错误响应体，与 FastAPI ``HTTPException`` 的默认格式一致。\n\n属于 HTTP 边界类型，仅用于 OpenAPI 登记，不进入 ``simcore.schemas``。"
       },
+      "FieldValidationResponse": {
+        "properties": {
+          "detail": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "FieldValidationResponse",
+        "description": "FastAPI 对请求字段校验失败时返回的 detail 列表。"
+      },
       "FixedLength": {
         "properties": {
           "dist": {
@@ -480,6 +559,10 @@
           "peak_hbm_gb_s": {
             "type": "number",
             "title": "Peak Hbm Gb S"
+          },
+          "peak_interconnect_gb_s": {
+            "type": "number",
+            "title": "Peak Interconnect Gb S"
           }
         },
         "type": "object",
@@ -488,7 +571,8 @@
           "gpu_count",
           "memory_bytes_per_gpu",
           "peak_fp16_tflops",
-          "peak_hbm_gb_s"
+          "peak_hbm_gb_s",
+          "peak_interconnect_gb_s"
         ],
         "title": "HardwareCatalogEntry"
       },
@@ -555,6 +639,18 @@
               }
             ],
             "title": "Collective Latency Ms"
+          },
+          "ep_communication_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ep Communication Latency Ms"
           },
           "kernel_overhead_ms": {
             "type": "number",
@@ -1129,7 +1225,7 @@
           "total_parameters"
         ],
         "title": "ModelSpec",
-        "description": "单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。"
+        "description": "全注意力模型的结构规格；MoE 层首版采用相同的专家结构。"
       },
       "PerfModelConfig": {
         "properties": {
@@ -1293,6 +1389,11 @@
           "l1_capacity_pages": {
             "type": "integer",
             "title": "L1 Capacity Pages"
+          },
+          "expert_weights_bytes": {
+            "type": "integer",
+            "title": "Expert Weights Bytes",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -1474,6 +1575,11 @@
             "title": "Tp Size",
             "default": 1
           },
+          "ep_size": {
+            "type": "integer",
+            "title": "Ep Size",
+            "default": 1
+          },
           "runnable": {
             "type": "boolean",
             "title": "Runnable",
@@ -1519,6 +1625,12 @@
             "type": "integer",
             "minimum": 1.0,
             "title": "Tp Size",
+            "default": 1
+          },
+          "ep_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ep Size",
             "default": 1
           }
         },

@@ -35,7 +35,7 @@ def simulate_analytical(
     config: SimConfig, model: ModelSpec, hardware: HardwareSpec
 ) -> tuple[SimResult, AnalyticalSummary]:
     """单 GPU Roofline 模式使用相同的调度与 KV 生命周期。"""
-    result, analysis = _simulate(config, (model, hardware, 1))
+    result, analysis = _simulate(config, (model, hardware, 1, 1))
     if analysis is None:
         raise RuntimeError("解析运行未生成成本汇总")
     return result, analysis
@@ -44,9 +44,11 @@ def simulate_analytical(
 def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
     """自动模式使用解析后的 token 容量和 token/ms 链路带宽。"""
     if not resolution.runnable:
-        raise NotImplementedError("TP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
+        if resolution.timing == "analytical":
+            raise ValueError("多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销")
+        raise NotImplementedError("TP/EP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
     analytical = (
-        (resolution.model, resolution.hardware, resolution.tp_size)
+        (resolution.model, resolution.hardware, resolution.tp_size, resolution.ep_size)
         if resolution.timing == "analytical" else None
     )
     return _simulate(
@@ -57,7 +59,7 @@ def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, Analytical
 
 
 def _simulate(
-    config: SimConfig, analytical: tuple[ModelSpec, HardwareSpec, int] | None,
+    config: SimConfig, analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
     token_bandwidths: tuple[float | None, float | None] | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:
     if config.workload.mode == "trace":

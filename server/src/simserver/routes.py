@@ -4,6 +4,8 @@
 ``SimConfig`` 校验（失败即 422），调用内核，再映射内核异常为 HTTP 状态码。
 """
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 
@@ -25,6 +27,24 @@ class ErrorResponse(BaseModel):
     detail: str
 
 
+class FieldValidationResponse(BaseModel):
+    """FastAPI 对请求字段校验失败时返回的 detail 列表。"""
+
+    detail: list[dict[str, Any]]
+
+
+_RESOLVED_ERRORS = {
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "model": ErrorResponse | FieldValidationResponse,
+        "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
+    },
+    status.HTTP_501_NOT_IMPLEMENTED: {
+        "model": ErrorResponse,
+        "description": "此部署/计时模式尚未实现",
+    },
+}
+
+
 router = APIRouter(prefix="/api")
 
 
@@ -34,6 +54,7 @@ class HardwareCatalogEntry(BaseModel):
     memory_bytes_per_gpu: int
     peak_fp16_tflops: float
     peak_hbm_gb_s: float
+    peak_interconnect_gb_s: float
 
 
 class ScenarioCatalogEntry(BaseModel):
@@ -68,7 +89,8 @@ def presets_endpoint() -> PresetCatalog:
     )
 
 
-@router.post("/resolve", response_model=ResolvedConfig, summary="解析单实例容量与计时规格")
+@router.post("/resolve", response_model=ResolvedConfig, summary="解析单实例容量与计时规格",
+             responses={status.HTTP_422_UNPROCESSABLE_CONTENT: _RESOLVED_ERRORS[status.HTTP_422_UNPROCESSABLE_CONTENT]})
 def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
     try:
         return resolve_config(request)
@@ -76,7 +98,8 @@ def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/simulate/resolved", response_model=ResolvedRun, summary="按解析规格运行单实例仿真")
+@router.post("/simulate/resolved", response_model=ResolvedRun,
+             summary="按解析规格运行单实例仿真", responses=_RESOLVED_ERRORS)
 def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
     try:
         resolution = resolve_config(request)

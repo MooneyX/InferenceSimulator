@@ -149,6 +149,11 @@ async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise
       kind: "validation", status: 422, validationErrors: Array.isArray(detail) ? detail : [],
     });
   }
+  if (response.status === 501) {
+    throw new SimulationApiError(getErrorDetail(payload) ?? "此解析运行模式尚未实现", {
+      kind: "not_implemented", status: 501,
+    });
+  }
   throw new SimulationApiError(getErrorDetail(payload) ?? `请求失败（HTTP ${response.status}）`, {
     kind: response.ok ? "invalid_response" : "http", status: response.status,
   });

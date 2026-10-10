@@ -29,6 +29,17 @@ def test_schema_names_not_split() -> None:
     assert not [name for name in schemas if name.endswith(("-Input", "-Output"))]
 
 
+def test_resolved_routes_document_business_and_field_errors() -> None:
+    spec = json.loads(render_openapi())
+    for path in ("/api/resolve", "/api/simulate/resolved"):
+        errors = spec["paths"][path]["post"]["responses"]["422"]["content"]["application/json"]["schema"]
+        assert {item["$ref"] for item in errors["anyOf"]} == {
+            "#/components/schemas/ErrorResponse", "#/components/schemas/FieldValidationResponse",
+        }
+    error = spec["paths"]["/api/simulate/resolved"]["post"]["responses"]["501"]
+    assert error["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/ErrorResponse"
+
+
 def test_write_uses_lf(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "openapi.json"
     write_openapi(target)

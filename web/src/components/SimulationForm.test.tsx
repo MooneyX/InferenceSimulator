@@ -406,6 +406,42 @@ describe("SimulationForm", () => {
     }));
   });
 
+  it("round-trips EP topology and runs MoE analytical timing only", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("专家数"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("每 token 激活专家数"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("专家中间维度（可选）"), { target: { value: "512" } });
+    fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("EP 数（MoE 须等于 TP）"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）"), {
+      target: { value: "0.2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(exported)).toMatchObject({
+      tp_size: 4, ep_size: 4,
+      hardware: { ep_communication_latency_ms: 0.2, collective_latency_ms: null },
+    });
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
+      target: { value: "0.1" },
+    });
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
+      tp_size: 4, ep_size: 4, timing: "analytical",
+    }));
+    fireEvent.change(screen.getByLabelText("EP 数（MoE 须等于 TP）"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("EP 数（MoE 须等于 TP）")).toHaveValue(4);
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+  });
+
   it("round-trips TP topology and runs analytical multi-GPU only", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
@@ -417,13 +453,13 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("单 rank 有效互联带宽（GB/s，TP>1 必填）"), {
       target: { value: "100" },
     });
-    fireEvent.change(screen.getByLabelText("每次集合通信固定延迟（ms，TP>1 必填）"), {
+    fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
       target: { value: "0.1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
-      tp_size: 4, hardware: { gpu_count: 4, collective_latency_ms: 0.1 },
+      tp_size: 4, ep_size: 1, hardware: { gpu_count: 4, collective_latency_ms: 0.1 },
     });
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "1" },
@@ -489,5 +525,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "导入参数" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "导出参数" })).toBeDisabled();
+    expect(screen.getByLabelText("请求数量")).toBeDisabled();
+    expect(screen.getByLabelText("每页 token 数")).toBeDisabled();
   });
 });

@@ -90,6 +90,48 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     assert "四系数" in refused.json()["detail"]
 
 
+def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
+    client = TestClient(create_app())
+    catalog = client.get("/api/presets").json()
+    request = payload()
+    request["model"] = catalog["models"][1]
+    request["hardware"].update({
+        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 1800,
+    })
+    request["storage"].update({
+        "l1_available_gb": 200, "l2_available_gb": 0, "l3_available_gb": 0,
+    })
+    request.update({"tp_size": 8, "ep_size": 8})
+    response = client.post("/api/resolve", json=request)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["runnable"] is False
+    assert preview["ep_size"] == 8
+    assert len(preview["capacity"]["rank_reports"]) == 8
+    expected = 94 * 128 * 3 * 4096 * 1536 // 8 * 2
+    assert {item["expert_weights_bytes"] for item in preview["capacity"]["rank_reports"]} == {expected}
+    assert preview["capacity"]["weights_resident_bytes"] >= 235_000_000_000 * 2
+    incomplete = client.post("/api/simulate/resolved", json=request)
+    assert incomplete.status_code == 422
+    request["hardware"].update({
+        "collective_latency_ms": 0.1, "ep_communication_latency_ms": 0.2,
+    })
+    ready = client.post("/api/resolve", json=request)
+    assert ready.status_code == 200 and ready.json()["runnable"] is True
+    run = client.post("/api/simulate/resolved", json=request)
+    assert run.status_code == 200, run.text
+    data = run.json()
+    assert data["resolution"] == ready.json()
+    assert data["result"]["meta"]["num_completed"] == 1
+    assert data["analysis"]["ep_dispatch_ms"] > 0
+    assert data["analysis"]["ep_combine_ms"] > 0
+    assert data["analysis"]["ep_exchanges"] > 0
+    request["timing"] = "empirical"
+    assert client.post("/api/resolve", json=request).json()["runnable"] is False
+    assert client.post("/api/simulate/resolved", json=request).status_code == 501
+
+
 def test_presets_and_unsupported_modes() -> None:
     client = TestClient(create_app())
     catalog = client.get("/api/presets")
@@ -101,6 +143,7 @@ def test_presets_and_unsupported_modes() -> None:
     assert catalog.json()["hardware"][0]["memory_bytes_per_gpu"] == 288_000_000_000
     assert catalog.json()["hardware"][0]["peak_fp16_tflops"] == 2250
     assert catalog.json()["hardware"][0]["peak_hbm_gb_s"] == 8000
+    assert catalog.json()["hardware"][0]["peak_interconnect_gb_s"] == 1800
     assert catalog.json()["models"][0]["total_parameters"] == 8_200_000_000
     assert catalog.json()["models"][1]["active_parameters"] == 22_000_000_000
     assert catalog.json()["scenarios"][1]["stage"] == "requires_tp_ep"

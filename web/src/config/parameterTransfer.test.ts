@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import type { ResolvedRequest } from "../api/types";
+import { initialHardware, initialModel, initialStorage } from "../components/AutomaticConfig";
 import { createDefaultSimConfig } from "./simulation";
-import { parseSimConfigJson, serializeSimConfig } from "./parameterTransfer";
+import { parseResolvedRequestJson, parseSimConfigJson, serializeResolvedRequest, serializeSimConfig } from "./parameterTransfer";
 
 describe("parameter JSON transfer", () => {
   it("round-trips the complete API config without result data", () => {
@@ -50,6 +52,54 @@ describe("parameter JSON transfer", () => {
     } }, "output_len.value"],
   ])("rejects invalid or unsupported configs", (value, message) => {
     expect(() => parseSimConfigJson(JSON.stringify(value))).toThrow(message as string);
+  });
+
+  it("defaults legacy automatic requests to EP1 and rejects invalid EP widths", () => {
+    const request = {
+      config: createDefaultSimConfig(), model: { name: "toy", num_layers: 1,
+        hidden_size: 16, num_attention_heads: 2, num_kv_heads: 1,
+        head_dim: 8, ffn_intermediate_size: 32, total_parameters: 1000 },
+      hardware: { name: "GPU", gpu_count: 1, memory_bytes_per_gpu: 1000000,
+        effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
+      storage: { l1_available_gb: 0.001, l2_available_gb: 0, l3_available_gb: 0 },
+    };
+    expect(parseResolvedRequestJson(JSON.stringify(request)).ep_size).toBe(1);
+    expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, ep_size: 0 })))
+      .toThrow("ep_size 必须是正整数");
+  });
+
+  it("rejects malformed physical specs and non-finite automatic drafts", () => {
+    const base: ResolvedRequest = {
+      config: createDefaultSimConfig(),
+      model: { ...initialModel, name: "toy", num_layers: 2, hidden_size: 16,
+        num_attention_heads: 2, num_kv_heads: 1, head_dim: 8,
+        ffn_intermediate_size: 32, total_parameters: 10000 },
+      hardware: { ...initialHardware, name: "GPU", gpu_count: 1,
+        memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1,
+        ep_communication_latency_ms: null },
+      storage: { ...initialStorage, l1_available_gb: 0.001 }, tp_size: 1, ep_size: 1,
+      timing: "analytical",
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(base))).toEqual(base);
+    const invalid = [
+      [{ ...base, model: { ...base.model, moe_layers: -1 } }, "model.moe_layers"],
+      [{ ...base, hardware: { ...base.hardware, extra: 2 } }, "不支持的参数：hardware.extra"],
+      [{ ...base, hardware: { ...base.hardware, ep_communication_latency_ms: -1 } }, "hardware.ep_communication_latency_ms"],
+      [{ ...base, storage: { ...base.storage, l1_available_gb: -1 } }, "storage.l1_available_gb"],
+      [{ ...base, ep_size: 2 }, "Dense 模型"],
+      [{ ...base, model: { ...base.model, weight_dtype: "fp8" } }, "BF16/FP16"],
+      [{ ...base, model: { ...base.model, moe_layers: 1 } }, "MoE 需要"],
+      [{ ...base, unexpected: true }, "不支持的参数：自动解析参数.unexpected"],
+    ] as const;
+    for (const [request, message] of invalid) {
+      expect(() => parseResolvedRequestJson(JSON.stringify(request))).toThrow(message);
+    }
+    expect(() => serializeResolvedRequest({ ...base, hardware: {
+      ...base.hardware, ep_communication_latency_ms: Number.POSITIVE_INFINITY,
+    } })).toThrow("ep_communication_latency_ms");
+    expect(() => serializeResolvedRequest({ ...base, model: {
+      ...base.model, num_experts: Number.NaN,
+    } })).toThrow("num_experts");
   });
 
   it("round-trips a three-tier config including link speeds and latency", () => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { simulate, SimulationApiError } from "./client";
-import type { SimConfig, SimResult } from "./types";
+import { resolveAutomatic, simulate, simulateAutomatic, SimulationApiError } from "./client";
+import type { ResolvedRequest, SimConfig, SimResult } from "./types";
 
 const config: SimConfig = {
   workload: {
@@ -237,6 +237,29 @@ describe("simulate", () => {
       kind: "network",
       message: "无法连接仿真服务",
       cause,
+    });
+  });
+});
+
+describe("automatic resolution errors", () => {
+  const request = { config } as ResolvedRequest;
+
+  it("preserves field paths and business messages for both 422 formats", async () => {
+    const detail = [{ loc: ["body", "model", "num_experts"], msg: "专家数错误", type: "value_error" }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(422, { detail }))
+      .mockResolvedValueOnce(jsonResponse(422, { detail: "TP 数必须等于 GPU 卡数" })));
+    await expect(resolveAutomatic(request)).rejects.toMatchObject({
+      kind: "validation", status: 422, validationErrors: detail,
+    });
+    await expect(simulateAutomatic(request)).rejects.toMatchObject({
+      kind: "validation", status: 422, message: "TP 数必须等于 GPU 卡数", validationErrors: [],
+    });
+  });
+
+  it("recognizes unimplemented resolved run modes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 EP" })));
+    await expect(simulateAutomatic(request)).rejects.toMatchObject({
+      kind: "not_implemented", status: 501, message: "四系数不支持 EP",
     });
   });
 });

@@ -24,9 +24,11 @@ MODELS = (
 
 # 单卡显存：https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html
 # 稠密 BF16 和 HBM 标称峰值：https://inferencex.semianalysis.com/zh/chips/b300
+# 单 GPU NVLink 互联标称 1.8 TB/s（双向合计）：https://www.nvidia.com/en-us/data-center/hgx/
 HARDWARE = (
     {
         "name": "NVIDIA B300", "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
         "peak_fp16_tflops": 2250, "peak_hbm_gb_s": 8000,
+        "peak_interconnect_gb_s": 1800,
     },
 )

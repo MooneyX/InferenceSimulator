@@ -203,12 +203,50 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
+      target: { value: "0.1" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({ tp_size: 4 }));
     const summary = await screen.findByLabelText("解析配置与成本");
     expect(summary).toHaveTextContent("TP4");
     expect(summary).toHaveTextContent("TP 同步 1.25 ms");
     expect(summary).toHaveTextContent("144 次");
+  });
+
+  it("shows TP and EP timing separately without adding communication to GPU time twice", async () => {
+    simulateAutomaticMock.mockResolvedValue({
+      result,
+      resolution: {
+        timing: "analytical", tp_size: 4, ep_size: 4,
+        model: { name: "toy-moe", moe_layers: 2 }, hardware: { name: "B300" },
+        capacity: { weights_resident_bytes: 1_000_000, kv_bytes_per_token: 128,
+          rank_reports: [{ rank: 0, sharded_weights_bytes: 200_000,
+            replicated_weights_bytes: 50_000, expert_weights_bytes: 100_000,
+            kv_bytes_per_token: 32, l1_kv_budget_bytes: 300_000, l1_capacity_pages: 25 }] },
+        config: result.meta.config,
+      },
+      analysis: {
+        steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
+        memory_ms: 0.2, device_ms: 5, restore_ms: 1,
+        communication_ms: 2, communication_bytes: 4000, collectives: 4,
+        tp_communication_ms: 1, tp_communication_bytes: 2000,
+        ep_dispatch_ms: 0.4, ep_combine_ms: 0.6,
+        ep_dispatch_bytes: 900, ep_combine_bytes: 1100, ep_exchanges: 8,
+      },
+    } as ResolvedRun);
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    const summary = await screen.findByLabelText("解析配置与成本");
+    expect(summary).toHaveTextContent("TP4 + EP4");
+    expect(summary).toHaveTextContent("整组权重 0.00 GB");
+    expect(screen.getByLabelText("逐卡容量账单")).toHaveTextContent("GPU 0");
+    expect(screen.getByLabelText("逐卡容量账单")).toHaveTextContent("专家驻留 0.000 GB");
+    expect(summary).toHaveTextContent("TP 同步 1.00 ms");
+    expect(summary).toHaveTextContent("EP dispatch 0.40 ms / combine 0.60 ms");
+    expect(summary).toHaveTextContent("GPU 计时 5.00 ms");
+    expect(summary).toHaveTextContent("逻辑流量");
   });
 
   it("shows abort and skip reasons but charts completed requests only", async () => {

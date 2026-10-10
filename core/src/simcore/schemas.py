@@ -229,7 +229,7 @@ class SimConfig(_Frozen):
 
 
 class ModelSpec(_Frozen):
-    """单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。"""
+    """全注意力模型的结构规格；MoE 层首版采用相同的专家结构。"""
 
     name: str = Field(min_length=1)
     revision: str | None = None
@@ -273,6 +273,7 @@ class HardwareSpec(_Frozen):
     effective_hbm_gb_s: float = Field(gt=0, allow_inf_nan=False)
     effective_interconnect_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     collective_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    ep_communication_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     kernel_overhead_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
@@ -298,6 +299,7 @@ class ResolvedRequest(_Frozen):
     storage: StorageSpec
     timing: Literal["empirical", "analytical"] = "analytical"
     tp_size: int = Field(default=1, ge=1)
+    ep_size: int = Field(default=1, ge=1)
 
 
 class RankCapacityReport(_Record):
@@ -307,6 +309,7 @@ class RankCapacityReport(_Record):
     kv_bytes_per_token: int
     l1_kv_budget_bytes: int
     l1_capacity_pages: int
+    expert_weights_bytes: int = 0
 
 
 class CapacityReport(_Record):
@@ -334,6 +337,7 @@ class ResolvedConfig(_Record):
     timing: Literal["empirical", "analytical"]
     capacity: CapacityReport
     tp_size: int = 1
+    ep_size: int = 1
     runnable: bool = True
 
 
@@ -348,6 +352,13 @@ class AnalyticalSummary(_Record):
     communication_ms: float = 0.0
     communication_bytes: float = 0.0
     collectives: int = 0
+    tp_communication_ms: float = 0.0
+    tp_communication_bytes: float = 0.0
+    ep_dispatch_ms: float = 0.0
+    ep_combine_ms: float = 0.0
+    ep_dispatch_bytes: float = 0.0
+    ep_combine_bytes: float = 0.0
+    ep_exchanges: int = 0
 
 
 class ResolvedRun(_Record):

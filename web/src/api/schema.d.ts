@@ -158,6 +158,41 @@ export interface components {
              * @default 0
              */
             collectives: number;
+            /**
+             * Tp Communication Ms
+             * @default 0
+             */
+            tp_communication_ms: number;
+            /**
+             * Tp Communication Bytes
+             * @default 0
+             */
+            tp_communication_bytes: number;
+            /**
+             * Ep Dispatch Ms
+             * @default 0
+             */
+            ep_dispatch_ms: number;
+            /**
+             * Ep Combine Ms
+             * @default 0
+             */
+            ep_combine_ms: number;
+            /**
+             * Ep Dispatch Bytes
+             * @default 0
+             */
+            ep_dispatch_bytes: number;
+            /**
+             * Ep Combine Bytes
+             * @default 0
+             */
+            ep_combine_bytes: number;
+            /**
+             * Ep Exchanges
+             * @default 0
+             */
+            ep_exchanges: number;
         };
         /** CapacityReport */
         CapacityReport: {
@@ -250,6 +285,16 @@ export interface components {
             detail: string;
         };
         /**
+         * FieldValidationResponse
+         * @description FastAPI 对请求字段校验失败时返回的 detail 列表。
+         */
+        FieldValidationResponse: {
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
          * FixedLength
          * @description 固定长度。
          */
@@ -282,6 +327,8 @@ export interface components {
             peak_fp16_tflops: number;
             /** Peak Hbm Gb S */
             peak_hbm_gb_s: number;
+            /** Peak Interconnect Gb S */
+            peak_interconnect_gb_s: number;
         };
         /**
          * HardwareSpec
@@ -307,6 +354,8 @@ export interface components {
             effective_interconnect_gb_s?: number | null;
             /** Collective Latency Ms */
             collective_latency_ms?: number | null;
+            /** Ep Communication Latency Ms */
+            ep_communication_latency_ms?: number | null;
             /**
              * Kernel Overhead Ms
              * @default 0
@@ -581,7 +630,7 @@ export interface components {
         };
         /**
          * ModelSpec
-         * @description 单 GPU 全注意力模型的显式规格；MoE 字段为后续阶段保留。
+         * @description 全注意力模型的结构规格；MoE 层首版采用相同的专家结构。
          */
         ModelSpec: {
             /** Name */
@@ -726,6 +775,11 @@ export interface components {
             l1_kv_budget_bytes: number;
             /** L1 Capacity Pages */
             l1_capacity_pages: number;
+            /**
+             * Expert Weights Bytes
+             * @default 0
+             */
+            expert_weights_bytes: number;
         };
         /**
          * RequestRecord
@@ -825,6 +879,11 @@ export interface components {
              */
             tp_size: number;
             /**
+             * Ep Size
+             * @default 1
+             */
+            ep_size: number;
+            /**
              * Runnable
              * @default true
              */
@@ -850,6 +909,11 @@ export interface components {
              * @default 1
              */
             tp_size: number;
+            /**
+             * Ep Size
+             * @default 1
+             */
+            ep_size: number;
         };
         /** ResolvedRun */
         ResolvedRun: {
@@ -1115,13 +1179,13 @@ export interface operations {
                     "application/json": components["schemas"]["ResolvedConfig"];
                 };
             };
-            /** @description Validation Error */
+            /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
                 };
             };
         };
@@ -1148,13 +1212,22 @@ export interface operations {
                     "application/json": components["schemas"]["ResolvedRun"];
                 };
             };
-            /** @description Validation Error */
+            /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
+                };
+            };
+            /** @description 此部署/计时模式尚未实现 */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

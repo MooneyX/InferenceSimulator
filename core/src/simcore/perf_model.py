@@ -32,7 +32,7 @@ class PrefillWork:
     new_tokens: int
     context_after: int
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # 校验 Prefill 请求身份、复用量和输入规模；无返回值
         if self.request_id < 0 or self.reused_tokens < 0 or self.new_tokens < 1:
             raise ValueError("Prefill 请求 ID、复用量或新计算量不合法")
         if self.context_after != self.reused_tokens + self.new_tokens:
@@ -44,7 +44,7 @@ class DecodeWork:
     request_id: int
     context_after_decode: int
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # 校验 Decode 请求 ID 与上下文长度；无返回值
         if self.request_id < 0 or self.context_after_decode < 1:
             raise ValueError("Decode 请求 ID 或上下文长度不合法")
 
@@ -60,7 +60,7 @@ class StepWorkload:
     restore_page_size: int = 0
     restore_only: tuple[int, ...] = ()
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # 校验本步阶段、请求集合、页数与恢复来源；无返回值
         prefill_ids = tuple(item.request_id for item in self.prefill)
         decode_ids = tuple(item.request_id for item in self.decode)
         phase = (
@@ -98,7 +98,7 @@ class StepWorkload:
             raise ValueError("纯 Restore 步须实际传输缓存页")
 
 
-def restore_bytes(workload: StepWorkload, cfg: PerfModelConfig) -> int:
+def restore_bytes(workload: StepWorkload, cfg: PerfModelConfig) -> int:  # 恢复页及 KV 字节配置 → 上行链路传输总字节数
     """上行链路字节数；L3 命中需要经过两条链路。"""
     if not workload.restore_sources:
         return 0
@@ -112,7 +112,7 @@ def restore_bytes(workload: StepWorkload, cfg: PerfModelConfig) -> int:
     )
 
 
-def restore_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
+def restore_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:  # 恢复页与字节带宽/延迟配置 → 链路耗时（ms）
     """每步每条实际使用的链路只计一次固定延迟。"""
     if not workload.restore_sources:
         return 0.0
@@ -137,7 +137,7 @@ def restore_time_tokens(
     l3_tokens_per_ms: float | None,
     l2_latency_ms: float,
     l3_latency_ms: float,
-) -> float:
+) -> float:  # 恢复页、两层 token 带宽与固定延迟 → 总恢复耗时（ms）
     """自动模式按实际经过的链路与整页 token 量计费。"""
     if not workload.restore_sources:
         return 0.0
@@ -154,7 +154,7 @@ def restore_time_tokens(
     return duration
 
 
-def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
+def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:  # Prefill/Decode 工作量与经验系数 → 融合后的设备耗时（ms）
     """纯步取各自成本；融合取较大成本，不重复统计同一步 Decode。"""
     prefill_total = 0.0
     for item in workload.prefill:
@@ -167,7 +167,7 @@ def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:
     return max(prefill_total, decode_total)
 
 
-def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelConfig) -> float:
+def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelConfig) -> float:  # 历史上下文、新 token 数与系数 → Prefill 耗时（ms）
     """前缀命中后仍需读取历史上下文：二次项按历史与新输入的面积差计算。"""
     if context_before < 0 or new_prefill_tokens < 1:
         raise ValueError("context_before 须 >= 0 且 new_prefill_tokens 须 >= 1")
@@ -176,7 +176,7 @@ def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelCon
     )
 
 
-def decode_step_time(batch_total_tokens: int, cfg: PerfModelConfig) -> float:
+def decode_step_time(batch_total_tokens: int, cfg: PerfModelConfig) -> float:  # 批内 KV token 总量与性能系数 → 一次 Decode 耗时（ms）
     """一次 decode 迭代的耗时（ms）。
 
     ``decode_d1 + decode_d2 * T``。常数项为与 batch 无关的固定开销（kernel launch 等），

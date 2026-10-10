@@ -20,7 +20,7 @@ __all__ = ["compute_metrics", "percentile"]
 _MS_PER_SECOND = 1000.0
 
 
-def percentile(sorted_values: Sequence[float], q: float) -> float:
+def percentile(sorted_values: Sequence[float], q: float) -> float:  # 升序样本与 [0,1] 分位点 → 插值后的数值
     """线性插值分位数。
 
     对升序样本取位置 ``h = (n - 1) * q``，在 ``floor(h)`` 与 ``ceil(h)`` 两点间线性插值，
@@ -64,7 +64,7 @@ def compute_metrics(
     latest_sent_arrival: float | None = None,
     num_sent: int | None = None,
     replayed_prefill_tokens: int = 0,
-) -> Metrics:
+) -> Metrics:  # 完成记录、计划/配置、缓存及发送时间窗/计数 → 全场指标（无成功请求时部分未定义）
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
     constructed = plan.constructed_ideal_prefix_hit_rate if plan else 0.0
     num_sessions = len(plan.root_request_ids) if plan else 0

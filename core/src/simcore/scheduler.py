@@ -23,11 +23,11 @@ class WaitingRequest:
     generated_tokens: int = 0
 
     @property
-    def restoring(self) -> bool:
+    def restoring(self) -> bool:  # 已生成 token 数 → 是否为回撤后恢复的请求
         return self.generated_tokens > 0
 
     @property
-    def target_tokens(self) -> int:
+    def target_tokens(self) -> int:  # 输入与已生成输出 → 重建 KV 长度；末个输出尚未写入 KV
         return self.request.prompt_len + max(self.generated_tokens - 1, 0)
 
 
@@ -46,7 +46,7 @@ class PrefillCandidate:
     hit_sources: tuple[tuple[str, str], ...] = ()
 
     @property
-    def context_after(self) -> int:
+    def context_after(self) -> int:  # 当前候选的目标长度 → Prefill 后上下文 token 数
         return self.waiting.target_tokens
 
 
@@ -69,7 +69,7 @@ class AdmissionBatch:
 class F001Scheduler:
     """按当前 KV 状态逐队头准入；预算只估算未来页，不预分配。"""
 
-    def __init__(self, engine: EngineConfig, cache: L1KVCache | TieredKVCache) -> None:
+    def __init__(self, engine: EngineConfig, cache: L1KVCache | TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:
             raise ValueError("L1 页配置与引擎配置不一致")
         if (
@@ -87,20 +87,20 @@ class F001Scheduler:
         self._ratio = 0.7
 
     @property
-    def ratio(self) -> float:
+    def ratio(self) -> float:  # 当前调度预算 → 未来输出预留比例
         return self._ratio
 
     @property
-    def num_waiting(self) -> int:
+    def num_waiting(self) -> int:  # FCFS 等待队列 → 等待请求数
         return len(self._waiting)
 
     @property
-    def head_request_id(self) -> int | None:
+    def head_request_id(self) -> int | None:  # FCFS 队头 → 请求 ID，空队列返回 None
         return self._waiting[0].request.request_id if self._waiting else None
 
     def enqueue(
         self, request: InferenceRequest, now_ms: float, *, generated_tokens: int = 0
-    ) -> bool:
+    ) -> bool:  # 请求、到达时刻及已生成数 → 是否成功排入 FCFS 队列
         """返回 False 表示 M<1，调用方须在发送时立即记录请求失败。"""
         if now_ms < self._last_arrival:
             raise ValueError("FCFS 请求发送时刻不得倒退")
@@ -114,13 +114,13 @@ class F001Scheduler:
         self._insert(WaitingRequest(request, now_ms, generated_tokens))
         return True
 
-    def requeue(self, request: InferenceRequest, now_ms: float, generated_tokens: int) -> None:
+    def requeue(self, request: InferenceRequest, now_ms: float, generated_tokens: int) -> None:  # 回撤请求、步终时刻与输出进度 → 重新按 FCFS 排队；无返回值
         """回撤请求于步终重新等待；不改变尚在计算中到达请求的发送时钟。"""
         if not 1 <= generated_tokens < request.max_new_tokens:
             raise ValueError("回撤请求的生成进度不合法")
         self._insert(WaitingRequest(request, now_ms, generated_tokens))
 
-    def _insert(self, item: WaitingRequest) -> None:
+    def _insert(self, item: WaitingRequest) -> None:  # 待调度请求 → 按到达时刻与 ID 插入队列；无返回值
         key = item.request.request_id
         if key in self._queued:
             raise ValueError("请求已在等待队列中")
@@ -140,8 +140,8 @@ class F001Scheduler:
         *,
         is_ready: Callable[[int], bool] | None = None,
         can_reuse: Callable[[int, str, str], bool] | None = None,
-    ) -> AdmissionBatch:
-        """冻结本步 D，依次临时 pin 候选，预算失败撤销且不跳过队头。"""
+    ) -> AdmissionBatch:  # 运行集、Decode ID 与就绪/复用条件 → 本步准入、恢复和阻塞批次
+        """固定本步 Decode 集合，逐个保护候选命中页，预算失败不跳过队头。"""
         if len(set(decode_ids)) != len(decode_ids) or not set(decode_ids) <= running.keys():
             raise ValueError("Decode 集合必须是步首运行请求的不重复子集")
         if self._engine.pd_mutually_exclusive and decode_ids:
@@ -168,9 +168,9 @@ class F001Scheduler:
         restore_hits: list[tuple[int, tuple[tuple[str, str], ...]]] = []
         promotions: set[str] = set()
         aborted: list[WaitingRequest] = []
-        current_offset = decode_new
-        selected_future = 0
-        selected_pages_tokens = 0
+        current_offset = decode_new  # 本步新页、增长余量及页提升的容量预算（不预占）
+        selected_future = 0  # 候选请求将来输出的预算，不预留物理页
+        selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
         blocked = False
         tiered = self._engine.l2_capacity_tokens > 0
         while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
@@ -284,7 +284,7 @@ class F001Scheduler:
             tuple(sorted(restore_hits)),
         )
 
-    def rollback_selection(self, selection: AdmissionBatch) -> None:
+    def rollback_selection(self, selection: AdmissionBatch) -> None:  # 已选准入批次 → 取消保护并还原 FCFS 队列；无返回值
         """回载容量不足时撤销候选引用，并按原 FCFS 顺序放回队列。"""
         for candidate in selection.admitted:
             self._cache.cancel_pin(candidate.waiting.request.request_id)
@@ -293,7 +293,7 @@ class F001Scheduler:
             self._cache.cancel_pin(item.request.request_id)
             self._insert(item)
 
-    def _pop_head(self) -> WaitingRequest:
+    def _pop_head(self) -> WaitingRequest:  # FCFS 队列 → 移除并返回队头请求
         item = self._waiting.popleft()
         self._queued.remove(item.request.request_id)
         return item
@@ -305,14 +305,14 @@ class F001Scheduler:
         decoded: bool = False,
         withdrew: bool = False,
         idle: bool = False,
-    ) -> float:
+    ) -> float:  # 运行集和解码/回撤/空闲标志 → 更新后的未来输出预留比例
         """每步完成后更新未来估算比例；纯 Prefill 不衰减。"""
         if idle and not running:
             self._ratio = 0.7
         elif withdrew and running:
             generated = sum(item.generated_tokens for item in running.values())
             limits = sum(item.request.max_new_tokens for item in running.values())
-            # 回撤后提高未来输出的预留比例。
+            # 根据回撤后仍运行请求的生成进度重新估计未来输出预留比例。
             self._ratio = min(1.0, (generated + 20 * len(running)) / (limits + 1))
         elif decoded and not withdrew:
             self._ratio = max(0.098, self._ratio - (0.7 - 0.098) / 600)  # 稳定解码时逐步放宽

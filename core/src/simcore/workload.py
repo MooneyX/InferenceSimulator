@@ -30,7 +30,7 @@ __all__ = ["build_plan", "plan_from_arrivals", "sample_length"]
 _MS_PER_SECOND = 1000.0
 
 
-def sample_length(dist: LengthDist, rng: random.Random) -> int:
+def sample_length(dist: LengthDist, rng: random.Random) -> int:  # 长度分布与随机流 → 至少 1 的 token 长度
     """按分布采样一个 token 长度。
 
     结果向上取整并钳制到 >= 1（见 ``docs/design/workload.md``）：长度为 0 的请求无意义，
@@ -52,7 +52,7 @@ def sample_length(dist: LengthDist, rng: random.Random) -> int:
             return max(1, math.ceil(rng.lognormvariate(mu, dist.sigma)))
 
 
-def _sample_poisson(mean: float, rng: random.Random) -> int:
+def _sample_poisson(mean: float, rng: random.Random) -> int:  # 泊松均值与随机流 → 非负整数采样值
     """小均值保留 Knuth 乘积法及其随机流，大均值使用 PTRS 避免下溢。"""
     if mean >= 30.0:
         return _sample_poisson_ptrs(mean, rng)
@@ -65,7 +65,7 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:
     return count
 
 
-def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:
+def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:  # 大泊松均值与随机流 → PTRS 采样的非负整数
     """Hörmann PTRS 变换拒绝采样；大均值下期望尝试次数不随均值增长。"""
     root = math.sqrt(mean)
     b = 0.931 + 2.53 * root
@@ -91,7 +91,7 @@ def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:
             return k
 
 
-def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:
+def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:  # 输入长度、输出上限与页容量 → 可见生成 token 上限
     # 输入向上取整占页后再留一页，避免输出挤占最后的 KV 空间。
     prompt_pages = (prompt_len + engine.page_size - 1) // engine.page_size
     return max(
@@ -99,7 +99,7 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
     )
 
 
-def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:
+def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:  # 合成负载与 KV 引擎配置 → 会话拓扑和根到达计划
     """预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
     block_size = engine.page_size
     sessions = cast(int, cfg.session.num_sessions)
@@ -111,7 +111,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     output_rng = random.Random(stable_derive(cfg.seed, "output-length"))
     increment_dist = cast(LengthDist, cfg.turn_increment_len)
     think_time_rng = random.Random(stable_derive(cfg.seed, "think-time"))
-    counts = [n // sessions] * sessions
+    counts = [n // sessions] * sessions  # 各会话轮次数；余数随机分配以免偏向前面的会话
     shuffled = list(range(sessions))
     topology_rng.shuffle(shuffled)
     for session_id in shuffled[: n % sessions]:
@@ -181,7 +181,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     )
 
 
-def plan_from_arrivals(arrivals: Iterable[Arrival], engine: EngineConfig) -> WorkloadPlan:
+def plan_from_arrivals(arrivals: Iterable[Arrival], engine: EngineConfig) -> WorkloadPlan:  # 手写到达序列与引擎配置 → 独立根会话的计划
     """将手写 Arrival 到达序列适配为各自独立的根 session。"""
     turns: dict[int, TurnPlan] = {}
     roots: list[int] = []

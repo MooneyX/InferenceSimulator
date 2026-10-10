@@ -4,7 +4,7 @@ import hashlib
 import json
 
 
-def encode(request_id: int, block_index: int) -> str:
+def encode(request_id: int, block_index: int) -> str:  # 请求 ID 与页序号 → 本请求的稳定块身份
     """由请求 ID 和完整块的逻辑序号编码不依赖前驱的块身份。"""
     if type(request_id) is not int or type(block_index) is not int:
         raise TypeError("request_id 和 block_index 必须为非负整数")
@@ -15,7 +15,7 @@ def encode(request_id: int, block_index: int) -> str:
 
 def logical_chunk_id(
     request_id: int, block_index: int, inherited_prefix_ids: tuple[str, ...]
-) -> str:
+) -> str:  # 请求、页序号及继承页 ID → 对应逻辑页身份
     """按逻辑页位置从不可变继承前缀或请求 ID 推导页身份。"""
     if type(request_id) is not int or type(block_index) is not int:
         raise TypeError("request_id 和 block_index 必须为非负整数")
@@ -26,7 +26,7 @@ def logical_chunk_id(
     return encode(request_id, block_index)  # 新页归当前请求
 
 
-def stable_derive(seed: int, domain: str) -> int:
+def stable_derive(seed: int, domain: str) -> int:  # 随机种子与用途域 → 稳定独立的 64 位种子
     """按域派生独立随机流，避免采样维度之间相互扰动。"""
     payload = json.dumps([seed, domain], ensure_ascii=False, separators=(",", ":")).encode()
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")

@@ -20,7 +20,7 @@ class Coordinator:
 
     def __init__(
         self, engines: Sequence[Engine], client: ClientDriver | OpenLoopClient, router: Router
-    ) -> None:
+    ) -> None:  # 引擎副本、客户端、选路器 → 建立统一事件队列；无返回值
         self.engines = tuple(engines)
         self.client = client
         self.router = router
@@ -44,7 +44,7 @@ class Coordinator:
 
     def _enqueue_wakeups(
         self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None
-    ) -> None:
+    ) -> None:  # 唤醒序列与可选父轮完成时刻 → 按事件优先级入堆；无返回值
         for wakeup in wakeups:
             self._wakeups[wakeup.turn_id] = wakeup
             if completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
@@ -53,7 +53,7 @@ class Coordinator:
                 event = self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
             heapq.heappush(self._heap, event)
 
-    def _process_aborts(self, instance_id: int) -> None:
+    def _process_aborts(self, instance_id: int) -> None:  # 副本 ID → 通知客户端失败并标记后代；无返回值
         engine = self.engines[instance_id]
         for request_id in engine.drain_aborts():
             if isinstance(self.client, OpenLoopClient):
@@ -61,13 +61,13 @@ class Coordinator:
             else:
                 engine.register_skipped(self.client.on_request_aborted(request_id))
 
-    def _schedule_step(self, instance_id: int, now_ms: float) -> None:
+    def _schedule_step(self, instance_id: int, now_ms: float) -> None:  # 副本 ID 与当前时刻 → 安排可运行的引擎步；无返回值
         if not self._step_pending[instance_id] and self.engines[instance_id].can_step:
             time = max(now_ms, self._busy_until[instance_id])
             heapq.heappush(self._heap, self._factory.engine_step(time, instance_id))
             self._step_pending[instance_id] = True
 
-    def _drain_engine_events(self, instance_id: int) -> None:
+    def _drain_engine_events(self, instance_id: int) -> None:  # 副本 ID → 将局部页传输/查询事件映射进全局堆；无返回值
         for time, kind, local_ref in self.engines[instance_id].drain_events():
             if kind is EventKind.L3_LOOKUP_DONE:
                 event = self._factory.l3_lookup_done(time, local_ref)
@@ -84,7 +84,7 @@ class Coordinator:
                 raise ValueError(f"未知的引擎事件类型: {kind}")
             heapq.heappush(self._heap, event)
 
-    def _submit(self, request: InferenceRequest, output_len: int, now_ms: float) -> None:
+    def _submit(self, request: InferenceRequest, output_len: int, now_ms: float) -> None:  # 请求、实际输出长度和时刻 → 选路并投放副本；无返回值
         instance_id = self.router.select(request)
         engine = self.engines[instance_id]
         engine.register_output_target(request.request_id, output_len)
@@ -94,7 +94,7 @@ class Coordinator:
         if accepted:
             self._schedule_step(instance_id, now_ms)
 
-    def run(self) -> tuple[EngineRun, ...]:
+    def run(self) -> tuple[EngineRun, ...]:  # 消费全局事件堆直至清空 → 每副本的原始仿真结果
         while self._heap:
             event = heapq.heappop(self._heap)
             now_ms = event.time

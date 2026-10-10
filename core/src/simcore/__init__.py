@@ -1,6 +1,6 @@
 """simcore —— LLM Serving 系统级离散事件仿真内核。
 
-纯计算包：无文件、无网络、无时钟读取。唯一对外入口为 :func:`simulate`，
+仿真逻辑无文件、无网络 IO；顶层入口仅用性能时钟统计实际运行耗时。主要对外入口为 :func:`simulate`，
 输入 :class:`SimConfig`，输出 :class:`SimResult`。
 
 模块间单向依赖关系见 ``docs/design/architecture.md``「内核内部模块」。

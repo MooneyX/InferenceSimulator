@@ -35,7 +35,7 @@ from simcore.workload import build_plan
 __all__ = ["simulate"]
 
 
-def simulate(config: SimConfig) -> SimResult:
+def simulate(config: SimConfig) -> SimResult:  # 仿真配置 → 完整的经验计时仿真结果
     """沿用单实例经验模型的完整仿真入口。"""
     result, _ = _simulate(config, None)
     return result
@@ -43,7 +43,7 @@ def simulate(config: SimConfig) -> SimResult:
 
 def simulate_analytical(
     config: SimConfig, model: ModelSpec, hardware: HardwareSpec
-) -> tuple[SimResult, AnalyticalSummary]:
+) -> tuple[SimResult, AnalyticalSummary]:  # 配置、模型、硬件 → 仿真结果与解析成本汇总
     """单 GPU Roofline 模式使用相同的调度与 KV 生命周期。"""
     result, analysis = _simulate(config, (model, hardware, 1, 1))
     if analysis is None:
@@ -51,7 +51,7 @@ def simulate_analytical(
     return result, analysis
 
 
-def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
+def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:  # 解析后配置 → 仿真结果及可选解析成本
     """自动模式使用解析后的 token 容量和 token/ms 链路带宽。"""
     if not resolution.runnable:
         if resolution.timing == "analytical":
@@ -73,7 +73,7 @@ def _simulate(
     config: SimConfig,
     analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
     token_bandwidths: tuple[float | None, float | None] | None = None,
-) -> tuple[SimResult, AnalyticalSummary | None]:
+) -> tuple[SimResult, AnalyticalSummary | None]:  # 配置、可选解析规格和链路带宽 → 全场结果/可选成本
     if config.workload.mode == "trace":
         raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
     started_at = perf_counter()
@@ -103,7 +103,7 @@ def _simulate(
     aborted: list[AbortedRequest] = []
     skipped: list[SkippedRequest] = []
     for instance_id, run in enumerate(runs):
-        local_ids = (
+        local_ids = (  # 本副本完成、失败、跳过的全部请求 ID
             {item.id for item in run.records}
             | {item.id for item in run.aborted_requests}
             | {item.id for item in run.skipped_requests}
@@ -179,7 +179,7 @@ def _simulate(
     return result, analysis
 
 
-def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfig) -> Metrics:
+def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfig) -> Metrics:  # 实例结果、负载计划与配置 → 合并后的指标
     """按全场实际到达窗口重新计算时延；末态缓存按独占实例求和。"""
     records = [record for run in runs for record in run.records]
     sent_arrivals = [item.arrival for run in runs for item in run.records] + [

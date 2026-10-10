@@ -31,7 +31,7 @@ def step_cost(
     hardware: HardwareSpec,
     tp_size: int = 1,
     ep_size: int = 1,
-) -> StepCost:
+) -> StepCost:  # 单步负载、模型、硬件及 TP/EP 并行度 → 分项耗时与资源成本
     """按真实单步工作量计算各层依赖；MoE 替换 Dense FFN。"""
     if not workload.prefill and not workload.decode:
         return StepCost(0.0, 0.0, 0.0, 0.0, 0.0)
@@ -87,7 +87,7 @@ def step_cost(
 
 def _tp_step_cost(
     workload: StepWorkload, model: ModelSpec, hardware: HardwareSpec, tp_size: int
-) -> StepCost:
+) -> StepCost:  # 单步负载、模型、硬件与 TP 规模 → 各 rank 及通信成本
     """单实例同构 TP：各 rank 执行相同的局部工作，逐层两次等效归约。"""
     h, d, f = model.hidden_size, model.head_dim, model.ffn_intermediate_size
     q_heads = model.num_attention_heads // tp_size
@@ -100,7 +100,7 @@ def _tp_step_cost(
     kv_reads = sum(item.context_after for item in workload.prefill) + sum(
         item.context_after_decode for item in workload.decode
     )
-    # Q/K/V 与输出投影在不同的同步边界，不能合成一次 Roofline 阶段。
+    # Q/K/V 与输出投影中间隔着注意力计算，须分别计入 Roofline 阶段。
     qkv_weights = h * (q_heads + 2 * kv_heads) * d
     output_weights = h * q_heads * d
     ffn_weights = 3 * h * (f // tp_size)
@@ -149,7 +149,7 @@ def _moe_step_cost(
     hardware: HardwareSpec,
     tp_size: int,
     ep_size: int,
-) -> StepCost:
+) -> StepCost:  # 单步负载、模型、硬件、TP/EP 规模 → 含专家通信的分项成本
     """无重叠基线：各 rank 平均路由，逐层等待通信与专家计算。"""
     h, d = model.hidden_size, model.head_dim
     q_heads = model.num_attention_heads // tp_size
@@ -169,7 +169,7 @@ def _moe_step_cost(
     bytes_per_ms = hardware.effective_hbm_gb_s * 1e6
     flops = hbm = compute = memory = device = 0.0
 
-    def stage(work_flops: float, nbytes: float, repeats: int = 1) -> None:
+    def stage(work_flops: float, nbytes: float, repeats: int = 1) -> None:  # 单阶段 FLOPs、字节与重复层数 → 累加计算/显存成本；无返回值
         nonlocal flops, hbm, compute, memory, device
         flops += repeats * work_flops
         hbm += repeats * nbytes
@@ -228,8 +228,8 @@ def _moe_step_cost(
         ):
             raise ValueError("EP 计时需要单 rank 互联带宽和 EP 单次通信固定开销")
         # 不生成具体路由：每 token 在无放回 Top-K 中命中某一目标 rank 的概率。
-        experts_per_rank = model.num_experts // ep_size
-        missed = 1.0
+        experts_per_rank = model.num_experts // ep_size  # 每个 EP rank 驻留的专家数
+        missed = 1.0  # 无放回选择均未命中某个远端 rank 的概率
         for selected in range(model.experts_per_token):
             missed *= (model.num_experts - experts_per_rank - selected) / (
                 model.num_experts - selected
@@ -238,7 +238,7 @@ def _moe_step_cost(
         if workload.prefill:
             remote_payloads = tokens * (ep_size - 1) / ep_size * (1 - missed)
         else:
-            # low_latency 的 masked 路径按有效专家选择数估计逻辑 payload。
+            # 纯 Decode 按远端专家选择次数估计逻辑 payload。
             remote_payloads = remote_selections
         # BF16/FP16 向量与计算精度一致；每次远端选择另计 4B ID + 4B 权重/索引。
         bytes_per_exchange = remote_payloads * h * 2 + remote_selections * 8

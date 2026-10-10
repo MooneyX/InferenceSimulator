@@ -13,11 +13,11 @@ from simcore.schemas import (
 _GB = Decimal(1_000_000_000)
 
 
-def _bytes_from_gb(value: float) -> int:
+def _bytes_from_gb(value: float) -> int:  # 十进制 GB 数值 → 向下取整的字节数
     return int((Decimal(str(value)) * _GB).to_integral_value(rounding=ROUND_FLOOR))
 
 
-def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:
+def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:  # 模型规格 → 总参数、激活参数、专家参数数目
     """按当前支持的无偏置全注意力、门控 FFN 与同构专家结构估算参数。"""
     h, q, kv, d = (model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim)
     dense_layers = model.num_layers - model.moe_layers
@@ -38,7 +38,7 @@ def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:
     return non_expert + expert, active, expert
 
 
-def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int]:
+def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int]:  # 模型与 TP 份数 → 单 rank 分片/复制权重字节数
     """返回每 rank 的结构估算分片与复制权重字节。"""
     if model.vocab_size is None:
         raise ValueError("TP 容量预览需要模型 vocab_size 与词嵌入共享规则")
@@ -70,7 +70,7 @@ def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int]:
     return sharded * 2, replicated * 2
 
 
-def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
+def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:  # 模型与 TP 份数（EP 同数）→ 单 rank 分片、复制及专家权重字节
     """返回每 rank 非专家分片、复制及全部驻留专家字节。"""
     if model.vocab_size is None:
         raise ValueError("MoE 容量预览需要 vocab_size 与词嵌入共享规则")
@@ -103,7 +103,7 @@ def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
     return sharded * 2, replicated * 2, expert_parameters // tp_size * 2
 
 
-def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
+def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬件、存储及仿真请求 → 物理页容量与运行可行性报告
     model, hardware, storage = request.model, request.hardware, request.storage
     page_size = request.config.engine.page_size
     tp_size = request.tp_size
@@ -126,9 +126,9 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
     local_kv_heads = max(1, model.num_kv_heads // tp_size)
-    kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2
-    group_kv_bytes = kv_bytes * tp_size
-    page_bytes = group_kv_bytes * page_size
+    kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2  # 单 rank 每 token 的 K/V BF16 字节
+    group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
+    page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = _bytes_from_gb(storage.l1_available_gb)
     l2 = _bytes_from_gb(storage.l2_available_gb)
     l3 = _bytes_from_gb(storage.l3_available_gb)

@@ -12,7 +12,7 @@
 - ``kind`` 优先级：步末发布、请求结算及客户端回调先于传输完成，
   传输完成先于本时刻的发送，所有发送先于新引擎步。
   将来才到达的闭环子轮与普通发送同级。
-- ``ref`` 在同类事件内按请求 ID 排序；``seq`` 只负责相同 ID 的最终平局。
+- ``ref`` 在同类事件内排序（请求、实例、传输或时钟序号）；``seq`` 打破同引用的平局。
 
 依赖层级：仅依赖 ``schemas``。
 """
@@ -56,7 +56,7 @@ class EventKind(IntEnum):
 class Event:
     """调度事件。按 ``(time, kind, ref, seq)`` 排序，可直接入 ``heapq``。
 
-    同一时间同类事件优先处理较小的请求 ID，序号仅打破相同 ID 的平局。
+    同一时间同类事件按引用 ID 排序；引用可指请求、副本、传输或时钟序号。
 
     Attributes:
         time: 事件触发时刻（ms）。
@@ -76,51 +76,51 @@ class EventFactory:
 
     __slots__ = ("_next_seq",)
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # 无显式输入 → 初始化单调事件序号；无返回值
         self._next_seq = 0
 
-    def _make(self, time: float, kind: EventKind, ref: int) -> Event:
+    def _make(self, time: float, kind: EventKind, ref: int) -> Event:  # 时刻、类别、引用 → 唯一序号事件
         seq = self._next_seq
         self._next_seq = seq + 1
         return Event(time, kind, ref, seq)
 
-    def arrival(self, time: float, request_id: int) -> Event:
+    def arrival(self, time: float, request_id: int) -> Event:  # 到达时刻与请求 ID → 兼容的到达事件
         """旧单轮到达事件；映射到客户端发送的同刻优先级。"""
         return self._make(time, EventKind.ARRIVAL, request_id)
 
-    def client_completion(self, time: float, request_id: int) -> Event:
+    def client_completion(self, time: float, request_id: int) -> Event:  # 完成时刻与请求 ID → 客户端回调事件
         return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
 
-    def client_send(self, time: float, turn_id: int) -> Event:
+    def client_send(self, time: float, turn_id: int) -> Event:  # 发送时刻与轮次 ID → 普通发送事件
         return self._make(time, EventKind.CLIENT_SEND, turn_id)
 
-    def client_child_send(self, time: float, turn_id: int) -> Event:
+    def client_child_send(self, time: float, turn_id: int) -> Event:  # 回调时刻与子轮 ID → 优先发送事件
         """完成回调在本时刻唤醒的子轮须先于其他普通发送。"""
         return self._make(time, EventKind.CLIENT_CHILD_SEND, turn_id)
 
-    def open_loop_tick(self, time: float, index: int) -> Event:
+    def open_loop_tick(self, time: float, index: int) -> Event:  # 投放时刻与序号 → 开环时钟事件
         return self._make(time, EventKind.OPEN_LOOP_TICK, index)
 
-    def engine_step(self, time: float, instance_id: int) -> Event:
+    def engine_step(self, time: float, instance_id: int) -> Event:  # 步起点与副本 ID → 引擎步事件
         return self._make(time, EventKind.ENGINE_STEP, instance_id)
 
-    def step_done(self, time: float, instance_id: int) -> Event:
+    def step_done(self, time: float, instance_id: int) -> Event:  # 步终点与副本 ID → 步完成事件
         return self._make(time, EventKind.STEP_DONE, instance_id)
 
-    def l3_lookup_done(self, time: float, request_id: int) -> Event:
+    def l3_lookup_done(self, time: float, request_id: int) -> Event:  # 查询完成时刻与请求 ID → L3 查询事件
         return self._make(time, EventKind.L3_LOOKUP_DONE, request_id)
 
-    def l3_l2_done(self, time: float, transfer_id: int) -> Event:
+    def l3_l2_done(self, time: float, transfer_id: int) -> Event:  # 完成时刻与传输 ID → L3 上行事件
         return self._make(time, EventKind.L3_L2_DONE, transfer_id)
 
-    def l2_l1_done(self, time: float, transfer_id: int) -> Event:
+    def l2_l1_done(self, time: float, transfer_id: int) -> Event:  # 完成时刻与传输 ID → L2 上行事件
         return self._make(time, EventKind.L2_L1_DONE, transfer_id)
 
-    def request_done(self, time: float, request_id: int) -> Event:
+    def request_done(self, time: float, request_id: int) -> Event:  # 结算时刻与请求 ID → 完成事件
         return self._make(time, EventKind.REQUEST_DONE, request_id)
 
     @property
-    def issued(self) -> int:
+    def issued(self) -> int:  # 无显式输入 → 已分配的事件数
         """已分配的事件数。"""
         return self._next_seq
 
@@ -130,7 +130,7 @@ class EventFactory:
 
 @dataclass(frozen=True, slots=True)
 class ArrivalTrace:
-    """请求到达并进入等待队列。"""
+    """记录请求到达；即刻失败的请求不会进入等待队列。"""
 
     time: float
     request_id: int
@@ -138,7 +138,7 @@ class ArrivalTrace:
     output_len: int
 
     @classmethod
-    def of(cls, arrival: Arrival) -> "ArrivalTrace":
+    def of(cls, arrival: Arrival) -> "ArrivalTrace":  # 到达记录 → 对应的事件流到达条目
         return cls(arrival.sim_time, arrival.request_id, arrival.prompt_len, arrival.output_len)
 
 
@@ -154,8 +154,8 @@ class StepTrace:
         forced: 其中强制准入的 request_id。
         num_decoding: 本步 decode 的请求数。
         batch_total_tokens: 本步 batch 的 KV token 总量（含本步准入 prompt）。
-        kv_used: 步末 decode 增长后、释放完成请求前的 KV 占用。
-        kv_overflow: 步末超出预算的 token 数；未超限为 0。
+        kv_used: 步末 decode 增长后、释放完成请求前的逻辑 KV token 数。
+        kv_overflow: 预留的兼容字段，目前固定为 0。
         finished: 本步结束时完成的 request_id。
     """
 
@@ -195,7 +195,7 @@ class StepTrace:
     demotions: int = 0
 
     @property
-    def end(self) -> float:
+    def end(self) -> float:  # 步起点与耗时 → 步结束时刻（ms）
         return self.time + self.duration
 
 
@@ -221,16 +221,16 @@ class EventLog:
 
     __slots__ = ("_enabled", "_last_time", "_records")
 
-    def __init__(self, *, enabled: bool = True) -> None:
+    def __init__(self, *, enabled: bool = True) -> None:  # 是否保存记录 → 初始化时序校验日志；无返回值
         self._enabled = enabled
         self._records: list[TraceRecord] = []
         self._last_time = float("-inf")
 
     @property
-    def enabled(self) -> bool:
+    def enabled(self) -> bool:  # 构造时设置 → 是否保存事件流
         return self._enabled
 
-    def record(self, entry: TraceRecord) -> None:
+    def record(self, entry: TraceRecord) -> None:  # 事件条目 → 校验时间并追加（启用时）；无返回值
         """追加一条记录。
 
         Raises:
@@ -244,16 +244,16 @@ class EventLog:
         if self._enabled:
             self._records.append(entry)
 
-    def __iter__(self) -> Iterator[TraceRecord]:
+    def __iter__(self) -> Iterator[TraceRecord]:  # 当前日志 → 按记录顺序的迭代器
         return iter(self._records)
 
-    def __len__(self) -> int:
+    def __len__(self) -> int:  # 当前日志 → 保存的事件条目数
         return len(self._records)
 
-    def steps(self) -> Iterator[StepTrace]:
+    def steps(self) -> Iterator[StepTrace]:  # 当前日志 → 仅包含引擎步的迭代器
         return (r for r in self._records if isinstance(r, StepTrace))
 
-    def for_request(self, request_id: int) -> list[TraceRecord]:
+    def for_request(self, request_id: int) -> list[TraceRecord]:  # 请求 ID → 相关到达、步进与完成记录
         """某请求相关的全部记录：到达、参与的步（准入或完成）、完成结算。"""
         out: list[TraceRecord] = []
         for r in self._records:

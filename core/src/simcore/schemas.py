@@ -141,7 +141,7 @@ class SyntheticWorkloadConfig(_Frozen):
     session: SessionConfig = Field(default_factory=SessionConfig)
 
     @model_validator(mode="after")
-    def _resolve_session(self) -> Self:
+    def _resolve_session(self) -> Self:  # 当前负载配置 → 校验开/闭环并补全会话数，返回配置自身
         if self.arrival_mode == "open_loop":
             if self.arrival_rate is None or self.session_rate is not None:
                 raise ValueError("开环负载必须仅提供请求到达率 arrival_rate")
@@ -171,7 +171,7 @@ class WorkloadConfig(_Frozen):
     synthetic: SyntheticWorkloadConfig | None = None
 
     @model_validator(mode="after")
-    def _check_mode_payload(self) -> Self:
+    def _check_mode_payload(self) -> Self:  # 当前负载模式与配置 → 校验合成负载必填项，返回自身
         if self.mode == "synthetic" and self.synthetic is None:
             raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
         return self
@@ -192,7 +192,7 @@ class EngineConfig(_Frozen):
     pd_mutually_exclusive: bool = Field(default=True, description="Prefill 与 Decode 分步执行")
 
     @model_validator(mode="after")
-    def _check_capacity(self) -> Self:
+    def _check_capacity(self) -> Self:  # 当前引擎页容量设置 → 校验层级与页大小，返回自身
         if self.max_total_tokens < self.page_size or self.max_total_tokens % self.page_size:
             raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
         for tier in ("l2", "l3"):
@@ -203,7 +203,7 @@ class EngineConfig(_Frozen):
         return self
 
     @property
-    def capacity_pages(self) -> int:
+    def capacity_pages(self) -> int:  # L1 token 容量与页大小 → 物理页数
         return self.max_total_tokens // self.page_size
 
 
@@ -226,7 +226,7 @@ class PerfModelConfig(_Frozen):
     l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
-def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:
+def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:  # 引擎容量与传输系数 → 校验层间带宽配置；无返回值
     """同时供 SimConfig、Engine 与 run_engine 检查 KV 层与传输参数。"""
     if engine.l2_capacity_tokens and (
         perf.kv_bytes_per_token is None or perf.l2_to_l1_bandwidth_bytes_per_ms is None
@@ -247,7 +247,7 @@ class SimConfig(_Frozen):
     num_instances: int = Field(ge=1, description="独占相同单实例配置的推理副本数量")
 
     @model_validator(mode="after")
-    def _check_tiered_config(self) -> Self:
+    def _check_tiered_config(self) -> Self:  # 当前仿真配置 → 校验 KV 与性能模型匹配，返回自身
         validate_kv_config(self.engine, self.perf_model)
         return self
 
@@ -274,7 +274,7 @@ class ModelSpec(_Frozen):
     attention_layout: Literal["full_gqa", "other"] = "full_gqa"
 
     @model_validator(mode="after")
-    def _check_heads(self) -> Self:
+    def _check_heads(self) -> Self:  # 当前模型规格 → 校验 GQA 分头与 MoE 层数，返回自身
         if self.num_attention_heads % self.num_kv_heads:
             raise ValueError("注意力头数须是 KV 头数的整数倍")
         if self.moe_layers > self.num_layers:
@@ -413,7 +413,7 @@ class WorkloadPlan:
     children: Mapping[int, tuple[int, ...]]
     constructed_ideal_prefix_hit_rate: float = 0.0
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # 轮次和后代映射 → 防御性拷贝并冻结；无返回值
         # 先拷贝再冻结，避免外部字典改写计划。
         object.__setattr__(self, "turns", MappingProxyType(dict(self.turns)))
         object.__setattr__(self, "children", MappingProxyType(dict(self.children)))
@@ -490,7 +490,7 @@ class RequestRecord(_Record):
     l3_hit_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _check_ordering(self) -> Self:
+    def _check_ordering(self) -> Self:  # 当前请求区间与分层命中记录 → 校验时序和 token 守恒，返回自身
         if not (self.arrival <= self.prefill_start <= self.prefill_end <= self.finish):
             raise ValueError(
                 "区间端点必须单调不减: "
@@ -519,7 +519,7 @@ class AbortedRequest(_Record):
     retry_count: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def _check_failure_time(self) -> Self:
+    def _check_failure_time(self) -> Self:  # 当前失败请求记录 → 校验失败时刻不早于到达，返回自身
         if self.failed_at < self.arrival:
             raise ValueError("failed_at 不得早于 arrival")
         return self
@@ -605,7 +605,7 @@ class Metrics(_Record):
     l3_free_blocks: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _check_cache_conservation(self) -> Self:
+    def _check_cache_conservation(self) -> Self:  # 当前全场指标 → 校验各层物理页和命中 token 守恒，返回自身
         if not (  # 输入 token 分为命中与重算；物理页分为驻留与空闲
             self.actual_hit_tokens <= self.ideal_hit_tokens <= self.total_input_tokens
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.total_input_tokens
@@ -651,7 +651,7 @@ class SimMeta(_Record):
     )
 
     @model_validator(mode="after")
-    def _check_window(self) -> Self:
+    def _check_window(self) -> Self:  # 当前仿真元数据 → 校验时间窗及请求计数，返回自身
         if self.sim_end < self.sim_start:
             raise ValueError(f"sim_end({self.sim_end}) 不得早于 sim_start({self.sim_start})")
         if self.num_completed + self.num_aborted + self.num_skipped != self.num_requests:
@@ -682,7 +682,7 @@ class SimResult(_Record):
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_result_counts(self) -> Self:
+    def _check_result_counts(self) -> Self:  # 当前完整结果 → 校验实例计数、互斥状态和指标定义，返回自身
         if (
             [item.instance_id for item in self.instances]
             != list(range(self.meta.config.num_instances))

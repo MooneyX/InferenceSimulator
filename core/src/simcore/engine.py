@@ -48,7 +48,7 @@ class EngineRun:
         warnings: 告警文本，按发生时刻排序。
         num_engine_steps: 执行的引擎步数。
         sim_start: 首请求到达时刻（ms）；无请求时为 0。
-        sim_end: 末请求完成时刻（ms）；无请求时为 0。
+        sim_end: 最晚请求完成或失败时刻（ms）；无请求时为 0。
         trace: 完整事件流（``record_trace=False`` 时为空）。
         cache_snapshot: 仿真结束时的物理 L1 容量快照。
     """
@@ -98,7 +98,7 @@ def run_engine(
     arrivals: Iterable[Arrival],
     *,
     record_trace: bool = True,
-) -> EngineRun:
+) -> EngineRun:  # 引擎配置、计时系数、到达序列及轨迹开关 → 单实例仿真结果
     """执行一场仿真。
 
     Args:
@@ -139,7 +139,7 @@ class Engine:
         record_trace: bool = True,
         analytical: tuple[ModelSpec, HardwareSpec, int, int] | None = None,
         token_bandwidths: tuple[float | None, float | None] | None = None,
-    ) -> None:
+    ) -> None:  # 引擎/计时配置、输出目标、轨迹开关与可选解析规格/链路带宽 → 初始化状态；无返回值
         validate_kv_config(engine, perf)
         self._token_bandwidths = token_bandwidths
         self._analytical = analytical
@@ -155,7 +155,7 @@ class Engine:
         )
         self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
-        self._admission_tiers: dict[int, tuple[int, int, int]] = {}
+        self._admission_tiers: dict[int, tuple[int, int, int]] = {}  # 请求 ID → 首次准入时 L1/L2/L3 命中 token 数
         self._restore_bytes = 0
         self._restore_time_ms = 0.0
         self._log = EventLog(enabled=record_trace)
@@ -178,8 +178,8 @@ class Engine:
         self._prefetch_waiting: dict[int, set[int]] = {}
         self._prefetched_origins: dict[int, set[str]] = {}
         self._unusable_hits: dict[int, set[str]] = {}
-        self._pending_selection: AdmissionBatch | None = None
-        self._pending_loads: set[str] = set()
+        self._pending_selection: AdmissionBatch | None = None  # 等待 L2 回载后执行的准入批次
+        self._pending_loads: set[str] = set()  # 当前批次尚未回载到 L1 的页 ID
         self._pending_publish: tuple[int, ...] = ()
         self._pending_finished: tuple[int, ...] = ()
         self._scheduled_events: list[tuple[float, EventKind, int]] = []
@@ -189,16 +189,16 @@ class Engine:
         self._link_free = {"L2": 0.0, "L1": 0.0}
 
     @property
-    def has_work(self) -> bool:
+    def has_work(self) -> bool:  # 等待队列或运行集 → 是否仍有可执行请求
         """是否有等待或执行中的请求（不含等待完成结算的请求）。"""
         return bool(self._running or self._prefix_scheduler.num_waiting)
 
     @property
-    def num_steps(self) -> int:
+    def num_steps(self) -> int:  # 无显式输入 → 累计 GPU 步数
         return self._num_steps
 
     @property
-    def can_step(self) -> bool:
+    def can_step(self) -> bool:  # 当前运行、选批与回载状态 → 是否可安排下一步
         if self._running:
             return True
         if self._pending_selection is not None or self._pending_loads:
@@ -210,14 +210,14 @@ class Engine:
             and head not in self._prefetch_waiting
         )
 
-    def drain_events(self) -> tuple[tuple[float, EventKind, int], ...]:
+    def drain_events(self) -> tuple[tuple[float, EventKind, int], ...]:  # 待派发事件列表 → 时刻、类型、引用元组并清空队列
         events = tuple(self._scheduled_events)
         self._scheduled_events.clear()
         return events
 
     def _start_transfer(
         self, chunk_id: str, destination: str, now_ms: float, request_id: int
-    ) -> int:
+    ) -> int:  # 页 ID、目的层、时刻及请求 ID → 去重后的传输任务 ID
         existing = self._transfer_by_chunk.get(chunk_id)
         if existing is not None:
             self._transfers[existing].waiting_requests.add(request_id)
@@ -256,11 +256,11 @@ class Engine:
         self._scheduled_events.append((end, kind, transfer_id))
         return transfer_id
 
-    def register_output_target(self, request_id: int, output_len: int) -> None:
+    def register_output_target(self, request_id: int, output_len: int) -> None:  # 请求 ID 与实际输出长度 → 记录引擎私有目标；无返回值
         """动态投放前注册引擎私有的输出目标。"""
         self._output_targets[request_id] = output_len
 
-    def submit(self, request: InferenceRequest, now_ms: float) -> bool:
+    def submit(self, request: InferenceRequest, now_ms: float) -> bool:  # 推理请求与发送时刻 → 是否成功入队
         """发送时 M<1 直接失败；其他请求按 FCFS 入队。"""
         key = request.request_id
         if key in self._requests:
@@ -291,7 +291,7 @@ class Engine:
             )
         return True
 
-    def on_l3_lookup(self, request_id: int, now_ms: float) -> None:
+    def on_l3_lookup(self, request_id: int, now_ms: float) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取；无返回值
         self._lookup_waiting.remove(request_id)
         request = self._requests[request_id]
         sources = self._prefix_cache.probe(request, request.prompt_len)
@@ -312,7 +312,7 @@ class Engine:
         if pending:
             self._prefetch_waiting[request_id] = pending
 
-    def on_transfer_done(self, kind: EventKind, transfer_id: int, now_ms: float) -> None:
+    def on_transfer_done(self, kind: EventKind, transfer_id: int, now_ms: float) -> None:  # 传输事件、任务 ID 和时刻 → 结算回载并唤醒等待；无返回值
         task = self._transfers.pop(transfer_id, None)
         if task is None:
             return
@@ -339,7 +339,7 @@ class Engine:
         request_id: int,
         now_ms: float,
         reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"],
-    ) -> None:
+    ) -> None:  # 请求 ID、失败时刻和容量原因 → 登记中止记录；无返回值
         self._aborted[request_id] = AbortedRequest(
             id=request_id,
             arrival=self._arrival_times[request_id],
@@ -350,19 +350,19 @@ class Engine:
         )
         self._recent_aborts.append(request_id)
 
-    def drain_aborts(self) -> tuple[int, ...]:
+    def drain_aborts(self) -> tuple[int, ...]:  # 最近失败记录 → 按 ID 排序的待通知请求元组并清空
         """供客户端标记后代 skipped；每个失败仅通知一次。"""
         result = tuple(sorted(self._recent_aborts))
         self._recent_aborts.clear()
         return result
 
-    def register_skipped(self, skipped: tuple[SkippedRequest, ...]) -> None:
+    def register_skipped(self, skipped: tuple[SkippedRequest, ...]) -> None:  # 未发送子轮记录 → 登记跳过请求；无返回值
         for item in skipped:
             self._skipped[item.id] = item
 
     def _prepare_decode(
         self, running: dict[int, RunningRequest], now_ms: float
-    ) -> tuple[dict[int, RunningRequest], tuple[tuple[int, int], ...]]:
+    ) -> tuple[dict[int, RunningRequest], tuple[tuple[int, int], ...]]:  # 运行请求与时刻 → 可解码请求及回撤的 ID/进度
         """先驱逐，再按 g、负输入长、ID 回撤；单请求仍无法进展则终止。"""
         remaining = dict(running)
         withdrawn: list[tuple[int, int]] = []
@@ -396,8 +396,8 @@ class Engine:
                 del remaining[key]
         return remaining, tuple(withdrawn)
 
-    def start_step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]] | None:
-        """先等待低层回载；仅就绪批次才在 GPU 上执行一个步骤。"""
+    def start_step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
+        """回载未就绪时仍可处理已有请求的 Decode；就绪后再执行准入批次。"""
         selection = self._pending_selection
         if selection is not None and self._pending_loads:
             if not self._running:
@@ -460,7 +460,7 @@ class Engine:
                 return None
         return self.step(now_ms, step_index, selection=selection, defer_publication=True)
 
-    def finish_step(self, now_ms: float) -> tuple[int, ...]:
+    def finish_step(self, now_ms: float) -> tuple[int, ...]:  # GPU 步完成时刻 → 发布前缀并返回已完成请求 ID
         """仅在模拟的 GPU 步完成时公开本步产生的共享前缀。"""
         if self._pending_publish:
             self._prefix_cache.publish_batch(self._pending_publish)
@@ -476,7 +476,7 @@ class Engine:
         *,
         selection: AdmissionBatch | None = None,
         defer_publication: bool = False,
-    ) -> tuple[float, tuple[int, ...]]:
+    ) -> tuple[float, tuple[int, ...]]:  # 步时刻/序号、可选选批和延迟发布标志 → 耗时及完成请求 ID
         """计算本步工作量；事件驱动入口将页的公开延后至步末。"""
         cache = self._prefix_cache
         running = {
@@ -735,7 +735,7 @@ class Engine:
         self._num_steps += 1
         return duration, tuple(finished)
 
-    def complete(self, now_ms: float, request_id: int) -> RequestCompletion:
+    def complete(self, now_ms: float, request_id: int) -> RequestCompletion:  # Done 时刻与请求 ID → 释放 KV 并返回完成消息
         """在 Done 事件时释放 KV，只返回请求身份和完成时间。"""
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
@@ -751,7 +751,7 @@ class Engine:
 
     # ------------------------------------------------------------ 结算
 
-    def finalize(self) -> EngineRun:
+    def finalize(self) -> EngineRun:  # 已结算的请求、缓存及成本统计 → 单实例仿真原始产出
         """所有请求完成后形成稳定输出，包含即时提交时刻。"""
         arrivals = self._arrivals
         records = tuple(

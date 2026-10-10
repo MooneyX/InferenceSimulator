@@ -210,6 +210,7 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
         num_requests=300,
         session_rate=40.0,
         prompt_len=LognormalLength(mean=200.0, sigma=1.0),
+        turn_increment_len=LognormalLength(mean=16.0, sigma=1.0),
         output_len=PoissonLength(mean=30.0),
         seed=seed,
     )

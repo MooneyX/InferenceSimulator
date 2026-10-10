@@ -26,14 +26,16 @@ describe("parameter JSON transfer", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic = {
       num_requests: 20, arrival_mode: "session", session_rate: 2,
-      session: { num_sessions: 5, topology: "linear", think_time_ms: 200,
-        target_ideal_prefix_hit_rate: 0 },
-      prompt_len: { dist: "fixed", value: 256 }, output_len: { dist: "fixed", value: 16 },
+      session: { num_sessions: 5, topology: "linear", think_time_ms: 200 },
+      prompt_len: { dist: "fixed", value: 256 },
+      turn_increment_len: { dist: "fixed", value: 32 },
+      output_len: { dist: "fixed", value: 16 },
       max_new_tokens: 128, seed: 42,
     };
     const json = serializeSimConfig(config);
     expect(parseSimConfigJson(json)).toEqual(config);
     expect(JSON.parse(json).workload.synthetic).not.toHaveProperty("arrival_rate");
+    expect(JSON.parse(json).workload.synthetic).not.toHaveProperty("session.target_ideal_prefix_hit_rate");
   });
 
   it.each(["", "{", "null", "[]", '"hello"'])

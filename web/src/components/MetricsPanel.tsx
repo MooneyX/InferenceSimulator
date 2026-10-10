@@ -103,11 +103,7 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
           unit="ms"
           description="内核生成请求计划至汇总指标的墙钟时间，不含配置解析、网络传输和页面渲染"
         />
-        {metrics.target_ideal_prefix_hit_rate != null && <MetricCard label="目标理想命中率"
-          value={metrics.target_ideal_prefix_hit_rate} unit="%" description="闭环模式配置的全场目标" />}
-        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="全场计划继承的完整页 token / 全场计划输入 token；包含失败请求" />
-        {metrics.ideal_hit_quantization_error != null && <MetricCard label="量化误差"
-          value={metrics.ideal_hit_quantization_error} unit="%" description="闭环模式的构造率与目标之差" />}
+        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="全场已构造轮次的可继承完整页 token / 计划输入 token；闭环含失败及跳过轮次的计划" />
         <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="成功请求实际跳过的输入 token / 成功请求输入 token" />
         <MetricCard label="子轮理想命中率" value={metrics.child_ideal_prefix_hit_rate} unit="%" description="成功子轮的理想复用 token / 成功子轮输入 token" />
         <MetricCard label="子轮实际命中率" value={metrics.child_actual_prefix_hit_rate} unit="%" description="成功子轮实际复用 token / 成功子轮输入 token" />

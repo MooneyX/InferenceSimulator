@@ -413,15 +413,11 @@ export interface components {
              * @description 末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）
              */
             makespan: number;
-            /** Target Ideal Prefix Hit Rate */
-            target_ideal_prefix_hit_rate?: number | null;
             /**
              * Constructed Ideal Prefix Hit Rate
              * @default 0
              */
             constructed_ideal_prefix_hit_rate: number;
-            /** Ideal Hit Quantization Error */
-            ideal_hit_quantization_error?: number | null;
             /**
              * Arrival Qps
              * @description 全部已发送请求首末时刻间按已发送数减一计算的实际请求 QPS
@@ -963,11 +959,6 @@ export interface components {
              * @default 0
              */
             think_time_ms: number;
-            /**
-             * Target Ideal Prefix Hit Rate
-             * @default 0
-             */
-            target_ideal_prefix_hit_rate: number;
         };
         /**
          * SimConfig

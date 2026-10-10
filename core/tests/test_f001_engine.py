@@ -199,9 +199,10 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
                 num_requests=3,
                 session_rate=10,
                 prompt_len=FixedLength(value=65),
+                turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 seed=7,
-                session=SessionConfig(num_sessions=1, target_ideal_prefix_hit_rate=64 / (65 * 3)),
+                session=SessionConfig(num_sessions=1),
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64),
@@ -212,7 +213,8 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
     exclude = {"meta": {"wall_clock_ms"}}
     assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert first.meta.num_completed == first.meta.num_requests == 3
-    assert first.metrics.actual_hit_tokens == 64
+    assert first.metrics.actual_hit_tokens == 128
+    assert [record.prompt_len for record in first.requests] == [65, 68, 71]
     assert first.metrics.l1_reserved_future_blocks == 0
     assert all(request.output_len == 2 for request in first.requests)
 

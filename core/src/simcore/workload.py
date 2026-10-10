@@ -1,7 +1,7 @@
 """合成负载规划及手写 Arrival 到达序列的适配。
 
-``build_plan`` 只生成 session 拓扑、长度、理想继承块数和根发送计划，不物化 token
-或预生成块 ID；根到达、长度、拓扑、分配分别使用稳定派生的独立随机流。
+``build_plan`` 只生成 session 拓扑、累积上下文长度、理想继承块数和根发送计划，不物化 token
+或预生成块 ID；根到达、根/增量长度、拓扑分别使用稳定派生的独立随机流。
 ``plan_from_arrivals`` 将手写到达序列转换为各自独立的根 session。
 
 依赖层级：``schemas``、``prefix_hash.stable_derive``。
@@ -10,7 +10,6 @@
 import math
 import random
 from collections.abc import Iterable
-from dataclasses import replace
 from typing import cast
 
 from simcore.prefix_hash import stable_derive
@@ -101,15 +100,17 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
 
 
 def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:
-    """独立随机流采样长度、到达和子轮思考时间；仅引擎使用截断后的输出长度。"""
+    """预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
     block_size = engine.page_size
     sessions = cast(int, cfg.session.num_sessions)
     n = cfg.num_requests
     topology_rng = random.Random(stable_derive(cfg.seed, "topology"))
     arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
-    length_rng = random.Random(stable_derive(cfg.seed, "length"))
+    roots_rng = random.Random(stable_derive(cfg.seed, "root-length"))
+    increments_rng = random.Random(stable_derive(cfg.seed, "turn-increment"))
+    output_rng = random.Random(stable_derive(cfg.seed, "output-length"))
+    increment_dist = cast(LengthDist, cfg.turn_increment_len)
     think_time_rng = random.Random(stable_derive(cfg.seed, "think-time"))
-    allocation_rng = random.Random(stable_derive(cfg.seed, "allocation"))
     counts = [n // sessions] * sessions
     shuffled = list(range(sessions))
     topology_rng.shuffle(shuffled)
@@ -126,8 +127,22 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
         clock += arrival_rng.expovariate(rate_per_ms)
         parent_id: int | None = None
         for index in range(count):
-            prompt_len = sample_length(cfg.prompt_len, length_rng)
-            sampled_output_len = sample_length(cfg.output_len, length_rng)
+            if parent_id is None:
+                prompt_len = sample_length(cfg.prompt_len, roots_rng)
+                inherited = 0
+            else:
+                parent = turns[parent_id]
+                prompt_len = parent.prompt_len + parent.output_len + sample_length(
+                    increment_dist, increments_rng
+                )
+                inherited = (
+                    min(
+                        (parent.prompt_len + parent.output_len - 1) // block_size,
+                        (prompt_len - 1) // block_size,
+                    )
+                    if parent.output_len > 0 else 0
+                )
+            sampled_output_len = sample_length(cfg.output_len, output_rng)
             max_new_tokens = _visible_limit(prompt_len, cfg.max_new_tokens, engine)
             think_time_ms = None
             if parent_id is not None:
@@ -145,7 +160,7 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
                 prompt_len=prompt_len,
                 output_len=min(sampled_output_len, max_new_tokens),
                 max_new_tokens=max_new_tokens,
-                ideal_reuse_blocks=0,
+                ideal_reuse_blocks=inherited,
             )
             turns[request_id] = turn
             if parent_id is None:
@@ -155,44 +170,9 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
             parent_id = request_id
             request_id += 1
 
-    maxima: dict[int, int] = {}
-    for turn in turns.values():
-        if turn.parent_request_id is not None:
-            parent = turns[turn.parent_request_id]
-            maxima[turn.request_id] = (
-                min(
-                    (parent.prompt_len + parent.output_len - 1) // block_size,  # 父轮已写入的完整页
-                    (turn.prompt_len - 1) // block_size,  # 子轮至少留一个新输入 token
-                )
-                if parent.output_len > 0
-                else 0
-            )
-        else:
-            maxima[turn.request_id] = 0
     total_input = sum(turn.prompt_len for turn in turns.values())
-    maximum = sum(maxima.values())
-    r_max = block_size * maximum / total_input
-    target = cfg.session.target_ideal_prefix_hit_rate
-    if target > r_max + 1e-12:
-        raise ValueError(f"理想前缀命中率不可行: target={target}, r_max={r_max}")
-    raw = target * total_input / block_size  # 目标命中 token 换算成整页数
-    lower = math.floor(raw)
-    desired = min(maximum, lower + int(raw - lower > 0.5))  # 量化后不超过可继承上限
-    if maximum:
-        # 理想复用整页按可继承上限分摊，余数平局用独立随机流打破。
-        shares = {key: desired * cap / maximum for key, cap in maxima.items()}
-        assigned = {key: math.floor(value) for key, value in shares.items()}
-        ties = list(turns)
-        allocation_rng.shuffle(ties)
-        tie_order = {key: index for index, key in enumerate(ties)}
-        ranked = sorted(turns, key=lambda key: (-(shares[key] - assigned[key]), tie_order[key]))
-        for key in ranked[: desired - sum(assigned.values())]:  # 剩余页先给小数余量最大的轮次
-            assigned[key] += 1
-    else:
-        assigned = dict.fromkeys(turns, 0)
-    for key, count in assigned.items():
-        turns[key] = replace(turns[key], ideal_reuse_blocks=count)
-    achieved = block_size * desired / total_input
+    ideal_tokens = block_size * sum(turn.ideal_reuse_blocks for turn in turns.values())
+    achieved = ideal_tokens / total_input
     return WorkloadPlan(
         turns=turns,
         root_request_ids=tuple(roots),

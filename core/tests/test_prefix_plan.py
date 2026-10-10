@@ -1,4 +1,4 @@
-"""PC1-A：会话长度与拓扑计划、块身份继承及预算量化。"""
+"""PC1-A：累积会话长度与拓扑计划、完整页身份继承。"""
 
 import random
 from dataclasses import FrozenInstanceError
@@ -21,18 +21,15 @@ from simcore.schemas import (
 from simcore.workload import build_plan, plan_from_arrivals
 
 
-def config(
-    n: int = 10, s: int = 3, rate: float = 25.0, target: float = 0.0
-) -> SyntheticWorkloadConfig:
+def config(n: int = 10, s: int = 3, rate: float = 25.0) -> SyntheticWorkloadConfig:
     return SyntheticWorkloadConfig(
         num_requests=n,
         session_rate=rate,
         prompt_len=FixedLength(value=10),
+        turn_increment_len=FixedLength(value=2),
         output_len=FixedLength(value=6),
         seed=17,
-        session=SessionConfig(
-            num_sessions=s, think_time_ms=30, target_ideal_prefix_hit_rate=target
-        ),
+        session=SessionConfig(num_sessions=s, think_time_ms=30),
     )
 
 
@@ -117,30 +114,21 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
     )
 
 
-def test_quantization_and_infeasibility() -> None:
-    cache = engine()
-    plan = build_plan(config(n=6, s=2, target=0.2), cache)
-    assert sum(t.ideal_reuse_blocks for t in plan.turns.values()) == 3
-    assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(12 / 60)
-    assert not hasattr(plan, "quantization_error")
-    assert not hasattr(plan, "target_ideal_prefix_hit_rate")
-    assert not hasattr(plan, "block_size_tokens")
-    with pytest.raises(ValueError, match="r_max"):
-        build_plan(config(n=6, s=2, target=0.9), cache)
-    with pytest.raises(ValueError, match="r_max=0"):
-        build_plan(config(n=2, s=2, target=0.1), cache)
-
-
-def test_half_block_quantization_prefers_smaller() -> None:
-    plan = build_plan(config(n=6, s=2, target=0.1), engine())
-    assert sum(t.ideal_reuse_blocks for t in plan.turns.values()) == 1
-    assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(4 / 60)
+def test_context_grows_and_inherits_every_completed_parent_page() -> None:
+    plan = build_plan(config(n=6, s=2), engine())
+    assert [plan.turns[key].prompt_len for key in range(3)] == [10, 18, 26]
+    assert [plan.turns[key].ideal_reuse_blocks for key in range(3)] == [0, 3, 5]
+    total = sum(turn.prompt_len for turn in plan.turns.values())
+    ideal = 4 * sum(turn.ideal_reuse_blocks for turn in plan.turns.values())
+    assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(ideal / total)
+    roots_only = build_plan(config(n=2, s=2), engine())
+    assert roots_only.constructed_ideal_prefix_hit_rate == 0
 
 
 def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
     cache = engine()
-    plan = build_plan(config(n=6, s=2, target=0.2), cache)
-    assert plan == build_plan(config(n=6, s=2, target=0.2), cache)
+    plan = build_plan(config(n=6, s=2), cache)
+    assert plan == build_plan(config(n=6, s=2), cache)
     client = ClientDriver(plan, cache)
     roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
     assert all(request.inherited_prefix_ids == () for request in roots)
@@ -152,7 +140,7 @@ def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
 
 def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
     cache = engine()
-    plan = build_plan(config(n=3, s=1, target=0.2), cache)
+    plan = build_plan(config(n=3, s=1), cache)
     root_id = plan.root_request_ids[0]
     root = plan.turns[root_id]
     assert not hasattr(root, "output_token_plan")
@@ -188,6 +176,7 @@ def test_output_is_clamped_without_exposing_sample_to_client() -> None:
         num_requests=1,
         session_rate=1,
         prompt_len=FixedLength(value=65),
+        turn_increment_len=FixedLength(value=2),
         output_len=FixedLength(value=100),
         max_new_tokens=200,
         seed=7,
@@ -204,6 +193,22 @@ def test_output_is_clamped_without_exposing_sample_to_client() -> None:
     assert short_plan.turns[0].output_len == 2
     assert short_plan.turns[0].max_new_tokens == request.max_new_tokens
     assert build_plan(cfg, runtime) == plan
+
+
+def test_clamped_parent_output_drives_child_context_and_capacity() -> None:
+    cfg = SyntheticWorkloadConfig(
+        num_requests=3, session_rate=1,
+        prompt_len=FixedLength(value=65), turn_increment_len=FixedLength(value=1),
+        output_len=FixedLength(value=100), max_new_tokens=200, seed=7,
+        session=SessionConfig(num_sessions=1),
+    )
+    plan = build_plan(cfg, engine(page_size=64, capacity=256))
+    parent, child, descendant = (plan.turns[key] for key in range(3))
+    assert parent.output_len == 64
+    assert (child.prompt_len, child.max_new_tokens, child.output_len) == (130, 0, 0)
+    assert child.ideal_reuse_blocks == 2
+    assert descendant.prompt_len == 131
+    assert descendant.ideal_reuse_blocks == 0
 
 
 def test_manual_limit_and_unexecutable_request_are_planned() -> None:

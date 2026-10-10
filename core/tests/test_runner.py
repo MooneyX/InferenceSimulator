@@ -29,6 +29,7 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
                 num_requests=num_requests,
                 session_rate=30.0,
                 prompt_len=LognormalLength(mean=256.0, sigma=0.8),
+                turn_increment_len=FixedLength(value=8),
                 output_len=PoissonLength(mean=40.0),
                 seed=seed,
             )
@@ -78,7 +79,6 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
     assert result.metrics.num_sessions == 1
     assert result.metrics.child_ideal_prefix_hit_rate == pytest.approx(144 / (39 + 46 + 53 + 60))
     assert result.metrics.mean_prompt_tokens == pytest.approx(46)
-    assert result.metrics.target_ideal_prefix_hit_rate is None
     assert simulate(config).requests == result.requests
 
 
@@ -221,9 +221,10 @@ class TestEndToEnd:
                     num_requests=2,
                     session_rate=10,
                     prompt_len=FixedLength(value=16),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
                     seed=2,
-                    session=SessionConfig(num_sessions=1, target_ideal_prefix_hit_rate=0.25),
+                    session=SessionConfig(num_sessions=1),
                 )
             ),
             engine=EngineConfig(
@@ -235,30 +236,32 @@ class TestEndToEnd:
         )
         result = simulate(config)
         m = result.metrics
-        assert m.total_input_tokens == 32
-        assert m.target_ideal_prefix_hit_rate == m.constructed_ideal_prefix_hit_rate == 0.25
-        assert m.ideal_hit_tokens == m.actual_hit_tokens == m.l1_hit_tokens == 8
+        assert m.total_input_tokens == 41
+        assert m.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
+        assert m.ideal_hit_tokens == m.actual_hit_tokens == m.l1_hit_tokens == 22
         assert m.l2_hit_tokens == m.l3_hit_tokens == 0
         assert m.restore_bytes == m.restore_time_ms == m.promotions == m.demotions == 0
-        assert m.actual_prefix_hit_rate == 0.25
-        assert m.actual_prefill_tokens == 24 and m.saved_prefill_tokens == 8
+        assert m.actual_prefix_hit_rate == pytest.approx(22 / 41)
+        assert m.actual_prefill_tokens == 19 and m.saved_prefill_tokens == 22
         assert m.requests_with_hit_ratio == 0.5
         assert m.l1_capacity_blocks == 40
         assert m.l1_resident_blocks + m.l1_free_blocks + m.l1_reserved_future_blocks == 40
         assert m.l1_active_blocks == 0
         assert result.requests[1].parent_request_id == result.requests[0].id
-        assert result.requests[1].actual_prefill_tokens == 8
+        assert result.requests[1].prompt_len == 25
+        assert result.requests[1].actual_prefill_tokens == 3
 
-    def test_quantization_error_comes_from_config_and_plan(self) -> None:
+    def test_constructed_ideal_hit_rate_is_plan_result(self) -> None:
         config = SimConfig(
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
                     session_rate=10,
                     prompt_len=FixedLength(value=16),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
                     seed=2,
-                    session=SessionConfig(num_sessions=1, target_ideal_prefix_hit_rate=0.1),
+                    session=SessionConfig(num_sessions=1),
                 )
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=80, page_size=2),
@@ -268,13 +271,9 @@ class TestEndToEnd:
         assert synthetic is not None
         plan = build_plan(synthetic, config.engine)
         metrics = simulate(config).metrics
-        assert metrics.target_ideal_prefix_hit_rate == pytest.approx(0.1)
-        assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(0.125)
-        assert metrics.ideal_hit_quantization_error == pytest.approx(0.025)
+        assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
         empty = compute_metrics([], plan=plan, config=config)
-        assert empty.target_ideal_prefix_hit_rate == metrics.target_ideal_prefix_hit_rate
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
-        assert empty.ideal_hit_quantization_error == metrics.ideal_hit_quantization_error
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
         cfg = SimConfig(
@@ -283,6 +282,7 @@ class TestEndToEnd:
                     num_requests=2,
                     session_rate=10,
                     prompt_len=FixedLength(value=128),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
                     seed=0,
                 )
@@ -303,6 +303,7 @@ class TestEndToEnd:
                     num_requests=1,
                     session_rate=1,
                     prompt_len=FixedLength(value=3),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
                     max_new_tokens=1,
                     seed=0,
@@ -336,7 +337,8 @@ class TestEndToEnd:
         cfg = SimConfig(
             workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
                 num_requests=3, session_rate=2,
-                prompt_len=FixedLength(value=128), output_len=FixedLength(value=1), seed=0,
+                prompt_len=FixedLength(value=128), turn_increment_len=FixedLength(value=1),
+                output_len=FixedLength(value=1), seed=0,
                 session=SessionConfig(num_sessions=1),
             )),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
@@ -381,13 +383,10 @@ class TestSmallCases:
                     num_requests=3,
                     session_rate=1.0,
                     prompt_len=FixedLength(value=10),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=2),
                     seed=7,
-                    session=SessionConfig(
-                        num_sessions=1,
-                        think_time_ms=think_time_ms,
-                        target_ideal_prefix_hit_rate=0.2,
-                    ),
+                    session=SessionConfig(num_sessions=1, think_time_ms=think_time_ms),
                 )
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
@@ -418,6 +417,7 @@ class TestSmallCases:
                     num_requests=1,
                     session_rate=1.0,
                     prompt_len=FixedLength(value=5),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=3),
                     seed=0,
                 )

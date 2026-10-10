@@ -36,9 +36,10 @@ def config() -> SimConfig:
                 num_requests=4,
                 session_rate=10,
                 prompt_len=FixedLength(value=5),
+                turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=1),
                 seed=7,
-                session=SessionConfig(num_sessions=2, target_ideal_prefix_hit_rate=4 / 26),
+                session=SessionConfig(num_sessions=2),
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4),
@@ -127,6 +128,7 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
                 num_requests=1,
                 session_rate=10,
                 prompt_len=FixedLength(value=4),
+                turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 seed=7,
             )

@@ -37,6 +37,7 @@ def make_config(**engine_overrides: object) -> SimConfig:
                 num_requests=4,
                 session_rate=10.0,
                 prompt_len=FixedLength(value=128),
+                turn_increment_len=FixedLength(value=8),
                 output_len=FixedLength(value=16),
                 seed=0,
             )
@@ -256,12 +257,27 @@ class TestConfigValidation:
             SyntheticWorkloadConfig.model_validate({**payload, "arrival_rate": 10})
         open_payload = {**payload, "arrival_mode": "open_loop", "session_rate": None,
                         "turn_increment_len": {"dist": "fixed", "value": 8},
-                        "session": {"think_time_ms": 0, "target_ideal_prefix_hit_rate": 0}}
+                        "session": {"think_time_ms": 0}}
         with pytest.raises(ValidationError, match="arrival_rate"):
             SyntheticWorkloadConfig.model_validate(open_payload)
         assert SyntheticWorkloadConfig.model_validate(
             {**open_payload, "arrival_rate": 10}
         ).arrival_rate == 10
+
+    def test_both_modes_require_turn_increment_and_reject_old_hit_target(self) -> None:
+        workload = make_config().workload.synthetic
+        assert workload is not None
+        payload = workload.model_dump()
+        with pytest.raises(ValidationError, match="turn_increment_len"):
+            SyntheticWorkloadConfig.model_validate({**payload, "turn_increment_len": None})
+        open_payload = {**payload, "arrival_mode": "open_loop", "session_rate": None,
+                        "arrival_rate": 10, "session": {}}
+        with pytest.raises(ValidationError, match="turn_increment_len"):
+            SyntheticWorkloadConfig.model_validate({**open_payload, "turn_increment_len": None})
+        with pytest.raises(ValidationError, match="target_ideal_prefix_hit_rate"):
+            SyntheticWorkloadConfig.model_validate({**payload, "session": {
+                "num_sessions": 2, "target_ideal_prefix_hit_rate": 0.5,
+            }})
 
     def test_session_without_cross_session_field_roundtrips(self) -> None:
         payload = make_config().model_dump()

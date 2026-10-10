@@ -10,7 +10,7 @@
 
 表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：页面可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、输入/输出长度分布、生成上限和种子。开环填写 `arrival_rate`（期望请求 QPS）及子轮新增内容长度；无就绪子轮时新建会话。闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值）；每轮输入长度独立采样，保留原客户端按父轮完成后续写及前缀分配流程。闭环表单默认理想命中目标为 0，API 仍支持配置 `session.target_ideal_prefix_hit_rate`。跨 session 不共享公共前缀；`mode` 固定 synthetic，trace 不在前端暴露。
+- **负载（workload）**：页面可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、根输入长度、子轮新增内容长度、输出长度、生成上限和种子。子轮输入均为父轮输入 + 父轮已生成输出 + 新增内容，理想命中率由完整页继承自然产生。开环填写 `arrival_rate`（期望请求 QPS），无就绪子轮时新建会话；闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值），沿用父轮完成后续写的客户端行为。跨 session 不共享公共前缀；`mode` 固定 synthetic，trace 不在前端暴露。
 - **引擎（engine）**：编辑 `max_running_requests`、`max_total_tokens`、`max_prefill_tokens`（默认 16384）、`page_size`（默认 64）和 `pd_mutually_exclusive`（默认 `true`，Prefill/Decode 分步；关闭后可在同一步融合）；`l2_capacity_tokens`、`l3_capacity_tokens` 默认 0，按实际启用层配置；由容量和页大小派生各层页数。完整页 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`；启用 L2 后配置 `kv_bytes_per_token`、`l2_to_l1_bandwidth_bytes_per_ms`、`l2_latency_ms`，启用 L3 后还配置 `l3_to_l2_bandwidth_bytes_per_ms`、`l3_latency_ms`。
 

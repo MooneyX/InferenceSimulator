@@ -80,9 +80,8 @@ describe("validateSimConfig", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic = {
       ...config.workload.synthetic!, arrival_mode: "session", arrival_rate: undefined,
-      turn_increment_len: undefined, session_rate: 1.28,
-      session: { num_sessions: 20, topology: "linear", think_time_ms: 200,
-        target_ideal_prefix_hit_rate: 0 },
+      turn_increment_len: { dist: "fixed", value: 32 }, session_rate: 1.28,
+      session: { num_sessions: 20, topology: "linear", think_time_ms: 200 },
     };
     expect(validateSimConfig(config)).toEqual([]);
     config.workload.synthetic.session_rate = 0;

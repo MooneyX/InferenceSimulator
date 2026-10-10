@@ -62,24 +62,24 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 session");
   }
   const fields = arrivalMode === "open_loop"
-    ? ["arrival_rate", "turn_increment_len"] : ["session_rate", "session"];
+    ? ["arrival_rate"] : ["session_rate", "session"];
   const synthetic = objectWithKeys(workload.synthetic, "workload.synthetic", [
-    "num_requests", "arrival_mode", "prompt_len", "output_len", "max_new_tokens", "seed", ...fields,
+    "num_requests", "arrival_mode", "prompt_len", "turn_increment_len", "output_len",
+    "max_new_tokens", "seed", ...fields,
   ]);
   numericFields(synthetic, "workload.synthetic", [
     "num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate",
   ]);
   lengthDistribution(synthetic.prompt_len, "workload.synthetic.prompt_len");
+  lengthDistribution(synthetic.turn_increment_len, "workload.synthetic.turn_increment_len");
   lengthDistribution(synthetic.output_len, "workload.synthetic.output_len");
-  if (arrivalMode === "open_loop") {
-    lengthDistribution(synthetic.turn_increment_len, "workload.synthetic.turn_increment_len");
-  } else {
+  if (arrivalMode === "session") {
     const session = objectWithKeys(synthetic.session, "workload.synthetic.session", [
-      "num_sessions", "topology", "think_time_ms", "target_ideal_prefix_hit_rate",
+      "num_sessions", "topology", "think_time_ms",
     ]);
     if (session.topology !== "linear") throw new Error("workload.synthetic.session.topology 仅支持 linear");
     numericFields(session, "workload.synthetic.session", [
-      "num_sessions", "think_time_ms", "target_ideal_prefix_hit_rate",
+      "num_sessions", "think_time_ms",
     ]);
   }
 

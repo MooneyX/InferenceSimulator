@@ -115,6 +115,7 @@ try {
         workload = @{ mode = 'synthetic'; synthetic = @{
             num_requests = 2; session_rate = 50.0; seed = 0
             prompt_len = @{ dist = 'lognormal'; mean = 16; sigma = 1.0 }
+            turn_increment_len = @{ dist = 'fixed'; value = 4 }
             output_len = @{ dist = 'poisson'; mean = 4 }
         } }
         engine = @{ max_running_requests = 32; max_total_tokens = 65536; page_size = 64; pd_mutually_exclusive = $true }

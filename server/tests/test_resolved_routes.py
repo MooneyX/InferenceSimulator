@@ -16,6 +16,7 @@ def payload() -> dict[str, Any]:
                     "num_requests": 1,
                     "session_rate": 1,
                     "prompt_len": {"dist": "fixed", "value": 4},
+                    "turn_increment_len": {"dist": "fixed", "value": 1},
                     "output_len": {"dist": "fixed", "value": 2},
                     "max_new_tokens": 2,
                     "seed": 0,

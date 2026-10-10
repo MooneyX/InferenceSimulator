@@ -145,18 +145,19 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           arrival_mode: "session" as const,
           session_rate: 1.28,
           prompt_len: current.prompt_len,
+          turn_increment_len: current.turn_increment_len ?? { dist: "poisson" as const, mean: 256 },
           output_len: current.output_len,
           max_new_tokens: current.max_new_tokens,
           seed: current.seed,
           session: { num_sessions: Math.min(20, current.num_requests), topology: "linear" as const,
-            think_time_ms: 10_000, target_ideal_prefix_hit_rate: 0 },
+            think_time_ms: 10_000 },
         }
       : {
           num_requests: current.num_requests,
           arrival_mode: "open_loop" as const,
           arrival_rate: 64,
           prompt_len: current.prompt_len,
-          turn_increment_len: { dist: "poisson" as const, mean: 256 },
+          turn_increment_len: current.turn_increment_len ?? { dist: "poisson" as const, mean: 256 },
           output_len: current.output_len,
           max_new_tokens: current.max_new_tokens,
           seed: current.seed,
@@ -341,7 +342,6 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               onChange={(numSessions) => setConfig({ ...config, workload: { ...config.workload,
                 synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
                   think_time_ms: synthetic.session?.think_time_ms ?? 0,
-                  target_ideal_prefix_hit_rate: synthetic.session?.target_ideal_prefix_hit_rate ?? 0,
                   num_sessions: numSessions } } } })}
             />
             <NumberField id="session-rate" name="workload.synthetic.session_rate"
@@ -358,7 +358,6 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               onChange={(thinkTime) => setConfig({ ...config, workload: { ...config.workload,
                 synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
                   num_sessions: synthetic.session?.num_sessions,
-                  target_ideal_prefix_hit_rate: synthetic.session?.target_ideal_prefix_hit_rate ?? 0,
                   think_time_ms: thinkTime } } } })}
             />
           </>}
@@ -408,7 +407,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         <div className="distribution-grid">
           <LengthDistributionEditor
             name="prompt_len"
-            label={synthetic.arrival_mode === "open_loop" ? "新会话根输入长度" : "每轮输入长度"}
+            label="新会话根输入长度"
             value={synthetic.prompt_len}
             errors={{
               value: errorByField.get("workload.synthetic.prompt_len.value"),
@@ -425,7 +424,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               })
             }
           />
-          {synthetic.arrival_mode === "open_loop" && <LengthDistributionEditor
+          <LengthDistributionEditor
             name="turn_increment_len"
             label="子轮新增内容长度"
             value={synthetic.turn_increment_len ?? { dist: "fixed", value: 256 }}
@@ -438,7 +437,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               ...config,
               workload: { ...config.workload, synthetic: { ...synthetic, turn_increment_len: incrementLength } },
             })}
-          />}
+          />
           <LengthDistributionEditor
             name="output_len"
             label="输出长度"

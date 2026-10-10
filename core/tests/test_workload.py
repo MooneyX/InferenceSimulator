@@ -89,17 +89,19 @@ class TestSampleLength:
             num_requests=1000,
             session_rate=20.48,
             prompt_len=PoissonLength(mean=32768),
+            turn_increment_len=PoissonLength(mean=256),
             output_len=PoissonLength(mean=128),
             seed=42,
-            session=SessionConfig(
-                num_sessions=20, think_time_ms=10000, target_ideal_prefix_hit_rate=0.9
-            ),
+            session=SessionConfig(num_sessions=20, think_time_ms=10000),
         )
         engine = EngineConfig(max_running_requests=32, max_total_tokens=4_000_000, page_size=64)
         plan = build_plan(config, engine)
         assert len(plan.root_request_ids) == 20
-        assert statistics.mean(turn.prompt_len for turn in plan.turns.values()) == pytest.approx(
-            32768, rel=0.02
-        )
-        assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(0.9, abs=0.001)
+        root_lengths = [plan.turns[key].prompt_len for key in plan.root_request_ids]
+        assert statistics.mean(root_lengths) == pytest.approx(32768, rel=0.02)
+        for turn in plan.turns.values():
+            if turn.parent_request_id is not None:
+                parent = plan.turns[turn.parent_request_id]
+                assert turn.prompt_len > parent.prompt_len + parent.output_len
+        assert plan.constructed_ideal_prefix_hit_rate > 0.9
         assert build_plan(config, engine) == plan

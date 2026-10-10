@@ -36,6 +36,7 @@ def example_request() -> ResolvedRequest:
                     num_requests=1,
                     session_rate=1,
                     prompt_len=FixedLength(value=4),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=2),
                     max_new_tokens=2,
                     seed=0,

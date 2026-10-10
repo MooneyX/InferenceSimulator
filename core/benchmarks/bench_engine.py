@@ -52,6 +52,7 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
                 num_requests=num_requests,
                 session_rate=50.0,
                 prompt_len=LognormalLength(mean=512.0, sigma=1.0),
+                turn_increment_len=LognormalLength(mean=16.0, sigma=1.0),
                 output_len=PoissonLength(mean=128.0),
                 seed=seed,
             )

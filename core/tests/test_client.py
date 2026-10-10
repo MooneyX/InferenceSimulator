@@ -23,11 +23,10 @@ def make_client(think: float = 0.0) -> ClientDriver:
         num_requests=3,
         session_rate=5,
         prompt_len=FixedLength(value=8),
+        turn_increment_len=FixedLength(value=1),
         output_len=FixedLength(value=4),
         seed=2,
-        session=SessionConfig(
-            num_sessions=1, think_time_ms=think, target_ideal_prefix_hit_rate=0.25
-        ),
+        session=SessionConfig(num_sessions=1, think_time_ms=think),
     )
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     return ClientDriver(build_plan(cfg, engine), engine)
@@ -128,6 +127,7 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
         num_requests=3,
         session_rate=5,
         prompt_len=FixedLength(value=3),
+        turn_increment_len=FixedLength(value=1),
         output_len=FixedLength(value=3),
         seed=2,
         session=SessionConfig(num_sessions=1),

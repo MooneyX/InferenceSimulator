@@ -72,7 +72,10 @@ describe("SimulationForm", () => {
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒，泊松到达）")).not.toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "子轮新增内容长度" })).not.toBeInTheDocument();
+    const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
+    expect(within(incrementGroup).getByLabelText("平均长度（token）")).toHaveValue(256);
+    fireEvent.change(within(incrementGroup).getByLabelText("平均长度（token）"),
+      { target: { value: "48" } });
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText("新会话投放频率（会话/秒，泊松到达）"),
       { target: { value: "3" } });
@@ -81,11 +84,13 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     const submitted = onSubmit.mock.calls[0][0].workload.synthetic;
     expect(submitted).toMatchObject({ arrival_mode: "session", session_rate: 3,
+      turn_increment_len: { dist: "poisson", mean: 48 },
       session: { num_sessions: 5, think_time_ms: 200, topology: "linear" } });
     expect(submitted).not.toHaveProperty("arrival_rate");
-    expect(submitted).not.toHaveProperty("turn_increment_len");
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "open_loop" } });
     expect(screen.getByLabelText("目标发送 QPS（请求/秒，泊松到达）")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "子轮新增内容长度" }))
+      .getByLabelText("平均长度（token）")).toHaveValue(48);
   });
 
   it("blocks invalid closed-loop fields before submission", () => {

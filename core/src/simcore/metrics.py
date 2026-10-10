@@ -66,11 +66,7 @@ def compute_metrics(
     replayed_prefill_tokens: int = 0,
 ) -> Metrics:
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
-    synthetic = config.workload.synthetic if config else None
-    open_loop = synthetic is not None and synthetic.arrival_mode == "open_loop"
-    target = synthetic.session.target_ideal_prefix_hit_rate if synthetic and not open_loop else None
     constructed = plan.constructed_ideal_prefix_hit_rate if plan else 0.0
-    quantization_error = abs(constructed - target) if plan and target is not None else None
     num_sessions = len(plan.root_request_ids) if plan else 0
     root_ratio = num_sessions / len(plan.turns) if plan and plan.turns else 0.0
     arrival_qps = (
@@ -90,9 +86,7 @@ def compute_metrics(
             tpot_mean=None,
             throughput=None,
             makespan=0.0,
-            target_ideal_prefix_hit_rate=target,
             constructed_ideal_prefix_hit_rate=constructed,
-            ideal_hit_quantization_error=quantization_error,
             arrival_qps=arrival_qps,
             num_sessions=num_sessions,
             root_request_ratio=root_ratio,
@@ -170,9 +164,7 @@ def compute_metrics(
         tpot_mean=tpot_mean,
         throughput=throughput,
         makespan=makespan,
-        target_ideal_prefix_hit_rate=target,
         constructed_ideal_prefix_hit_rate=constructed if plan else ideal / input_tokens,
-        ideal_hit_quantization_error=quantization_error,
         arrival_qps=arrival_qps,
         num_sessions=num_sessions,
         root_request_ratio=root_ratio,

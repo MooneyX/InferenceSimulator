@@ -162,6 +162,7 @@ class TestPrefixMetrics:
                     num_requests=2,
                     session_rate=1,
                     prompt_len=FixedLength(value=5),
+                    turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=2),
                     seed=0,
                 )

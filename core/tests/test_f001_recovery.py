@@ -249,6 +249,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
                 num_requests=3,
                 session_rate=10,
                 prompt_len=FixedLength(value=64),
+                turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 seed=7,
                 session=SessionConfig(num_sessions=1),

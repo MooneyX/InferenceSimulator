@@ -10,8 +10,8 @@ workload:
     arrival_rate: float | null   # 仅 open_loop 必填，目标请求 QPS
     session_rate: float | null   # 仅 session 必填，新会话泊松投放频率（会话/秒）
     arrival_mode: session | open_loop  # 省略为 session；网页默认 open_loop，可切换
-    prompt_len: LengthDist       # 开环时仅根轮输入分布
-    turn_increment_len: LengthDist  # 开环必填，子轮新增内容分布
+    prompt_len: LengthDist       # 两种模式仅根轮输入分布
+    turn_increment_len: LengthDist  # 两种模式必填，子轮新增内容分布
     output_len: LengthDist
     max_new_tokens: int          # 每请求可见生成上限，默认 128
     seed: int
@@ -19,7 +19,6 @@ workload:
       num_sessions: int          # 省略时等于 num_requests
       topology: linear
       think_time_ms: float       # 子轮思考时间的指数分布均值（ms），默认 0
-      target_ideal_prefix_hit_rate: float
 engine:
   max_running_requests: int      # 必填，正整数
   max_total_tokens: int          # 必填，实际 KV token 容量
@@ -83,7 +82,7 @@ warnings:          # 非致命告警；不代替请求级失败状态
 
 | 状态码 | 场景 | 响应体 |
 |---|---|---|
-| `422` | config 校验失败（类型、范围、未知字段、非整页容量、`mode` 与载荷不匹配）或理想命中目标不可行等计划构造错误 | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划构造错误为 `{"detail": str}` |
+| `422` | config 校验失败（类型、范围、未知字段、缺少子轮增量分布、非整页容量、`mode` 与载荷不匹配）或配置业务错误 | 配置错误为 FastAPI 默认 `HTTPValidationError`；业务错误为 `{"detail": str}` |
 | `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
 
 运行中的单请求容量不足不归入 HTTP 422，而是正常结果的 `aborted_requests`；其他请求可继续执行。开环模式不预建未来子轮，失败时下一节拍可创建新根；闭环模式的预建后代才进入 `skipped_requests`。

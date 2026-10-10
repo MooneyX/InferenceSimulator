@@ -20,6 +20,7 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
                 "num_requests": num_requests,
                 "session_rate": 30.0,
                 "prompt_len": {"dist": "lognormal", "mean": 256.0, "sigma": 0.8},
+                "turn_increment_len": {"dist": "fixed", "value": 8},
                 "output_len": {"dist": "poisson", "mean": 40.0},
                 "max_new_tokens": 128,
                 "seed": seed,
@@ -154,15 +155,17 @@ class TestSuccess:
             {
                 "prompt_len": {"dist": "fixed", "value": 16},
                 "output_len": {"dist": "fixed", "value": 8},
-                "session": {"num_sessions": 1, "target_ideal_prefix_hit_rate": 0.25},
+                "session": {"num_sessions": 1},
+                "turn_increment_len": {"dist": "fixed", "value": 1},
             }
         )
         payload["engine"]["page_size"] = 2
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         body = response.json()
-        assert body["metrics"]["target_ideal_prefix_hit_rate"] == 0.25
-        assert body["metrics"]["actual_hit_tokens"] == 8
+        assert body["metrics"]["constructed_ideal_prefix_hit_rate"] == pytest.approx(22 / 41)
+        assert body["metrics"]["actual_hit_tokens"] == 22
+        assert body["requests"][1]["prompt_len"] == 25
         assert body["requests"][1]["session_id"] == 0
         assert body["requests"][1]["parent_request_id"] == 0
         assert "input_token_ids" not in body["requests"][1]
@@ -251,7 +254,7 @@ class TestErrors:
         assert result.meta.config.engine.pd_mutually_exclusive is exclusive
         assert result.meta.num_completed == 1 and result.meta.num_engine_steps == 2
 
-    def test_unreachable_ideal_hit_target_reports_r_max(self, client: TestClient) -> None:
+    def test_removed_hit_target_is_rejected(self, client: TestClient) -> None:
         payload = make_payload(num_requests=2)
         payload["workload"]["synthetic"]["session"] = {
             "num_sessions": 2,
@@ -259,7 +262,7 @@ class TestErrors:
         }
         response = client.post(URL, json=payload)
         assert response.status_code == 422
-        assert "r_max=0" in response.json()["detail"]
+        assert "target_ideal_prefix_hit_rate" in response.text
 
     def test_content_seed_is_rejected(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)

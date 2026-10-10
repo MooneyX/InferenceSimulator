@@ -119,7 +119,6 @@ class SessionConfig(_Frozen):
         allow_inf_nan=False,
         description="子轮思考时间的指数分布均值（ms）；0 表示无等待",
     )
-    target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, allow_inf_nan=False)
 
 
 class SyntheticWorkloadConfig(_Frozen):
@@ -147,15 +146,13 @@ class SyntheticWorkloadConfig(_Frozen):
                 raise ValueError("开环负载必须仅提供请求到达率 arrival_rate")
             if self.turn_increment_len is None:
                 raise ValueError("开环负载必须提供每轮新增长度分布 turn_increment_len")
-            if (
-                self.session.num_sessions is not None
-                or self.session.think_time_ms != 0
-                or self.session.target_ideal_prefix_hit_rate != 0
-            ):
-                raise ValueError("开环负载不使用会话数、思考时间或目标理想命中率")
+            if self.session.num_sessions is not None or self.session.think_time_ms != 0:
+                raise ValueError("开环负载不使用会话数或思考时间")
             return self
         if self.session_rate is None or self.arrival_rate is not None:
             raise ValueError("闭环负载必须仅提供新会话投放频率 session_rate")
+        if self.turn_increment_len is None:
+            raise ValueError("闭环负载必须提供每轮新增长度分布 turn_increment_len")
         count = self.session.num_sessions
         if count is None:
             object.__setattr__(
@@ -546,9 +543,7 @@ class Metrics(_Record):
     makespan: float = Field(
         ge=0, description="末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）"
     )
-    target_ideal_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
     constructed_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
-    ideal_hit_quantization_error: float | None = Field(default=None, ge=0)
     arrival_qps: float | None = Field(
         default=None, ge=0, description="全部已发送请求首末时刻间按已发送数减一计算的实际请求 QPS"
     )

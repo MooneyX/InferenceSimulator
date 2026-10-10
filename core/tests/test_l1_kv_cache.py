@@ -335,6 +335,35 @@ def test_tiered_plan_failure_and_cancel_pin_are_side_effect_free() -> None:
     assert_tiers_conserved(cache)
 
 
+def test_tiered_partial_cascade_failure_preserves_cache_and_lru() -> None:
+    cache = TieredKVCache(2, 1, 1, 1)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    protected = request(4, 2, (encode(3, 0),))
+    cache.pin(protected, 1)
+    entries = dict(cache._entries)
+    snapshots = cache.tier_snapshots()
+    heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
+    queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
+    counters = (cache._access_seq, cache.promotions, cache.demotions, cache.deletions)
+    for operation in (
+        lambda: cache.plan(reserve_pages=2),
+        lambda: cache.promote(reserve_pages=2),
+        lambda: cache.ensure_free(2),
+    ):
+        with pytest.raises(CacheCapacityError):
+            operation()
+        assert cache._entries == entries
+        assert cache.tier_snapshots() == snapshots
+        assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
+        assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
+        assert (cache._access_seq, cache.promotions, cache.demotions, cache.deletions) == counters
+    cache.cancel_pin(protected.request_id)
+    assert cache.ensure_free(2) == 2
+    assert_tiers_conserved(cache)
+
+
 def test_tiered_recomputed_low_id_keeps_new_l1_page_without_restore() -> None:
     cache = TieredKVCache(3, 1, 3)
     for request_id in range(4):

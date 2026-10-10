@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from heapq import heappush
+from heapq import heapify, heappop, heappush
 
 from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import InferenceRequest
@@ -377,16 +377,24 @@ class TieredKVCache:
         private = self._private_pages
         actions: list[tuple[str, str, str | None]] = []
         promoted: list[tuple[str, str]] = []
+        # 只在试算内建堆；失败时不会消费真实缓存的 LRU 候选。
+        heaps: dict[str, list[tuple[int, str]]] = {}
 
         def evict_one(tier: str) -> None:
             nonlocal seq
-            victims = (entries[key] for key in ids[tier] if not entries[key].ref_count)
-            victim = min(
-                victims,
-                key=lambda page: (page.last_access_seq, page.chunk_id),
-                default=None,
-            )
-            if victim is None:
+            if tier not in heaps:
+                heaps[tier] = [
+                    (entries[key].last_access_seq, key)
+                    for key in ids[tier] if not entries[key].ref_count
+                ]
+                heapify(heaps[tier])
+            while heaps[tier]:
+                access_seq, chunk_id = heappop(heaps[tier])
+                victim = entries.get(chunk_id)
+                if (victim is not None and victim.tier == tier
+                        and not victim.ref_count and victim.last_access_seq == access_seq):
+                    break
+            else:
                 raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
             lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
             if lower is not None and self._tiers[lower].capacity:
@@ -396,8 +404,11 @@ class TieredKVCache:
                 del entries[victim.chunk_id]
             else:
                 seq += 1
-                entries[victim.chunk_id] = replace(victim, tier=lower, last_access_seq=seq)
+                moved = replace(victim, tier=lower, last_access_seq=seq)
+                entries[victim.chunk_id] = moved
                 ids[lower].add(victim.chunk_id)
+                if lower in heaps:
+                    heappush(heaps[lower], (moved.last_access_seq, moved.chunk_id))
             destination = lower if lower and self._tiers[lower].capacity else None
             actions.append((victim.chunk_id, tier, destination))
 

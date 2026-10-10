@@ -385,14 +385,19 @@ class TieredKVCache:
             if tier not in heaps:
                 heaps[tier] = [
                     (entries[key].last_access_seq, key)
-                    for key in ids[tier] if not entries[key].ref_count
+                    for key in ids[tier]
+                    if not entries[key].ref_count
                 ]
                 heapify(heaps[tier])
             while heaps[tier]:
                 access_seq, chunk_id = heappop(heaps[tier])
                 victim = entries.get(chunk_id)
-                if (victim is not None and victim.tier == tier
-                        and not victim.ref_count and victim.last_access_seq == access_seq):
+                if (
+                    victim is not None
+                    and victim.tier == tier
+                    and not victim.ref_count
+                    and victim.last_access_seq == access_seq
+                ):
                     break
             else:
                 raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")

@@ -355,9 +355,11 @@ class Engine:
             transfer_time = restore_time(workload, self._perf)
         else:
             transfer_time = restore_time_tokens(
-                workload, l2_tokens_per_ms=self._token_bandwidths[0],
+                workload,
+                l2_tokens_per_ms=self._token_bandwidths[0],
                 l3_tokens_per_ms=self._token_bandwidths[1],
-                l2_latency_ms=self._perf.l2_latency_ms, l3_latency_ms=self._perf.l3_latency_ms,
+                l2_latency_ms=self._perf.l2_latency_ms,
+                l3_latency_ms=self._perf.l3_latency_ms,
             )
         transferred_bytes = restore_bytes(workload, self._perf)
         if self._analytical is None:

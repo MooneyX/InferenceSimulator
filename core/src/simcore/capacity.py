@@ -19,19 +19,19 @@ def _bytes_from_gb(value: float) -> int:
 
 def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:
     """按当前支持的无偏置全注意力、门控 FFN 与同构专家结构估算参数。"""
-    h, q, kv, d = (
-        model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim
-    )
+    h, q, kv, d = (model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim)
     dense_layers = model.num_layers - model.moe_layers
     expert = (
         model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
-        if model.moe_layers and model.expert_intermediate_size is not None else 0
+        if model.moe_layers and model.expert_intermediate_size is not None
+        else 0
     )
     non_expert = (
         model.num_layers * h * (2 * q * d + 2 * kv * d)
         + dense_layers * 3 * h * model.ffn_intermediate_size
         + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
-        + model.num_layers * (2 * h + 2 * d) + h
+        + model.num_layers * (2 * h + 2 * d)
+        + h
         + model.moe_layers * h * model.num_experts
     )
     active = non_expert + (expert // model.num_experts * model.experts_per_token if expert else 0)
@@ -83,9 +83,7 @@ def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
     dense_layers = model.num_layers - model.moe_layers
     if dense_layers and model.ffn_intermediate_size % tp_size:
         raise ValueError("Dense FFN 中间维度必须能被 TP 数整除")
-    h, q, kv, d = (
-        model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim
-    )
+    h, q, kv, d = (model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim)
     if (kv >= tp_size and kv % tp_size) or (kv < tp_size and tp_size % kv):
         raise ValueError("KV 头数与 TP 数不满足均分或按头复制条件")
     if model.vocab_size % tp_size:
@@ -117,9 +115,13 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
     if is_moe:
         if request.ep_size != tp_size:
             raise ValueError("MoE 首版要求 EP 数等于 TP 数和 GPU 卡数")
-    elif request.ep_size != 1 or any((
-        model.num_experts, model.experts_per_token, model.expert_intermediate_size,
-    )):
+    elif request.ep_size != 1 or any(
+        (
+            model.num_experts,
+            model.experts_per_token,
+            model.expert_intermediate_size,
+        )
+    ):
         raise ValueError("Dense 模型不应配置 EP 或 MoE 专家字段")
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
@@ -200,12 +202,18 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
         runnable=(
             (tp_size == 1 or request.timing == "analytical")
             and (not is_moe or request.timing == "analytical")
-            and (tp_size == 1 or (
-                hardware.effective_interconnect_gb_s is not None
-                and hardware.collective_latency_ms is not None
-            ))
-            and (not is_moe or request.ep_size == 1
-                 or hardware.ep_communication_latency_ms is not None)
+            and (
+                tp_size == 1
+                or (
+                    hardware.effective_interconnect_gb_s is not None
+                    and hardware.collective_latency_ms is not None
+                )
+            )
+            and (
+                not is_moe
+                or request.ep_size == 1
+                or hardware.ep_communication_latency_ms is not None
+            )
         ),
         capacity=CapacityReport(
             kv_bytes_per_token=group_kv_bytes,

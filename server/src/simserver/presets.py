@@ -7,17 +7,30 @@ from simcore.schemas import ModelSpec
 # https://huggingface.co/Qwen/Qwen3-235B-A22B
 MODELS = (
     ModelSpec(
-        name="Qwen/Qwen3-8B", num_layers=36, hidden_size=4096,
-        num_attention_heads=32, num_kv_heads=8, head_dim=128,
-        ffn_intermediate_size=12288, vocab_size=151_936,
+        name="Qwen/Qwen3-8B",
+        num_layers=36,
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        ffn_intermediate_size=12288,
+        vocab_size=151_936,
         tie_word_embeddings=False,
     ),
     ModelSpec(
-        name="Qwen/Qwen3-235B-A22B", num_layers=94, hidden_size=4096,
-        num_attention_heads=64, num_kv_heads=4, head_dim=128,
-        ffn_intermediate_size=12288, expert_intermediate_size=1536,
-        vocab_size=151_936, tie_word_embeddings=False,
-        num_experts=128, experts_per_token=8, moe_layers=94,
+        name="Qwen/Qwen3-235B-A22B",
+        num_layers=94,
+        hidden_size=4096,
+        num_attention_heads=64,
+        num_kv_heads=4,
+        head_dim=128,
+        ffn_intermediate_size=12288,
+        expert_intermediate_size=1536,
+        vocab_size=151_936,
+        tie_word_embeddings=False,
+        num_experts=128,
+        experts_per_token=8,
+        moe_layers=94,
     ),
 )
 
@@ -26,8 +39,11 @@ MODELS = (
 # 单 GPU NVLink 互联标称 1.8 TB/s（双向合计）：https://www.nvidia.com/en-us/data-center/hgx/
 HARDWARE = (
     {
-        "name": "NVIDIA B300", "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
-        "peak_fp16_tflops": 2250, "peak_hbm_gb_s": 8000,
+        "name": "NVIDIA B300",
+        "gpu_count": 8,
+        "memory_bytes_per_gpu": 288_000_000_000,
+        "peak_fp16_tflops": 2250,
+        "peak_hbm_gb_s": 8000,
         "peak_interconnect_gb_s": 1800,
     },
 )

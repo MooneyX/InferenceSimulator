@@ -245,7 +245,9 @@ def test_exclusive_mode_rejects_mixed_budget_in_same_step() -> None:
 
 def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> None:
     config = EngineConfig(
-        max_running_requests=3, max_total_tokens=28, page_size=4,
+        max_running_requests=3,
+        max_total_tokens=28,
+        page_size=4,
         l2_capacity_tokens=8,
     )
     cache = TieredKVCache(28, 4, 8)
@@ -274,7 +276,9 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
 
 def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=8, page_size=4,
+        max_running_requests=2,
+        max_total_tokens=8,
+        page_size=4,
         l2_capacity_tokens=4,
     )
     cache = TieredKVCache(8, 4, 4)

@@ -77,7 +77,9 @@ def test_zero_coefficients_have_zero_duration_but_valid_workload() -> None:
 
 def test_restore_only_l3_uses_two_links_and_charges_each_fixed_latency_once() -> None:
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=1, decode_d2=0,
+        prefill_c1=1,
+        decode_d1=1,
+        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -85,15 +87,26 @@ def test_restore_only_l3_uses_two_links_and_charges_each_fixed_latency_once() ->
         l3_latency_ms=5,
     )
     transfer = StepWorkload(
-        "RESTORE", (), (), 0, 1,
-        (("a", "L2"), ("b", "L3")), 4, (1,),
+        "RESTORE",
+        (),
+        (),
+        0,
+        1,
+        (("a", "L2"), ("b", "L3")),
+        4,
+        (1,),
     )
     assert workload_time(transfer, perf) == 0
     assert restore_bytes(transfer, perf) == 24
     assert restore_time(transfer, perf) == 3 + 2 * 8 / 4 + 5 + 8 / 2
     mixed = StepWorkload(
-        "MIXED", (PrefillWork(1, 0, 2, 2),), (DecodeWork(2, 8),), 1, 2,
-        transfer.restore_sources, 4,
+        "MIXED",
+        (PrefillWork(1, 0, 2, 2),),
+        (DecodeWork(2, 8),),
+        1,
+        2,
+        transfer.restore_sources,
+        4,
     )
     assert restore_time(mixed, perf) == restore_time(transfer, perf)
     assert workload_time(mixed, perf) == max(2, 1)

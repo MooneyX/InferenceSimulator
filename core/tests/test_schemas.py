@@ -201,9 +201,7 @@ class TestConfigValidation:
             SimConfig.model_validate(payload)
 
     def test_shared_kv_config_validator(self) -> None:
-        engine = EngineConfig(
-            max_running_requests=1, max_total_tokens=128, l2_capacity_tokens=64
-        )
+        engine = EngineConfig(max_running_requests=1, max_total_tokens=128, l2_capacity_tokens=64)
         perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)
         with pytest.raises(ValueError, match="kv_bytes_per_token"):
             validate_kv_config(engine, perf)

@@ -10,27 +10,42 @@ from simserver import create_app
 def payload() -> dict[str, Any]:
     return {
         "config": {
-            "workload": {"mode": "synthetic", "synthetic": {
-                "num_requests": 1, "arrival_rate": 1,
-                "prompt_len": {"dist": "fixed", "value": 4},
-                "output_len": {"dist": "fixed", "value": 2},
-                "max_new_tokens": 2, "seed": 0,
-            }},
+            "workload": {
+                "mode": "synthetic",
+                "synthetic": {
+                    "num_requests": 1,
+                    "arrival_rate": 1,
+                    "prompt_len": {"dist": "fixed", "value": 4},
+                    "output_len": {"dist": "fixed", "value": 2},
+                    "max_new_tokens": 2,
+                    "seed": 0,
+                },
+            },
             "engine": {"max_running_requests": 1, "max_total_tokens": 4, "page_size": 4},
             "perf_model": {"prefill_c1": 1, "decode_d1": 2, "decode_d2": 1},
         },
         "model": {
-            "name": "toy", "num_layers": 2, "hidden_size": 16,
-            "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
-            "ffn_intermediate_size": 32, "vocab_size": 16,
+            "name": "toy",
+            "num_layers": 2,
+            "hidden_size": 16,
+            "num_attention_heads": 2,
+            "num_kv_heads": 1,
+            "head_dim": 8,
+            "ffn_intermediate_size": 32,
+            "vocab_size": 16,
         },
         "hardware": {
-            "name": "toy", "gpu_count": 1, "memory_bytes_per_gpu": 2_000_000,
-            "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1,
+            "name": "toy",
+            "gpu_count": 1,
+            "memory_bytes_per_gpu": 2_000_000,
+            "effective_fp16_tflops": 1,
+            "effective_hbm_gb_s": 1,
         },
         "storage": {
-            "l1_available_gb": 0.001, "l2_available_gb": 0.000000512,
-            "l3_available_gb": 0.000000256, "l2_to_l1_gb_s": 0.001,
+            "l1_available_gb": 0.001,
+            "l2_available_gb": 0.000000512,
+            "l3_available_gb": 0.000000256,
+            "l2_to_l1_gb_s": 0.001,
             "l3_to_l2_gb_s": 0.002,
         },
         "timing": "analytical",
@@ -60,18 +75,28 @@ def test_preview_and_run_resolve_identically() -> None:
 def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:
     client = TestClient(create_app())
     request = payload()
-    request["model"].update({
-        "name": "Qwen3-8B", "num_layers": 36, "hidden_size": 4096,
-        "num_attention_heads": 32, "num_kv_heads": 8, "head_dim": 128,
-        "ffn_intermediate_size": 12288, "vocab_size": 151936,
-        "tie_word_embeddings": False,
-    })
-    request["hardware"].update({
-        "gpu_count": 4, "memory_bytes_per_gpu": 288_000_000_000,
-        "effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1,
-    })
-    request["storage"].update({"l1_available_gb": 20, "l2_available_gb": 1,
-                               "l3_available_gb": 0.5})
+    request["model"].update(
+        {
+            "name": "Qwen3-8B",
+            "num_layers": 36,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_kv_heads": 8,
+            "head_dim": 128,
+            "ffn_intermediate_size": 12288,
+            "vocab_size": 151936,
+            "tie_word_embeddings": False,
+        }
+    )
+    request["hardware"].update(
+        {
+            "gpu_count": 4,
+            "memory_bytes_per_gpu": 288_000_000_000,
+            "effective_interconnect_gb_s": 100,
+            "collective_latency_ms": 0.1,
+        }
+    )
+    request["storage"].update({"l1_available_gb": 20, "l2_available_gb": 1, "l3_available_gb": 0.5})
     request["tp_size"] = 4
     preview = client.post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
@@ -98,13 +123,20 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     catalog = client.get("/api/presets").json()
     request = payload()
     request["model"] = catalog["models"][1]
-    request["hardware"].update({
-        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
-        "effective_interconnect_gb_s": 600,
-    })
-    request["storage"].update({
-        "l1_available_gb": 200, "l2_available_gb": 0, "l3_available_gb": 0,
-    })
+    request["hardware"].update(
+        {
+            "gpu_count": 8,
+            "memory_bytes_per_gpu": 288_000_000_000,
+            "effective_interconnect_gb_s": 600,
+        }
+    )
+    request["storage"].update(
+        {
+            "l1_available_gb": 200,
+            "l2_available_gb": 0,
+            "l3_available_gb": 0,
+        }
+    )
     request.update({"tp_size": 8, "ep_size": 8})
     response = client.post("/api/resolve", json=request)
     assert response.status_code == 200, response.text
@@ -121,9 +153,12 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert preview["capacity"]["weights_resident_bytes"] >= 2 * 235_093_634_560
     incomplete = client.post("/api/simulate/resolved", json=request)
     assert incomplete.status_code == 422
-    request["hardware"].update({
-        "collective_latency_ms": 0.01, "ep_communication_latency_ms": 0.02,
-    })
+    request["hardware"].update(
+        {
+            "collective_latency_ms": 0.01,
+            "ep_communication_latency_ms": 0.02,
+        }
+    )
     ready = client.post("/api/resolve", json=request)
     assert ready.status_code == 200 and ready.json()["runnable"] is True
     run = client.post("/api/simulate/resolved", json=request)
@@ -144,7 +179,8 @@ def test_presets_and_unsupported_modes() -> None:
     catalog = client.get("/api/presets")
     assert catalog.status_code == 200
     assert {item["name"] for item in catalog.json()["models"]} == {
-        "Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B",
+        "Qwen/Qwen3-8B",
+        "Qwen/Qwen3-235B-A22B",
     }
     assert catalog.json()["hardware"][0]["gpu_count"] == 8
     assert catalog.json()["hardware"][0]["memory_bytes_per_gpu"] == 288_000_000_000
@@ -164,8 +200,12 @@ def test_presets_and_unsupported_modes() -> None:
     assert response.status_code == 422
     assert "TP 数" in response.json()["detail"]
     request["hardware"]["gpu_count"] = 1
-    for field in ("total_parameters", "active_parameters", "expert_parameters_total",
-                  "resident_weights_bytes"):
+    for field in (
+        "total_parameters",
+        "active_parameters",
+        "expert_parameters_total",
+        "resident_weights_bytes",
+    ):
         request["model"][field] = 1
         rejected = client.post("/api/resolve", json=request)
         assert rejected.status_code == 422

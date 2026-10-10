@@ -101,14 +101,14 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
         other = changed_plan.turns[request_id]
         assert turn.root_arrival_time_ms == other.root_arrival_time_ms
         assert (turn.prompt_len, turn.output_len, turn.ideal_reuse_blocks) == (
-            other.prompt_len, other.output_len, other.ideal_reuse_blocks
+            other.prompt_len,
+            other.output_len,
+            other.ideal_reuse_blocks,
         )
         if turn.think_time_ms is not None:
             assert other.think_time_ms == pytest.approx(2 * turn.think_time_ms)
 
-    zero = cfg.model_copy(
-        update={"session": cfg.session.model_copy(update={"think_time_ms": 0.0})}
-    )
+    zero = cfg.model_copy(update={"session": cfg.session.model_copy(update={"think_time_ms": 0.0})})
     zero_plan = build_plan(zero, engine())
     assert all(
         turn.think_time_ms == 0.0

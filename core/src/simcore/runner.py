@@ -50,17 +50,19 @@ def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, Analytical
         raise NotImplementedError("TP/EP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
     analytical = (
         (resolution.model, resolution.hardware, resolution.tp_size, resolution.ep_size)
-        if resolution.timing == "analytical" else None
+        if resolution.timing == "analytical"
+        else None
     )
     return _simulate(
-        resolution.config, analytical,
-        (resolution.capacity.l2_to_l1_tokens_per_ms,
-         resolution.capacity.l3_to_l2_tokens_per_ms),
+        resolution.config,
+        analytical,
+        (resolution.capacity.l2_to_l1_tokens_per_ms, resolution.capacity.l3_to_l2_tokens_per_ms),
     )
 
 
 def _simulate(
-    config: SimConfig, analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
+    config: SimConfig,
+    analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
     token_bandwidths: tuple[float | None, float | None] | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:
     if config.workload.mode == "trace":

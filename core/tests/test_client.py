@@ -139,9 +139,7 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
     turns = dict(base.turns)
     turns[child_id] = replace(turns[child_id], prompt_len=5, output_len=5, ideal_reuse_blocks=1)
     turns[grandchild_id] = replace(turns[grandchild_id], prompt_len=13, ideal_reuse_blocks=2)
-    client = ClientDriver(
-        WorkloadPlan(turns, base.root_request_ids, base.children), engine
-    )
+    client = ClientDriver(WorkloadPlan(turns, base.root_request_ids, base.children), engine)
 
     root = client.on_wakeup(client.initial_wakeups()[0])
     assert root.inherited_prefix_ids == ()

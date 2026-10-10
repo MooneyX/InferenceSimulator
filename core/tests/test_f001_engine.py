@@ -226,12 +226,17 @@ def test_empty_step_is_rejected_without_advancing_clock() -> None:
 
 def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> None:
     config = EngineConfig(
-        max_running_requests=3, max_total_tokens=28, page_size=4,
+        max_running_requests=3,
+        max_total_tokens=28,
+        page_size=4,
         l2_capacity_tokens=8,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=5, decode_d2=1,
-        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
     engine = Engine(config, perf, output_targets={1: 1, 2: 1})
@@ -264,20 +269,26 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     engine.complete(7, 2)
     run = engine.finalize()
     assert run.promotions == 1 and run.restore_bytes == 8 and run.restore_time_ms == 5
-    assert [(record.l1_hit_tokens, record.l2_hit_tokens, record.l3_hit_tokens)
-            for record in run.records] == [(0, 4, 0), (0, 4, 0)]
+    assert [
+        (record.l1_hit_tokens, record.l2_hit_tokens, record.l3_hit_tokens) for record in run.records
+    ] == [(0, 4, 0), (0, 4, 0)]
     assert run.l2_snapshot is not None
     assert run.l2_snapshot.free_blocks + run.l2_snapshot.resident_blocks == 2
 
 
 def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=16, page_size=4,
+        max_running_requests=2,
+        max_total_tokens=16,
+        page_size=4,
         l2_capacity_tokens=8,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=5, decode_d2=1,
-        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
     engine = Engine(config, perf, output_targets={0: 2})
@@ -312,12 +323,18 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
 
 def test_fused_decode_and_restore_share_step_without_decoding_restored_request() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=28, page_size=4,
-        l2_capacity_tokens=8, pd_mutually_exclusive=False,
+        max_running_requests=2,
+        max_total_tokens=28,
+        page_size=4,
+        l2_capacity_tokens=8,
+        pd_mutually_exclusive=False,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=5, decode_d2=1,
-        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
     engine = Engine(config, perf, output_targets={0: 2, 1: 2})
@@ -353,15 +370,21 @@ def test_fused_decode_and_restore_share_step_without_decoding_restored_request()
 
 def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=16, page_size=4,
-        l2_capacity_tokens=4, l3_capacity_tokens=4,
+        max_running_requests=2,
+        max_total_tokens=16,
+        page_size=4,
+        l2_capacity_tokens=4,
+        l3_capacity_tokens=4,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=5, decode_d2=1,
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
-        l2_latency_ms=3, l3_latency_ms=5,
+        l2_latency_ms=3,
+        l3_latency_ms=5,
     )
     engine = Engine(config, perf, output_targets={1: 1})
     cache = engine._prefix_cache
@@ -390,12 +413,17 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
 
 def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=36, page_size=4,
+        max_running_requests=2,
+        max_total_tokens=36,
+        page_size=4,
         l2_capacity_tokens=8,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=0, decode_d2=0,
-        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        prefill_c1=1,
+        decode_d1=0,
+        decode_d2=0,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
     )
     engine = Engine(config, perf, output_targets={1: 1, 2: 1})
     cache = engine._prefix_cache
@@ -410,9 +438,15 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
     demoted_page = cache.page(shared)
     assert demoted_page is not None and demoted_page.tier == "L2"
     engine.submit(request(1, prompt=5, maximum=1, inherited=(shared,)), 0)
-    engine.submit(request(
-        2, prompt=9, maximum=1, inherited=(encode(77, 0), shared),
-    ), 0)
+    engine.submit(
+        request(
+            2,
+            prompt=9,
+            maximum=1,
+            inherited=(encode(77, 0), shared),
+        ),
+        0,
+    )
     assert engine.step(0, 0) == (12, (1, 2))
     published = cache.page(shared)
     assert published is not None and published.tier == "L1"
@@ -421,27 +455,37 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
     engine.complete(12, 1)
     engine.complete(12, 2)
     assert cache.page(shared) is not None
-    assert [(r.l2_hit_tokens, r.replayed_prefill_tokens)
-            for r in engine.finalize().records] == [(4, 0), (0, 0)]
+    assert [(r.l2_hit_tokens, r.replayed_prefill_tokens) for r in engine.finalize().records] == [
+        (4, 0),
+        (0, 0),
+    ]
 
 
 @pytest.mark.parametrize("exclusive", [True, False])
 def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -> None:
     legacy = EngineConfig(
-        max_running_requests=2, max_total_tokens=32, page_size=4,
+        max_running_requests=2,
+        max_total_tokens=32,
+        page_size=4,
         pd_mutually_exclusive=exclusive,
     )
     explicitly_disabled = EngineConfig(
-        max_running_requests=2, max_total_tokens=32, page_size=4,
-        l2_capacity_tokens=0, l3_capacity_tokens=0,
+        max_running_requests=2,
+        max_total_tokens=32,
+        page_size=4,
+        l2_capacity_tokens=0,
+        l3_capacity_tokens=0,
         pd_mutually_exclusive=exclusive,
     )
     extra_perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=5, decode_d2=1,
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
-        l2_latency_ms=3, l3_latency_ms=5,
+        l2_latency_ms=3,
+        l3_latency_ms=5,
     )
     arrivals = (
         Arrival(request_id=0, sim_time=0, prompt_len=5, output_len=3, max_new_tokens=3),

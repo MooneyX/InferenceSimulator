@@ -252,9 +252,9 @@ def assert_tiers_conserved(cache: TieredKVCache) -> None:
         assert snapshot.evictable_blocks == sum(
             entry.tier == tier and entry.ref_count == 0 for entry in entries.values()
         )
-        assert snapshot.resident_blocks == sum(
-            entry.tier == tier for entry in entries.values()
-        ) + (cache.private_pages if tier == "L1" else 0)
+        assert snapshot.resident_blocks == sum(entry.tier == tier for entry in entries.values()) + (
+            cache.private_pages if tier == "L1" else 0
+        )
 
 
 def test_tiered_lru_demotes_one_level_at_a_time_and_deletes_last_tier() -> None:

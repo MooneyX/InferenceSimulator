@@ -78,19 +78,33 @@ def presets_endpoint() -> PresetCatalog:
         hardware=[HardwareCatalogEntry.model_validate(item) for item in HARDWARE],
         scenarios=[
             ScenarioCatalogEntry(
-                id="qwen3-8b-b300-1", model_name="Qwen/Qwen3-8B",
-                hardware_name="NVIDIA B300", gpu_count=1, stage="single_gpu_example",
+                id="qwen3-8b-b300-1",
+                model_name="Qwen/Qwen3-8B",
+                hardware_name="NVIDIA B300",
+                gpu_count=1,
+                stage="single_gpu_example",
             ),
             ScenarioCatalogEntry(
-                id="qwen3-235b-b300-8", model_name="Qwen/Qwen3-235B-A22B",
-                hardware_name="NVIDIA B300", gpu_count=8, stage="requires_tp_ep",
+                id="qwen3-235b-b300-8",
+                model_name="Qwen/Qwen3-235B-A22B",
+                hardware_name="NVIDIA B300",
+                gpu_count=8,
+                stage="requires_tp_ep",
             ),
         ],
     )
 
 
-@router.post("/resolve", response_model=ResolvedConfig, summary="解析单实例容量与计时规格",
-             responses={status.HTTP_422_UNPROCESSABLE_CONTENT: _RESOLVED_ERRORS[status.HTTP_422_UNPROCESSABLE_CONTENT]})
+@router.post(
+    "/resolve",
+    response_model=ResolvedConfig,
+    summary="解析单实例容量与计时规格",
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: _RESOLVED_ERRORS[
+            status.HTTP_422_UNPROCESSABLE_CONTENT
+        ]
+    },
+)
 def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
     try:
         return resolve_config(request)
@@ -98,8 +112,12 @@ def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/simulate/resolved", response_model=ResolvedRun,
-             summary="按解析规格运行单实例仿真", responses=_RESOLVED_ERRORS)
+@router.post(
+    "/simulate/resolved",
+    response_model=ResolvedRun,
+    summary="按解析规格运行单实例仿真",
+    responses=_RESOLVED_ERRORS,
+)
 def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
     try:
         resolution = resolve_config(request)

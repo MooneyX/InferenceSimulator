@@ -26,8 +26,11 @@ class StepCost:
 
 
 def step_cost(
-    workload: StepWorkload, model: ModelSpec, hardware: HardwareSpec,
-    tp_size: int = 1, ep_size: int = 1,
+    workload: StepWorkload,
+    model: ModelSpec,
+    hardware: HardwareSpec,
+    tp_size: int = 1,
+    ep_size: int = 1,
 ) -> StepCost:
     """按真实单步工作量计算各层依赖；MoE 替换 Dense FFN。"""
     if not workload.prefill and not workload.decode:
@@ -141,7 +144,11 @@ def _tp_step_cost(
 
 
 def _moe_step_cost(
-    workload: StepWorkload, model: ModelSpec, hardware: HardwareSpec, tp_size: int, ep_size: int,
+    workload: StepWorkload,
+    model: ModelSpec,
+    hardware: HardwareSpec,
+    tp_size: int,
+    ep_size: int,
 ) -> StepCost:
     """无重叠基线：各 rank 平均路由，逐层等待通信与专家计算。"""
     h, d = model.hidden_size, model.head_dim
@@ -149,8 +156,7 @@ def _moe_step_cost(
     kv_heads = max(1, model.num_kv_heads // tp_size)
     tokens = sum(item.new_tokens for item in workload.prefill) + len(workload.decode)
     pairs = sum(
-        item.new_tokens * item.reused_tokens
-        + item.new_tokens * (item.new_tokens + 1) / 2
+        item.new_tokens * item.reused_tokens + item.new_tokens * (item.new_tokens + 1) / 2
         for item in workload.prefill
     ) + sum(item.context_after_decode for item in workload.decode)
     kv_reads = sum(item.context_after for item in workload.prefill) + sum(
@@ -170,26 +176,32 @@ def _moe_step_cost(
         compute += repeats * work_flops / flops_per_ms
         memory += repeats * nbytes / bytes_per_ms
         device += repeats * (
-            hardware.kernel_overhead_ms
-            + max(work_flops / flops_per_ms, nbytes / bytes_per_ms)
+            hardware.kernel_overhead_ms + max(work_flops / flops_per_ms, nbytes / bytes_per_ms)
         )
 
-    stage(2 * tokens * qkv_weights, 2 * qkv_weights, model.num_layers)  # Q/K/V 投影：记录各层本步 token 的投影计算与权重读取
-    stage(4 * q_heads * d * pairs, 4 * kv_heads * d * (kv_reads + tokens), model.num_layers)  # 注意力：按配对数记录计算，按 KV 规模记录显存读写
-    stage(2 * tokens * output_weights, 2 * output_weights, model.num_layers)  # 输出投影：记录各层注意力输出的投影计算与权重读取
+    stage(
+        2 * tokens * qkv_weights, 2 * qkv_weights, model.num_layers
+    )  # Q/K/V 投影：记录各层本步 token 的投影计算与权重读取
+    stage(
+        4 * q_heads * d * pairs, 4 * kv_heads * d * (kv_reads + tokens), model.num_layers
+    )  # 注意力：按配对数记录计算，按 KV 规模记录显存读写
+    stage(
+        2 * tokens * output_weights, 2 * output_weights, model.num_layers
+    )  # 输出投影：记录各层注意力输出的投影计算与权重读取
     if dense_layers:
         ffn_weights = 3 * h * (model.ffn_intermediate_size // tp_size)
-        stage(2 * tokens * ffn_weights, 2 * ffn_weights, dense_layers)  # 普通前馈网络（Dense FFN）：只记录普通层的计算与权重读取
+        stage(
+            2 * tokens * ffn_weights, 2 * ffn_weights, dense_layers
+        )  # 普通前馈网络（Dense FFN）：只记录普通层的计算与权重读取
 
     # Gate 在每个 rank 对本步所有 token 的全部专家打分；专家参数只读本地份额。
     gate_weights = h * model.num_experts
-    stage(2 * tokens * gate_weights, 2 * gate_weights, model.moe_layers)  # MoE 门控（Gate）：记录 MoE 层的专家打分与权重读取
-    local_expert_weights = (
-        model.num_experts // ep_size * 3 * h * model.expert_intermediate_size
-    )
     stage(
-        2 * tokens * model.experts_per_token / ep_size
-        * 3 * h * model.expert_intermediate_size,
+        2 * tokens * gate_weights, 2 * gate_weights, model.moe_layers
+    )  # MoE 门控（Gate）：记录 MoE 层的专家打分与权重读取
+    local_expert_weights = model.num_experts // ep_size * 3 * h * model.expert_intermediate_size
+    stage(
+        2 * tokens * model.experts_per_token / ep_size * 3 * h * model.expert_intermediate_size,
         2 * local_expert_weights,
         model.moe_layers,
     )  # MoE 专家计算：记录 MoE 层选中专家的计算与本地权重读取
@@ -210,16 +222,19 @@ def _moe_step_cost(
             + bytes_per_collective / (hardware.effective_interconnect_gb_s * 1e6)
         )
     if ep_size > 1:
-        if hardware.effective_interconnect_gb_s is None or hardware.ep_communication_latency_ms is None:
+        if (
+            hardware.effective_interconnect_gb_s is None
+            or hardware.ep_communication_latency_ms is None
+        ):
             raise ValueError("EP 计时需要单 rank 互联带宽和 EP 单次通信固定开销")
         # 不生成具体路由：每 token 在无放回 Top-K 中命中某一目标 rank 的概率。
         experts_per_rank = model.num_experts // ep_size
         missed = 1.0
         for selected in range(model.experts_per_token):
-            missed *= (model.num_experts - experts_per_rank - selected) / (model.num_experts - selected)
-        remote_selections = (
-            tokens * model.experts_per_token * (ep_size - 1) / (ep_size * ep_size)
-        )
+            missed *= (model.num_experts - experts_per_rank - selected) / (
+                model.num_experts - selected
+            )
+        remote_selections = tokens * model.experts_per_token * (ep_size - 1) / (ep_size * ep_size)
         if workload.prefill:
             remote_payloads = tokens * (ep_size - 1) / ep_size * (1 - missed)
         else:
@@ -229,9 +244,8 @@ def _moe_step_cost(
         bytes_per_exchange = remote_payloads * h * 2 + remote_selections * 8
         ep_dispatch_bytes = ep_combine_bytes = bytes_per_exchange * model.moe_layers
         ep_exchanges = 2 * model.moe_layers
-        one_exchange = (
-            hardware.ep_communication_latency_ms
-            + bytes_per_exchange / (hardware.effective_interconnect_gb_s * 1e6)
+        one_exchange = hardware.ep_communication_latency_ms + bytes_per_exchange / (
+            hardware.effective_interconnect_gb_s * 1e6
         )
         ep_dispatch_ms = ep_combine_ms = model.moe_layers * one_exchange
     communication = tp_ms + ep_dispatch_ms + ep_combine_ms

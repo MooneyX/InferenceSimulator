@@ -5,12 +5,16 @@ export type ConfigField =
   | "workload.synthetic"
   | "workload.synthetic.num_requests"
   | "workload.synthetic.arrival_rate"
+  | "workload.synthetic.session_rate"
   | "workload.synthetic.session.num_sessions"
   | "workload.synthetic.session.think_time_ms"
   | "workload.synthetic.session.target_ideal_prefix_hit_rate"
   | "workload.synthetic.prompt_len.value"
   | "workload.synthetic.prompt_len.mean"
   | "workload.synthetic.prompt_len.sigma"
+  | "workload.synthetic.turn_increment_len.value"
+  | "workload.synthetic.turn_increment_len.mean"
+  | "workload.synthetic.turn_increment_len.sigma"
   | "workload.synthetic.output_len.value"
   | "workload.synthetic.output_len.mean"
   | "workload.synthetic.output_len.sigma"
@@ -45,9 +49,14 @@ export function createDefaultSimConfig(): SimConfig {
       synthetic: {
         num_requests: 1000,
         arrival_rate: 64,
+        arrival_mode: "open_loop",
         prompt_len: {
           dist: "poisson",
-          mean: 32_768,
+          mean: 2048,
+        },
+        turn_increment_len: {
+          dist: "poisson",
+          mean: 256,
         },
         output_len: {
           dist: "poisson",
@@ -55,12 +64,6 @@ export function createDefaultSimConfig(): SimConfig {
         },
         seed: 42,
         max_new_tokens: 1024,
-        session: {
-          num_sessions: 20,
-          topology: "linear",
-          think_time_ms: 10_000,
-          target_ideal_prefix_hit_rate: 0.9,
-        },
       },
     },
     engine: {
@@ -117,7 +120,7 @@ function validatePositiveInteger(
 
 function validateLengthDistribution(
   errors: ConfigValidationError[],
-  field: "workload.synthetic.prompt_len" | "workload.synthetic.output_len",
+  field: "workload.synthetic.prompt_len" | "workload.synthetic.turn_increment_len" | "workload.synthetic.output_len",
   distribution: LengthDistribution,
 ): void {
   switch (distribution.dist) {
@@ -154,39 +157,25 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       "workload.synthetic.num_requests",
       synthetic.num_requests,
     );
-    validateFiniteNumber(
-      errors,
-      "workload.synthetic.arrival_rate",
-      synthetic.arrival_rate,
-      0,
-      true,
-    );
-    const session = synthetic.session;
-    if (session !== undefined && session !== null) {
-      const numSessions = session.num_sessions;
-      if (numSessions !== undefined && numSessions !== null) {
-        validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", numSessions);
-        if (Number.isInteger(numSessions) && numSessions >= 1 &&
-            Number.isInteger(synthetic.num_requests) && synthetic.num_requests >= 1 &&
-            numSessions > synthetic.num_requests) {
-          errors.push({
-            field: "workload.synthetic.session.num_sessions",
-            message: "会话数量不能超过请求数量",
-          });
-        }
+    if (synthetic.arrival_mode === "open_loop") {
+      validateFiniteNumber(errors, "workload.synthetic.arrival_rate", synthetic.arrival_rate ?? NaN, 0, true);
+      if (!synthetic.turn_increment_len) {
+        errors.push({ field: "workload.synthetic", message: "开环模式必须设置每轮新增长度" });
+      } else {
+        validateLengthDistribution(errors, "workload.synthetic.turn_increment_len", synthetic.turn_increment_len);
       }
-      validateFiniteNumber(
-        errors,
-        "workload.synthetic.session.think_time_ms",
-        session.think_time_ms,
-        0,
-      );
-      const target = session.target_ideal_prefix_hit_rate;
-      if (!Number.isFinite(target) || target < 0 || target > 1) {
-        errors.push({
-          field: "workload.synthetic.session.target_ideal_prefix_hit_rate",
-          message: "必须是 0 到 1 之间的有限数值",
-        });
+    } else {
+      const session = synthetic.session;
+      validateFiniteNumber(errors, "workload.synthetic.session_rate", synthetic.session_rate ?? NaN, 0, true);
+      validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", session?.num_sessions ?? NaN);
+      if (session?.num_sessions != null && session.num_sessions > synthetic.num_requests) {
+        errors.push({ field: "workload.synthetic.session.num_sessions", message: "会话数量不能超过请求数量" });
+      }
+      validateFiniteNumber(errors, "workload.synthetic.session.think_time_ms", session?.think_time_ms ?? NaN, 0);
+      const target = session?.target_ideal_prefix_hit_rate;
+      if (target == null || !Number.isFinite(target) || target < 0 || target > 1) {
+        errors.push({ field: "workload.synthetic.session.target_ideal_prefix_hit_rate",
+          message: "理想命中率须在 0 到 1 之间" });
       }
     }
     validateLengthDistribution(

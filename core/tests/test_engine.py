@@ -208,7 +208,7 @@ class TestEdgeCases:
 def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) -> EngineRun:
     workload = SyntheticWorkloadConfig(
         num_requests=300,
-        arrival_rate=40.0,
+        session_rate=40.0,
         prompt_len=LognormalLength(mean=200.0, sigma=1.0),
         output_len=PoissonLength(mean=30.0),
         seed=seed,

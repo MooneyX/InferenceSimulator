@@ -247,7 +247,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                arrival_rate=10,
+                session_rate=10,
                 prompt_len=FixedLength(value=64),
                 output_len=FixedLength(value=2),
                 seed=7,

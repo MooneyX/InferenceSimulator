@@ -10,9 +10,9 @@
 同刻全序（可复现性的前提）：``(time, kind, ref, seq)``。
 
 - ``kind`` 优先级：``REQUEST_DONE`` < ``CLIENT_COMPLETION`` <
-  ``CLIENT_CHILD_SEND`` < ``CLIENT_SEND`` < ``ENGINE_STEP``。先按请求 ID
-  结算全部完成、释放 KV 和回调，再发送本时刻唤醒的子轮，然后发送普通到达，
-  最后安排引擎步。将来才到达的子轮与普通发送同级，按时刻和 ID 排序。
+  ``CLIENT_CHILD_SEND`` < ``CLIENT_SEND`` < ``OPEN_LOOP_TICK`` < ``ENGINE_STEP``。
+  先按请求 ID 结算全部完成、释放 KV 和回调，再处理闭环唤醒及开环时钟，
+  最后安排引擎步。将来才到达的闭环子轮与普通发送同级。
 - ``ref`` 在同类事件内按请求 ID 排序；``seq`` 只负责相同 ID 的最终平局。
 
 依赖层级：仅依赖 ``schemas``。
@@ -45,7 +45,8 @@ class EventKind(IntEnum):
     CLIENT_CHILD_SEND = 2
     CLIENT_SEND = 3
     ARRIVAL = 3  # 旧调用方的发送事件别名
-    ENGINE_STEP = 4
+    OPEN_LOOP_TICK = 4
+    ENGINE_STEP = 5
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -93,6 +94,9 @@ class EventFactory:
     def client_child_send(self, time: float, turn_id: int) -> Event:
         """完成回调在本时刻唤醒的子轮须先于其他普通发送。"""
         return self._make(time, EventKind.CLIENT_CHILD_SEND, turn_id)
+
+    def open_loop_tick(self, time: float, index: int) -> Event:
+        return self._make(time, EventKind.OPEN_LOOP_TICK, index)
 
     def engine_step(self, time: float, step_index: int) -> Event:
         return self._make(time, EventKind.ENGINE_STEP, step_index)

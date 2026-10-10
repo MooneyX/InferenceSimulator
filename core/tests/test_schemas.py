@@ -35,7 +35,7 @@ def make_config(**engine_overrides: object) -> SimConfig:
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
-                arrival_rate=10.0,
+                session_rate=10.0,
                 prompt_len=FixedLength(value=128),
                 output_len=FixedLength(value=16),
                 seed=0,
@@ -244,6 +244,24 @@ class TestConfigValidation:
             EngineConfig.model_validate(
                 {"max_running_requests": 8, "max_total_tokens": 4096, "max_batch_tokens": 1024}
             )
+
+    def test_session_rate_and_request_rate_are_mode_specific(self) -> None:
+        workload = make_config().workload.synthetic
+        assert workload is not None
+        assert workload.arrival_rate is None and workload.session_rate == 10
+        payload = workload.model_dump()
+        with pytest.raises(ValidationError, match="session_rate"):
+            SyntheticWorkloadConfig.model_validate({**payload, "session_rate": None})
+        with pytest.raises(ValidationError, match="session_rate"):
+            SyntheticWorkloadConfig.model_validate({**payload, "arrival_rate": 10})
+        open_payload = {**payload, "arrival_mode": "open_loop", "session_rate": None,
+                        "turn_increment_len": {"dist": "fixed", "value": 8},
+                        "session": {"think_time_ms": 0, "target_ideal_prefix_hit_rate": 0}}
+        with pytest.raises(ValidationError, match="arrival_rate"):
+            SyntheticWorkloadConfig.model_validate(open_payload)
+        assert SyntheticWorkloadConfig.model_validate(
+            {**open_payload, "arrival_rate": 10}
+        ).arrival_rate == 10
 
     def test_session_without_cross_session_field_roundtrips(self) -> None:
         payload = make_config().model_dump()

@@ -87,7 +87,7 @@ class TestSampleLength:
     def test_high_mean_prompt_plan_uses_actual_requested_length(self) -> None:
         config = SyntheticWorkloadConfig(
             num_requests=1000,
-            arrival_rate=1024,
+            session_rate=20.48,
             prompt_len=PoissonLength(mean=32768),
             output_len=PoissonLength(mean=128),
             seed=42,

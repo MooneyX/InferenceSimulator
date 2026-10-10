@@ -34,7 +34,7 @@ def example_request() -> ResolvedRequest:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
-                    arrival_rate=1,
+                    session_rate=1,
                     prompt_len=FixedLength(value=4),
                     output_len=FixedLength(value=2),
                     max_new_tokens=2,

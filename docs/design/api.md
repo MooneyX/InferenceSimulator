@@ -7,12 +7,15 @@ workload:
   mode: synthetic | trace        # trace 请求返回 501
   synthetic:
     num_requests: int            # 所有 session 的总轮次数
-    arrival_rate: float          # 所有轮次目标 QPS（请求/秒）
-    prompt_len: LengthDist
+    arrival_rate: float | null   # 仅 open_loop 必填，目标请求 QPS
+    session_rate: float | null   # 仅 session 必填，新会话泊松投放频率（会话/秒）
+    arrival_mode: session | open_loop  # 省略为 session；网页默认 open_loop，可切换
+    prompt_len: LengthDist       # 开环时仅根轮输入分布
+    turn_increment_len: LengthDist  # 开环必填，子轮新增内容分布
     output_len: LengthDist
     max_new_tokens: int          # 每请求可见生成上限，默认 128
     seed: int
-    session:
+    session:                     # 仅 session 模式使用；open_loop 不设置这些可选参数
       num_sessions: int          # 省略时等于 num_requests
       topology: linear
       think_time_ms: float       # 子轮思考时间的指数分布均值（ms），默认 0
@@ -46,11 +49,11 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-`arrival_rate` 是所有轮次的目标请求 QPS，`num_sessions` 缺省时等于 `num_requests`；不表示完成吞吐。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成负载按 `max_new_tokens` 与输入大小的安全余量截断实际输出目标；手工 `Arrival.max_new_tokens` 默认 128。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。旧 `SimConfig` 未提供独立 `prefix_cache`、硬件或校准模式；自动规格单独走下文 `ResolvedRequest`。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与直接构造 `Engine`/`run_engine` 时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
+开环只传 `arrival_rate=q`（期望请求/秒），全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成负载按 `max_new_tokens` 与输入大小的安全余量截断实际输出目标；手工 `Arrival.max_new_tokens` 默认 128。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。旧 `SimConfig` 未提供独立 `prefix_cache`、硬件或校准模式；自动规格单独走下文 `ResolvedRequest`。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与直接构造 `Engine`/`run_engine` 时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
 
 ## API
 
-旧配置的同步仿真端点：
+同步仿真端点：
 
 ```
 POST /api/simulate
@@ -83,7 +86,7 @@ warnings:          # 非致命告警；不代替请求级失败状态
 | `422` | config 校验失败（类型、范围、未知字段、非整页容量、`mode` 与载荷不匹配）或理想命中目标不可行等计划构造错误 | 配置错误为 FastAPI 默认 `HTTPValidationError`；计划构造错误为 `{"detail": str}` |
 | `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
 
-运行中的单请求容量不足不归入 HTTP 422，而是正常结果的 `aborted_requests`；其他请求可继续执行，失败父轮的后代进入 `skipped_requests`。
+运行中的单请求容量不足不归入 HTTP 422，而是正常结果的 `aborted_requests`；其他请求可继续执行。开环模式不预建未来子轮，失败时下一节拍可创建新根；闭环模式的预建后代才进入 `skipped_requests`。
 
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。
 
@@ -92,9 +95,9 @@ warnings:          # 非致命告警；不代替请求级失败状态
 ## 自动解析与 TP/EP 容量预览
 
 - `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 单卡显存、互联带宽标称值；不提供已测有效算力或模型修订认证，目录条目不等于已验证部署。B300 的 1800 GB/s 是单卡双向标称值；页面以 600 GB/s 作为未经校准的单 rank 有效带宽试算值，非实测值。
-- `POST /api/resolve` 接受旧 `SimConfig` 加显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；仅支持全注意力 GQA/MQA 与 BF16/FP16。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅放 KV 的物理容量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；未建模辅助权重不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
+- `POST /api/resolve` 接受 `SimConfig` 加显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；仅支持全注意力 GQA/MQA 与 BF16/FP16。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅放 KV 的物理容量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；未建模辅助权重不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
 - `POST /api/simulate/resolved` **再次解析**物理输入后执行；支持 Dense TP 与平均负载 MoE/EP 的解析计时，缺通信参数返回 422，TP/EP>1 经验四系数模式返回 501。成功返回 `ResolvedRun`：`resolution` 回显逐 rank 容量和有效 `SimConfig`，`analysis` 分列 TP 同步、EP dispatch/combine 的时间与逻辑流量；这些费用已计入 `device_ms`，KV 恢复时间独立。自动接口的 422 `detail` 可为字段错误列表或业务错误字符串，OpenAPI 同时登记两种格式。前端不复用上次容量预览的 token 数作为运行配置；结构估算参数和权重占用未经部署核验，旧自动配置 JSON 中已移除的参数输入会被拒绝。
-- 手填旧 `/api/simulate` 的请求/响应保持不变；四系数仅在 `timing=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。
+- 手填 `/api/simulate` 与自动解析请求使用相同的负载模式；四系数仅在 `timing=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。
 
 ## 类型同步
 

@@ -11,7 +11,7 @@ describe("parameter JSON transfer", () => {
     config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 128, sigma: 0.5 };
     config.workload.synthetic!.num_requests = 20;
-    config.workload.synthetic!.session!.num_sessions = 5;
+    config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 24 };
 
     const json = serializeSimConfig(config);
     expect(parseSimConfigJson(json)).toEqual(config);
@@ -20,6 +20,20 @@ describe("parameter JSON transfer", () => {
     });
     expect(JSON.parse(json)).not.toHaveProperty("metrics");
     expect(JSON.parse(json)).not.toHaveProperty("requests");
+  });
+
+  it("round-trips session mode without a request QPS", () => {
+    const config = createDefaultSimConfig();
+    config.workload.synthetic = {
+      num_requests: 20, arrival_mode: "session", session_rate: 2,
+      session: { num_sessions: 5, topology: "linear", think_time_ms: 200,
+        target_ideal_prefix_hit_rate: 0 },
+      prompt_len: { dist: "fixed", value: 256 }, output_len: { dist: "fixed", value: 16 },
+      max_new_tokens: 128, seed: 42,
+    };
+    const json = serializeSimConfig(config);
+    expect(parseSimConfigJson(json)).toEqual(config);
+    expect(JSON.parse(json).workload.synthetic).not.toHaveProperty("arrival_rate");
   });
 
   it.each(["", "{", "null", "[]", '"hello"'])
@@ -41,7 +55,7 @@ describe("parameter JSON transfer", () => {
     [{ ...createDefaultSimConfig(), workload: {
       ...createDefaultSimConfig().workload,
       synthetic: { ...createDefaultSimConfig().workload.synthetic!, session: null },
-    } }, "workload.synthetic.session 必须为 JSON 对象"],
+    } }, "不支持的参数：workload.synthetic.session"],
     [{ ...createDefaultSimConfig(), workload: {
       ...createDefaultSimConfig().workload,
       synthetic: { ...createDefaultSimConfig().workload.synthetic!, prompt_len: { dist: "other" } },

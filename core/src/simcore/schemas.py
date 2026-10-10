@@ -123,11 +123,18 @@ class SessionConfig(_Frozen):
 
 
 class SyntheticWorkloadConfig(_Frozen):
-    """合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。"""
+    """合成负载：开环按请求速率、闭环按新会话速率投放。"""
 
     num_requests: int = Field(ge=1, description="全部轮次请求数")
-    arrival_rate: float = Field(gt=0, allow_inf_nan=False, description="总请求目标 QPS")
+    arrival_rate: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False, description="开环目标请求 QPS"
+    )
+    session_rate: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False, description="闭环新会话投放频率（会话/秒）"
+    )
+    arrival_mode: Literal["session", "open_loop"] = "session"
     prompt_len: LengthDist
+    turn_increment_len: LengthDist | None = None
     output_len: LengthDist
     max_new_tokens: int = Field(default=128, ge=1, description="每个请求可见的生成上限")
     seed: int = Field(ge=0, description="随机种子；同种子必须逐字节可复现")
@@ -135,6 +142,20 @@ class SyntheticWorkloadConfig(_Frozen):
 
     @model_validator(mode="after")
     def _resolve_session(self) -> Self:
+        if self.arrival_mode == "open_loop":
+            if self.arrival_rate is None or self.session_rate is not None:
+                raise ValueError("开环负载必须仅提供请求到达率 arrival_rate")
+            if self.turn_increment_len is None:
+                raise ValueError("开环负载必须提供每轮新增长度分布 turn_increment_len")
+            if (
+                self.session.num_sessions is not None
+                or self.session.think_time_ms != 0
+                or self.session.target_ideal_prefix_hit_rate != 0
+            ):
+                raise ValueError("开环负载不使用会话数、思考时间或目标理想命中率")
+            return self
+        if self.session_rate is None or self.arrival_rate is not None:
+            raise ValueError("闭环负载必须仅提供新会话投放频率 session_rate")
         count = self.session.num_sessions
         if count is None:
             object.__setattr__(
@@ -525,9 +546,18 @@ class Metrics(_Record):
     makespan: float = Field(
         ge=0, description="末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）"
     )
-    target_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
+    target_ideal_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
     constructed_ideal_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
-    ideal_hit_quantization_error: float = Field(default=0.0, ge=0)
+    ideal_hit_quantization_error: float | None = Field(default=None, ge=0)
+    arrival_qps: float | None = Field(
+        default=None, ge=0, description="全部已发送请求首末时刻间按已发送数减一计算的实际请求 QPS"
+    )
+    num_sessions: int = Field(default=0, ge=0)
+    root_request_ratio: float = Field(default=0.0, ge=0, le=1)
+    mean_prompt_tokens: float | None = Field(default=None, ge=0)
+    mean_output_tokens: float | None = Field(default=None, ge=0)
+    child_ideal_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
+    child_actual_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
     actual_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
     requests_with_hit_ratio: float = Field(default=0.0, ge=0, le=1)
     requests_fully_cached_ratio: float = Field(default=0.0, ge=0, le=1)

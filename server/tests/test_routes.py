@@ -18,7 +18,7 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
             "mode": "synthetic",
             "synthetic": {
                 "num_requests": num_requests,
-                "arrival_rate": 30.0,
+                "session_rate": 30.0,
                 "prompt_len": {"dist": "lognormal", "mean": 256.0, "sigma": 0.8},
                 "output_len": {"dist": "poisson", "mean": 40.0},
                 "max_new_tokens": 128,
@@ -41,6 +41,18 @@ def client() -> TestClient:
 
 
 class TestSuccess:
+    def test_closed_loop_session_rate_and_request_qps(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=4)
+        payload["workload"]["synthetic"].update(
+            session_rate=2, session={"num_sessions": 2, "think_time_ms": 200}
+        )
+        response = client.post(URL, json=payload)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["config"]["workload"]["synthetic"]["arrival_rate"] is None
+        assert body["meta"]["config"]["workload"]["synthetic"]["session_rate"] == 2
+        assert body["metrics"]["arrival_qps"] > 0
+
     def test_new_engine_fields_echo_and_counts(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 16}
@@ -285,7 +297,7 @@ class TestErrors:
         ("path", "value"),
         [
             (("engine", "max_running_requests"), 0),
-            (("workload", "synthetic", "arrival_rate"), -1.0),
+            (("workload", "synthetic", "session_rate"), -1.0),
             (("workload", "synthetic", "prompt_len"), {"dist": "uniform", "value": 3}),
             (("engine", "unknown_field"), 1),
         ],

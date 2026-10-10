@@ -160,7 +160,7 @@ class TestPrefixMetrics:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    arrival_rate=1,
+                    session_rate=1,
                     prompt_len=FixedLength(value=5),
                     output_len=FixedLength(value=2),
                     seed=0,

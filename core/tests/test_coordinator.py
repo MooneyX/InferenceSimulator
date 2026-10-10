@@ -26,7 +26,7 @@ def config(think: float = 0) -> SimConfig:
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                arrival_rate=10,
+                session_rate=10,
                 prompt_len=FixedLength(value=4),
                 output_len=FixedLength(value=2),
                 seed=21,

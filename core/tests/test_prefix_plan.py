@@ -26,7 +26,7 @@ def config(
 ) -> SyntheticWorkloadConfig:
     return SyntheticWorkloadConfig(
         num_requests=n,
-        arrival_rate=rate,
+        session_rate=rate,
         prompt_len=FixedLength(value=10),
         output_len=FixedLength(value=6),
         seed=17,
@@ -186,7 +186,7 @@ def test_distinct_roots_have_isolated_chunk_ids() -> None:
 def test_output_is_clamped_without_exposing_sample_to_client() -> None:
     cfg = SyntheticWorkloadConfig(
         num_requests=1,
-        arrival_rate=1,
+        session_rate=1,
         prompt_len=FixedLength(value=65),
         output_len=FixedLength(value=100),
         max_new_tokens=200,

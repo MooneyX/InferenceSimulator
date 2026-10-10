@@ -413,21 +413,38 @@ export interface components {
              * @description 末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）
              */
             makespan: number;
-            /**
-             * Target Ideal Prefix Hit Rate
-             * @default 0
-             */
-            target_ideal_prefix_hit_rate: number;
+            /** Target Ideal Prefix Hit Rate */
+            target_ideal_prefix_hit_rate?: number | null;
             /**
              * Constructed Ideal Prefix Hit Rate
              * @default 0
              */
             constructed_ideal_prefix_hit_rate: number;
+            /** Ideal Hit Quantization Error */
+            ideal_hit_quantization_error?: number | null;
             /**
-             * Ideal Hit Quantization Error
+             * Arrival Qps
+             * @description 全部已发送请求首末时刻间按已发送数减一计算的实际请求 QPS
+             */
+            arrival_qps?: number | null;
+            /**
+             * Num Sessions
              * @default 0
              */
-            ideal_hit_quantization_error: number;
+            num_sessions: number;
+            /**
+             * Root Request Ratio
+             * @default 0
+             */
+            root_request_ratio: number;
+            /** Mean Prompt Tokens */
+            mean_prompt_tokens?: number | null;
+            /** Mean Output Tokens */
+            mean_output_tokens?: number | null;
+            /** Child Ideal Prefix Hit Rate */
+            child_ideal_prefix_hit_rate?: number | null;
+            /** Child Actual Prefix Hit Rate */
+            child_actual_prefix_hit_rate?: number | null;
             /**
              * Actual Prefix Hit Rate
              * @default 0
@@ -1070,7 +1087,7 @@ export interface components {
         };
         /**
          * SyntheticWorkloadConfig
-         * @description 合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。
+         * @description 合成负载：开环按请求速率、闭环按新会话速率投放。
          */
         SyntheticWorkloadConfig: {
             /**
@@ -1080,11 +1097,24 @@ export interface components {
             num_requests: number;
             /**
              * Arrival Rate
-             * @description 总请求目标 QPS
+             * @description 开环目标请求 QPS
              */
-            arrival_rate: number;
+            arrival_rate?: number | null;
+            /**
+             * Session Rate
+             * @description 闭环新会话投放频率（会话/秒）
+             */
+            session_rate?: number | null;
+            /**
+             * Arrival Mode
+             * @default session
+             * @enum {string}
+             */
+            arrival_mode: "session" | "open_loop";
             /** Prompt Len */
             prompt_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
+            /** Turn Increment Len */
+            turn_increment_len?: (components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"]) | null;
             /** Output Len */
             output_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
             /**

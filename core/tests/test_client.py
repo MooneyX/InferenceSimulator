@@ -21,7 +21,7 @@ from simcore.workload import build_plan
 def make_client(think: float = 0.0) -> ClientDriver:
     cfg = SyntheticWorkloadConfig(
         num_requests=3,
-        arrival_rate=5,
+        session_rate=5,
         prompt_len=FixedLength(value=8),
         output_len=FixedLength(value=4),
         seed=2,
@@ -126,7 +126,7 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=4)
     cfg = SyntheticWorkloadConfig(
         num_requests=3,
-        arrival_rate=5,
+        session_rate=5,
         prompt_len=FixedLength(value=3),
         output_len=FixedLength(value=3),
         seed=2,

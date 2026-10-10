@@ -50,7 +50,7 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
-                arrival_rate=50.0,
+                session_rate=50.0,
                 prompt_len=LognormalLength(mean=512.0, sigma=1.0),
                 output_len=PoissonLength(mean=128.0),
                 seed=seed,

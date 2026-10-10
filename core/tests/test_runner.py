@@ -1,5 +1,6 @@
 """runner 模块单测：端到端串联、元信息一致性、trace 接缝与可复现性。"""
 
+import random
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import simcore
 from simcore import SimConfig, SimResult, simulate
 from simcore.metrics import compute_metrics
+from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -25,7 +27,7 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
-                arrival_rate=30.0,
+                session_rate=30.0,
                 prompt_len=LognormalLength(mean=256.0, sigma=0.8),
                 output_len=PoissonLength(mean=40.0),
                 seed=seed,
@@ -41,6 +43,137 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
 @pytest.fixture(scope="module")
 def result() -> SimResult:
     return simulate(make_config())
+
+
+def expected_open_loop_arrivals(seed: int, qps: float, count: int) -> list[float]:
+    rng = random.Random(stable_derive(seed, "open-loop-arrival"))
+    times: list[float] = []
+    clock = 0.0
+    for _ in range(count):
+        clock += rng.expovariate(qps / 1000)
+        times.append(clock)
+    return times
+
+
+def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=5, arrival_rate=10,
+            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
+            output_len=FixedLength(value=2), seed=42,
+        )),
+        engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
+    )
+    result = simulate(config)
+    assert result.meta.num_completed == 5
+    assert result.meta.num_skipped == 0
+    arrivals = expected_open_loop_arrivals(42, 10, 5)
+    assert [record.arrival for record in result.requests] == pytest.approx(arrivals)
+    assert [record.prompt_len for record in result.requests] == [32, 39, 46, 53, 60]
+    assert [record.parent_request_id for record in result.requests] == [None, 0, 1, 2, 3]
+    assert [record.ideal_reuse_tokens for record in result.requests] == [0, 32, 32, 32, 48]
+    assert result.metrics.arrival_qps == pytest.approx(4000 / (arrivals[-1] - arrivals[0]))
+    assert result.metrics.arrival_qps != pytest.approx(10)
+    assert result.metrics.num_sessions == 1
+    assert result.metrics.child_ideal_prefix_hit_rate == pytest.approx(144 / (39 + 46 + 53 + 60))
+    assert result.metrics.mean_prompt_tokens == pytest.approx(46)
+    assert result.metrics.target_ideal_prefix_hit_rate is None
+    assert simulate(config).requests == result.requests
+
+
+def test_open_loop_completion_at_tick_is_ready() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=2, arrival_rate=31.25,
+            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
+            output_len=FixedLength(value=1), seed=42,
+        )),
+        engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
+    )
+    with patch("simcore.coordinator.random.Random.expovariate", side_effect=[7.0, 32.0]):
+        result = simulate(config)
+    assert [record.arrival for record in result.requests] == [7.0, 39.0]
+    assert result.requests[0].finish == 39.0
+    assert result.requests[1].parent_request_id == 0
+    assert result.metrics.num_sessions == 1
+
+
+def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=4, arrival_rate=10,
+            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
+            output_len=FixedLength(value=2), seed=42,
+        )),
+        engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
+    )
+    result = simulate(config)
+    assert result.meta.num_completed + result.meta.num_aborted == 4
+    arrivals = expected_open_loop_arrivals(42, 10, 4)
+    assert [record.arrival for record in result.requests] == pytest.approx(arrivals)
+    assert result.metrics.arrival_qps == pytest.approx(3000 / (arrivals[-1] - arrivals[0]))
+    assert result.metrics.num_sessions == 4
+    assert result.metrics.root_request_ratio == 1
+    assert result.metrics.constructed_ideal_prefix_hit_rate == 0
+
+
+def test_open_loop_capacity_failure_still_consumes_tick() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=3, arrival_rate=10,
+            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=40),
+            output_len=FixedLength(value=2), seed=1,
+        )),
+        engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+    )
+    result = simulate(config)
+    assert result.meta.num_completed == 2
+    assert result.meta.num_aborted == 1
+    assert result.meta.num_skipped == 0
+    arrivals = expected_open_loop_arrivals(1, 10, 3)
+    assert [record.arrival for record in result.requests] == pytest.approx(
+        [arrivals[0], arrivals[2]]
+    )
+    assert result.aborted_requests[0].arrival == pytest.approx(arrivals[1])
+    assert result.metrics.num_sessions == 2
+    assert result.metrics.arrival_qps == pytest.approx(2000 / (arrivals[2] - arrivals[0]))
+
+
+def test_open_loop_single_arrival_has_no_observed_qps() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=1, arrival_rate=10,
+            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
+            output_len=FixedLength(value=1), seed=1,
+        )),
+        engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+    )
+    result = simulate(config)
+    assert result.requests[0].arrival == pytest.approx(expected_open_loop_arrivals(1, 10, 1)[0])
+    assert result.metrics.arrival_qps is None
+
+
+def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
+    config = SimConfig(
+        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+            arrival_mode="open_loop", num_requests=2, arrival_rate=10,
+            prompt_len=FixedLength(value=128), turn_increment_len=FixedLength(value=5),
+            output_len=FixedLength(value=2), seed=1,
+        )),
+        engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
+        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+    )
+    result = simulate(config)
+    arrivals = expected_open_loop_arrivals(1, 10, 2)
+    assert result.meta.num_completed == 0
+    assert [request.arrival for request in result.aborted_requests] == pytest.approx(arrivals)
+    assert result.metrics.arrival_qps == pytest.approx(1000 / (arrivals[1] - arrivals[0]))
+    assert result.metrics.throughput is None
 
 
 class TestEndToEnd:
@@ -86,7 +219,7 @@ class TestEndToEnd:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    arrival_rate=10,
+                    session_rate=10,
                     prompt_len=FixedLength(value=16),
                     output_len=FixedLength(value=8),
                     seed=2,
@@ -121,7 +254,7 @@ class TestEndToEnd:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    arrival_rate=10,
+                    session_rate=10,
                     prompt_len=FixedLength(value=16),
                     output_len=FixedLength(value=8),
                     seed=2,
@@ -148,7 +281,7 @@ class TestEndToEnd:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    arrival_rate=10,
+                    session_rate=10,
                     prompt_len=FixedLength(value=128),
                     output_len=FixedLength(value=1),
                     seed=0,
@@ -168,7 +301,7 @@ class TestEndToEnd:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
-                    arrival_rate=1,
+                    session_rate=1,
                     prompt_len=FixedLength(value=3),
                     output_len=FixedLength(value=1),
                     max_new_tokens=1,
@@ -198,6 +331,22 @@ class TestEndToEnd:
         assert result.metrics.restore_bytes == result.metrics.restore_time_ms == 0
         assert result.metrics.promotions == result.metrics.demotions == 0
         assert SimResult.model_validate_json(result.model_dump_json()) == result
+
+    def test_closed_loop_skipped_turns_do_not_count_toward_request_qps(self) -> None:
+        cfg = SimConfig(
+            workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
+                num_requests=3, session_rate=2,
+                prompt_len=FixedLength(value=128), output_len=FixedLength(value=1), seed=0,
+                session=SessionConfig(num_sessions=1),
+            )),
+            engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
+            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        )
+        result = simulate(cfg)
+        assert (
+            result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped
+        ) == (0, 1, 2)
+        assert result.metrics.arrival_qps is None
 
     def test_json_roundtrip(self, result: SimResult) -> None:
         """服务层将直接序列化该对象，必须 JSON 往返无损。"""
@@ -230,7 +379,7 @@ class TestSmallCases:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=3,
-                    arrival_rate=1.0,
+                    session_rate=1.0,
                     prompt_len=FixedLength(value=10),
                     output_len=FixedLength(value=2),
                     seed=7,
@@ -249,6 +398,10 @@ class TestSmallCases:
         assert synthetic is not None
         plan = build_plan(synthetic, cfg.engine)
         assert len(result.requests) == 3
+        assert result.metrics.arrival_qps == pytest.approx(
+            2000 / (result.requests[-1].arrival - result.requests[0].arrival)
+        )
+        assert result.metrics.arrival_qps != pytest.approx(1.0)
         for parent, child in zip(result.requests, result.requests[1:], strict=False):
             sampled_delay = plan.turns[child.id].think_time_ms
             assert sampled_delay is not None
@@ -263,7 +416,7 @@ class TestSmallCases:
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
-                    arrival_rate=1.0,
+                    session_rate=1.0,
                     prompt_len=FixedLength(value=5),
                     output_len=FixedLength(value=3),
                     seed=0,

@@ -137,7 +137,33 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
   if (synthetic === undefined || synthetic === null) {
     throw new Error("SimulationForm requires a synthetic workload configuration");
   }
-  const session = synthetic.session!;
+  function changeArrivalMode(arrivalMode: "open_loop" | "session"): void {
+    const current = config.workload.synthetic!;
+    const nextSynthetic = arrivalMode === "session"
+      ? {
+          num_requests: current.num_requests,
+          arrival_mode: "session" as const,
+          session_rate: 1.28,
+          prompt_len: current.prompt_len,
+          output_len: current.output_len,
+          max_new_tokens: current.max_new_tokens,
+          seed: current.seed,
+          session: { num_sessions: Math.min(20, current.num_requests), topology: "linear" as const,
+            think_time_ms: 10_000, target_ideal_prefix_hit_rate: 0 },
+        }
+      : {
+          num_requests: current.num_requests,
+          arrival_mode: "open_loop" as const,
+          arrival_rate: 64,
+          prompt_len: current.prompt_len,
+          turn_increment_len: { dist: "poisson" as const, mean: 256 },
+          output_len: current.output_len,
+          max_new_tokens: current.max_new_tokens,
+          seed: current.seed,
+        };
+    setConfig({ ...config, workload: { ...config.workload, synthetic: nextSynthetic } });
+    setShowValidation(false);
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -230,7 +256,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             <p className="section-kicker">Workload</p>
             <h2 id="workload-heading">负载配置</h2>
           </div>
-          <p>泊松到达过程与请求长度分布</p>
+          <p>{synthetic.arrival_mode === "open_loop" ? "泊松开环投放 · 完成的会话优先续写" : "闭环会话 · 完成后按思考时间续写"}</p>
         </div>
 
         <div className="parameter-transfer" role="group" aria-label="参数导入导出">
@@ -270,6 +296,14 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             <label htmlFor="workload-mode">负载模式</label>
             <input id="workload-mode" value="synthetic" readOnly />
           </div>
+          <div className="form-field">
+            <label htmlFor="arrival-mode">请求投放方式</label>
+            <select id="arrival-mode" value={synthetic.arrival_mode}
+              onChange={(event) => changeArrivalMode(event.currentTarget.value as "open_loop" | "session")}>
+              <option value="open_loop">开环：按目标请求 QPS 投放</option>
+              <option value="session">闭环：按新会话频率投放</option>
+            </select>
+          </div>
           <NumberField
             id="num-requests"
             name="workload.synthetic.num_requests"
@@ -286,35 +320,48 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
                   synthetic: {
                     ...synthetic,
                     num_requests: numRequests,
-                    session: {
-                      ...session,
-                      num_sessions:
-                        session.num_sessions === synthetic.num_requests &&
-                        Number.isInteger(numRequests) && numRequests >= 1
-                          ? numRequests
-                          : session.num_sessions,
-                    },
                   },
                 },
               })
             }
           />
-          <NumberField
+          {synthetic.arrival_mode === "open_loop" ? <NumberField
             id="arrival-rate"
             name="workload.synthetic.arrival_rate"
-            label="总请求目标 QPS（请求/秒）"
-            value={synthetic.arrival_rate}
+            label="目标发送 QPS（请求/秒，泊松到达）"
+            value={synthetic.arrival_rate ?? NaN}
             error={errorByField.get("workload.synthetic.arrival_rate")}
-            onChange={(arrivalRate) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: { ...synthetic, arrival_rate: arrivalRate },
-                },
-              })
-            }
-          />
+            onChange={(arrivalRate) => setConfig({ ...config, workload: { ...config.workload,
+              synthetic: { ...synthetic, arrival_rate: arrivalRate } } })}
+          /> : <>
+            <NumberField id="num-sessions" name="workload.synthetic.session.num_sessions"
+              label="会话数量（根请求数）" integer min={1}
+              value={synthetic.session?.num_sessions ?? NaN}
+              error={errorByField.get("workload.synthetic.session.num_sessions")}
+              onChange={(numSessions) => setConfig({ ...config, workload: { ...config.workload,
+                synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
+                  think_time_ms: synthetic.session?.think_time_ms ?? 0,
+                  target_ideal_prefix_hit_rate: synthetic.session?.target_ideal_prefix_hit_rate ?? 0,
+                  num_sessions: numSessions } } } })}
+            />
+            <NumberField id="session-rate" name="workload.synthetic.session_rate"
+              label="新会话投放频率（会话/秒，泊松到达）"
+              value={synthetic.session_rate ?? NaN}
+              error={errorByField.get("workload.synthetic.session_rate")}
+              onChange={(sessionRate) => setConfig({ ...config, workload: { ...config.workload,
+                synthetic: { ...synthetic, session_rate: sessionRate } } })}
+            />
+            <NumberField id="think-time" name="workload.synthetic.session.think_time_ms"
+              label="轮次间平均思考时间（ms，指数分布）"
+              value={synthetic.session?.think_time_ms ?? NaN}
+              error={errorByField.get("workload.synthetic.session.think_time_ms")}
+              onChange={(thinkTime) => setConfig({ ...config, workload: { ...config.workload,
+                synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
+                  num_sessions: synthetic.session?.num_sessions,
+                  target_ideal_prefix_hit_rate: synthetic.session?.target_ideal_prefix_hit_rate ?? 0,
+                  think_time_ms: thinkTime } } } })}
+            />
+          </>}
           <NumberField
             id="seed"
             name="workload.synthetic.seed"
@@ -353,68 +400,15 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               })
             }
           />
-          <NumberField
-            id="num-sessions"
-            name="workload.synthetic.session.num_sessions"
-            label="会话数量（根请求数）"
-            value={session.num_sessions ?? synthetic.num_requests}
-            integer
-            min={1}
-            max={synthetic.num_requests}
-            error={errorByField.get("workload.synthetic.session.num_sessions")}
-            onChange={(numSessions) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: { ...synthetic, session: { ...session, num_sessions: numSessions } },
-                },
-              })
-            }
-          />
-          <NumberField
-            id="think-time-ms"
-            name="workload.synthetic.session.think_time_ms"
-            label="轮次间平均思考时间（ms，指数分布）"
-            value={session.think_time_ms}
-            error={errorByField.get("workload.synthetic.session.think_time_ms")}
-            onChange={(thinkTime) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: { ...synthetic, session: { ...session, think_time_ms: thinkTime } },
-                },
-              })
-            }
-          />
-          <NumberField
-            id="target-ideal-prefix-hit-rate"
-            name="workload.synthetic.session.target_ideal_prefix_hit_rate"
-            label="目标理想前缀命中率（%）"
-            value={session.target_ideal_prefix_hit_rate * 100}
-            max={100}
-            error={errorByField.has("workload.synthetic.session.target_ideal_prefix_hit_rate")
-              ? "必须是 0 到 100 之间的有限数值" : undefined}
-            onChange={(targetRate) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: {
-                    ...synthetic,
-                    session: { ...session, target_ideal_prefix_hit_rate: targetRate / 100 },
-                  },
-                },
-              })
-            }
-          />
+          <p>{synthetic.arrival_mode === "open_loop"
+            ? "没有就绪子轮时自动创建新会话；理想前缀命中率由累积上下文决定。"
+            : "闭环子轮须等待父轮完成及思考间隔；实际请求 QPS 由仿真结果计算。"}</p>
         </div>
 
         <div className="distribution-grid">
           <LengthDistributionEditor
             name="prompt_len"
-            label="Prompt 长度"
+            label={synthetic.arrival_mode === "open_loop" ? "新会话根输入长度" : "每轮输入长度"}
             value={synthetic.prompt_len}
             errors={{
               value: errorByField.get("workload.synthetic.prompt_len.value"),
@@ -431,6 +425,20 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
               })
             }
           />
+          {synthetic.arrival_mode === "open_loop" && <LengthDistributionEditor
+            name="turn_increment_len"
+            label="子轮新增内容长度"
+            value={synthetic.turn_increment_len ?? { dist: "fixed", value: 256 }}
+            errors={{
+              value: errorByField.get("workload.synthetic.turn_increment_len.value"),
+              mean: errorByField.get("workload.synthetic.turn_increment_len.mean"),
+              sigma: errorByField.get("workload.synthetic.turn_increment_len.sigma"),
+            }}
+            onChange={(incrementLength) => setConfig({
+              ...config,
+              workload: { ...config.workload, synthetic: { ...synthetic, turn_increment_len: incrementLength } },
+            })}
+          />}
           <LengthDistributionEditor
             name="output_len"
             label="输出长度"

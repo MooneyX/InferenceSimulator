@@ -34,7 +34,7 @@ def config() -> SimConfig:
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
-                arrival_rate=10,
+                session_rate=10,
                 prompt_len=FixedLength(value=5),
                 output_len=FixedLength(value=1),
                 seed=7,
@@ -125,7 +125,7 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=1,
-                arrival_rate=10,
+                session_rate=10,
                 prompt_len=FixedLength(value=4),
                 output_len=FixedLength(value=2),
                 seed=7,

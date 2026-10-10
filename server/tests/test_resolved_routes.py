@@ -14,7 +14,7 @@ def payload() -> dict[str, Any]:
                 "mode": "synthetic",
                 "synthetic": {
                     "num_requests": 1,
-                    "arrival_rate": 1,
+                    "session_rate": 1,
                     "prompt_len": {"dist": "fixed", "value": 4},
                     "output_len": {"dist": "fixed", "value": 2},
                     "max_new_tokens": 2,

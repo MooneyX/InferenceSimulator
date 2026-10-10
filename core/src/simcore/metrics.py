@@ -61,13 +61,24 @@ def compute_metrics(
     restore_bytes: int = 0,
     restore_time_ms: float = 0.0,
     earliest_sent_arrival: float | None = None,
+    latest_sent_arrival: float | None = None,
+    num_sent: int | None = None,
     replayed_prefill_tokens: int = 0,
 ) -> Metrics:
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
     synthetic = config.workload.synthetic if config else None
-    target = synthetic.session.target_ideal_prefix_hit_rate if synthetic else 0.0
+    open_loop = synthetic is not None and synthetic.arrival_mode == "open_loop"
+    target = synthetic.session.target_ideal_prefix_hit_rate if synthetic and not open_loop else None
     constructed = plan.constructed_ideal_prefix_hit_rate if plan else 0.0
-    quantization_error = abs(constructed - target) if plan and synthetic else 0.0
+    quantization_error = abs(constructed - target) if plan and target is not None else None
+    num_sessions = len(plan.root_request_ids) if plan else 0
+    root_ratio = num_sessions / len(plan.turns) if plan and plan.turns else 0.0
+    arrival_qps = (
+        (num_sent - 1) * _MS_PER_SECOND / (latest_sent_arrival - earliest_sent_arrival)
+        if num_sent is not None and num_sent > 1
+        and earliest_sent_arrival is not None and latest_sent_arrival is not None
+        and latest_sent_arrival > earliest_sent_arrival else None
+    )
     peak_resident = max(
         l1_peak_resident_blocks, cache_snapshot.resident_blocks if cache_snapshot else 0
     )
@@ -82,6 +93,9 @@ def compute_metrics(
             target_ideal_prefix_hit_rate=target,
             constructed_ideal_prefix_hit_rate=constructed,
             ideal_hit_quantization_error=quantization_error,
+            arrival_qps=arrival_qps,
+            num_sessions=num_sessions,
+            root_request_ratio=root_ratio,
             replayed_prefill_tokens=replayed_prefill_tokens,
             restore_bytes=restore_bytes,
             restore_time_ms=restore_time_ms,
@@ -133,6 +147,8 @@ def compute_metrics(
     ideal = sum(record.ideal_reuse_tokens for record in records)
     matched = sum(record.matched_cache_tokens for record in records)
     actual = sum(record.actual_hit_tokens for record in records)
+    children = [record for record in records if record.parent_request_id is not None]
+    child_input = sum(record.prompt_len for record in children)
     prefill = sum(
         record.actual_prefill_tokens
         if record.actual_prefill_tokens is not None
@@ -157,6 +173,19 @@ def compute_metrics(
         target_ideal_prefix_hit_rate=target,
         constructed_ideal_prefix_hit_rate=constructed if plan else ideal / input_tokens,
         ideal_hit_quantization_error=quantization_error,
+        arrival_qps=arrival_qps,
+        num_sessions=num_sessions,
+        root_request_ratio=root_ratio,
+        mean_prompt_tokens=input_tokens / len(records),
+        mean_output_tokens=sum(record.output_len for record in records) / len(records),
+        child_ideal_prefix_hit_rate=(
+            sum(record.ideal_reuse_tokens for record in children) / child_input
+            if child_input else None
+        ),
+        child_actual_prefix_hit_rate=(
+            sum(record.actual_hit_tokens for record in children) / child_input
+            if child_input else None
+        ),
         actual_prefix_hit_rate=actual / input_tokens,
         requests_with_hit_ratio=sum(record.actual_hit_tokens > 0 for record in records)
         / len(records),

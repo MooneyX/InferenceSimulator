@@ -782,11 +782,17 @@
             "description": "末成功请求完成 − 最早已发送请求到达；无成功请求为 0（ms）"
           },
           "target_ideal_prefix_hit_rate": {
-            "type": "number",
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Target Ideal Prefix Hit Rate",
-            "default": 0.0
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Ideal Prefix Hit Rate"
           },
           "constructed_ideal_prefix_hit_rate": {
             "type": "number",
@@ -796,10 +802,92 @@
             "default": 0.0
           },
           "ideal_hit_quantization_error": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ideal Hit Quantization Error"
+          },
+          "arrival_qps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arrival Qps",
+            "description": "全部已发送请求首末时刻间按已发送数减一计算的实际请求 QPS"
+          },
+          "num_sessions": {
+            "type": "integer",
             "minimum": 0.0,
-            "title": "Ideal Hit Quantization Error",
+            "title": "Num Sessions",
+            "default": 0
+          },
+          "root_request_ratio": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Root Request Ratio",
             "default": 0.0
+          },
+          "mean_prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Prompt Tokens"
+          },
+          "mean_output_tokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Output Tokens"
+          },
+          "child_ideal_prefix_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Ideal Prefix Hit Rate"
+          },
+          "child_actual_prefix_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Actual Prefix Hit Rate"
           },
           "actual_prefix_hit_rate": {
             "type": "number",
@@ -1949,10 +2037,39 @@
             "description": "全部轮次请求数"
           },
           "arrival_rate": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Arrival Rate",
-            "description": "总请求目标 QPS"
+            "description": "开环目标请求 QPS"
+          },
+          "session_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Rate",
+            "description": "闭环新会话投放频率（会话/秒）"
+          },
+          "arrival_mode": {
+            "type": "string",
+            "enum": [
+              "session",
+              "open_loop"
+            ],
+            "title": "Arrival Mode",
+            "default": "session"
           },
           "prompt_len": {
             "oneOf": [
@@ -1975,6 +2092,35 @@
                 "poisson": "#/components/schemas/PoissonLength"
               }
             }
+          },
+          "turn_increment_len": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FixedLength"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PoissonLength"
+                  },
+                  {
+                    "$ref": "#/components/schemas/LognormalLength"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "dist",
+                  "mapping": {
+                    "fixed": "#/components/schemas/FixedLength",
+                    "lognormal": "#/components/schemas/LognormalLength",
+                    "poisson": "#/components/schemas/PoissonLength"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Increment Len"
           },
           "output_len": {
             "oneOf": [
@@ -2019,13 +2165,12 @@
         "type": "object",
         "required": [
           "num_requests",
-          "arrival_rate",
           "prompt_len",
           "output_len",
           "seed"
         ],
         "title": "SyntheticWorkloadConfig",
-        "description": "合成负载参数：目标总轮次 QPS、长度分布和 session 拓扑。"
+        "description": "合成负载：开环按请求速率、闭环按新会话速率投放。"
       },
       "ValidationError": {
         "properties": {

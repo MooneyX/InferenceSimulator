@@ -1,13 +1,13 @@
-"""顶层入口：计划 → 闭环客户端 → 统一事件时钟 → 引擎 → 指标。
+"""顶层入口：负载客户端 → 统一事件时钟 → 引擎 → 指标。
 
-只规划根请求到达，子轮次必须等父请求实际完成后才由客户端发送。
-事件流不经 API 暴露，默认关闭记录；旧长度 Arrival 由 ``engine.run_engine`` 适配。
+开环模式按独立泊松时钟投放请求；显式闭环模式只预先规划根到达。
+事件流不经 API 暴露，默认关闭记录；手写 Arrival 由 ``engine.run_engine`` 适配。
 """
 
 from time import perf_counter
 from typing import cast
 
-from simcore.client import ClientDriver
+from simcore.client import ClientDriver, OpenLoopClient
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.metrics import compute_metrics
@@ -69,19 +69,25 @@ def _simulate(
         raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
     started_at = perf_counter()
     synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
-    plan = build_plan(synthetic, config.engine)
-    client = ClientDriver(plan, config.engine)
+    if synthetic.arrival_mode == "open_loop":
+        client: ClientDriver | OpenLoopClient = OpenLoopClient(synthetic, config.engine)
+        output_targets: dict[int, int] = {}
+    else:
+        plan = build_plan(synthetic, config.engine)
+        client = ClientDriver(plan, config.engine)
+        output_targets = {key: turn.output_len for key, turn in plan.turns.items()}
     run = Coordinator(
         Engine(
             config.engine,
             config.perf_model,
-            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
+            output_targets=output_targets,
             record_trace=False,
             analytical=analytical,
             token_bandwidths=token_bandwidths,
         ),
         client,
     ).run()
+    plan = client.plan
     metrics = compute_metrics(
         run.records,
         plan=plan,
@@ -96,6 +102,12 @@ def _simulate(
         restore_bytes=run.restore_bytes,
         restore_time_ms=run.restore_time_ms,
         earliest_sent_arrival=run.sim_start,
+        latest_sent_arrival=max(
+            [request.arrival for request in run.records]
+            + [request.arrival for request in run.aborted_requests],
+            default=None,
+        ),
+        num_sent=len(run.records) + len(run.aborted_requests),
         replayed_prefill_tokens=run.replayed_prefill_tokens,
     )
     wall_clock_ms = (perf_counter() - started_at) * 1000

@@ -11,16 +11,12 @@ describe("createDefaultSimConfig", () => {
         synthetic: {
           num_requests: 1000,
           arrival_rate: 64,
-          prompt_len: { dist: "poisson", mean: 32_768 },
+          arrival_mode: "open_loop",
+          prompt_len: { dist: "poisson", mean: 2048 },
+          turn_increment_len: { dist: "poisson", mean: 256 },
           output_len: { dist: "poisson", mean: 128 },
           max_new_tokens: 1024,
           seed: 42,
-          session: {
-            num_sessions: 20,
-            topology: "linear",
-            think_time_ms: 10_000,
-            target_ideal_prefix_hit_rate: 0.9,
-          },
         },
       },
       engine: {
@@ -44,9 +40,7 @@ describe("createDefaultSimConfig", () => {
         l3_latency_ms: 0,
       },
     });
-    const session = createDefaultSimConfig().workload.synthetic!.session!;
-    expect(session).not.toHaveProperty("allow_cross_session_shared_prefix");
-    expect(JSON.parse(JSON.stringify(session))).not.toHaveProperty("allow_cross_session_shared_prefix");
+    expect(createDefaultSimConfig().workload.synthetic).not.toHaveProperty("session");
   });
 
   it("returns independent objects", () => {
@@ -58,7 +52,7 @@ describe("createDefaultSimConfig", () => {
     expect(first.workload.synthetic?.prompt_len).not.toBe(
       second.workload.synthetic?.prompt_len,
     );
-    expect(first.workload.synthetic?.session).not.toBe(second.workload.synthetic?.session);
+    expect(first.workload.synthetic?.turn_increment_len).not.toBe(second.workload.synthetic?.turn_increment_len);
     expect(first.engine).not.toBe(second.engine);
   });
 });
@@ -74,29 +68,29 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(config)).toEqual([]);
   });
 
-  it("validates session boundaries and finite values", () => {
+  it("validates the child increment length distribution", () => {
     const config = createDefaultSimConfig();
-    const session = config.workload.synthetic!.session!;
-    config.workload.synthetic!.num_requests = 2;
-    session.num_sessions = 3;
-    session.think_time_ms = -1;
-    session.target_ideal_prefix_hit_rate = 1.1;
+    config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 0 };
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "workload.synthetic.session.num_sessions",
-      "workload.synthetic.session.think_time_ms",
-      "workload.synthetic.session.target_ideal_prefix_hit_rate",
+      "workload.synthetic.turn_increment_len.value",
     ]);
-    session.num_sessions = 1;
-    session.think_time_ms = 0;
-    session.target_ideal_prefix_hit_rate = 1;
+  });
+
+  it("validates closed-loop session inputs without requiring a request QPS", () => {
+    const config = createDefaultSimConfig();
+    config.workload.synthetic = {
+      ...config.workload.synthetic!, arrival_mode: "session", arrival_rate: undefined,
+      turn_increment_len: undefined, session_rate: 1.28,
+      session: { num_sessions: 20, topology: "linear", think_time_ms: 200,
+        target_ideal_prefix_hit_rate: 0 },
+    };
     expect(validateSimConfig(config)).toEqual([]);
-    session.num_sessions = Number.NaN;
-    session.think_time_ms = Number.POSITIVE_INFINITY;
-    session.target_ideal_prefix_hit_rate = Number.NaN;
+    config.workload.synthetic.session_rate = 0;
+    config.workload.synthetic.session!.num_sessions = 1001;
+    config.workload.synthetic.session!.think_time_ms = -1;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "workload.synthetic.session.num_sessions",
+      "workload.synthetic.session_rate", "workload.synthetic.session.num_sessions",
       "workload.synthetic.session.think_time_ms",
-      "workload.synthetic.session.target_ideal_prefix_hit_rate",
     ]);
   });
 

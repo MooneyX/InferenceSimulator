@@ -197,7 +197,7 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                arrival_rate=10,
+                session_rate=10,
                 prompt_len=FixedLength(value=65),
                 output_len=FixedLength(value=2),
                 seed=7,

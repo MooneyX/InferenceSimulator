@@ -176,6 +176,10 @@ class Engine:
     def num_steps(self) -> int:
         return self._num_steps
 
+    def register_output_target(self, request_id: int, output_len: int) -> None:
+        """动态投放前注册引擎私有的输出目标。"""
+        self._output_targets[request_id] = output_len
+
     def submit(self, request: InferenceRequest, now_ms: float) -> bool:
         """发送时 M<1 直接失败；其他请求按 FCFS 入队。"""
         key = request.request_id

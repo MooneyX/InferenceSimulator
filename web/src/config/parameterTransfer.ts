@@ -57,24 +57,31 @@ export function parseSimConfigJson(json: string): SimConfig {
   if (workload.mode !== "synthetic") {
     throw new Error("workload.mode 当前仅支持 synthetic 模式");
   }
+  const arrivalMode = (workload.synthetic as Record<string, unknown> | null)?.arrival_mode;
+  if (arrivalMode !== "open_loop" && arrivalMode !== "session") {
+    throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 session");
+  }
+  const fields = arrivalMode === "open_loop"
+    ? ["arrival_rate", "turn_increment_len"] : ["session_rate", "session"];
   const synthetic = objectWithKeys(workload.synthetic, "workload.synthetic", [
-    "num_requests", "arrival_rate", "prompt_len", "output_len", "max_new_tokens", "seed", "session",
+    "num_requests", "arrival_mode", "prompt_len", "output_len", "max_new_tokens", "seed", ...fields,
   ]);
   numericFields(synthetic, "workload.synthetic", [
-    "num_requests", "arrival_rate", "max_new_tokens", "seed",
+    "num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate",
   ]);
   lengthDistribution(synthetic.prompt_len, "workload.synthetic.prompt_len");
   lengthDistribution(synthetic.output_len, "workload.synthetic.output_len");
-
-  const session = objectWithKeys(synthetic.session, "workload.synthetic.session", [
-    "num_sessions", "topology", "think_time_ms", "target_ideal_prefix_hit_rate",
-  ]);
-  if (session.topology !== "linear") {
-    throw new Error("workload.synthetic.session.topology 当前仅支持 linear");
+  if (arrivalMode === "open_loop") {
+    lengthDistribution(synthetic.turn_increment_len, "workload.synthetic.turn_increment_len");
+  } else {
+    const session = objectWithKeys(synthetic.session, "workload.synthetic.session", [
+      "num_sessions", "topology", "think_time_ms", "target_ideal_prefix_hit_rate",
+    ]);
+    if (session.topology !== "linear") throw new Error("workload.synthetic.session.topology 仅支持 linear");
+    numericFields(session, "workload.synthetic.session", [
+      "num_sessions", "think_time_ms", "target_ideal_prefix_hit_rate",
+    ]);
   }
-  numericFields(session, "workload.synthetic.session", [
-    "num_sessions", "think_time_ms", "target_ideal_prefix_hit_rate",
-  ]);
 
   const engine = objectWithKeys(root.engine, "engine", [
     "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",

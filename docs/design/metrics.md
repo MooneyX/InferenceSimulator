@@ -8,9 +8,11 @@
 - 每个 `output_len > 1` 请求的 `TPOT = (finish-prefill_end)/(output_len-1)`；全场 TPOT 是这些请求的算术平均。只有单 token 输出时返回 `null`。
 - 有成功请求时 `makespan = 最晚成功完成时刻 - 最早已发送请求到达时刻`（含失败请求的到达），`throughput = completed_requests/(makespan/1000)`；`makespan=0` 时吞吐为 `null`。无成功请求时 makespan 为 0，TTFT 均值/P50/P99、TPOT、吞吐均为 `null`。吞吐是实测完成速率，**不是**目标到达率 `arrival_rate`。
 
+开环模式的 `arrival_qps` 是已投放 N 个请求（包括发送后失败者）的 `(N-1)*1000/(最后投放时刻-首次投放时刻)`；泊松到达下它通常不等于配置的期望速率 q。N=1 或首末时刻相同时为 `null`。闭环模式同样报告已发送请求（不含因父轮失败而跳过的后代）的首末到达观测 QPS；它不是 `session_rate`，也不保证达到任何目标请求 QPS。`num_sessions` 为创建的根会话数，`root_request_ratio=num_sessions/N`，两者计入发送后失败的根。`mean_prompt_tokens`、`mean_output_tokens` 则只对已完成请求统计；全失败时为 `null`。目标 QPS、发送 QPS 与完成吞吐的时间分母不同，不可混用。
+
 ## 前缀复用与容量
 
-- `total_input_tokens = sum(prompt_len)`，`ideal_hit_tokens = sum(ideal_reuse_tokens)`，`matched_cache_tokens = sum(matched_cache_tokens)`，`actual_hit_tokens = sum(actual_hit_tokens)`；`actual_prefix_hit_rate = actual_hit_tokens/total_input_tokens`。`target_ideal_prefix_hit_rate`、`constructed_ideal_prefix_hit_rate` 与量化误差来自负载计划；构造命中率与实际命中率不能互相替代。
+- `total_input_tokens = sum(prompt_len)`，`ideal_hit_tokens = sum(ideal_reuse_tokens)`，`matched_cache_tokens = sum(matched_cache_tokens)`，`actual_hit_tokens = sum(actual_hit_tokens)`；`actual_prefix_hit_rate = actual_hit_tokens/total_input_tokens`。闭环模式的目标、构造率与量化误差来自负载计划；开环模式的目标与量化误差为 `null`，`constructed_ideal_prefix_hit_rate` 是全部已构造请求（含失败请求）的计划复用 token / 全部计划输入 token。`child_ideal_prefix_hit_rate` 与 `child_actual_prefix_hit_rate` 只对已完成子轮统计，分母是这些子轮的输入 token 总数；无成功子轮时为 `null`。构造率与成功请求实际率的样本范围不同，不应将两者之差简单解释为 KV 淘汰损失。
 - `actual_prefill_tokens` 只计成功请求的**首次**输入计算；`saved_prefill_tokens = total_input_tokens-actual_prefill_tokens = actual_hit_tokens`。必须满足 `actual_hit_tokens <= ideal_hit_tokens <= total_input_tokens` 和 `actual_prefill_tokens+actual_hit_tokens=total_input_tokens`。`replayed_prefill_tokens` 单独累计包括**最终失败请求**在内的已执行回撤重算，不混入首次命中率分母。所有全场 token 比率都以成功请求输入 token 总量加权，不取每请求比率的简单平均；全失败时这些计数和比率为零。
 - `requests_with_hit_ratio` 为成功且实际复用 token 数大于零的请求比例；`requests_fully_cached_ratio` 为成功请求中**可缓存完整输入块数大于零且所有完整块都在缓存中匹配**的比例；即使完整块全命中，最后一个输入 token 仍需重算。
 - 每个成功请求的 `l1_hit_tokens+l2_hit_tokens+l3_hit_tokens=actual_hit_tokens`，全场分层命中是成功请求逐层之和；归因以**首次准入实际跳过**的输入页来源为准，回撤重算只进入 `replayed_prefill_tokens`。请求共享同一低层页可各自命中，但 `promotions` 只计唯一 ID 实际上移至 L1 的次数；`demotions` 按逐级下移次数计，`l1_evictions` 包含移至 L2 的页。`restore_bytes` 为 L2→L1 与 L3→L2 链路上行字节之和，`restore_time_ms` 为各步恢复时长之和，不含 lookup 和 write-back 时间。

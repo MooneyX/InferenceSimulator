@@ -1,16 +1,24 @@
-"""闭环客户端：只在父请求实际完成后创建下一轮发送。"""
+"""会话客户端：闭环回调或独立开环时钟驱动下一轮发送。"""
 
-from simcore.prefix_hash import logical_chunk_id
+import heapq
+import random
+from typing import cast
+
+from simcore.prefix_hash import logical_chunk_id, stable_derive
 from simcore.schemas import (
     ClientWakeup,
     EngineConfig,
     InferenceRequest,
+    LengthDist,
     RequestCompletion,
     SkippedRequest,
+    SyntheticWorkloadConfig,
+    TurnPlan,
     WorkloadPlan,
 )
+from simcore.workload import _visible_limit, sample_length
 
-__all__ = ["ClientDriver"]
+__all__ = ["ClientDriver", "OpenLoopClient"]
 
 
 class ClientDriver:
@@ -108,3 +116,93 @@ class ClientDriver:
                 for descendant_id in reversed(self.plan.children.get(child_id, ()))
             )
         return tuple(sorted(skipped, key=lambda item: item.id))
+
+
+class OpenLoopClient:
+    """每次时钟投放一个请求：先取已完成会话，否则创建新的根会话。"""
+
+    def __init__(self, config: SyntheticWorkloadConfig, engine: EngineConfig) -> None:
+        self.config = config
+        self.engine = engine
+        self._increment_dist = cast(LengthDist, config.turn_increment_len)
+        self._roots_rng = random.Random(stable_derive(config.seed, "root-length"))
+        self._increments_rng = random.Random(stable_derive(config.seed, "turn-increment"))
+        self._outputs_rng = random.Random(stable_derive(config.seed, "output-length"))
+        self._ready: list[tuple[float, int, int]] = []
+        self._inflight: dict[int, InferenceRequest] = {}
+        self._turns: dict[int, TurnPlan] = {}
+        self._roots: list[int] = []
+        self._children: dict[int, tuple[int, ...]] = {}
+        self._next_id = 0
+
+    def send(self, now_ms: float) -> tuple[InferenceRequest, int]:
+        key = self._next_id
+        self._next_id += 1
+        if self._ready:
+            _, session_id, parent_id = heapq.heappop(self._ready)
+            parent = self._inflight.pop(parent_id)
+            parent_turn = self._turns[parent_id]
+            increment = sample_length(self._increment_dist, self._increments_rng)
+            prompt_len = parent_turn.prompt_len + parent_turn.output_len + increment
+            inherited = min(
+                (parent_turn.prompt_len + parent_turn.output_len - 1) // self.engine.page_size,
+                (prompt_len - 1) // self.engine.page_size,
+            )
+            head = tuple(
+                logical_chunk_id(parent_id, index, parent.inherited_prefix_ids)
+                for index in range(inherited)
+            )
+            self._children[parent_id] = (key,)
+        else:
+            session_id = key
+            parent_id = None
+            prompt_len = sample_length(self.config.prompt_len, self._roots_rng)
+            inherited = 0
+            head = ()
+            self._roots.append(key)
+        max_new_tokens = _visible_limit(prompt_len, self.config.max_new_tokens, self.engine)
+        output_len = min(sample_length(self.config.output_len, self._outputs_rng), max_new_tokens)
+        self._turns[key] = TurnPlan(
+            request_id=key,
+            session_id=session_id,
+            parent_request_id=parent_id,
+            root_arrival_time_ms=now_ms if parent_id is None else None,
+            think_time_ms=None,
+            prompt_len=prompt_len,
+            output_len=output_len,
+            max_new_tokens=max_new_tokens,
+            ideal_reuse_blocks=inherited,
+        )
+        request = InferenceRequest(
+            request_id=key,
+            session_id=session_id,
+            parent_request_id=parent_id,
+            prompt_len=prompt_len,
+            max_new_tokens=max_new_tokens,
+            inherited_prefix_ids=head,
+            ideal_reuse_blocks=inherited,
+        )
+        self._inflight[key] = request
+        return request, output_len
+
+    def on_request_completed(self, completion: RequestCompletion) -> None:
+        # 完成只使会话就绪；下一轮仍须等独立投放时钟。
+        heapq.heappush(
+            self._ready,
+            (completion.finish_time_ms, self._inflight[completion.request_id].session_id,
+             completion.request_id),
+        )
+
+    def on_request_aborted(self, request_id: int) -> None:
+        self._inflight.pop(request_id)
+
+    @property
+    def plan(self) -> WorkloadPlan:
+        total = sum(turn.prompt_len for turn in self._turns.values())
+        ideal = sum(turn.ideal_reuse_blocks for turn in self._turns.values())
+        return WorkloadPlan(
+            turns=self._turns,
+            root_request_ids=tuple(self._roots),
+            children=self._children,
+            constructed_ideal_prefix_hit_rate=ideal * self.engine.page_size / total,
+        )

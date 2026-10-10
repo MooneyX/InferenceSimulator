@@ -13,7 +13,14 @@ const metrics: Metrics = {
   tpot_mean: 2.5,
   throughput: 1234.567,
   makespan: 800.25,
-  target_ideal_prefix_hit_rate: 0.3,
+  arrival_qps: 1200,
+  num_sessions: 3,
+  root_request_ratio: 0.25,
+  mean_prompt_tokens: 128,
+  mean_output_tokens: 32,
+  child_ideal_prefix_hit_rate: 0.4,
+  child_actual_prefix_hit_rate: 0.2,
+  target_ideal_prefix_hit_rate: null,
   constructed_ideal_prefix_hit_rate: 0.28,
   ideal_hit_quantization_error: 0.02,
   actual_prefix_hit_rate: 0.17,
@@ -71,17 +78,21 @@ function metricValue(label: string): HTMLElement {
 
 describe("MetricsPanel", () => {
   it("renders every service metric with deterministic units", () => {
-    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} />);
+    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} targetQps={64} />);
 
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(metricValue("目标发送 QPS")).toHaveTextContent("64 请求/秒");
     expect(metricValue("TTFT 均值")).toHaveTextContent("12.35 ms");
     expect(metricValue("TTFT P50")).toHaveTextContent("10 ms");
     expect(metricValue("TTFT P99")).toHaveTextContent("98.77 ms");
     expect(metricValue("TPOT 均值")).toHaveTextContent("2.5 ms");
-    expect(metricValue("端到端吞吐")).toHaveTextContent("1,234.57 请求/秒");
+    expect(metricValue("实际请求 QPS")).toHaveTextContent("1,200 请求/秒");
+    expect(metricValue("完成 QPS")).toHaveTextContent("1,234.57 请求/秒");
+    expect(metricValue("新建会话数")).toHaveTextContent("3 次");
+    expect(metricValue("根请求占比")).toHaveTextContent("25 %");
+    expect(metricValue("子轮理想命中率")).toHaveTextContent("40 %");
     expect(metricValue("Makespan")).toHaveTextContent("800.25 ms");
     expect(metricValue("实际运行耗时")).toHaveTextContent("42.5 ms");
-    expect(metricValue("目标理想命中率")).toHaveTextContent("30 %");
     expect(metricValue("构造理想命中率")).toHaveTextContent("28 %");
     expect(metricValue("实际前缀命中率")).toHaveTextContent("17 %");
     expect(metricValue("完整块全命中请求比例")).toHaveTextContent("25 %");
@@ -99,6 +110,13 @@ describe("MetricsPanel", () => {
     expect(metricValue("L3 空闲")).toHaveTextContent("12 页");
     expect(metricValue("L3 峰值驻留")).toHaveTextContent("8 页");
     expect(metricValue("L3 驱逐")).toHaveTextContent("1 次");
+  });
+
+  it("shows observed request QPS without an input request-QPS target in session mode", () => {
+    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} targetSessionRate={1.28} />);
+    expect(metricValue("新会话投放频率")).toHaveTextContent("1.28 会话/秒");
+    expect(metricValue("实际请求 QPS")).toHaveTextContent("1,200 请求/秒");
+    expect(screen.queryByText("目标发送 QPS")).not.toBeInTheDocument();
   });
 
   it("separates aggregate cache hits from tier attribution and restore costs", () => {
@@ -137,7 +155,7 @@ describe("MetricsPanel", () => {
     );
 
     expect(metricValue("TPOT 均值")).toHaveTextContent("未定义");
-    expect(metricValue("端到端吞吐")).toHaveTextContent("未定义");
+    expect(metricValue("完成 QPS")).toHaveTextContent("未定义");
   });
 
   it("displays values supplied by the service without recomputing them", () => {
@@ -157,6 +175,6 @@ describe("MetricsPanel", () => {
     );
 
     expect(metricValue("TTFT 均值")).toHaveTextContent("901 ms");
-    expect(metricValue("端到端吞吐")).toHaveTextContent("905 请求/秒");
+    expect(metricValue("完成 QPS")).toHaveTextContent("905 请求/秒");
   });
 });

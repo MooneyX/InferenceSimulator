@@ -20,9 +20,8 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       config: expect.objectContaining({ workload: expect.objectContaining({
-        synthetic: expect.objectContaining({ session: expect.objectContaining({
-          target_ideal_prefix_hit_rate: 0.9,
-        }) }),
+        synthetic: expect.objectContaining({ arrival_mode: "open_loop",
+          turn_increment_len: { dist: "poisson", mean: 256 } }),
       }) }),
     }));
   });
@@ -35,15 +34,13 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("heading", { name: "性能模型" })).toBeInTheDocument();
     expect(screen.getByLabelText("负载模式")).toHaveValue("synthetic");
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
-    expect(screen.getByLabelText("总请求目标 QPS（请求/秒）")).toHaveValue(64);
+    expect(screen.getByLabelText("目标发送 QPS（请求/秒，泊松到达）")).toHaveValue(64);
     expect(screen.getByLabelText("随机种子")).toHaveValue(42);
-    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(20);
-    expect(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）")).toHaveValue(10_000);
-    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveValue(90);
-    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveAttribute("max", "100");
-    const promptGroup = screen.getByRole("group", { name: "Prompt 长度" });
+    const promptGroup = screen.getByRole("group", { name: "新会话根输入长度" });
     expect(within(promptGroup).getByLabelText("分布类型")).toHaveValue("poisson");
-    expect(within(promptGroup).getByLabelText("平均长度（token）")).toHaveValue(32_768);
+    expect(within(promptGroup).getByLabelText("平均长度（token）")).toHaveValue(2048);
+    expect(within(screen.getByRole("group", { name: "子轮新增内容长度" }))
+      .getByLabelText("平均长度（token）")).toHaveValue(256);
     expect(screen.queryByLabelText("允许跨会话共享公共前缀")).not.toBeInTheDocument();
     expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(1024);
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
@@ -55,6 +52,57 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(64);
     expect(screen.getByLabelText(/Prefill \/ Decode 分步执行/)).toBeChecked();
     expect(screen.getByText(/1024 页/)).toBeInTheDocument();
+  });
+
+  it("uses the selected session workload in automatic resolution too", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({
+      workload: expect.objectContaining({ synthetic: expect.objectContaining({
+        arrival_mode: "session", session_rate: 1.28,
+        session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
+      }) }),
+    }) }));
+  });
+
+  it("submits session mode using only session count, rate and think interval", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    expect(screen.queryByLabelText("目标发送 QPS（请求/秒，泊松到达）")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "子轮新增内容长度" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("新会话投放频率（会话/秒，泊松到达）"),
+      { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"),
+      { target: { value: "200" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    const submitted = onSubmit.mock.calls[0][0].workload.synthetic;
+    expect(submitted).toMatchObject({ arrival_mode: "session", session_rate: 3,
+      session: { num_sessions: 5, think_time_ms: 200, topology: "linear" } });
+    expect(submitted).not.toHaveProperty("arrival_rate");
+    expect(submitted).not.toHaveProperty("turn_increment_len");
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "open_loop" } });
+    expect(screen.getByLabelText("目标发送 QPS（请求/秒，泊松到达）")).toBeInTheDocument();
+  });
+
+  it("blocks invalid closed-loop fields before submission", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "1001" } });
+    fireEvent.change(screen.getByLabelText("新会话投放频率（会话/秒，泊松到达）"),
+      { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"),
+      { target: { value: "-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    for (const label of ["会话数量（根请求数）", "新会话投放频率（会话/秒，泊松到达）",
+      "轮次间平均思考时间（ms，指数分布）"]) {
+      expect(screen.getByLabelText(label)).toHaveAttribute("aria-invalid", "true");
+    }
   });
 
   it("submits the complete default config", () => {
@@ -69,16 +117,12 @@ describe("SimulationForm", () => {
         synthetic: {
           num_requests: 1000,
           arrival_rate: 64,
-          prompt_len: { dist: "poisson", mean: 32_768 },
+          arrival_mode: "open_loop",
+          prompt_len: { dist: "poisson", mean: 2048 },
+          turn_increment_len: { dist: "poisson", mean: 256 },
           output_len: { dist: "poisson", mean: 128 },
           max_new_tokens: 1024,
           seed: 42,
-          session: {
-            num_sessions: 20,
-            topology: "linear",
-            think_time_ms: 10_000,
-            target_ideal_prefix_hit_rate: 0.9,
-          },
         },
       },
       engine: {
@@ -102,10 +146,7 @@ describe("SimulationForm", () => {
         l3_latency_ms: 0,
       },
     });
-    const submittedSession = onSubmit.mock.calls[0][0].workload.synthetic.session;
-    expect(JSON.parse(JSON.stringify(submittedSession))).not.toHaveProperty(
-      "allow_cross_session_shared_prefix",
-    );
+    expect(onSubmit.mock.calls[0][0].workload.synthetic).not.toHaveProperty("session");
   });
 
   it("updates scalar and distribution fields before submission", () => {
@@ -116,12 +157,16 @@ describe("SimulationForm", () => {
       target: { value: "25" },
     });
 
-    const promptGroup = screen.getByRole("group", { name: "Prompt 长度" });
+    const promptGroup = screen.getByRole("group", { name: "新会话根输入长度" });
     fireEvent.change(within(promptGroup).getByLabelText("分布类型"), {
       target: { value: "fixed" },
     });
     fireEvent.change(within(promptGroup).getByLabelText("固定长度（token）"), {
       target: { value: "256" },
+    });
+    const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
+    fireEvent.change(within(incrementGroup).getByLabelText("平均长度（token）"), {
+      target: { value: "64" },
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
@@ -130,27 +175,22 @@ describe("SimulationForm", () => {
       workload: {
         synthetic: {
           num_requests: 25,
-          session: { num_sessions: 20 },
+          arrival_mode: "open_loop",
           prompt_len: { dist: "fixed", value: 256 },
+          turn_increment_len: { dist: "poisson", mean: 64 },
         },
       },
     });
   });
 
-  it("submits edited multi-turn sessions, whole-page capacity and fused mode", () => {
+  it("submits edited open-loop distribution, whole-page capacity and fused mode", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
 
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
-    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), {
-      target: { value: "5" },
-    });
-    fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"), {
-      target: { value: "30" },
-    });
-    fireEvent.change(screen.getByLabelText("目标理想前缀命中率（%）"), {
-      target: { value: "20" },
-    });
+    const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
+    fireEvent.change(within(incrementGroup).getByLabelText("分布类型"), { target: { value: "fixed" } });
+    fireEvent.change(within(incrementGroup).getByLabelText("固定长度（token）"), { target: { value: "20" } });
     fireEvent.change(screen.getByLabelText("L1 KV 总容量（token）"), {
       target: { value: "128" },
     });
@@ -170,12 +210,7 @@ describe("SimulationForm", () => {
         synthetic: {
           num_requests: 20,
           max_new_tokens: 12,
-          session: {
-            num_sessions: 5,
-            topology: "linear",
-            think_time_ms: 30,
-            target_ideal_prefix_hit_rate: 0.2,
-          },
+          turn_increment_len: { dist: "fixed", value: 20 },
         },
       },
       engine: { max_total_tokens: 128, page_size: 4, pd_mutually_exclusive: false },
@@ -209,9 +244,7 @@ describe("SimulationForm", () => {
   });
 
   it.each([
-    ["会话数量（根请求数）", "1001", "会话数量不能超过请求数量"],
-    ["轮次间平均思考时间（ms，指数分布）", "-1", "必须是大于或等于 0 的有限数值"],
-    ["目标理想前缀命中率（%）", "101", "必须是 0 到 100 之间的有限数值"],
+    ["目标发送 QPS（请求/秒，泊松到达）", "0", "必须是大于 0 的有限数值"],
     ["L1 KV 总容量（token）", "130", "必须是页大小的整数倍"],
     ["L2 KV 容量（token，0 为关闭）", "65", "容量必须是页大小的非负整数倍"],
     ["L3 KV 容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
@@ -257,7 +290,7 @@ describe("SimulationForm", () => {
 
     const json = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(json)).toMatchObject({ workload: { synthetic: {
-      num_requests: 25, session: { num_sessions: 20, target_ideal_prefix_hit_rate: 0.9 },
+      num_requests: 25, arrival_mode: "open_loop", turn_increment_len: { dist: "poisson", mean: 256 },
     } } });
     expect(JSON.parse(json)).not.toHaveProperty("metrics");
     expect(writeText).toHaveBeenCalledWith(json);
@@ -277,8 +310,7 @@ describe("SimulationForm", () => {
     render(<SimulationForm onSubmit={onSubmit} />);
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 20;
-    config.workload.synthetic!.session!.num_sessions = 5;
-    config.workload.synthetic!.session!.target_ideal_prefix_hit_rate = 0.35;
+    config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 35 };
     config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
     config.engine.page_size = 128;
@@ -296,10 +328,10 @@ describe("SimulationForm", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("参数已导入");
     expect(screen.getByLabelText("请求数量")).toHaveValue(20);
-    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(5);
-    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveValue(35);
-    expect(within(screen.getByRole("group", { name: "Prompt 长度" })).getByLabelText("固定长度（token）"))
-      .toHaveValue(256);
+    expect(within(screen.getByRole("group", { name: "子轮新增内容长度" }))
+      .getByLabelText("固定长度（token）")).toHaveValue(35);
+    expect(within(screen.getByRole("group", { name: "新会话根输入长度" }))
+      .getByLabelText("固定长度（token）")).toHaveValue(256);
     expect(within(screen.getByRole("group", { name: "输出长度" })).getByLabelText("形状参数（sigma）"))
       .toHaveValue(2);
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(128);
@@ -391,7 +423,6 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
     const manual = createDefaultSimConfig();
     manual.workload.synthetic!.num_requests = 12;
-    manual.workload.synthetic!.session!.num_sessions = 12;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(manual) } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
@@ -514,7 +545,6 @@ describe("SimulationForm", () => {
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 12;
-    config.workload.synthetic!.session!.num_sessions = 12;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByLabelText("请求数量")).toHaveValue(12);

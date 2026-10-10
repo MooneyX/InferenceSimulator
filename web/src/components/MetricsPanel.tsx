@@ -6,12 +6,14 @@ type Metrics = SimResult["metrics"];
 export interface MetricsPanelProps {
   metrics: Metrics;
   wallClockMs: SimResult["meta"]["wall_clock_ms"];
+  targetQps?: number;
+  targetSessionRate?: number;
 }
 
 interface MetricCardProps {
   label: string;
   value: number | null | undefined;
-  unit: "ms" | "请求/秒" | "%" | "token" | "页" | "次" | "字节";
+  unit: "ms" | "请求/秒" | "会话/秒" | "%" | "token" | "页" | "次" | "字节";
   description: string;
 }
 
@@ -37,7 +39,7 @@ function MetricCard({ label, value, unit, description }: MetricCardProps) {
   );
 }
 
-export function MetricsPanel({ metrics, wallClockMs }: MetricsPanelProps) {
+export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRate }: MetricsPanelProps) {
   return (
     <section className="metrics-panel" aria-labelledby="metrics-heading">
       <div className="metrics-heading">
@@ -73,12 +75,22 @@ export function MetricsPanel({ metrics, wallClockMs }: MetricsPanelProps) {
           unit="ms"
           description="Decode 阶段平均每 token 耗时"
         />
-        <MetricCard
-          label="端到端吞吐"
-          value={metrics.throughput}
-          unit="请求/秒"
-          description="仿真时间范围内完成的请求数"
-        />
+        {targetQps != null && <MetricCard label="目标发送 QPS" value={targetQps} unit="请求/秒"
+          description="开环泊松到达的期望请求速率" />}
+        {targetSessionRate != null && <MetricCard label="新会话投放频率" value={targetSessionRate} unit="会话/秒"
+          description="闭环根会话的期望到达率，不是请求 QPS" />}
+        <MetricCard label="实际请求 QPS" value={metrics.arrival_qps} unit="请求/秒"
+          description="成功及失败请求的首末发送时间内按已发送数减一计算；单请求未定义" />
+        <MetricCard label="完成 QPS" value={metrics.throughput} unit="请求/秒"
+          description="成功请求数除以最早到达到最晚完成的仿真时间；包含排空阶段" />
+        <MetricCard label="新建会话数" value={metrics.num_sessions} unit="次"
+          description="全场实际启动的根会话数" />
+        <MetricCard label="根请求占比" value={metrics.root_request_ratio} unit="%"
+          description="根请求数除以全部投放请求数" />
+        <MetricCard label="完成请求平均输入" value={metrics.mean_prompt_tokens} unit="token"
+          description="按成功请求统计的完整上下文输入长度" />
+        <MetricCard label="完成请求平均输出" value={metrics.mean_output_tokens} unit="token"
+          description="按成功请求统计的实际生成长度" />
         <MetricCard
           label="Makespan"
           value={metrics.makespan}
@@ -91,10 +103,14 @@ export function MetricsPanel({ metrics, wallClockMs }: MetricsPanelProps) {
           unit="ms"
           description="内核生成请求计划至汇总指标的墙钟时间，不含配置解析、网络传输和页面渲染"
         />
-        <MetricCard label="目标理想命中率" value={metrics.target_ideal_prefix_hit_rate} unit="%" description="用户设置的所有请求输入 token 加权目标" />
-        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="按计划继承块数和完整块粒度量化的理想前缀" />
-        <MetricCard label="量化误差" value={metrics.ideal_hit_quantization_error} unit="%" description="构造理想命中率与目标之差" />
-        <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="真正跳过 Prefill 的输入 token 比例" />
+        {metrics.target_ideal_prefix_hit_rate != null && <MetricCard label="目标理想命中率"
+          value={metrics.target_ideal_prefix_hit_rate} unit="%" description="闭环模式配置的全场目标" />}
+        <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="全场计划继承的完整页 token / 全场计划输入 token；包含失败请求" />
+        {metrics.ideal_hit_quantization_error != null && <MetricCard label="量化误差"
+          value={metrics.ideal_hit_quantization_error} unit="%" description="闭环模式的构造率与目标之差" />}
+        <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="成功请求实际跳过的输入 token / 成功请求输入 token" />
+        <MetricCard label="子轮理想命中率" value={metrics.child_ideal_prefix_hit_rate} unit="%" description="成功子轮的理想复用 token / 成功子轮输入 token" />
+        <MetricCard label="子轮实际命中率" value={metrics.child_actual_prefix_hit_rate} unit="%" description="成功子轮实际复用 token / 成功子轮输入 token" />
         <MetricCard label="有命中请求比例" value={metrics.requests_with_hit_ratio} unit="%" description="至少一个输入 token 真正复用的请求" />
         <MetricCard label="完整块全命中请求比例" value={metrics.requests_fully_cached_ratio} unit="%" description="有完整输入块且全部物理命中的请求" />
         <MetricCard label="实际 Prefill" value={metrics.actual_prefill_tokens} unit="token" description="成功请求首次准入计算的输入 token 数" />

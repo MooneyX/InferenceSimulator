@@ -7,7 +7,7 @@ type DistributionKind = LengthDistribution["dist"];
 type DistributionParameter = "value" | "mean" | "sigma";
 
 export interface LengthDistributionEditorProps {
-  name: "prompt_len" | "output_len";
+  name: "prompt_len" | "turn_increment_len" | "output_len";
   label: string;
   value: LengthDistribution;
   onChange: (value: LengthDistribution) => void;

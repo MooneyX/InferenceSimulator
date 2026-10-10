@@ -119,8 +119,8 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
     roots: list[int] = []
     children: dict[int, tuple[int, ...]] = {}
     clock = 0.0
-    # 只采样根请求到达；每个会话平均 n/sessions 轮，折算成总目标 QPS。
-    rate_per_ms = cfg.arrival_rate * sessions / n / _MS_PER_SECOND
+    # 闭环根会话按独立的会话到达率采样，与子轮完成时刻解耦。
+    rate_per_ms = cast(float, cfg.session_rate) / _MS_PER_SECOND
     request_id = 0
     for session_id, count in enumerate(counts):
         clock += arrival_rng.expovariate(rate_per_ms)

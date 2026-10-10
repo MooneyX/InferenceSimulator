@@ -10,7 +10,7 @@
 
 表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：编辑 `num_requests`（总轮次数）、`arrival_rate`（所有轮次的目标请求 QPS，非根 session/秒）、`prompt_len` / `output_len`（LengthDist：fixed / poisson / lognormal 及其参数）、`max_new_tokens`（每请求生成上限，默认 128）、`seed`，以及 `session.num_sessions`、`session.think_time_ms`（子轮间指数分布的平均思考时间，0 为无等待）、`session.target_ideal_prefix_hit_rate`。`session.topology` 固定为 `linear`；`session.content_seed` 与跨会话共享开关均已移除，表单及提交 JSON 不包含这些字段；跨 session 公共前缀不支持，同 session 父子轮次仍可继承完整块。所有负载均按 session 计划提交；根 session 速率自动换算为 `arrival_rate * num_sessions / num_requests`，有限场不保证实测到达率等于目标；`mode` 固定 synthetic，trace 分支不在前端暴露。
+- **负载（workload）**：页面可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、输入/输出长度分布、生成上限和种子。开环填写 `arrival_rate`（期望请求 QPS）及子轮新增内容长度；无就绪子轮时新建会话。闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值）；每轮输入长度独立采样，保留原客户端按父轮完成后续写及前缀分配流程。闭环表单默认理想命中目标为 0，API 仍支持配置 `session.target_ideal_prefix_hit_rate`。跨 session 不共享公共前缀；`mode` 固定 synthetic，trace 不在前端暴露。
 - **引擎（engine）**：编辑 `max_running_requests`、`max_total_tokens`、`max_prefill_tokens`（默认 16384）、`page_size`（默认 64）和 `pd_mutually_exclusive`（默认 `true`，Prefill/Decode 分步；关闭后可在同一步融合）；`l2_capacity_tokens`、`l3_capacity_tokens` 默认 0，按实际启用层配置；由容量和页大小派生各层页数。完整页 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 - **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`；启用 L2 后配置 `kv_bytes_per_token`、`l2_to_l1_bandwidth_bytes_per_ms`、`l2_latency_ms`，启用 L3 后还配置 `l3_to_l2_bandwidth_bytes_per_ms`、`l3_latency_ms`。
 
@@ -22,8 +22,8 @@
 
 ## 输出：指标与告警
 
-- **指标卡片**：展示响应提供的时延、仿真完成吞吐、目标/构造/实际前缀命中、Prefill 工作量及 L1/L2/L3 分层命中、容量/驻留/驱逐/峰值、提升/降级与 restore 字节/时长；总命中不误标为 L1 命中。自动解析模式区分整组权重与逐卡 TP 分片、复制、EP 专家权重/KV 账单，展示总 FLOPs、HBM bytes、TP 同步和 EP dispatch/combine 时间与单 rank 逻辑流量；通信已含在设备时间内，恢复时间单列。结果注明均匀路由、无重叠、未经校准；不称为 GPU 实测。`arrival_rate` 是目标到达 QPS，不当作完成吞吐。字段及计算口径见 [metrics.md](metrics.md)。
-- **状态与原因**：展示 `meta.num_completed/num_aborted/num_skipped`；分别列出 `aborted_requests`、`skipped_requests` 的请求 ID 及原因。运行中的请求级容量失败属于 200 结果，不作为整场 HTTP 422；父轮失败导致未发送后代跳过。
+- **指标卡片**：展示响应提供的时延、实际发送 QPS、完成吞吐、根请求占比、平均输入输出长度、构造/实际及子轮前缀命中、Prefill 工作量及 L1/L2/L3 分层命中、容量/驻留/驱逐/峰值、提升/降级与 restore 字节/时长；总命中不误标为 L1 命中。自动解析模式区分整组权重与逐卡 TP 分片、复制、EP 专家权重/KV 账单，展示总 FLOPs、HBM bytes、TP 同步和 EP dispatch/combine 时间与单 rank 逻辑流量；通信已含在设备时间内，恢复时间单列。结果注明均匀路由、无重叠、未经校准；不称为 GPU 实测。开环 `arrival_rate` 是期望请求速率，闭环 `session_rate` 是期望新会话速率；实际请求 QPS 与完成吞吐分别展示，不混为目标。字段及计算口径见 [metrics.md](metrics.md)。
+- **状态与原因**：展示 `meta.num_completed/num_aborted/num_skipped`；分别列出 `aborted_requests`、`skipped_requests` 的请求 ID 及原因。运行中的请求级容量失败属于 200 结果，不作为整场 HTTP 422；开环模式不会预建未来子轮，失败会话不再续写，下一节拍可以创建新根；显式闭环模式中预建的后代才会标记跳过。
 - **告警列表**：`warnings` 非空时逐条展示，为空不渲染；全失败时空指标按响应空值展示，不伪造时延或吞吐。
 - **甘特图**：只使用 `requests` 中的已完成区间；若没有成功请求，显示无法绘制的空态而不绘制失败/跳过记录。见下节。
 

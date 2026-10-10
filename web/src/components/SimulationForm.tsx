@@ -102,7 +102,7 @@ function NumberField({
 }
 
 export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: SimulationFormProps) {
-  const [mode, setMode] = useState<"manual" | "automatic">("manual");
+  const [mode, setMode] = useState<"manual" | "automatic">(onSubmitAuto ? "automatic" : "manual");
   const [manualConfig, setManualConfig] = useState<SimConfig>(createDefaultSimConfig);
   const [automaticConfig, setAutomaticConfig] = useState<SimConfig>(createDefaultSimConfig);
   const config = mode === "automatic" ? automaticConfig : manualConfig;
@@ -212,15 +212,15 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
     <form className="simulation-form" noValidate onSubmit={handleSubmit}>
       {onSubmitAuto && <fieldset className="configuration-mode" disabled={disabled}>
         <legend>配置方式</legend>
-        <label className={mode === "manual" ? "mode-option selected" : "mode-option"}>
-          <input type="radio" name="configuration-mode" value="manual" checked={mode === "manual"}
-            onChange={() => { setMode("manual"); setShowValidation(false); setTransferNote(null); }} />
-          <span><strong>手动配置</strong><small>直接填写容量与经验计时参数</small></span>
-        </label>
         <label className={mode === "automatic" ? "mode-option selected" : "mode-option"}>
           <input type="radio" name="configuration-mode" value="automatic" checked={mode === "automatic"}
             onChange={() => { setMode("automatic"); setShowValidation(false); setTransferNote(null); }} />
           <span><strong>自动解析</strong><small>根据模型与硬件推算容量及链路参数</small></span>
+        </label>
+        <label className={mode === "manual" ? "mode-option selected" : "mode-option"}>
+          <input type="radio" name="configuration-mode" value="manual" checked={mode === "manual"}
+            onChange={() => { setMode("manual"); setShowValidation(false); setTransferNote(null); }} />
+          <span><strong>手动配置</strong><small>直接填写容量与经验计时参数</small></span>
         </label>
       </fieldset>}
       <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
@@ -391,10 +391,11 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
           <NumberField
             id="target-ideal-prefix-hit-rate"
             name="workload.synthetic.session.target_ideal_prefix_hit_rate"
-            label="目标理想前缀命中率（0–1）"
-            value={session.target_ideal_prefix_hit_rate}
-            max={1}
-            error={errorByField.get("workload.synthetic.session.target_ideal_prefix_hit_rate")}
+            label="目标理想前缀命中率（%）"
+            value={session.target_ideal_prefix_hit_rate * 100}
+            max={100}
+            error={errorByField.has("workload.synthetic.session.target_ideal_prefix_hit_rate")
+              ? "必须是 0 到 100 之间的有限数值" : undefined}
             onChange={(targetRate) =>
               setConfig({
                 ...config,
@@ -402,7 +403,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
                   ...config.workload,
                   synthetic: {
                     ...synthetic,
-                    session: { ...session, target_ideal_prefix_hit_rate: targetRate },
+                    session: { ...session, target_ideal_prefix_hit_rate: targetRate / 100 },
                   },
                 },
               })

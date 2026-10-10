@@ -122,6 +122,7 @@ describe("App", () => {
       screen.getByRole("heading", { level: 1, name: "推理服务仿真器" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
       "单实例 · TP 可选Synthetic workloadFCFS 调度",
     );
@@ -148,6 +149,7 @@ describe("App", () => {
     simulateMock.mockResolvedValue(result);
     render(<App />);
 
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
@@ -172,7 +174,7 @@ describe("App", () => {
       analysis: null,
     } as ResolvedRun);
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -260,6 +262,7 @@ describe("App", () => {
       skipped_requests: [{ id: 2, parent_request_id: 1, reason: "parent_not_completed" }],
     });
     render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 1 · 跳过 1");
     expect(screen.getByLabelText("失败请求原因")).toHaveTextContent("input_exceeds_kv_capacity");
@@ -283,6 +286,7 @@ describe("App", () => {
       }],
     });
     render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByText("本次没有已完成请求，无法绘制生命周期图。")).toBeInTheDocument();
     expect(screen.queryByTestId("request-gantt")).not.toBeInTheDocument();
@@ -298,6 +302,7 @@ describe("App", () => {
     );
     render(<App />);
 
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
@@ -323,6 +328,7 @@ describe("App", () => {
     );
     render(<App />);
 
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     const alert = await screen.findByRole("alert");

@@ -7,6 +7,26 @@ import { SimulationForm } from "./SimulationForm";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("SimulationForm", () => {
+  it("selects automatic resolution first when available", () => {
+    const onSubmitAuto = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+
+    const modes = screen.getAllByRole("radio", { name: /自动解析|手动配置/ });
+    expect(modes).toHaveLength(2);
+    expect(modes[0]).toHaveAttribute("value", "automatic");
+    expect(modes[0]).toBeChecked();
+    expect(modes[1]).toHaveAttribute("value", "manual");
+    expect(screen.getByRole("group", { name: "自动解析参数" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ workload: expect.objectContaining({
+        synthetic: expect.objectContaining({ session: expect.objectContaining({
+          target_ideal_prefix_hit_rate: 0.9,
+        }) }),
+      }) }),
+    }));
+  });
+
   it("renders every synthetic configuration group with defaults", () => {
     render(<SimulationForm onSubmit={vi.fn()} />);
 
@@ -15,12 +35,17 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("heading", { name: "性能模型" })).toBeInTheDocument();
     expect(screen.getByLabelText("负载模式")).toHaveValue("synthetic");
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
-    expect(screen.getByLabelText("总请求目标 QPS（请求/秒）")).toHaveValue(50);
-    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(1000);
-    expect(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）")).toHaveValue(0);
-    expect(screen.getByLabelText("目标理想前缀命中率（0–1）")).toHaveValue(0);
+    expect(screen.getByLabelText("总请求目标 QPS（请求/秒）")).toHaveValue(64);
+    expect(screen.getByLabelText("随机种子")).toHaveValue(42);
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(20);
+    expect(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）")).toHaveValue(10_000);
+    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveValue(90);
+    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveAttribute("max", "100");
+    const promptGroup = screen.getByRole("group", { name: "Prompt 长度" });
+    expect(within(promptGroup).getByLabelText("分布类型")).toHaveValue("poisson");
+    expect(within(promptGroup).getByLabelText("平均长度（token）")).toHaveValue(32_768);
     expect(screen.queryByLabelText("允许跨会话共享公共前缀")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(128);
+    expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(1024);
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
     expect(screen.getByLabelText("L1 KV 总容量（token）")).toHaveValue(65_536);
     expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(0);
@@ -43,16 +68,16 @@ describe("SimulationForm", () => {
         mode: "synthetic",
         synthetic: {
           num_requests: 1000,
-          arrival_rate: 50,
-          prompt_len: { dist: "lognormal", mean: 512, sigma: 1 },
+          arrival_rate: 64,
+          prompt_len: { dist: "poisson", mean: 32_768 },
           output_len: { dist: "poisson", mean: 128 },
-          max_new_tokens: 128,
-          seed: 0,
+          max_new_tokens: 1024,
+          seed: 42,
           session: {
-            num_sessions: 1000,
+            num_sessions: 20,
             topology: "linear",
-            think_time_ms: 0,
-            target_ideal_prefix_hit_rate: 0,
+            think_time_ms: 10_000,
+            target_ideal_prefix_hit_rate: 0.9,
           },
         },
       },
@@ -105,7 +130,7 @@ describe("SimulationForm", () => {
       workload: {
         synthetic: {
           num_requests: 25,
-          session: { num_sessions: 25 },
+          session: { num_sessions: 20 },
           prompt_len: { dist: "fixed", value: 256 },
         },
       },
@@ -123,8 +148,8 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"), {
       target: { value: "30" },
     });
-    fireEvent.change(screen.getByLabelText("目标理想前缀命中率（0–1）"), {
-      target: { value: "0.2" },
+    fireEvent.change(screen.getByLabelText("目标理想前缀命中率（%）"), {
+      target: { value: "20" },
     });
     fireEvent.change(screen.getByLabelText("L1 KV 总容量（token）"), {
       target: { value: "128" },
@@ -186,7 +211,7 @@ describe("SimulationForm", () => {
   it.each([
     ["会话数量（根请求数）", "1001", "会话数量不能超过请求数量"],
     ["轮次间平均思考时间（ms，指数分布）", "-1", "必须是大于或等于 0 的有限数值"],
-    ["目标理想前缀命中率（0–1）", "1.1", "必须是 0 到 1 之间的有限数值"],
+    ["目标理想前缀命中率（%）", "101", "必须是 0 到 100 之间的有限数值"],
     ["L1 KV 总容量（token）", "130", "必须是页大小的整数倍"],
     ["L2 KV 容量（token，0 为关闭）", "65", "容量必须是页大小的非负整数倍"],
     ["L3 KV 容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
@@ -232,7 +257,7 @@ describe("SimulationForm", () => {
 
     const json = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(json)).toMatchObject({ workload: { synthetic: {
-      num_requests: 25, session: { num_sessions: 25 },
+      num_requests: 25, session: { num_sessions: 20, target_ideal_prefix_hit_rate: 0.9 },
     } } });
     expect(JSON.parse(json)).not.toHaveProperty("metrics");
     expect(writeText).toHaveBeenCalledWith(json);
@@ -253,6 +278,7 @@ describe("SimulationForm", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 20;
     config.workload.synthetic!.session!.num_sessions = 5;
+    config.workload.synthetic!.session!.target_ideal_prefix_hit_rate = 0.35;
     config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
     config.engine.page_size = 128;
@@ -271,6 +297,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("status")).toHaveTextContent("参数已导入");
     expect(screen.getByLabelText("请求数量")).toHaveValue(20);
     expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(5);
+    expect(screen.getByLabelText("目标理想前缀命中率（%）")).toHaveValue(35);
     expect(within(screen.getByRole("group", { name: "Prompt 长度" })).getByLabelText("固定长度（token）"))
       .toHaveValue(256);
     expect(within(screen.getByRole("group", { name: "输出长度" })).getByLabelText("形状参数（sigma）"))
@@ -324,7 +351,7 @@ describe("SimulationForm", () => {
     const onSubmit = vi.fn();
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} onSubmitAuto={onSubmitAuto} />);
-    expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByRole("group", { name: "手动配置参数" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
     fireEvent.change(screen.getByLabelText("最多同时运行请求"), { target: { value: "12" } });

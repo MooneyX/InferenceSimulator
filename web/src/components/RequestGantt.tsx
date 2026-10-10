@@ -105,6 +105,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
     phaseIndex.get(segment.phase) ?? 0,
     segment.requestId,
   ]);
+  // 初始只显示前 40 个请求，其余可通过纵向缩放查看。
   const initialLastRow = Math.min(model.rows.length - 1, 39);
 
   return {
@@ -156,6 +157,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
       {
         type: "inside",
         xAxisIndex: 0,
+        // 横向缩放保留跨越窗口边界的请求区间。
         filterMode: "weakFilter",
       },
       {

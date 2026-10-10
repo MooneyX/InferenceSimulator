@@ -4,22 +4,31 @@
 事件流不经 API 暴露，默认关闭记录；手写 Arrival 由 ``engine.run_engine`` 适配。
 """
 
+from dataclasses import fields
 from time import perf_counter
 from typing import cast
 
 from simcore.client import ClientDriver, OpenLoopClient
 from simcore.coordinator import Coordinator
-from simcore.engine import Engine
+from simcore.engine import Engine, EngineRun
+from simcore.kv_cache import L1Snapshot, TierSnapshot
 from simcore.metrics import compute_metrics
+from simcore.router import Router
 from simcore.schemas import (
+    AbortedRequest,
     AnalyticalSummary,
     HardwareSpec,
+    InstanceResult,
+    Metrics,
     ModelSpec,
+    RequestRecord,
     ResolvedConfig,
     SimConfig,
     SimMeta,
     SimResult,
+    SkippedRequest,
     SyntheticWorkloadConfig,
+    WorkloadPlan,
 )
 from simcore.workload import build_plan
 
@@ -71,62 +80,142 @@ def _simulate(
     synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
     if synthetic.arrival_mode == "open_loop":
         client: ClientDriver | OpenLoopClient = OpenLoopClient(synthetic, config.engine)
-        output_targets: dict[int, int] = {}
     else:
-        plan = build_plan(synthetic, config.engine)
-        client = ClientDriver(plan, config.engine)
-        output_targets = {key: turn.output_len for key, turn in plan.turns.items()}
-    run = Coordinator(
-        Engine(
-            config.engine,
-            config.perf_model,
-            output_targets=output_targets,
-            record_trace=False,
-            analytical=analytical,
-            token_bandwidths=token_bandwidths,
+        client = ClientDriver(build_plan(synthetic, config.engine), config.engine)
+    runs = Coordinator(
+        tuple(
+            Engine(
+                config.engine,
+                config.perf_model,
+                output_targets={},
+                record_trace=False,
+                analytical=analytical,
+                token_bandwidths=token_bandwidths,
+            )
+            for _ in range(config.num_instances)
         ),
         client,
+        Router(config.num_instances),
     ).run()
     plan = client.plan
-    metrics = compute_metrics(
-        run.records,
-        plan=plan,
-        config=config,
-        cache_snapshot=run.cache_snapshot,
-        l2_snapshot=run.l2_snapshot,
-        l3_snapshot=run.l3_snapshot,
-        l1_evictions=run.l1_evictions,
-        l1_peak_resident_blocks=run.l1_peak_resident_blocks,
-        promotions=run.promotions,
-        demotions=run.demotions,
-        restore_bytes=run.restore_bytes,
-        restore_time_ms=run.restore_time_ms,
-        earliest_sent_arrival=run.sim_start,
-        latest_sent_arrival=max(
-            [request.arrival for request in run.records]
-            + [request.arrival for request in run.aborted_requests],
-            default=None,
-        ),
-        num_sent=len(run.records) + len(run.aborted_requests),
-        replayed_prefill_tokens=run.replayed_prefill_tokens,
-    )
+    instances: list[InstanceResult] = []
+    records: list[RequestRecord] = []
+    aborted: list[AbortedRequest] = []
+    skipped: list[SkippedRequest] = []
+    for instance_id, run in enumerate(runs):
+        local_ids = (
+            {item.id for item in run.records}
+            | {item.id for item in run.aborted_requests}
+            | {item.id for item in run.skipped_requests}
+        )
+        turns = {key: plan.turns[key] for key in sorted(local_ids)}
+        input_tokens = sum(turn.prompt_len for turn in turns.values())
+        local_plan = WorkloadPlan(
+            turns=turns,
+            root_request_ids=tuple(key for key in plan.root_request_ids if key in turns),
+            children={},
+            constructed_ideal_prefix_hit_rate=(
+                config.engine.page_size
+                * sum(turn.ideal_reuse_blocks for turn in turns.values())
+                / input_tokens
+                if input_tokens
+                else 0.0
+            ),
+        )
+        instances.append(
+            InstanceResult(
+                instance_id=instance_id,
+                num_completed=len(run.records),
+                num_aborted=len(run.aborted_requests),
+                num_skipped=len(run.skipped_requests),
+                num_engine_steps=run.num_engine_steps,
+                metrics=_summarize((run,), local_plan, config),
+            )
+        )
+        records.extend(item.model_copy(update={"instance_id": instance_id}) for item in run.records)
+        aborted.extend(
+            item.model_copy(update={"instance_id": instance_id}) for item in run.aborted_requests
+        )
+        skipped.extend(
+            item.model_copy(update={"instance_id": instance_id}) for item in run.skipped_requests
+        )
+    records.sort(key=lambda item: item.id)
+    aborted.sort(key=lambda item: item.id)
+    skipped.sort(key=lambda item: item.id)
+    sent_arrivals = [item.arrival for item in records] + [item.arrival for item in aborted]
     wall_clock_ms = (perf_counter() - started_at) * 1000
     result = SimResult(
         meta=SimMeta(
             config=config,
             num_requests=len(plan.turns),
-            num_completed=len(run.records),
-            num_aborted=len(run.aborted_requests),
-            num_skipped=len(run.skipped_requests),
-            num_engine_steps=run.num_engine_steps,
-            sim_start=run.sim_start,
-            sim_end=run.sim_end,
+            num_completed=len(records),
+            num_aborted=len(aborted),
+            num_skipped=len(skipped),
+            num_engine_steps=sum(run.num_engine_steps for run in runs),
+            sim_start=min(sent_arrivals, default=0.0),
+            sim_end=max(
+                (run.sim_end for run in runs if run.records or run.aborted_requests), default=0.0
+            ),
             wall_clock_ms=wall_clock_ms,
         ),
-        metrics=metrics,
-        requests=list(run.records),
-        aborted_requests=list(run.aborted_requests),
-        skipped_requests=list(run.skipped_requests),
-        warnings=list(run.warnings),
+        metrics=_summarize(runs, plan, config),
+        instances=instances,
+        requests=records,
+        aborted_requests=aborted,
+        skipped_requests=skipped,
+        warnings=[warning for run in runs for warning in run.warnings],
     )
-    return result, run.analysis
+    analyses = [run.analysis for run in runs if run.analysis is not None]
+    analysis = (
+        AnalyticalSummary(
+            **{
+                name: sum(getattr(entry, name) for entry in analyses)
+                for name in AnalyticalSummary.model_fields
+            }
+        )
+        if analyses
+        else None
+    )
+    return result, analysis
+
+
+def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfig) -> Metrics:
+    """按全场实际到达窗口重新计算时延；末态缓存按独占实例求和。"""
+    records = [record for run in runs for record in run.records]
+    sent_arrivals = [item.arrival for run in runs for item in run.records] + [
+        item.arrival for run in runs for item in run.aborted_requests
+    ]
+    l1 = L1Snapshot(
+        **{
+            item.name: sum(getattr(run.cache_snapshot, item.name) for run in runs)
+            for item in fields(L1Snapshot)
+        }
+    )
+    tiers = [
+        TierSnapshot(
+            **{
+                item.name: sum(getattr(getattr(run, tier), item.name) for run in runs)
+                for item in fields(TierSnapshot)
+            }
+        )
+        for tier in ("l2_snapshot", "l3_snapshot")
+    ]
+    return compute_metrics(
+        records,
+        plan=plan,
+        config=config,
+        cache_snapshot=l1,
+        l2_snapshot=tiers[0],
+        l3_snapshot=tiers[1],
+        l1_evictions=sum(run.l1_evictions for run in runs),
+        # 各实例峰值发生时刻可能不同；该字段是各实例峰值之和（容量规划上界）。
+        l1_peak_resident_blocks=sum(run.l1_peak_resident_blocks for run in runs),
+        promotions=sum(run.promotions for run in runs),
+        demotions=sum(run.demotions for run in runs),
+        restore_bytes=sum(run.restore_bytes for run in runs),
+        restore_time_ms=sum(run.restore_time_ms for run in runs),
+        earliest_sent_arrival=min(sent_arrivals, default=None),
+        latest_sent_arrival=max(sent_arrivals, default=None),
+        num_sent=len(sent_arrivals),
+        replayed_prefill_tokens=sum(run.replayed_prefill_tokens for run in runs),
+    )

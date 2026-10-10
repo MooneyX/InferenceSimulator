@@ -6,6 +6,7 @@ import { createDefaultSimConfig, validateSimConfig } from "./simulation";
 describe("createDefaultSimConfig", () => {
   it("creates a complete synthetic configuration", () => {
     expect(createDefaultSimConfig()).toEqual({
+      num_instances: 1,
       workload: {
         mode: "synthetic",
         synthetic: {

@@ -52,7 +52,8 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("JSON 格式不正确");
   }
 
-  const root = objectWithKeys(parsed, "", ["workload", "engine", "perf_model"]);
+  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "engine", "perf_model"]);
+  numericFields(root, "参数配置", ["num_instances"]);
   const workload = objectWithKeys(root.workload, "workload", ["mode", "synthetic"]);
   if (workload.mode !== "synthetic") {
     throw new Error("workload.mode 当前仅支持 synthetic 模式");

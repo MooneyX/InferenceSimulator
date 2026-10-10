@@ -226,15 +226,13 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
     plan = build_plan(workload, cfg)
     client = ClientDriver(plan, cfg)
+    from simcore.router import Router
+
     return Coordinator(
-        Engine(
-            cfg,
-            perf,
-            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
-            record_trace=record_trace,
-        ),
+        (Engine(cfg, perf, output_targets={}, record_trace=record_trace),),
         client,
-    ).run()
+        Router(1),
+    ).run()[0]
 
 
 @pytest.fixture(scope="module")

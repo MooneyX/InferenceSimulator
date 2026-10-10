@@ -8,6 +8,7 @@ export interface MetricsPanelProps {
   wallClockMs: SimResult["meta"]["wall_clock_ms"];
   targetQps?: number;
   targetSessionRate?: number;
+  peakAggregated?: boolean;
 }
 
 interface MetricCardProps {
@@ -39,7 +40,7 @@ function MetricCard({ label, value, unit, description }: MetricCardProps) {
   );
 }
 
-export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRate }: MetricsPanelProps) {
+export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRate, peakAggregated = false }: MetricsPanelProps) {
   return (
     <section className="metrics-panel" aria-labelledby="metrics-heading">
       <div className="metrics-heading">
@@ -101,7 +102,7 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
           label="实际运行耗时"
           value={wallClockMs}
           unit="ms"
-          description="内核生成请求计划至汇总指标的墙钟时间，不含配置解析、网络传输和页面渲染"
+          description="整场内核从生成计划至汇总的墙钟时间（非单实例耗时）；不含网络和页面渲染"
         />
         <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="全场已构造轮次的可继承完整页 token / 计划输入 token；闭环含失败及跳过轮次的计划" />
         <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="成功请求实际跳过的输入 token / 成功请求输入 token" />
@@ -124,17 +125,17 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
         <MetricCard label="L1 驻留" value={metrics.l1_resident_blocks} unit="页" description="仿真结束时 L1 的 KV 页占用" />
         <MetricCard label="L1 空闲" value={metrics.l1_free_blocks} unit="页" description="仿真结束时 L1 的空闲页数" />
         <MetricCard label="L1 驱逐" value={metrics.l1_evictions} unit="次" description="离开 L1 的 KV 页数，含降级到 L2" />
-        <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="页" description="仿真中实际物理 KV 页驻留峰值" />
+        <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="页" description={peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中实际物理 KV 页驻留峰值"} />
         <MetricCard label="L2 容量" value={metrics.l2_capacity_blocks} unit="页" description="L2 的整页容量；0 表示关闭" />
         <MetricCard label="L2 驻留" value={metrics.l2_resident_blocks} unit="页" description="仿真结束时 L2 的 KV 页占用" />
         <MetricCard label="L2 空闲" value={metrics.l2_free_blocks} unit="页" description="仿真结束时 L2 的空闲页数" />
         <MetricCard label="L2 驱逐" value={metrics.l2_evictions} unit="次" description="离开 L2 的 KV 页数，含降级到 L3" />
-        <MetricCard label="L2 峰值驻留" value={metrics.l2_peak_resident_blocks} unit="页" description="仿真中 L2 驻留页数峰值" />
+        <MetricCard label="L2 峰值驻留" value={metrics.l2_peak_resident_blocks} unit="页" description={peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中 L2 驻留页数峰值"} />
         <MetricCard label="L3 容量" value={metrics.l3_capacity_blocks} unit="页" description="L3 的整页容量；0 表示关闭" />
         <MetricCard label="L3 驻留" value={metrics.l3_resident_blocks} unit="页" description="仿真结束时 L3 的 KV 页占用" />
         <MetricCard label="L3 空闲" value={metrics.l3_free_blocks} unit="页" description="仿真结束时 L3 的空闲页数" />
         <MetricCard label="L3 驱逐" value={metrics.l3_evictions} unit="次" description="最终删除的 L3 KV 页数" />
-        <MetricCard label="L3 峰值驻留" value={metrics.l3_peak_resident_blocks} unit="页" description="仿真中 L3 驻留页数峰值" />
+        <MetricCard label="L3 峰值驻留" value={metrics.l3_peak_resident_blocks} unit="页" description={peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中 L3 驻留页数峰值"} />
       </dl>
     </section>
   );

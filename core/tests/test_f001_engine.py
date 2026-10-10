@@ -194,6 +194,7 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
 
 def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible() -> None:
     config = SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,

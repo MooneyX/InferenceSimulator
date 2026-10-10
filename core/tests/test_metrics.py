@@ -157,6 +157,7 @@ class TestPrefixMetrics:
             l1_hit_tokens=4,
         )
         config = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,

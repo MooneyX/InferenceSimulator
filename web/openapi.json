@@ -72,7 +72,7 @@
     },
     "/api/simulate/resolved": {
       "post": {
-        "summary": "按解析规格运行单实例仿真",
+        "summary": "按单实例解析规格运行多实例仿真",
         "operationId": "simulate_resolved_endpoint_api_simulate_resolved_post",
         "requestBody": {
           "content": {
@@ -184,6 +184,12 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Id"
+          },
+          "instance_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Instance Id",
+            "default": 0
           },
           "arrival": {
             "type": "number",
@@ -679,6 +685,50 @@
         ],
         "title": "HardwareSpec",
         "description": "单卡容量及用户假设的有效性能，不使用标称峰值代入。"
+      },
+      "InstanceResult": {
+        "properties": {
+          "instance_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Instance Id"
+          },
+          "num_completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Completed"
+          },
+          "num_aborted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Aborted"
+          },
+          "num_skipped": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Skipped"
+          },
+          "num_engine_steps": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Engine Steps"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/Metrics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instance_id",
+          "num_completed",
+          "num_aborted",
+          "num_skipped",
+          "num_engine_steps",
+          "metrics"
+        ],
+        "title": "InstanceResult",
+        "description": "单个副本的统计；吞吐按本副本已发送请求到达至最后成功完成计算。"
       },
       "LognormalLength": {
         "properties": {
@@ -1440,6 +1490,12 @@
             "minimum": 0.0,
             "title": "Id"
           },
+          "instance_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Instance Id",
+            "default": 0
+          },
           "arrival": {
             "type": "number",
             "minimum": 0.0,
@@ -1773,6 +1829,12 @@
           },
           "perf_model": {
             "$ref": "#/components/schemas/PerfModelConfig"
+          },
+          "num_instances": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Instances",
+            "description": "独占相同单实例配置的推理副本数量"
           }
         },
         "additionalProperties": false,
@@ -1780,7 +1842,8 @@
         "required": [
           "workload",
           "engine",
-          "perf_model"
+          "perf_model",
+          "num_instances"
         ],
         "title": "SimConfig",
         "description": "一场仿真的完整输入。"
@@ -1860,6 +1923,13 @@
           "metrics": {
             "$ref": "#/components/schemas/Metrics"
           },
+          "instances": {
+            "items": {
+              "$ref": "#/components/schemas/InstanceResult"
+            },
+            "type": "array",
+            "title": "Instances"
+          },
           "requests": {
             "items": {
               "$ref": "#/components/schemas/RequestRecord"
@@ -1893,7 +1963,8 @@
         "type": "object",
         "required": [
           "meta",
-          "metrics"
+          "metrics",
+          "instances"
         ],
         "title": "SimResult",
         "description": "一场仿真的完整输出，即 ``POST /api/simulate`` 的响应体。"
@@ -1904,6 +1975,12 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Id"
+          },
+          "instance_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Instance Id",
+            "default": 0
           },
           "parent_request_id": {
             "type": "integer",

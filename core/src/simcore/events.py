@@ -58,7 +58,7 @@ class Event:
     Attributes:
         time: 事件触发时刻（ms）。
         kind: 事件类别。
-        ref: 发送为 turn_id；完成/回调为 request_id；引擎步为步序号。
+        ref: 发送为 turn_id；完成/回调为 request_id；引擎步为 instance_id。
         seq: 创建序号，由 ``EventFactory`` 分配。
     """
 
@@ -98,8 +98,8 @@ class EventFactory:
     def open_loop_tick(self, time: float, index: int) -> Event:
         return self._make(time, EventKind.OPEN_LOOP_TICK, index)
 
-    def engine_step(self, time: float, step_index: int) -> Event:
-        return self._make(time, EventKind.ENGINE_STEP, step_index)
+    def engine_step(self, time: float, instance_id: int) -> Event:
+        return self._make(time, EventKind.ENGINE_STEP, instance_id)
 
     def request_done(self, time: float, request_id: int) -> Event:
         return self._make(time, EventKind.REQUEST_DONE, request_id)

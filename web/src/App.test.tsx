@@ -80,9 +80,11 @@ const result: SimResult = {
     l3_evictable_blocks: 0,
     l3_free_blocks: 0,
   },
+  instances: [],
   requests: [
     {
       id: 0,
+      instance_id: 0,
       arrival: 0,
       prefill_start: 0,
       prefill_end: 1,
@@ -106,6 +108,8 @@ const result: SimResult = {
   skipped_requests: [],
   warnings: ["仿真提示"],
 };
+result.instances.push({ instance_id: 0, num_completed: 1, num_aborted: 0, num_skipped: 0,
+  num_engine_steps: 8, metrics: result.metrics });
 
 const simulateMock = vi.mocked(simulate);
 const simulateAutomaticMock = vi.mocked(simulateAutomatic);
@@ -125,9 +129,32 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
-      "单实例 · TP 可选Synthetic workloadFCFS 调度",
+      "多实例 · TP 可选Synthetic workloadFCFS 调度",
     );
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
+  });
+
+  it("routes the configured replica count and filters instance results", async () => {
+    simulateMock.mockResolvedValue({
+      ...result,
+      meta: { ...result.meta, config: { ...result.meta.config, num_instances: 2 },
+        num_requests: 2, num_completed: 2 },
+      instances: [result.instances[0], { instance_id: 1, num_completed: 1,
+        num_aborted: 0, num_skipped: 0, num_engine_steps: 1,
+        metrics: { ...result.metrics, ttft_mean: 2 } }],
+      requests: [result.requests![0], { ...result.requests![0], id: 1, instance_id: 1 }],
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
+    fireEvent.change(screen.getByLabelText("推理实例数量（每实例独占相同配置）"),
+      { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({ num_instances: 2 }));
+    expect(await screen.findByTestId("request-gantt")).toHaveTextContent("2 requests");
+    fireEvent.change(screen.getByLabelText("查看范围："), { target: { value: "1" } });
+    expect(screen.getByTestId("request-gantt")).toHaveTextContent("1 requests");
+    expect(screen.getByLabelText("实例结果筛选")).toHaveTextContent("实例 1");
+    expect(screen.getByText("TTFT 均值").closest(".metric-card")).toHaveTextContent("2 ms");
   });
 
   it("navigates to real configuration and result sections", () => {
@@ -259,10 +286,10 @@ describe("App", () => {
       ...result,
       meta: { ...result.meta, num_requests: 3, num_aborted: 1, num_skipped: 1 },
       aborted_requests: [{
-        id: 1, arrival: 0, failed_at: 0,
+        id: 1, instance_id: 0, arrival: 0, failed_at: 0,
         reason: "input_exceeds_kv_capacity", generated_tokens: 0, retry_count: 0,
       }],
-      skipped_requests: [{ id: 2, parent_request_id: 1, reason: "parent_not_completed" }],
+      skipped_requests: [{ id: 2, instance_id: 0, parent_request_id: 1, reason: "parent_not_completed" }],
     });
     render(<App />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
@@ -284,7 +311,7 @@ describe("App", () => {
       },
       requests: [],
       aborted_requests: [{
-        id: 0, arrival: 0, failed_at: 0,
+        id: 0, instance_id: 0, arrival: 0, failed_at: 0,
         reason: "input_exceeds_kv_capacity", generated_tokens: 0, retry_count: 0,
       }],
     });

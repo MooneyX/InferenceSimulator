@@ -136,7 +136,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       <div className="section-heading"><div>
         <p className="section-kicker">Hardware · Stage 1</p>
         <h2 id="auto-hardware-heading">硬件配置</h2>
-      </div><p>标称峰值供参考；有效算力与带宽需按实际负载校准</p></div>
+      </div><p>以下硬件与存储均为单实例规格；总 GPU 数 = 实例数量 × 每实例 GPU 数</p></div>
       <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="auto-gpu-preset">GPU 选择</label>
         <select id="auto-gpu-preset" value={selectedHardware?.name ?? "custom"}
           onChange={(event) => {
@@ -208,7 +208,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         : "TP>1 不支持四系数计时，请切换到解析计时。"}</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
-      <strong>服务端解析：</strong>KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
+      <strong>服务端单实例解析：</strong>共 {config.num_instances} 个实例，总 GPU {config.num_instances * hardware.gpu_count} 张；KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
       {preview.tp_size > 1 ? "整组结构估算驻留权重" : "结构估算驻留权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
       结构估算总参数 {(preview.capacity.estimated_total_parameters / 1e9).toFixed(3)} B；
       结构估算每 token 激活参数 {(preview.capacity.estimated_active_parameters / 1e9).toFixed(3)} B；

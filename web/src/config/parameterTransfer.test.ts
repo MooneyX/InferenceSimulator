@@ -44,7 +44,7 @@ describe("parameter JSON transfer", () => {
   });
 
   it.each([
-    [{}, "缺少参数：workload"],
+    [{}, "缺少参数：num_instances"],
     [{ ...createDefaultSimConfig(), metrics: {} }, "不支持的参数：metrics"],
     [{ ...createDefaultSimConfig(), workload: { mode: "trace", synthetic: null } }, "仅支持 synthetic"],
     [{ ...createDefaultSimConfig(), workload: { mode: "synthetic" } }, "缺少参数：workload.synthetic"],

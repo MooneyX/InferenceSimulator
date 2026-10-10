@@ -10,6 +10,7 @@ from simserver import create_app
 def payload() -> dict[str, Any]:
     return {
         "config": {
+            "num_instances": 1,
             "workload": {
                 "mode": "synthetic",
                 "synthetic": {

@@ -471,10 +471,20 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>单实例 KV 页池与 Prefill/Decode 执行方式</p>
+          <p>每实例独占 KV · 根请求轮询 · 子请求严格继承父实例</p>
         </div>
 
         <div className="form-grid">
+          <NumberField
+            id="num-instances"
+            name="num_instances"
+            label="推理实例数量（每实例独占相同配置）"
+            value={config.num_instances}
+            integer
+            min={1}
+            error={errorByField.get("num_instances")}
+            onChange={(value) => setConfig({ ...config, num_instances: value })}
+          />
           <NumberField
             id="max-running-requests"
             name="engine.max_running_requests"

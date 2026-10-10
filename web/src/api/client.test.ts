@@ -4,6 +4,7 @@ import { resolveAutomatic, simulate, simulateAutomatic, SimulationApiError } fro
 import type { ResolvedRequest, SimConfig, SimResult } from "./types";
 
 const config: SimConfig = {
+  num_instances: 1,
   workload: {
     mode: "synthetic",
     synthetic: {
@@ -40,6 +41,7 @@ const config: SimConfig = {
 };
 
 const result: SimResult = {
+  instances: [],
   meta: {
     config,
     num_requests: 1,
@@ -105,6 +107,7 @@ const result: SimResult = {
   requests: [
     {
       id: 0,
+      instance_id: 0,
       arrival: 0,
       prefill_start: 0,
       prefill_end: 1,

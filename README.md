@@ -53,19 +53,19 @@ cd web
 npm run dev
 ```
 
-前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面默认以目标 QPS 作为期望速率，按泊松过程投放全部请求：优先续写已完成会话，否则创建新会话；根输入、子轮新增内容及输出分别采样。理想命中率是构造结果，完成吞吐不保证等于发送 QPS。也可切换闭环会话模式：沿用根输入＋每轮新增内容的长度构造，配置会话数、新会话投放频率和平均思考间隔，不输入目标请求 QPS；结果显示实测请求 QPS 与完成吞吐。页面支持 P/D 模式切换、完成/失败/跳过状态及指标展示；Canvas 甘特图仅绘制已完成请求。
+前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面默认以目标 QPS 作为期望速率，按泊松过程投放全部请求：优先续写已完成会话，否则创建新会话；根输入、子轮新增内容及输出分别采样。理想命中率是构造结果，完成吞吐不保证等于发送 QPS。也可切换闭环会话模式：沿用根输入＋每轮新增内容的长度构造，配置会话数、新会话投放频率和平均思考间隔，不输入目标请求 QPS；结果显示实测请求 QPS 与完成吞吐。页面支持设置实例数与每实例独占的硬件/引擎配置（自动模式总 GPU 数 = 实例数 × 每实例 GPU 数），根请求轮询、子请求回到父实例；可切换全场与逐实例指标和甘特图。页面支持 P/D 模式切换、完成/失败/跳过状态及指标展示；Canvas 甘特图仅绘制已完成请求。
 
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"arrival_mode":"open_loop","prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_running_requests":32,"max_total_tokens":65536,"page_size":64,"pd_mutually_exclusive":true},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
+$body = '{"num_instances":1,"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"arrival_mode":"open_loop","prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_running_requests":32,"max_total_tokens":65536,"page_size":64,"pd_mutually_exclusive":true},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
 Remove-Item simulate-request.json
 ```
 
-响应包含 `meta`、`metrics`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；尚未实现的 `workload.mode=trace` 返回 `501`。
+响应包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`；各请求含 `instance_id`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；尚未实现的 `workload.mode=trace` 返回 `501`。
 
 ## 同步前端类型
 

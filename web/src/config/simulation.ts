@@ -1,6 +1,7 @@
 import type { LengthDistribution, SimConfig } from "../api/types";
 
 export type ConfigField =
+  | "num_instances"
   | "workload.mode"
   | "workload.synthetic"
   | "workload.synthetic.num_requests"
@@ -43,6 +44,7 @@ export interface ConfigValidationError {
 
 export function createDefaultSimConfig(): SimConfig {
   return {
+    num_instances: 1,
     workload: {
       mode: "synthetic",
       synthetic: {
@@ -139,6 +141,7 @@ function validateLengthDistribution(
 export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
   const { workload, engine, perf_model: perfModel } = config;
+  validatePositiveInteger(errors, "num_instances", config.num_instances);
 
   if (workload.mode !== "synthetic") {
     errors.push({ field: "workload.mode", message: "当前仅支持 synthetic 模式" });

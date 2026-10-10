@@ -14,6 +14,7 @@ URL = "/api/simulate"
 
 def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -> dict[str, Any]:
     return {
+        "num_instances": 1,
         "workload": {
             "mode": "synthetic",
             "synthetic": {
@@ -93,6 +94,26 @@ class TestSuccess:
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
+    def test_two_instances_have_independent_capacity_and_request_owners(
+        self, client: TestClient
+    ) -> None:
+        payload = make_payload(num_requests=4)
+        payload["num_instances"] = 2
+        response = client.post(URL, json=payload)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["config"]["num_instances"] == 2
+        assert [item["instance_id"] for item in body["instances"]] == [0, 1]
+        assert (
+            body["metrics"]["l1_capacity_blocks"]
+            == 2 * body["instances"][0]["metrics"]["l1_capacity_blocks"]
+        )
+        assert (
+            sum(item["num_completed"] for item in body["instances"])
+            == body["meta"]["num_completed"]
+        )
+        assert {item["instance_id"] for item in body["requests"]} == {0, 1}
+
     def test_returns_full_result(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload())
         assert response.status_code == 200
@@ -101,6 +122,7 @@ class TestSuccess:
         assert set(body) == {
             "meta",
             "metrics",
+            "instances",
             "requests",
             "aborted_requests",
             "skipped_requests",
@@ -192,6 +214,13 @@ class TestSuccess:
 
 
 class TestErrors:
+    def test_instance_count_is_required(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        del payload["num_instances"]
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert "num_instances" in response.text
+
     @pytest.mark.parametrize("capacity", [63, 130])
     def test_invalid_page_capacity_returns_422(self, client: TestClient, capacity: int) -> None:
         payload = make_payload(num_requests=1)

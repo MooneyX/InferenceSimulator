@@ -244,6 +244,7 @@ def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> Non
 
 def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> None:
     config = SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,

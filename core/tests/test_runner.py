@@ -24,6 +24,7 @@ from simcore.workload import build_plan
 
 def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) -> SimConfig:
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
@@ -58,11 +59,18 @@ def expected_open_loop_arrivals(seed: int, qps: float, count: int) -> list[float
 
 def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=5, arrival_rate=10,
-            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
-            output_len=FixedLength(value=2), seed=42,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=5,
+                arrival_rate=10,
+                prompt_len=FixedLength(value=32),
+                turn_increment_len=FixedLength(value=5),
+                output_len=FixedLength(value=2),
+                seed=42,
+            )
+        ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
     )
@@ -84,11 +92,18 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
 
 def test_open_loop_completion_at_tick_is_ready() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=2, arrival_rate=31.25,
-            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
-            output_len=FixedLength(value=1), seed=42,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=2,
+                arrival_rate=31.25,
+                prompt_len=FixedLength(value=32),
+                turn_increment_len=FixedLength(value=5),
+                output_len=FixedLength(value=1),
+                seed=42,
+            )
+        ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
@@ -102,11 +117,18 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
 
 def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=4, arrival_rate=10,
-            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
-            output_len=FixedLength(value=2), seed=42,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=4,
+                arrival_rate=10,
+                prompt_len=FixedLength(value=32),
+                turn_increment_len=FixedLength(value=5),
+                output_len=FixedLength(value=2),
+                seed=42,
+            )
+        ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
     )
@@ -122,11 +144,18 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
 
 def test_open_loop_capacity_failure_still_consumes_tick() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=3, arrival_rate=10,
-            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=40),
-            output_len=FixedLength(value=2), seed=1,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=3,
+                arrival_rate=10,
+                prompt_len=FixedLength(value=32),
+                turn_increment_len=FixedLength(value=40),
+                output_len=FixedLength(value=2),
+                seed=1,
+            )
+        ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
@@ -145,11 +174,18 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
 
 def test_open_loop_single_arrival_has_no_observed_qps() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=1, arrival_rate=10,
-            prompt_len=FixedLength(value=32), turn_increment_len=FixedLength(value=5),
-            output_len=FixedLength(value=1), seed=1,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=1,
+                arrival_rate=10,
+                prompt_len=FixedLength(value=32),
+                turn_increment_len=FixedLength(value=5),
+                output_len=FixedLength(value=1),
+                seed=1,
+            )
+        ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
@@ -160,11 +196,18 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
 
 def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
     config = SimConfig(
-        workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-            arrival_mode="open_loop", num_requests=2, arrival_rate=10,
-            prompt_len=FixedLength(value=128), turn_increment_len=FixedLength(value=5),
-            output_len=FixedLength(value=2), seed=1,
-        )),
+        num_instances=1,
+        workload=WorkloadConfig(
+            synthetic=SyntheticWorkloadConfig(
+                arrival_mode="open_loop",
+                num_requests=2,
+                arrival_rate=10,
+                prompt_len=FixedLength(value=128),
+                turn_increment_len=FixedLength(value=5),
+                output_len=FixedLength(value=2),
+                seed=1,
+            )
+        ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
@@ -216,6 +259,7 @@ class TestEndToEnd:
 
     def test_prefix_metrics_are_weighted_and_capacity_conserved(self) -> None:
         config = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
@@ -253,6 +297,7 @@ class TestEndToEnd:
 
     def test_constructed_ideal_hit_rate_is_plan_result(self) -> None:
         config = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
@@ -277,6 +322,7 @@ class TestEndToEnd:
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
         cfg = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
@@ -298,6 +344,7 @@ class TestEndToEnd:
 
     def test_enabled_tiers_propagate_capacity_and_zero_transfer(self) -> None:
         cfg = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
@@ -335,19 +382,27 @@ class TestEndToEnd:
 
     def test_closed_loop_skipped_turns_do_not_count_toward_request_qps(self) -> None:
         cfg = SimConfig(
-            workload=WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-                num_requests=3, session_rate=2,
-                prompt_len=FixedLength(value=128), turn_increment_len=FixedLength(value=1),
-                output_len=FixedLength(value=1), seed=0,
-                session=SessionConfig(num_sessions=1),
-            )),
+            num_instances=1,
+            workload=WorkloadConfig(
+                synthetic=SyntheticWorkloadConfig(
+                    num_requests=3,
+                    session_rate=2,
+                    prompt_len=FixedLength(value=128),
+                    turn_increment_len=FixedLength(value=1),
+                    output_len=FixedLength(value=1),
+                    seed=0,
+                    session=SessionConfig(num_sessions=1),
+                )
+            ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
             perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
         )
         result = simulate(cfg)
-        assert (
-            result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped
-        ) == (0, 1, 2)
+        assert (result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped) == (
+            0,
+            1,
+            2,
+        )
         assert result.metrics.arrival_qps is None
 
     def test_json_roundtrip(self, result: SimResult) -> None:
@@ -378,6 +433,7 @@ class TestSmallCases:
     @pytest.mark.parametrize("think_time_ms", [0.0, 30.0])
     def test_followup_arrives_only_after_parent_completion(self, think_time_ms: float) -> None:
         cfg = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=3,
@@ -412,6 +468,7 @@ class TestSmallCases:
 
     def test_single_request_fixed_lengths(self) -> None:
         cfg = SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,

@@ -58,18 +58,20 @@ sigma: float    # 仅 lognormal：形状参数，越大尾越长
 POST /api/simulate
 ```
 
+- 请求必须包含 `num_instances >= 1`；`engine` / `perf_model` 表示单实例配置，自动解析的 `hardware.gpu_count` 也表示每实例卡数，总卡数为两者相乘。所有实例独占硬件与 KV。
 - 同步执行整场仿真，无任务 ID、无持久化。
 - 成功响应即使存在请求级失败仍为 200；三个结果列表均按请求 ID 升序，数量之和等于计划请求总数：
 
 ```yaml
 meta:              # config 回显；num_requests / num_completed / num_aborted /
                    # num_skipped / num_engine_steps；sim_start / sim_end（ms）
-metrics:           # 汇总指标及无成功请求时的空值，见 metrics.md
-requests:          # 仅成功请求；含 id、session_id、parent_request_id、
+metrics:           # 全场指标及无成功请求时的空值，见 metrics.md
+instances:         # 按 instance_id 排序的逐实例指标、完成/失败/跳过和引擎步数
+requests:          # 仅成功请求；含 id、instance_id、session_id、parent_request_id、
                    # arrival / prefill_start / prefill_end / finish、输入输出长度及命中/重算量
-aborted_requests:  # 已发送但失败：id、arrival、failed_at、reason、
+aborted_requests:  # 已发送但失败：id、instance_id、arrival、failed_at、reason、
                    # generated_tokens、retry_count
-skipped_requests:  # 父轮未完成、从未发送：id、parent_request_id、reason
+skipped_requests:  # 父轮未完成、从未发送：id、父轮 instance_id、parent_request_id、reason
 warnings:          # 非致命告警；不代替请求级失败状态
 ```
 

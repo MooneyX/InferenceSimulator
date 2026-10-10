@@ -12,6 +12,7 @@ function request(
 ): RequestRecord {
   return {
     id,
+    instance_id: 0,
     arrival,
     prefill_start: prefillStart,
     prefill_end: prefillEnd,

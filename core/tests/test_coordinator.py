@@ -23,6 +23,7 @@ from simcore.workload import build_plan
 
 def config(think: float = 0) -> SimConfig:
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
@@ -62,14 +63,13 @@ def test_zero_think_done_callback_send_step_order() -> None:
     assert workload is not None
     plan = build_plan(workload, cfg.engine)
     client = ClientDriver(plan, cfg.engine)
+    from simcore.router import Router
+
     run = Coordinator(
-        Engine(
-            cfg.engine,
-            cfg.perf_model,
-            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
-        ),
+        (Engine(cfg.engine, cfg.perf_model, output_targets={}),),
         client,
-    ).run()
+        Router(1),
+    ).run()[0]
     records = run.records
     assert records[0].finish == records[1].arrival
     assert records[1].prefill_start == records[1].arrival

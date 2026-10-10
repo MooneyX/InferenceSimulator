@@ -42,9 +42,11 @@ function presentError(error: unknown): PresentationError {
 
 export default function App() {
   const [result, setResult] = useState<SimResult | null>(null);
+  const [selectedInstanceId, setSelectedInstanceId] = useState<number | null>(null);
   const [automatic, setAutomatic] = useState<ResolvedRun | null>(null);
   const [error, setError] = useState<PresentationError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const selectedInstance = result?.instances.find((item) => item.instance_id === selectedInstanceId);
   const [activeSection, setActiveSection] = useState(() =>
     navigation.some(({ id }) => `#${id}` === window.location.hash)
       ? window.location.hash.slice(1)
@@ -55,6 +57,7 @@ export default function App() {
     setIsRunning(true);
     setError(null);
     setResult(null);
+    setSelectedInstanceId(null);
     setAutomatic(null);
 
     try {
@@ -70,6 +73,7 @@ export default function App() {
     setIsRunning(true);
     setError(null);
     setResult(null);
+    setSelectedInstanceId(null);
     setAutomatic(null);
     try {
       const response = await simulateAutomatic(request);
@@ -86,7 +90,7 @@ export default function App() {
     <>
       <header className="topbar">
         <a className="brand" href="#overview"><span>KV Cache</span> 推理服务仿真器</a>
-        <span className="topbar-caption">单实例 · 分层 KV 仿真工作台</span>
+        <span className="topbar-caption">多实例 · 独立 KV 仿真工作台</span>
       </header>
 
       <nav className="sidebar" aria-label="建模模块">
@@ -108,12 +112,12 @@ export default function App() {
       <main className="app-shell" id="overview">
         <header className="hero">
           <div>
-            <p className="eyebrow">基础参数 / 单实例推理</p>
+            <p className="eyebrow">基础参数 / 多实例推理</p>
             <h1>推理服务仿真器</h1>
             <p className="hero-description">选择手动配置或自动解析，设置仿真参数并查看请求生命周期。</p>
           </div>
           <div className="hero-badges" aria-label="当前仿真范围">
-            <span>单实例 · TP 可选</span>
+            <span>多实例 · TP 可选</span>
             <span>Synthetic workload</span>
             <span>FCFS 调度</span>
           </div>
@@ -172,6 +176,7 @@ export default function App() {
               {automatic && <section className="simulation-status" aria-label="解析配置与成本">
                 <h3>自动解析 · TP{automatic.resolution.tp_size}{automatic.resolution.model.moe_layers ? ` + EP${automatic.resolution.ep_size}` : ""} · {automatic.resolution.timing === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
                 <p>模型 {automatic.resolution.model.name} · GPU {automatic.resolution.hardware.name} ·
+                  {result.meta.config.num_instances} 实例 × 每实例 {automatic.resolution.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * automatic.resolution.hardware.gpu_count} GPU ·
                   {automatic.resolution.tp_size > 1 ? "整组权重" : "权重"} {(automatic.resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
                 <p>每 token KV {automatic.resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
                   L1 {automatic.resolution.config.engine.max_total_tokens.toLocaleString()} token ·
@@ -205,11 +210,26 @@ export default function App() {
                 </p>}
                 {automatic.resolution.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
               </section>}
-              <MetricsPanel metrics={result.metrics} wallClockMs={result.meta.wall_clock_ms}
-                targetQps={result.meta.config.workload.synthetic?.arrival_rate ?? undefined}
-                targetSessionRate={result.meta.config.workload.synthetic?.session_rate ?? undefined} />
+              <section className="simulation-status" aria-label="实例结果筛选">
+                <label htmlFor="instance-filter">查看范围：</label>{" "}
+                <select id="instance-filter" value={selectedInstanceId ?? "all"}
+                  onChange={(event) => setSelectedInstanceId(event.target.value === "all" ? null : Number(event.target.value))}>
+                  <option value="all">全部实例</option>
+                  {result.instances.map((instance) => <option key={instance.instance_id} value={instance.instance_id}>
+                    实例 {instance.instance_id}
+                  </option>)}
+                </select>
+                {selectedInstance && <p>完成 {selectedInstance.num_completed} ·
+                  失败 {selectedInstance.num_aborted} · 跳过 {selectedInstance.num_skipped} ·
+                  引擎步 {selectedInstance.num_engine_steps}</p>}
+              </section>
+              <MetricsPanel metrics={selectedInstance?.metrics ?? result.metrics}
+                wallClockMs={result.meta.wall_clock_ms}
+                peakAggregated={selectedInstanceId === null && result.instances.length > 1}
+                targetQps={selectedInstanceId === null ? result.meta.config.workload.synthetic?.arrival_rate ?? undefined : undefined}
+                targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.synthetic?.session_rate ?? undefined : undefined} />
               <WarningsPanel warnings={result.warnings} />
-              {(result.requests?.length ?? 0) > 0 ? (
+              {(result.requests ?? []).some((item) => selectedInstanceId === null || item.instance_id === selectedInstanceId) ? (
                 <Suspense
                   fallback={
                     <section className="simulation-status" role="status">
@@ -218,7 +238,8 @@ export default function App() {
                     </section>
                   }
                 >
-                  <RequestGantt requests={result.requests ?? []} />
+                  <RequestGantt requests={selectedInstanceId === null ? result.requests :
+                    (result.requests ?? []).filter((item) => item.instance_id === selectedInstanceId)} />
                 </Suspense>
               ) : (
                 <section className="simulation-status">本次没有已完成请求，无法绘制生命周期图。</section>

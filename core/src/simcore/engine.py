@@ -108,15 +108,13 @@ def run_engine(
     validate_kv_config(engine, perf)
     plan = plan_from_arrivals(arrivals, engine)
     client = ClientDriver(plan, engine)
+    from simcore.router import Router
+
     return Coordinator(
-        Engine(
-            engine,
-            perf,
-            output_targets={key: turn.output_len for key, turn in plan.turns.items()},
-            record_trace=record_trace,
-        ),
+        (Engine(engine, perf, output_targets={}, record_trace=record_trace),),
         client,
-    ).run()
+        Router(1),
+    ).run()[0]
 
 
 class Engine:

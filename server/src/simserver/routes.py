@@ -115,7 +115,7 @@ def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
 @router.post(
     "/simulate/resolved",
     response_model=ResolvedRun,
-    summary="按解析规格运行单实例仿真",
+    summary="按单实例解析规格运行多实例仿真",
     responses=_RESOLVED_ERRORS,
 )
 def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:

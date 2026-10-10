@@ -31,6 +31,7 @@ from simcore.schemas import (
 def example_request() -> ResolvedRequest:
     return ResolvedRequest(
         config=SimConfig(
+            num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,

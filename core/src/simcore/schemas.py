@@ -25,6 +25,7 @@ __all__ = [
     "FixedLength",
     "HardwareSpec",
     "InferenceRequest",
+    "InstanceResult",
     "LengthDist",
     "LognormalLength",
     "Metrics",
@@ -239,6 +240,7 @@ class SimConfig(_Frozen):
     workload: WorkloadConfig
     engine: EngineConfig
     perf_model: PerfModelConfig
+    num_instances: int = Field(ge=1, description="独占相同单实例配置的推理副本数量")
 
     @model_validator(mode="after")
     def _check_tiered_config(self) -> Self:
@@ -462,6 +464,7 @@ class RequestRecord(_Record):
     """
 
     id: int = Field(ge=0)
+    instance_id: int = Field(default=0, ge=0)
     arrival: float = Field(ge=0)
     prefill_start: float = Field(ge=0)
     prefill_end: float = Field(ge=0, description="= decode_start")
@@ -503,6 +506,7 @@ class AbortedRequest(_Record):
     """已发送但执行失败的请求；失败不终止其他请求。"""
 
     id: int = Field(ge=0)
+    instance_id: int = Field(default=0, ge=0)
     arrival: float = Field(ge=0)
     failed_at: float = Field(ge=0)
     reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"]
@@ -520,6 +524,7 @@ class SkippedRequest(_Record):
     """父轮未成功，因而从未发送的子轮。"""
 
     id: int = Field(ge=0)
+    instance_id: int = Field(default=0, ge=0)
     parent_request_id: int = Field(ge=0)
     reason: Literal["parent_not_completed"] = "parent_not_completed"
 
@@ -649,11 +654,23 @@ class SimMeta(_Record):
         return self
 
 
+class InstanceResult(_Record):
+    """单个副本的统计；吞吐按本副本已发送请求到达至最后成功完成计算。"""
+
+    instance_id: int = Field(ge=0)
+    num_completed: int = Field(ge=0)
+    num_aborted: int = Field(ge=0)
+    num_skipped: int = Field(ge=0)
+    num_engine_steps: int = Field(ge=0)
+    metrics: Metrics
+
+
 class SimResult(_Record):
     """一场仿真的完整输出，即 ``POST /api/simulate`` 的响应体。"""
 
     meta: SimMeta
     metrics: Metrics
+    instances: list[InstanceResult]
     requests: list[RequestRecord] = Field(default_factory=list)
     aborted_requests: list[AbortedRequest] = Field(default_factory=list)
     skipped_requests: list[SkippedRequest] = Field(default_factory=list)
@@ -661,6 +678,15 @@ class SimResult(_Record):
 
     @model_validator(mode="after")
     def _check_result_counts(self) -> Self:
+        if (
+            [item.instance_id for item in self.instances]
+            != list(range(self.meta.config.num_instances))
+            or sum(item.num_completed for item in self.instances) != self.meta.num_completed
+            or sum(item.num_aborted for item in self.instances) != self.meta.num_aborted
+            or sum(item.num_skipped for item in self.instances) != self.meta.num_skipped
+            or sum(item.num_engine_steps for item in self.instances) != self.meta.num_engine_steps
+        ):
+            raise ValueError("逐实例结果与全场规模不一致")
         if (
             len(self.requests) != self.meta.num_completed
             or len(self.aborted_requests) != self.meta.num_aborted

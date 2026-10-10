@@ -22,9 +22,10 @@ client       ClientDriver：消费计划、保存已完成请求身份与实际 
 perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU 与迁移；L1KVCache 兼容入口（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
-engine       已到达请求、EngineStep、KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
+engine       单个实例的已到达请求、EngineStep、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与引擎 trace 类型（依赖 schemas）
-coordinator  唯一 DES 时钟和事件队列；路由 client 与 engine（依赖 client、engine、events）
+router       根请求轮询、子请求严格继承父实例的路由策略（依赖 schemas）
+coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
 runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、client、coordinator、engine、metrics）
 ```

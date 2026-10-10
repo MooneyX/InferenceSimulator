@@ -14,6 +14,7 @@ from simcore.schemas import (
     EngineConfig,
     FixedLength,
     InferenceRequest,
+    InstanceResult,
     Metrics,
     PerfModelConfig,
     RequestRecord,
@@ -31,6 +32,7 @@ from simcore.schemas import (
 
 def config() -> SimConfig:
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
@@ -123,6 +125,7 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
 
 def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
     settings = SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=1,
@@ -209,6 +212,19 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     assert metrics.total_input_tokens == metrics.actual_prefill_tokens == 0
 
 
+def _instances(meta: SimMeta) -> list[InstanceResult]:
+    return [
+        InstanceResult(
+            instance_id=0,
+            num_completed=meta.num_completed,
+            num_aborted=meta.num_aborted,
+            num_skipped=meta.num_skipped,
+            num_engine_steps=meta.num_engine_steps,
+            metrics=Metrics(ttft_mean=None, ttft_p50=None, ttft_p99=None, makespan=0),
+        )
+    ]
+
+
 def test_status_result_rejects_duplicates_and_successful_parent_skip() -> None:
     settings = config()
     record = RequestRecord(
@@ -242,12 +258,19 @@ def test_status_result_rejects_duplicates_and_successful_parent_skip() -> None:
         wall_clock_ms=0,
     )
     with pytest.raises(ValidationError, match="不可同时"):
-        SimResult(meta=meta, metrics=metrics, requests=[record], aborted_requests=[aborted])
+        SimResult(
+            meta=meta,
+            metrics=metrics,
+            instances=_instances(meta),
+            requests=[record],
+            aborted_requests=[aborted],
+        )
     meta = meta.model_copy(update={"num_aborted": 0, "num_skipped": 1})
     with pytest.raises(ValidationError, match="父轮"):
         SimResult(
             meta=meta,
             metrics=metrics,
+            instances=_instances(meta),
             requests=[record],
             skipped_requests=[SkippedRequest(id=1, parent_request_id=0)],
         )
@@ -256,6 +279,7 @@ def test_status_result_rejects_duplicates_and_successful_parent_skip() -> None:
         SimResult(
             meta=meta,
             metrics=metrics,
+            instances=_instances(meta),
             requests=[record, record],
             skipped_requests=[SkippedRequest(id=1, parent_request_id=0)],
         )
@@ -285,6 +309,7 @@ def test_result_rejects_metrics_inconsistent_with_success_count() -> None:
     with pytest.raises(ValidationError, match="无成功"):
         SimResult(
             meta=no_success,
+            instances=_instances(no_success),
             metrics=Metrics(ttft_mean=0, ttft_p50=0, ttft_p99=0, makespan=0),
             aborted_requests=[failed],
         )
@@ -309,18 +334,21 @@ def test_result_rejects_metrics_inconsistent_with_success_count() -> None:
     with pytest.raises(ValidationError, match="有成功"):
         SimResult(
             meta=one_success,
+            instances=_instances(one_success),
             metrics=Metrics(ttft_mean=None, ttft_p50=None, ttft_p99=None, makespan=1),
             requests=[succeeded],
         )
     with pytest.raises(ValidationError, match="吞吐"):
         SimResult(
             meta=one_success,
+            instances=_instances(one_success),
             metrics=Metrics(ttft_mean=1, ttft_p50=1, ttft_p99=1, makespan=1),
             requests=[succeeded],
         )
     with pytest.raises(ValidationError, match="TPOT"):
         SimResult(
             meta=one_success,
+            instances=_instances(one_success),
             metrics=Metrics(
                 ttft_mean=1,
                 ttft_p50=1,

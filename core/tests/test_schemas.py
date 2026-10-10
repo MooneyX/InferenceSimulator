@@ -10,6 +10,7 @@ from simcore.schemas import (
     Arrival,
     EngineConfig,
     FixedLength,
+    InstanceResult,
     LengthDist,
     LognormalLength,
     Metrics,
@@ -32,6 +33,7 @@ LENGTH_DIST = TypeAdapter[LengthDist](LengthDist)
 def make_config(**engine_overrides: object) -> SimConfig:
     """构造一个合法的最小配置，供各用例复用。"""
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
@@ -255,14 +257,21 @@ class TestConfigValidation:
             SyntheticWorkloadConfig.model_validate({**payload, "session_rate": None})
         with pytest.raises(ValidationError, match="session_rate"):
             SyntheticWorkloadConfig.model_validate({**payload, "arrival_rate": 10})
-        open_payload = {**payload, "arrival_mode": "open_loop", "session_rate": None,
-                        "turn_increment_len": {"dist": "fixed", "value": 8},
-                        "session": {"think_time_ms": 0}}
+        open_payload = {
+            **payload,
+            "arrival_mode": "open_loop",
+            "session_rate": None,
+            "turn_increment_len": {"dist": "fixed", "value": 8},
+            "session": {"think_time_ms": 0},
+        }
         with pytest.raises(ValidationError, match="arrival_rate"):
             SyntheticWorkloadConfig.model_validate(open_payload)
-        assert SyntheticWorkloadConfig.model_validate(
-            {**open_payload, "arrival_rate": 10}
-        ).arrival_rate == 10
+        assert (
+            SyntheticWorkloadConfig.model_validate(
+                {**open_payload, "arrival_rate": 10}
+            ).arrival_rate
+            == 10
+        )
 
     def test_both_modes_require_turn_increment_and_reject_old_hit_target(self) -> None:
         workload = make_config().workload.synthetic
@@ -270,14 +279,25 @@ class TestConfigValidation:
         payload = workload.model_dump()
         with pytest.raises(ValidationError, match="turn_increment_len"):
             SyntheticWorkloadConfig.model_validate({**payload, "turn_increment_len": None})
-        open_payload = {**payload, "arrival_mode": "open_loop", "session_rate": None,
-                        "arrival_rate": 10, "session": {}}
+        open_payload = {
+            **payload,
+            "arrival_mode": "open_loop",
+            "session_rate": None,
+            "arrival_rate": 10,
+            "session": {},
+        }
         with pytest.raises(ValidationError, match="turn_increment_len"):
             SyntheticWorkloadConfig.model_validate({**open_payload, "turn_increment_len": None})
         with pytest.raises(ValidationError, match="target_ideal_prefix_hit_rate"):
-            SyntheticWorkloadConfig.model_validate({**payload, "session": {
-                "num_sessions": 2, "target_ideal_prefix_hit_rate": 0.5,
-            }})
+            SyntheticWorkloadConfig.model_validate(
+                {
+                    **payload,
+                    "session": {
+                        "num_sessions": 2,
+                        "target_ideal_prefix_hit_rate": 0.5,
+                    },
+                }
+            )
 
     def test_session_without_cross_session_field_roundtrips(self) -> None:
         payload = make_config().model_dump()
@@ -424,6 +444,18 @@ class TestResult:
             metrics=Metrics(
                 ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
             ),
+            instances=[
+                InstanceResult(
+                    instance_id=0,
+                    num_completed=0,
+                    num_aborted=0,
+                    num_skipped=0,
+                    num_engine_steps=0,
+                    metrics=Metrics(
+                        ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
+                    ),
+                )
+            ],
         )
         assert SimResult.model_validate(result.model_dump()) == result
         assert result.requests == []
@@ -447,6 +479,18 @@ class TestResult:
             metrics=Metrics(
                 ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
             ),
+            instances=[
+                InstanceResult(
+                    instance_id=0,
+                    num_completed=0,
+                    num_aborted=1,
+                    num_skipped=1,
+                    num_engine_steps=0,
+                    metrics=Metrics(
+                        ttft_mean=None, ttft_p50=None, ttft_p99=None, throughput=None, makespan=0.0
+                    ),
+                )
+            ],
             aborted_requests=[
                 AbortedRequest(
                     id=0,

@@ -123,6 +123,7 @@ describe("SimulationForm", () => {
     fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
 
     expect(onSubmit).toHaveBeenCalledWith({
+      num_instances: 1,
       workload: {
         mode: "synthetic",
         synthetic: {

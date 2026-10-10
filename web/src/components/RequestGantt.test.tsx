@@ -29,6 +29,7 @@ vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }));
 function request(id: number, offset = 0): RequestRecord {
   return {
     id,
+    instance_id: 0,
     arrival: offset,
     prefill_start: offset + 2,
     prefill_end: offset + 5,

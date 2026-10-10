@@ -47,7 +47,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按解析规格运行单实例仿真 */
+        /** 按单实例解析规格运行多实例仿真 */
         post: operations["simulate_resolved_endpoint_api_simulate_resolved_post"];
         delete?: never;
         options?: never;
@@ -92,6 +92,11 @@ export interface components {
         AbortedRequest: {
             /** Id */
             id: number;
+            /**
+             * Instance Id
+             * @default 0
+             */
+            instance_id: number;
             /** Arrival */
             arrival: number;
             /** Failed At */
@@ -362,6 +367,23 @@ export interface components {
              * @default 0
              */
             kernel_overhead_ms: number;
+        };
+        /**
+         * InstanceResult
+         * @description 单个副本的统计；吞吐按本副本已发送请求到达至最后成功完成计算。
+         */
+        InstanceResult: {
+            /** Instance Id */
+            instance_id: number;
+            /** Num Completed */
+            num_completed: number;
+            /** Num Aborted */
+            num_aborted: number;
+            /** Num Skipped */
+            num_skipped: number;
+            /** Num Engine Steps */
+            num_engine_steps: number;
+            metrics: components["schemas"]["Metrics"];
         };
         /**
          * LognormalLength
@@ -797,6 +819,11 @@ export interface components {
         RequestRecord: {
             /** Id */
             id: number;
+            /**
+             * Instance Id
+             * @default 0
+             */
+            instance_id: number;
             /** Arrival */
             arrival: number;
             /** Prefill Start */
@@ -968,6 +995,11 @@ export interface components {
             workload: components["schemas"]["WorkloadConfig"];
             engine: components["schemas"]["EngineConfig"];
             perf_model: components["schemas"]["PerfModelConfig"];
+            /**
+             * Num Instances
+             * @description 独占相同单实例配置的推理副本数量
+             */
+            num_instances: number;
         };
         /**
          * SimMeta
@@ -1014,6 +1046,8 @@ export interface components {
         SimResult: {
             meta: components["schemas"]["SimMeta"];
             metrics: components["schemas"]["Metrics"];
+            /** Instances */
+            instances: components["schemas"]["InstanceResult"][];
             /** Requests */
             requests?: components["schemas"]["RequestRecord"][];
             /** Aborted Requests */
@@ -1030,6 +1064,11 @@ export interface components {
         SkippedRequest: {
             /** Id */
             id: number;
+            /**
+             * Instance Id
+             * @default 0
+             */
+            instance_id: number;
             /** Parent Request Id */
             parent_request_id: number;
             /**

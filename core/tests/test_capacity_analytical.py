@@ -71,6 +71,7 @@ def example_request() -> ResolvedRequest:
             l3_to_l2_gb_s=0.002,
             l2_latency_ms=3,
             l3_latency_ms=4,
+            l3_lookup_latency_ms=1.25,
         ),
     )
 
@@ -97,6 +98,8 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     assert report.l2_to_l1_tokens_per_ms == pytest.approx(1000 / 64)
     assert report.l3_to_l2_tokens_per_ms == pytest.approx(2000 / 64)
     assert resolved.config.perf_model.kv_bytes_per_token == 64
+    assert resolved.config.perf_model.l3_lookup_latency_ms == 1.25
+    assert resolved.config.engine.l3_prefetch_min_tokens == 256
 
 
 def test_qwen3_8b_single_b300_capacity_example() -> None:

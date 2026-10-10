@@ -25,6 +25,7 @@ describe("createDefaultSimConfig", () => {
         max_total_tokens: 65_536,
         l2_capacity_tokens: 0,
         l3_capacity_tokens: 0,
+        l3_prefetch_min_tokens: 256,
         max_prefill_tokens: 16_384,
         page_size: 64,
         pd_mutually_exclusive: true,
@@ -39,6 +40,7 @@ describe("createDefaultSimConfig", () => {
         l3_to_l2_bandwidth_bytes_per_ms: null,
         l2_latency_ms: 0,
         l3_latency_ms: 0,
+        l3_lookup_latency_ms: 0,
       },
     });
     expect(createDefaultSimConfig().workload.synthetic).not.toHaveProperty("session");
@@ -148,6 +150,8 @@ describe("validateSimConfig", () => {
     config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 128;
     config.perf_model.l2_latency_ms = 0.5;
     config.perf_model.l3_latency_ms = 1;
+    config.perf_model.l3_lookup_latency_ms = 2.5;
+    config.engine.l3_prefetch_min_tokens = 0;
     expect(validateSimConfig(config)).toEqual([]);
     config.perf_model.kv_bytes_per_token = 1.5;
     config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 0;
@@ -194,12 +198,14 @@ describe("validateSimConfig", () => {
     config.engine.max_running_requests = 0;
     config.engine.max_total_tokens = 2.5;
     config.engine.max_prefill_tokens = 0;
+    config.engine.l3_prefetch_min_tokens = -1;
     config.engine.page_size = 0;
     config.engine.pd_mutually_exclusive = null as unknown as boolean;
     config.perf_model.prefill_c1 = -0.1;
     config.perf_model.prefill_c2 = Number.POSITIVE_INFINITY;
     config.perf_model.decode_d1 = -1;
     config.perf_model.decode_d2 = Number.NaN;
+    config.perf_model.l3_lookup_latency_ms = -1;
 
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "workload.synthetic.num_requests",
@@ -209,12 +215,14 @@ describe("validateSimConfig", () => {
       "engine.max_running_requests",
       "engine.max_total_tokens",
       "engine.max_prefill_tokens",
+      "engine.l3_prefetch_min_tokens",
       "engine.page_size",
       "engine.pd_mutually_exclusive",
       "perf_model.prefill_c1",
       "perf_model.prefill_c2",
       "perf_model.decode_d1",
       "perf_model.decode_d2",
+      "perf_model.l3_lookup_latency_ms",
     ]);
   });
 

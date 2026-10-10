@@ -470,6 +470,13 @@
             "description": "L3 KV 的 token 容量；0 表示关闭",
             "default": 0
           },
+          "l3_prefetch_min_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Prefetch Min Tokens",
+            "description": "触发 L3 异步预取的最小可复用 token 数",
+            "default": 256
+          },
           "pd_mutually_exclusive": {
             "type": "boolean",
             "title": "Pd Mutually Exclusive",
@@ -1372,6 +1379,12 @@
             "minimum": 0.0,
             "title": "L3 Latency Ms",
             "default": 0.0
+          },
+          "l3_lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Lookup Latency Ms",
+            "default": 0.0
           }
         },
         "additionalProperties": false,
@@ -2062,6 +2075,12 @@
             "type": "number",
             "minimum": 0.0,
             "title": "L3 Latency Ms",
+            "default": 0.0
+          },
+          "l3_lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Lookup Latency Ms",
             "default": 0.0
           }
         },

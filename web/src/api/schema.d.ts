@@ -274,6 +274,12 @@ export interface components {
              */
             l3_capacity_tokens: number;
             /**
+             * L3 Prefetch Min Tokens
+             * @description 触发 L3 异步预取的最小可复用 token 数
+             * @default 256
+             */
+            l3_prefetch_min_tokens: number;
+            /**
              * Pd Mutually Exclusive
              * @description Prefill 与 Decode 分步执行
              * @default true
@@ -763,6 +769,11 @@ export interface components {
              * @default 0
              */
             l3_latency_ms: number;
+            /**
+             * L3 Lookup Latency Ms
+             * @default 0
+             */
+            l3_lookup_latency_ms: number;
         };
         /**
          * PoissonLength
@@ -1114,6 +1125,11 @@ export interface components {
              * @default 0
              */
             l3_latency_ms: number;
+            /**
+             * L3 Lookup Latency Ms
+             * @default 0
+             */
+            l3_lookup_latency_ms: number;
         };
         /**
          * SyntheticWorkloadConfig

@@ -131,6 +131,9 @@ describe("AutomaticConfig", () => {
     expect(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）")).toHaveValue(0.01);
     expect(screen.getByLabelText("EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）")).toHaveValue(0.02);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(288);
+    expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(0);
+    fireEvent.change(screen.getByLabelText("L3 查找延迟（ms）"), { target: { value: "1.5" } });
+    expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ l3_lookup_latency_ms: 1.5 }));
     expect(screen.getByText(/2,250 TFLOPS 稠密 BF16\/FP16 算力/)).toBeInTheDocument();
     expect(screen.getByText(/8,000 GB\/s HBM 带宽/)).toBeInTheDocument();
     expect(screen.getByText(/1,800 GB\/s 单卡 NVLink 双向标称带宽/)).toBeInTheDocument();

@@ -3,6 +3,7 @@
 from simcore.engine import Engine, run_engine
 from simcore.kv_cache import L1KVCache, TieredKVCache
 from simcore.metrics import compute_metrics
+from simcore.prefix_hash import encode
 from simcore.runner import simulate
 from simcore.scheduler import F001Scheduler
 from simcore.schemas import (
@@ -49,6 +50,34 @@ def test_decode_evicts_cached_pages_before_considering_withdrawal() -> None:
     assert engine._prefix_cache.evictions == 1
     engine.complete(14, 0)
     assert engine.finalize().aborted_requests == ()
+
+
+def test_decode_withdraws_when_lower_tier_is_protected_by_inflight_load() -> None:
+    cfg = EngineConfig(
+        max_running_requests=2, max_total_tokens=12, page_size=4, l2_capacity_tokens=4
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+    )
+    engine = Engine(cfg, perf, output_targets={0: 2})
+    engine.submit(request(0, maximum=2), 0)
+    assert engine.step(0, 0) == (4, ())
+    cache = engine._prefix_cache
+    for key in (99, 98):
+        occupy(cache, key, 4)
+        cache.finish(key)
+    cache.ensure_free(1)
+    source = encode(99, 0)
+    cached = cache.page(source)
+    assert cached is not None and cached.tier == "L2"
+    cache.reserve_transfer(source, "L1")
+    assert engine.step(4, 1) == (0, ())
+    assert engine._aborted[0].reason == "decode_kv_exhausted"
+    cache.cancel_transfer(source)
 
 
 def test_withdraws_deterministically_then_replays_without_sampling_again() -> None:

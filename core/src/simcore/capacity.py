@@ -186,6 +186,7 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
             "l3_to_l2_bandwidth_bytes_per_ms": (l3_bw * 1_000_000 if l3_bw is not None else None),
             "l2_latency_ms": storage.l2_latency_ms,
             "l3_latency_ms": storage.l3_latency_ms,
+            "l3_lookup_latency_ms": storage.l3_lookup_latency_ms,
         }
     )
     config = request.config.model_copy(update={"engine": engine, "perf_model": perf})

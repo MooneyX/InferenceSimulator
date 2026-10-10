@@ -43,6 +43,7 @@ function configForAutomaticResolution(config: SimConfig, timing: ResolvedRequest
     l3_to_l2_bandwidth_bytes_per_ms: null,
     l2_latency_ms: 0,
     l3_latency_ms: 0,
+    l3_lookup_latency_ms: 0,
   };
   if (timing === "analytical") {
     for (const field of ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"] as const) {
@@ -546,6 +547,17 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
             })}
           />
           <NumberField
+            id="l3-prefetch-min-tokens"
+            name="engine.l3_prefetch_min_tokens"
+            label="L3 异步预取最小长度（token，0 为不设阈值）"
+            value={config.engine.l3_prefetch_min_tokens}
+            integer
+            error={errorByField.get("engine.l3_prefetch_min_tokens")}
+            onChange={(value) => setConfig({
+              ...config, engine: { ...config.engine, l3_prefetch_min_tokens: value },
+            })}
+          />
+          <NumberField
             id="page-size"
             name="engine.page_size"
             label="每页 token 数"
@@ -659,6 +671,16 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
                   error={errorByField.get("perf_model.l3_latency_ms")}
                   onChange={(value) => setConfig({
                     ...config, perf_model: { ...config.perf_model, l3_latency_ms: value },
+                  })}
+                />
+                <NumberField
+                  id="l3-lookup-latency-ms"
+                  name="perf_model.l3_lookup_latency_ms"
+                  label="L3 查找延迟（ms）"
+                  value={config.perf_model.l3_lookup_latency_ms}
+                  error={errorByField.get("perf_model.l3_lookup_latency_ms")}
+                  onChange={(value) => setConfig({
+                    ...config, perf_model: { ...config.perf_model, l3_lookup_latency_ms: value },
                   })}
                 />
               </>

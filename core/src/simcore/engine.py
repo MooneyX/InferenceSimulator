@@ -4,11 +4,12 @@
 """
 
 from collections.abc import Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
 
 from simcore.analytical import step_cost
-from simcore.events import ArrivalTrace, DoneTrace, EventLog, StepTrace
+from simcore.events import ArrivalTrace, DoneTrace, EventKind, EventLog, StepTrace
 from simcore.kv_cache import CacheCapacityError, L1Snapshot, TieredKVCache, TierSnapshot
 from simcore.perf_model import (
     DecodeWork,
@@ -19,7 +20,7 @@ from simcore.perf_model import (
     restore_time_tokens,
     workload_time,
 )
-from simcore.scheduler import F001Scheduler, RunningRequest
+from simcore.scheduler import AdmissionBatch, F001Scheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
@@ -80,6 +81,15 @@ class EngineRun:
     restore_bytes: int = 0
     restore_time_ms: float = 0.0
     analysis: AnalyticalSummary | None = None
+
+
+@dataclass(slots=True)
+class _TransferTask:
+    chunk_id: str
+    source: str
+    destination: str
+    waiting_requests: set[int]
+    service_ms: float
 
 
 def run_engine(
@@ -164,6 +174,19 @@ class Engine:
         self._prefill_end: dict[int, float] = {}
         self._finish: dict[int, float] = {}
         self._num_steps = 0
+        self._lookup_waiting: set[int] = set()
+        self._prefetch_waiting: dict[int, set[int]] = {}
+        self._prefetched_origins: dict[int, set[str]] = {}
+        self._unusable_hits: dict[int, set[str]] = {}
+        self._pending_selection: AdmissionBatch | None = None
+        self._pending_loads: set[str] = set()
+        self._pending_publish: tuple[int, ...] = ()
+        self._pending_finished: tuple[int, ...] = ()
+        self._scheduled_events: list[tuple[float, EventKind, int]] = []
+        self._transfers: dict[int, _TransferTask] = {}
+        self._transfer_by_chunk: dict[str, int] = {}
+        self._next_transfer_id = 0
+        self._link_free = {"L2": 0.0, "L1": 0.0}
 
     @property
     def has_work(self) -> bool:
@@ -173,6 +196,65 @@ class Engine:
     @property
     def num_steps(self) -> int:
         return self._num_steps
+
+    @property
+    def can_step(self) -> bool:
+        if self._running:
+            return True
+        if self._pending_selection is not None or self._pending_loads:
+            return self._pending_selection is not None and not self._pending_loads
+        head = self._prefix_scheduler.head_request_id
+        return (
+            head is not None
+            and head not in self._lookup_waiting
+            and head not in self._prefetch_waiting
+        )
+
+    def drain_events(self) -> tuple[tuple[float, EventKind, int], ...]:
+        events = tuple(self._scheduled_events)
+        self._scheduled_events.clear()
+        return events
+
+    def _start_transfer(
+        self, chunk_id: str, destination: str, now_ms: float, request_id: int
+    ) -> int:
+        existing = self._transfer_by_chunk.get(chunk_id)
+        if existing is not None:
+            self._transfers[existing].waiting_requests.add(request_id)
+            return existing
+        source = self._prefix_cache.reserve_transfer(chunk_id, destination)
+        page_tokens = self._prefix_cache.page_size
+        rate = (
+            self._token_bandwidths[1 if destination == "L2" else 0]
+            if self._token_bandwidths is not None
+            else None
+        )
+        if rate is None:
+            bytes_per_ms = (
+                self._perf.l3_to_l2_bandwidth_bytes_per_ms
+                if destination == "L2"
+                else self._perf.l2_to_l1_bandwidth_bytes_per_ms
+            )
+            kv_bytes = self._perf.kv_bytes_per_token
+            if bytes_per_ms is None or kv_bytes is None:
+                raise ValueError("传输链路须配置有效带宽和 KV 字节数")
+            transfer_ms = page_tokens * kv_bytes / bytes_per_ms
+        else:
+            transfer_ms = page_tokens / rate
+        latency = self._perf.l3_latency_ms if destination == "L2" else self._perf.l2_latency_ms
+        service_ms = latency + transfer_ms
+        start = max(now_ms, self._link_free[destination])
+        end = start + service_ms
+        self._link_free[destination] = end
+        transfer_id = self._next_transfer_id
+        self._next_transfer_id += 1
+        self._transfers[transfer_id] = _TransferTask(
+            chunk_id, source, destination, {request_id}, service_ms
+        )
+        self._transfer_by_chunk[chunk_id] = transfer_id
+        kind = EventKind.L3_L2_DONE if destination == "L2" else EventKind.L2_L1_DONE
+        self._scheduled_events.append((end, kind, transfer_id))
+        return transfer_id
 
     def register_output_target(self, request_id: int, output_len: int) -> None:
         """动态投放前注册引擎私有的输出目标。"""
@@ -201,7 +283,56 @@ class Engine:
             output_len=output_len,
             max_new_tokens=request.max_new_tokens,
         )
+        if self._engine_config.l3_capacity_tokens:
+            self._prefix_cache.probe(request, request.prompt_len)
+            self._lookup_waiting.add(key)
+            self._scheduled_events.append(
+                (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, key)
+            )
         return True
+
+    def on_l3_lookup(self, request_id: int, now_ms: float) -> None:
+        self._lookup_waiting.remove(request_id)
+        request = self._requests[request_id]
+        sources = self._prefix_cache.probe(request, request.prompt_len)
+        start = next((i for i, (_, tier) in enumerate(sources) if tier == "L3"), len(sources))
+        remote: list[str] = []
+        for chunk_id, tier in sources[start:]:
+            if tier != "L3":
+                break
+            remote.append(chunk_id)
+        if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
+            return
+        pending: set[int] = set()
+        for chunk_id in remote:
+            try:
+                pending.add(self._start_transfer(chunk_id, "L2", now_ms, request_id))
+            except (CacheCapacityError, ValueError):
+                break
+        if pending:
+            self._prefetch_waiting[request_id] = pending
+
+    def on_transfer_done(self, kind: EventKind, transfer_id: int, now_ms: float) -> None:
+        task = self._transfers.pop(transfer_id, None)
+        if task is None:
+            return
+        del self._transfer_by_chunk[task.chunk_id]
+        self._prefix_cache.complete_transfer(task.chunk_id)
+        page_bytes = self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
+        self._restore_bytes += page_bytes
+        self._restore_time_ms += task.service_ms
+        if self._analysis is not None:
+            self._analysis.restore_ms += task.service_ms
+        if kind is EventKind.L3_L2_DONE:
+            for request_id in task.waiting_requests:
+                self._prefetched_origins.setdefault(request_id, set()).add(task.chunk_id)
+                remaining = self._prefetch_waiting.get(request_id)
+                if remaining is not None:
+                    remaining.discard(transfer_id)
+                    if not remaining:
+                        del self._prefetch_waiting[request_id]
+        else:
+            self._pending_loads.discard(task.chunk_id)
 
     def _abort(
         self,
@@ -243,7 +374,9 @@ class Engine:
                 cache.ensure_free(needed)
                 break
             except CacheCapacityError:
-                cache.ensure_free(cache.free_pages + cache.evictable_pages)  # 先腾尽可驱逐页
+                # 下层被保护时无法降级，仍须继续回撤活动请求。
+                with suppress(CacheCapacityError):
+                    cache.ensure_free(cache.free_pages + cache.evictable_pages)
                 key = min(
                     remaining,
                     key=lambda candidate: (
@@ -263,8 +396,88 @@ class Engine:
                 del remaining[key]
         return remaining, tuple(withdrawn)
 
-    def step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]]:
-        """只推进步首 Decode 和本步 Prefill；结果发布后下一步才可复用。"""
+    def start_step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]] | None:
+        """先等待低层回载；仅就绪批次才在 GPU 上执行一个步骤。"""
+        selection = self._pending_selection
+        if selection is not None and self._pending_loads:
+            if not self._running:
+                return None
+            selection = AdmissionBatch((), (), (), True, 0, 0, 0)
+        elif selection is not None:
+            self._pending_selection = None
+        else:
+            running = {
+                key: RunningRequest(self._requests[key], generated)
+                for key, generated in self._running.items()
+            }
+            selection = self._prefix_scheduler.select_prefill(
+                running,
+                is_ready=lambda key: (
+                    not self._pending_loads
+                    and key not in self._lookup_waiting
+                    and key not in self._prefetch_waiting
+                ),
+                can_reuse=lambda key, chunk_id, tier: (
+                    tier != "L3" and chunk_id not in self._unusable_hits.get(key, ())
+                ),
+            )
+            missing = tuple(
+                chunk_id
+                for chunk_id in selection.promote_ids
+                if (page := self._prefix_cache.page(chunk_id)) is not None and page.tier == "L2"
+            )
+            if missing:
+                self._pending_selection = selection
+                for chunk_id in missing:
+                    try:
+                        self._start_transfer(
+                            chunk_id,
+                            "L1",
+                            now_ms,
+                            selection.admitted[0].waiting.request.request_id
+                            if selection.admitted
+                            else selection.restore_only[0].request.request_id,
+                        )
+                        self._pending_loads.add(chunk_id)
+                    except CacheCapacityError:
+                        for item in selection.aborted:
+                            self._abort(
+                                item.request.request_id, now_ms, "input_exceeds_kv_capacity"
+                            )
+                        for item in selection.restored:
+                            self._running[item.request.request_id] = item.generated_tokens
+                        for candidate in selection.admitted:
+                            self._unusable_hits.setdefault(
+                                candidate.waiting.request.request_id, set()
+                            ).add(chunk_id)
+                        for item in selection.restore_only:
+                            self._unusable_hits.setdefault(item.request.request_id, set()).add(
+                                chunk_id
+                            )
+                        self._prefix_scheduler.rollback_selection(selection)
+                        self._pending_selection = None
+                        return None
+                return None
+        return self.step(now_ms, step_index, selection=selection, defer_publication=True)
+
+    def finish_step(self, now_ms: float) -> tuple[int, ...]:
+        """仅在模拟的 GPU 步完成时公开本步产生的共享前缀。"""
+        if self._pending_publish:
+            self._prefix_cache.publish_batch(self._pending_publish)
+            self._pending_publish = ()
+        finished = self._pending_finished
+        self._pending_finished = ()
+        return finished
+
+    def step(
+        self,
+        now_ms: float,
+        step_index: int,
+        *,
+        selection: AdmissionBatch | None = None,
+        defer_publication: bool = False,
+    ) -> tuple[float, tuple[int, ...]]:
+        """计算本步工作量；事件驱动入口将页的公开延后至步末。"""
         cache = self._prefix_cache
         running = {
             key: RunningRequest(self._requests[key], generated)
@@ -280,7 +493,8 @@ class Engine:
         withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
             # 先试 Prefill，成功则本步不 Decode。
-            selection = self._prefix_scheduler.select_prefill(running)
+            if selection is None:
+                selection = self._prefix_scheduler.select_prefill(running)
             if not selection.admitted and not selection.restore_only and running:
                 running, withdrawn = self._prepare_decode(running, now_ms)
                 if withdrawn:
@@ -293,11 +507,22 @@ class Engine:
             if withdrawn:
                 self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
-            selection = self._prefix_scheduler.select_prefill(running, decode_ids)
+            if selection is None:
+                selection = self._prefix_scheduler.select_prefill(running, decode_ids)
         for item in selection.aborted:
             self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
         for item in selection.restored:
             self._running[item.request.request_id] = item.generated_tokens
+        if (
+            defer_publication
+            and selection.restore_only
+            and not selection.admitted
+            and not decode_ids
+        ):
+            for item in selection.restore_only:
+                cache.admit(item.request.request_id)
+                self._running[item.request.request_id] = item.generated_tokens
+            return 0.0, ()
         prefill = tuple(
             sorted(
                 (
@@ -337,8 +562,7 @@ class Engine:
         allocated_pages = decode_new_pages + sum(
             candidate.required_pages for candidate in selection.admitted
         )
-        if self._engine_config.l2_capacity_tokens:
-            cache.plan(selection.promote_ids, allocated_pages)
+        if self._engine_config.l2_capacity_tokens and not defer_publication:
             promoted = cache.promote(selection.promote_ids, allocated_pages)
         else:
             cache.ensure_free(allocated_pages)
@@ -420,16 +644,35 @@ class Engine:
                     finished.append(key)
             if key not in self._admission_stats:
                 self._admission_stats[key] = (candidate.reused_tokens, candidate.reused_tokens)
+                prefetched = self._prefetched_origins.get(key, set())
                 self._admission_tiers[key] = (
-                    tuple(tier for _, tier in candidate.hit_sources).count("L1") * cache.page_size
+                    sum(
+                        tier == "L1" and chunk_id not in prefetched
+                        for chunk_id, tier in candidate.hit_sources
+                    )
+                    * cache.page_size
                     if candidate.hit_sources
                     else candidate.reused_tokens,
-                    tuple(tier for _, tier in candidate.hit_sources).count("L2") * cache.page_size,
-                    tuple(tier for _, tier in candidate.hit_sources).count("L3") * cache.page_size,
+                    sum(
+                        tier == "L2" and chunk_id not in prefetched
+                        for chunk_id, tier in candidate.hit_sources
+                    )
+                    * cache.page_size,
+                    sum(
+                        tier == "L3" or chunk_id in prefetched
+                        for chunk_id, tier in candidate.hit_sources
+                    )
+                    * cache.page_size,
                 )
-        # 本步新页到步末才发布，留给后续步骤复用。
-        cache.publish_batch(tuple(item.waiting.request.request_id for item in selection.admitted))
+        # 新计算页尚未完成前只占私有容量，不向后来到达的请求发布。
+        publish_ids = tuple(item.waiting.request.request_id for item in selection.admitted)
+        if defer_publication:
+            self._pending_publish = publish_ids
+        else:
+            cache.publish_batch(publish_ids)
         finished.sort()
+        if defer_publication:
+            self._pending_finished = tuple(finished)
         if before is not None:
             cache_after = cache.snapshot()
             self._log.record(

@@ -1,7 +1,7 @@
 """F001 调度器：按 L1 页状态逐队头规划 FCFS 准入。"""
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from simcore.kv_cache import CacheCapacityError, L1KVCache, TieredKVCache
@@ -94,6 +94,10 @@ class F001Scheduler:
     def num_waiting(self) -> int:
         return len(self._waiting)
 
+    @property
+    def head_request_id(self) -> int | None:
+        return self._waiting[0].request.request_id if self._waiting else None
+
     def enqueue(
         self, request: InferenceRequest, now_ms: float, *, generated_tokens: int = 0
     ) -> bool:
@@ -133,6 +137,9 @@ class F001Scheduler:
         self,
         running: Mapping[int, RunningRequest],
         decode_ids: tuple[int, ...] = (),
+        *,
+        is_ready: Callable[[int], bool] | None = None,
+        can_reuse: Callable[[int, str, str], bool] | None = None,
     ) -> AdmissionBatch:
         """冻结本步 D，依次临时 pin 候选，预算失败撤销且不跳过队头。"""
         if len(set(decode_ids)) != len(decode_ids) or not set(decode_ids) <= running.keys():
@@ -169,8 +176,22 @@ class F001Scheduler:
         while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
             item = self._waiting[0]
             request = item.request
+            if is_ready is not None and not is_ready(request.request_id):
+                blocked = True
+                break
             target = item.target_tokens
             sources = cache.probe(request, target, restoring=item.restoring)
+            if can_reuse is not None:
+                sources = sources[
+                    : next(
+                        (
+                            index
+                            for index, (chunk_id, tier) in enumerate(sources)
+                            if not can_reuse(request.request_id, chunk_id, tier)
+                        ),
+                        len(sources),
+                    )
+                ]
             hit = len(sources) * block_size
             cache.pin(request, hit)
             new_tokens = target - hit
@@ -262,6 +283,15 @@ class F001Scheduler:
             tuple(sorted(promotions)),
             tuple(sorted(restore_hits)),
         )
+
+    def rollback_selection(self, selection: AdmissionBatch) -> None:
+        """回载容量不足时撤销候选引用，并按原 FCFS 顺序放回队列。"""
+        for candidate in selection.admitted:
+            self._cache.cancel_pin(candidate.waiting.request.request_id)
+            self._insert(candidate.waiting)
+        for item in selection.restore_only:
+            self._cache.cancel_pin(item.request.request_id)
+            self._insert(item)
 
     def _pop_head(self) -> WaitingRequest:
         item = self._waiting.popleft()

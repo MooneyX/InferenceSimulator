@@ -186,6 +186,9 @@ class EngineConfig(_Frozen):
     page_size: int = Field(default=64, ge=1, description="每个 KV 页的 token 数")
     l2_capacity_tokens: int = Field(default=0, ge=0, description="L2 KV 的 token 容量；0 表示关闭")
     l3_capacity_tokens: int = Field(default=0, ge=0, description="L3 KV 的 token 容量；0 表示关闭")
+    l3_prefetch_min_tokens: int = Field(
+        default=256, ge=0, description="触发 L3 异步预取的最小可复用 token 数"
+    )
     pd_mutually_exclusive: bool = Field(default=True, description="Prefill 与 Decode 分步执行")
 
     @model_validator(mode="after")
@@ -220,6 +223,7 @@ class PerfModelConfig(_Frozen):
     l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:
@@ -304,6 +308,7 @@ class StorageSpec(_Frozen):
     l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class ResolvedRequest(_Frozen):

@@ -46,12 +46,24 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻：完成结算 → 到达 → 引擎步，与创建顺序无关。"""
+        """同刻先发布计算页，再结算完成、发布传输，最后处理到达。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         arrival = f.arrival(5.0, 1)
         done = f.request_done(5.0, 2)
-        assert sorted([step, arrival, done]) == [done, arrival, step]
+        end = f.step_done(5.0, 0)
+        lookup = f.l3_lookup_done(5.0, 1)
+        l3_l2 = f.l3_l2_done(5.0, 3)
+        l2_l1 = f.l2_l1_done(5.0, 4)
+        assert sorted([step, arrival, done, end, lookup, l3_l2, l2_l1]) == [
+            end,
+            done,
+            lookup,
+            l3_l2,
+            l2_l1,
+            arrival,
+            step,
+        ]
 
     def test_client_callbacks_and_immediate_children_precede_normal_send(self) -> None:
         f = EventFactory()

@@ -105,6 +105,7 @@ describe("parameter JSON transfer", () => {
       [{ ...base, hardware: { ...base.hardware, extra: 2 } }, "不支持的参数：hardware.extra"],
       [{ ...base, hardware: { ...base.hardware, ep_communication_latency_ms: -1 } }, "hardware.ep_communication_latency_ms"],
       [{ ...base, storage: { ...base.storage, l1_available_gb: -1 } }, "storage.l1_available_gb"],
+      [{ ...base, storage: { ...base.storage, l3_lookup_latency_ms: -1 } }, "storage.l3_lookup_latency_ms"],
       [{ ...base, ep_size: 2 }, "Dense 模型"],
       [{ ...base, model: { ...base.model, weight_dtype: "fp8" } }, "BF16/FP16"],
       [{ ...base, model: { ...base.model, moe_layers: 1 } }, "MoE 需要"],
@@ -130,6 +131,8 @@ describe("parameter JSON transfer", () => {
     config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 50;
     config.perf_model.l2_latency_ms = 1;
     config.perf_model.l3_latency_ms = 2;
+    config.perf_model.l3_lookup_latency_ms = 0.75;
+    config.engine.l3_prefetch_min_tokens = 0;
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
   });
 
@@ -138,6 +141,12 @@ describe("parameter JSON transfer", () => {
     const { l3_capacity_tokens: _omitted, ...missing } = base.engine;
     expect(() => parseSimConfigJson(JSON.stringify({ ...base, engine: missing })))
       .toThrow("缺少参数：engine.l3_capacity_tokens");
+    const { l3_prefetch_min_tokens: _noThreshold, ...withoutThreshold } = base.engine;
+    expect(() => parseSimConfigJson(JSON.stringify({ ...base, engine: withoutThreshold })))
+      .toThrow("缺少参数：engine.l3_prefetch_min_tokens");
+    const { l3_lookup_latency_ms: _noLookup, ...withoutLookup } = base.perf_model;
+    expect(() => parseSimConfigJson(JSON.stringify({ ...base, perf_model: withoutLookup })))
+      .toThrow("缺少参数：perf_model.l3_lookup_latency_ms");
     expect(() => parseSimConfigJson(JSON.stringify({
       ...base, perf_model: { ...base.perf_model, unknown_link: 1 },
     }))).toThrow("不支持的参数：perf_model.unknown_link");
@@ -147,6 +156,12 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify({
       ...base, engine: { ...base.engine, l3_capacity_tokens: 64 },
     }))).toThrow("engine.l3_capacity_tokens");
+    expect(() => parseSimConfigJson(JSON.stringify({
+      ...base, engine: { ...base.engine, l3_prefetch_min_tokens: -1 },
+    }))).toThrow("engine.l3_prefetch_min_tokens");
+    expect(() => parseSimConfigJson(JSON.stringify({
+      ...base, perf_model: { ...base.perf_model, l3_lookup_latency_ms: -1 },
+    }))).toThrow("perf_model.l3_lookup_latency_ms");
   });
 
   it("refuses to export invalid drafts instead of silently converting non-finite values to null", () => {
@@ -159,5 +174,8 @@ describe("parameter JSON transfer", () => {
     config.perf_model.kv_bytes_per_token = null;
     config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = Number.POSITIVE_INFINITY;
     expect(() => serializeSimConfig(config)).toThrow("l2_to_l1_bandwidth_bytes_per_ms");
+    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = null;
+    config.perf_model.l3_lookup_latency_ms = Number.NaN;
+    expect(() => serializeSimConfig(config)).toThrow("l3_lookup_latency_ms");
   });
 });

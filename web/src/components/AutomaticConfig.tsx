@@ -41,7 +41,7 @@ export const initialHardware: Hardware = {
 export const initialStorage: Storage = {
   l1_available_gb: 200, l2_available_gb: 2048, l3_available_gb: 40_000,
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
-  l2_latency_ms: 0, l3_latency_ms: 0,
+  l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
 };
 
 function Input({ label, value, onChange, optional = false }: {
@@ -181,6 +181,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         ["l3_to_l2_gb_s", "L3 → L2 带宽（GB/s）"],
         ["l2_latency_ms", "L2 固定延迟（ms）"],
         ["l3_latency_ms", "L3 固定延迟（ms）"],
+        ["l3_lookup_latency_ms", "L3 查找延迟（ms）"],
       ] as const).map(([field, label]) => <Input key={field} label={label}
         value={field === "runtime_reserve_bytes" ? storage[field] / 1e9 :
           field === "l3_available_gb" ? storage[field] / 1000 : storage[field]}

@@ -23,6 +23,7 @@ const config: SimConfig = {
     max_total_tokens: 4096,
     l2_capacity_tokens: 0,
     l3_capacity_tokens: 0,
+    l3_prefetch_min_tokens: 256,
     max_prefill_tokens: 16_384,
     page_size: 64,
     pd_mutually_exclusive: true,
@@ -37,6 +38,7 @@ const config: SimConfig = {
     l3_to_l2_bandwidth_bytes_per_ms: null,
     l2_latency_ms: 0,
     l3_latency_ms: 0,
+    l3_lookup_latency_ms: 0,
   },
 };
 

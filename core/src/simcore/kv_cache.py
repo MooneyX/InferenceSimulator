@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from heapq import heapify, heappop, heappush
+from heapq import heappop, heappush
 
 from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import InferenceRequest
@@ -17,6 +17,8 @@ __all__ = [
     "TierSnapshot",
     "TieredKVCache",
 ]
+
+_TIER_ORDER = ("L1", "L2", "L3")
 
 
 class CacheCapacityError(ValueError):
@@ -67,6 +69,7 @@ class TierSnapshot:
 class _TierState:
     capacity: int
     resident: int = 0
+    reserved: int = 0
     evictable: int = 0
     peak: int = 0
     evictions: int = 0
@@ -107,6 +110,7 @@ class TieredKVCache:
         self._requests: dict[int, InferenceRequest] = {}
         self._states: dict[int, KVRequestState] = {}
         self._pins: dict[int, tuple[InferenceRequest, int]] = {}
+        self._transfers: dict[str, str] = {}
         self._evictable_heap = self._tiers["L1"].heap
         self._queued_evictions = self._tiers["L1"].queued
         self._private_pages = 0
@@ -351,13 +355,11 @@ class TieredKVCache:
         self,
         promote_ids: Iterable[str],
         reserve_pages: int,
-    ) -> tuple[
-        dict[str, CacheEntry],
-        list[tuple[str, str, str | None]],
-        tuple[tuple[str, str], ...],
-        int,
-    ]:
-        """在局部副本上模拟完整批次，不碰全局项、LRU 堆及计数。"""
+        *,
+        reserve_tier: str = "L1",
+        protected_id: str | None = None,
+    ) -> tuple[list[tuple[str, str, str | None]], tuple[tuple[str, str], ...]]:
+        """仅试算受影响页：增量覆盖表和堆前沿，不复制驻留索引或修改真实 LRU。"""
         if reserve_pages < 0:
             raise ValueError("所需页数不得为负")
         needed = tuple(sorted(set(promote_ids)))
@@ -365,76 +367,136 @@ class TieredKVCache:
             page = self._entries.get(chunk_id)
             if page is None:
                 raise ValueError("待提升页不存在")
+            if chunk_id in self._transfers:
+                raise ValueError("在途页不能同步提升")
             if page.tier != "L1" and not page.ref_count:
                 raise ValueError("待提升的低层页必须先 pin")
-        if reserve_pages <= self.free_pages and all(
+        target = self._tiers[reserve_tier]
+        if reserve_pages <= target.capacity - target.resident and all(
             self._entries[chunk_id].tier == "L1" for chunk_id in needed
         ):
-            return self._entries, [], (), self._access_seq
-        entries = dict(self._entries)  # 先在副本上试迁移，容量不足时不改真实缓存
-        ids = {tier: set(state.ids) for tier, state in self._tiers.items()}
+            return [], ()
+
+        counts = {tier: state.resident for tier, state in self._tiers.items()}
+        changed: dict[str, CacheEntry | None] = {}
         seq = self._access_seq
-        private = self._private_pages
         actions: list[tuple[str, str, str | None]] = []
         promoted: list[tuple[str, str]] = []
-        # 只在试算内建堆；失败时不会消费真实缓存的 LRU 候选。
-        heaps: dict[str, list[tuple[int, str]]] = {}
+        # 用二叉堆下标遍历原堆的最小候选；无论成功或失败，原堆均不被弹出。
+        frontiers: dict[str, list[tuple[int, str, int]]] = {}
+        added: dict[str, list[tuple[int, str]]] = {}
+
+        def next_victim(tier: str) -> CacheEntry:
+            state = self._tiers[tier]
+            frontier = frontiers.setdefault(tier, [])
+            local = added.setdefault(tier, [])
+            if not frontier and tier not in traversed:
+                traversed.add(tier)
+                if state.heap:
+                    key = state.heap[0]
+                    heappush(frontier, (*key, 0))
+            while frontier or local:
+                if frontier and (not local or frontier[0][:2] <= local[0]):
+                    access_seq, chunk_id, index = heappop(frontier)
+                    for child in (2 * index + 1, 2 * index + 2):
+                        if child < len(state.heap):
+                            heappush(frontier, (*state.heap[child], child))
+                else:
+                    access_seq, chunk_id = heappop(local)
+                page = changed.get(chunk_id, self._entries.get(chunk_id))
+                if (
+                    page is not None
+                    and page.tier == tier
+                    and not page.ref_count
+                    and page.last_access_seq == access_seq
+                    and chunk_id != protected_id
+                ):
+                    return page
+            raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
+
+        traversed: set[str] = set()
 
         def evict_one(tier: str) -> None:
             nonlocal seq
-            if tier not in heaps:
-                heaps[tier] = [
-                    (entries[key].last_access_seq, key)
-                    for key in ids[tier]
-                    if not entries[key].ref_count
-                ]
-                heapify(heaps[tier])
-            while heaps[tier]:
-                access_seq, chunk_id = heappop(heaps[tier])
-                victim = entries.get(chunk_id)
-                if (
-                    victim is not None
-                    and victim.tier == tier
-                    and not victim.ref_count
-                    and victim.last_access_seq == access_seq
-                ):
-                    break
-            else:
-                raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
+            victim = next_victim(tier)
             lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
-            if lower is not None and self._tiers[lower].capacity:
-                free_slot(lower)  # 下层满时逐层腾位，再降级本页
-            ids[tier].remove(victim.chunk_id)
-            if lower is None or not self._tiers[lower].capacity:
-                del entries[victim.chunk_id]
+            destination = lower if lower is not None and self._tiers[lower].capacity else None
+            if destination is not None:
+                free_slot(destination)
+            counts[tier] -= 1
+            if destination is None:
+                changed[victim.chunk_id] = None
             else:
                 seq += 1
-                moved = replace(victim, tier=lower, last_access_seq=seq)
-                entries[victim.chunk_id] = moved
-                ids[lower].add(victim.chunk_id)
-                if lower in heaps:
-                    heappush(heaps[lower], (moved.last_access_seq, moved.chunk_id))
-            destination = lower if lower and self._tiers[lower].capacity else None
+                moved = replace(victim, tier=destination, last_access_seq=seq)
+                changed[victim.chunk_id] = moved
+                counts[destination] += 1
+                heappush(added.setdefault(destination, []), (seq, victim.chunk_id))
             actions.append((victim.chunk_id, tier, destination))
 
         def free_slot(tier: str) -> None:
-            if len(ids[tier]) + (private if tier == "L1" else 0) >= self._tiers[tier].capacity:
+            while counts[tier] >= self._tiers[tier].capacity:
                 evict_one(tier)
 
         for chunk_id in needed:
-            page = entries[chunk_id]
-            if page.tier == "L1":
+            page = changed.get(chunk_id, self._entries[chunk_id])
+            if page is None or page.tier == "L1":
                 continue
             source = page.tier
-            ids[source].remove(chunk_id)
+            counts[source] -= 1
+            changed[chunk_id] = None
             free_slot("L1")
             seq += 1
-            entries[chunk_id] = replace(page, tier="L1", last_access_seq=seq)
-            ids["L1"].add(chunk_id)
+            changed[chunk_id] = replace(page, tier="L1", last_access_seq=seq)
+            counts["L1"] += 1
+            actions.append((chunk_id, source, "L1"))
             promoted.append((chunk_id, source))
-        while self._tiers["L1"].capacity - len(ids["L1"]) - private < reserve_pages:
-            evict_one("L1")
-        return entries, actions, tuple(promoted), seq
+        while target.capacity - counts[reserve_tier] < reserve_pages:
+            evict_one(reserve_tier)
+        return actions, tuple(promoted)
+
+    def _apply_move(
+        self, chunk_id: str, source: str, destination: str | None, *, detached: bool = False
+    ) -> None:
+        """仅提交一页的索引、计数和 LRU 差量。"""
+        page = self._entries[chunk_id]
+        old = self._tiers[source]
+        if not detached:
+            old.ids.remove(chunk_id)
+            old.resident -= 1
+            if not page.ref_count:
+                old.evictable -= 1
+        if destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(source):
+            self.promotions += 1
+            if source == "L2":
+                self.l2_promotions += 1
+            else:
+                self.l3_promotions += 1
+        else:
+            old.evictions += 1
+            if destination is None:
+                self.deletions += 1
+            else:
+                self.demotions += 1
+                if (source, destination) == ("L1", "L2"):
+                    self.l1_to_l2_demotions += 1
+                elif (source, destination) == ("L2", "L3"):
+                    self.l2_to_l3_demotions += 1
+        if destination is None:
+            del self._entries[chunk_id]
+            return
+        self._access_seq += 1
+        moved = replace(page, tier=destination, last_access_seq=self._access_seq)
+        self._entries[chunk_id] = moved
+        target = self._tiers[destination]
+        target.ids.add(chunk_id)
+        target.resident += 1
+        target.peak = max(target.peak, target.resident)
+        if not moved.ref_count:
+            target.evictable += 1
+            key = (moved.last_access_seq, chunk_id)
+            heappush(target.heap, key)
+            target.queued.add(key)
 
     def plan(
         self,
@@ -442,54 +504,73 @@ class TieredKVCache:
         reserve_pages: int = 0,
     ) -> tuple[tuple[str, str], ...]:
         """预检提升和新增私有页所需容量；失败无任何状态副作用。"""
-        return self._migration_plan(promote_ids, reserve_pages)[2]
+        return self._migration_plan(promote_ids, reserve_pages)[1]
 
     def promote(
         self,
         promote_ids: Iterable[str] = (),
         reserve_pages: int = 0,
     ) -> tuple[tuple[str, str], ...]:
-        """全批次容量预检通过后一次性提交提升、降级及末层删除。"""
-        entries, actions, promoted, seq = self._migration_plan(promote_ids, reserve_pages)
-        if not actions and not promoted:
-            return promoted
-        self._entries.clear()
-        self._entries.update(entries)
-        self._access_seq = seq
-        for _, source, dest in actions:
-            self._tiers[source].evictions += 1
-            if dest is None:
-                self.deletions += 1
-            else:
-                self.demotions += 1
-                if source == "L1":
-                    self.l1_to_l2_demotions += 1
-                else:
-                    self.l2_to_l3_demotions += 1
-        for _, source in promoted:
-            self.promotions += 1
-            if source == "L2":
-                self.l2_promotions += 1
-            else:
-                self.l3_promotions += 1
-        for tier, state in self._tiers.items():
-            state.ids.clear()
-            state.heap.clear()  # 提交迁移后重建 LRU，避免旧层级的堆项残留
-            state.queued.clear()
-            state.resident = self._private_pages if tier == "L1" else 0
-            state.evictable = 0
-        for chunk_id, page in self._entries.items():
-            state = self._tiers[page.tier]
-            state.ids.add(chunk_id)
-            state.resident += 1
-            if not page.ref_count:
-                state.evictable += 1
-                key = (page.last_access_seq, chunk_id)
-                heappush(state.heap, key)
-                state.queued.add(key)
-        for state in self._tiers.values():
-            state.peak = max(state.peak, state.resident)
+        """局部试算通过后增量提交批次迁移。"""
+        actions, promoted = self._migration_plan(promote_ids, reserve_pages)
+        detached = {chunk_id for chunk_id, _ in promoted}
+        for chunk_id, source in promoted:
+            origin = self._tiers[source]
+            origin.ids.remove(chunk_id)
+            origin.resident -= 1
+        for chunk_id, source, destination in actions:
+            self._apply_move(
+                chunk_id, source, destination, detached=chunk_id in detached and destination == "L1"
+            )
         return promoted
+
+    def reserve_transfer(self, chunk_id: str, destination: str) -> str:
+        """保护来源并占用目的容量；查询仍只观察来源页。"""
+        page = self._entries.get(chunk_id)
+        if page is None:
+            raise ValueError("待传输页不存在")
+        if chunk_id in self._transfers:
+            raise ValueError("同一页已有在途传输")
+        if destination not in self._tiers or not self._tiers[destination].capacity:
+            raise ValueError("目的层不存在或未启用")
+        source = page.tier
+        if source == destination:
+            raise ValueError("来源与目的层不能相同")
+        if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count:
+            raise CacheCapacityError("有活动引用的页不能降级")
+        actions, _ = self._migration_plan((), 1, reserve_tier=destination, protected_id=chunk_id)
+        for victim, source_tier, destination_tier in actions:
+            self._apply_move(victim, source_tier, destination_tier)
+        self._add_ref(chunk_id, refresh=False)
+        target = self._tiers[destination]
+        target.resident += 1
+        target.reserved += 1
+        target.peak = max(target.peak, target.resident)
+        self._transfers[chunk_id] = destination
+        return source
+
+    def complete_transfer(self, chunk_id: str) -> str:
+        """传输完成时将来源页迁入占位，最后释放传输 pin。"""
+        destination = self._transfers[chunk_id]
+        page = self._entries[chunk_id]
+        source = page.tier
+        if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count > 1:
+            raise CacheCapacityError("在途降级页获得活动引用，须先取消传输")
+        target = self._tiers[destination]
+        target.reserved -= 1
+        target.resident -= 1
+        self._apply_move(chunk_id, source, destination)
+        self._drop_ref(chunk_id)
+        del self._transfers[chunk_id]
+        return source
+
+    def cancel_transfer(self, chunk_id: str) -> None:
+        """撤销目的层占位和来源页保护，不刷新来源 LRU。"""
+        destination = self._transfers.pop(chunk_id)
+        target = self._tiers[destination]
+        target.reserved -= 1
+        target.resident -= 1
+        self._drop_ref(chunk_id)
 
     def prepare_batch(
         self,

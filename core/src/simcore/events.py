@@ -9,10 +9,9 @@
 
 同刻全序（可复现性的前提）：``(time, kind, ref, seq)``。
 
-- ``kind`` 优先级：``REQUEST_DONE`` < ``CLIENT_COMPLETION`` <
-  ``CLIENT_CHILD_SEND`` < ``CLIENT_SEND`` < ``OPEN_LOOP_TICK`` < ``ENGINE_STEP``。
-  先按请求 ID 结算全部完成、释放 KV 和回调，再处理闭环唤醒及开环时钟，
-  最后安排引擎步。将来才到达的闭环子轮与普通发送同级。
+- ``kind`` 优先级：步末发布、请求结算及客户端回调先于传输完成，
+  传输完成先于本时刻的发送，所有发送先于新引擎步。
+  将来才到达的闭环子轮与普通发送同级。
 - ``ref`` 在同类事件内按请求 ID 排序；``seq`` 只负责相同 ID 的最终平局。
 
 依赖层级：仅依赖 ``schemas``。
@@ -40,13 +39,17 @@ __all__ = [
 class EventKind(IntEnum):
     """事件类别。枚举值即同刻优先级，越小越先处理。"""
 
-    REQUEST_DONE = 0
-    CLIENT_COMPLETION = 1
-    CLIENT_CHILD_SEND = 2
-    CLIENT_SEND = 3
-    ARRIVAL = 3  # 旧调用方的发送事件别名
-    OPEN_LOOP_TICK = 4
-    ENGINE_STEP = 5
+    STEP_DONE = 0
+    REQUEST_DONE = 1
+    CLIENT_COMPLETION = 2
+    L3_LOOKUP_DONE = 3
+    L3_L2_DONE = 4
+    L2_L1_DONE = 5
+    CLIENT_CHILD_SEND = 6
+    CLIENT_SEND = 7
+    ARRIVAL = 7  # 手写到达事件别名
+    OPEN_LOOP_TICK = 8
+    ENGINE_STEP = 9
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -100,6 +103,18 @@ class EventFactory:
 
     def engine_step(self, time: float, instance_id: int) -> Event:
         return self._make(time, EventKind.ENGINE_STEP, instance_id)
+
+    def step_done(self, time: float, instance_id: int) -> Event:
+        return self._make(time, EventKind.STEP_DONE, instance_id)
+
+    def l3_lookup_done(self, time: float, request_id: int) -> Event:
+        return self._make(time, EventKind.L3_LOOKUP_DONE, request_id)
+
+    def l3_l2_done(self, time: float, transfer_id: int) -> Event:
+        return self._make(time, EventKind.L3_L2_DONE, transfer_id)
+
+    def l2_l1_done(self, time: float, transfer_id: int) -> Event:
+        return self._make(time, EventKind.L2_L1_DONE, transfer_id)
 
     def request_done(self, time: float, request_id: int) -> Event:
         return self._make(time, EventKind.REQUEST_DONE, request_id)

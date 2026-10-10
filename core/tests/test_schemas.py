@@ -22,6 +22,7 @@ from simcore.schemas import (
     SimMeta,
     SimResult,
     SkippedRequest,
+    StorageSpec,
     SyntheticWorkloadConfig,
     WorkloadConfig,
     validate_kv_config,
@@ -117,6 +118,7 @@ class TestConfigValidation:
             {"l2_capacity_tokens": 1},
             {"l3_capacity_tokens": 1},
             {"l3_capacity_tokens": 64},
+            {"l3_prefetch_min_tokens": -1},
         ],
     )
     def test_engine_bounds(self, overrides: dict[str, int]) -> None:
@@ -127,6 +129,7 @@ class TestConfigValidation:
         engine = make_config().engine
         assert (engine.page_size, engine.capacity_pages) == (64, 64)
         assert engine.max_prefill_tokens == 16_384
+        assert engine.l3_prefetch_min_tokens == 256
         assert engine.pd_mutually_exclusive is True
         assert engine.model_dump() == {
             "max_running_requests": 8,
@@ -135,8 +138,10 @@ class TestConfigValidation:
             "page_size": 64,
             "l2_capacity_tokens": 0,
             "l3_capacity_tokens": 0,
+            "l3_prefetch_min_tokens": 256,
             "pd_mutually_exclusive": True,
         }
+        assert make_config(l3_prefetch_min_tokens=0).engine.l3_prefetch_min_tokens == 0
         assert make_config(max_total_tokens=128).engine.capacity_pages == 2
         assert make_config(max_total_tokens=128, page_size=1).engine.capacity_pages == 128
         assert make_config(pd_mutually_exclusive=False).engine.pd_mutually_exclusive is False
@@ -154,7 +159,14 @@ class TestConfigValidation:
 
     def test_prefill_c2_defaults_to_zero(self) -> None:
         perf = make_config().perf_model
-        assert perf.prefill_c2 == perf.l2_latency_ms == perf.l3_latency_ms == 0.0
+        assert (
+            perf.prefill_c2
+            == perf.l2_latency_ms
+            == perf.l3_latency_ms
+            == perf.l3_lookup_latency_ms
+            == 0.0
+        )
+        assert StorageSpec(l1_available_gb=1).l3_lookup_latency_ms == 0.0
         assert perf.kv_bytes_per_token is None
         assert perf.l2_to_l1_bandwidth_bytes_per_ms is None
         assert perf.l3_to_l2_bandwidth_bytes_per_ms is None
@@ -173,12 +185,19 @@ class TestConfigValidation:
             ("l3_latency_ms", -1),
             ("l2_latency_ms", float("inf")),
             ("l3_latency_ms", float("nan")),
+            ("l3_lookup_latency_ms", -1),
+            ("l3_lookup_latency_ms", float("inf")),
         ],
     )
     def test_invalid_tiered_perf_coefficients_rejected(self, field: str, invalid: float) -> None:
         payload = make_config().perf_model.model_dump()
         with pytest.raises(ValidationError):
             PerfModelConfig.model_validate({**payload, field: invalid})
+
+    @pytest.mark.parametrize("invalid", [-1, float("inf"), float("nan")])
+    def test_invalid_storage_lookup_latency_rejected(self, invalid: float) -> None:
+        with pytest.raises(ValidationError):
+            StorageSpec(l1_available_gb=1, l3_lookup_latency_ms=invalid)
 
     @pytest.mark.parametrize(
         ("tier", "perf_updates", "missing"),

@@ -86,11 +86,11 @@ export function parseSimConfigJson(json: string): SimConfig {
 
   const engine = objectWithKeys(root.engine, "engine", [
     "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
-    "max_prefill_tokens", "page_size", "pd_mutually_exclusive",
+    "max_prefill_tokens", "l3_prefetch_min_tokens", "page_size", "pd_mutually_exclusive",
   ]);
   numericFields(engine, "engine", [
     "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
-    "max_prefill_tokens", "page_size",
+    "max_prefill_tokens", "l3_prefetch_min_tokens", "page_size",
   ]);
   if (typeof engine.pd_mutually_exclusive !== "boolean") {
     throw new Error("engine.pd_mutually_exclusive 必须是布尔值");
@@ -99,10 +99,11 @@ export function parseSimConfigJson(json: string): SimConfig {
   const perfModel = objectWithKeys(root.perf_model, "perf_model", [
     "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "kv_bytes_per_token",
     "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
-    "l2_latency_ms", "l3_latency_ms",
+    "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms",
   ]);
   numericFields(perfModel, "perf_model", [
     "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "l2_latency_ms", "l3_latency_ms",
+    "l3_lookup_latency_ms",
   ]);
   for (const key of [
     "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
@@ -160,7 +161,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     "kernel_overhead_ms"]);
   const storage = physicalObject(root.storage, "storage", ["l1_available_gb"],
     ["l2_available_gb", "l3_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
-      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]);
+      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]);
   for (const [part, record] of [["model", model], ["hardware", hardware]] as const) {
     if (typeof record.name !== "string" || !record.name.trim()) throw new Error(`${part}.name 不能为空`);
   }
@@ -203,7 +204,8 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   }
   physicalNumber(hardware, "hardware", "kernel_overhead_ms", 0);
   physicalNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
-  for (const key of ["l2_available_gb", "l3_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
+  for (const key of ["l2_available_gb", "l3_available_gb", "l2_latency_ms", "l3_latency_ms",
+    "l3_lookup_latency_ms"] as const) {
     physicalNumber(storage, "storage", key, 0);
   }
   physicalNumber(storage, "storage", "runtime_reserve_bytes", 0, true);

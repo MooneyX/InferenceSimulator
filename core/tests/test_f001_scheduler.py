@@ -207,6 +207,18 @@ def test_unexecutable_request_rejected_at_send_and_never_queued() -> None:
     assert scheduler.select_prefill({}).admitted == ()
 
 
+def test_prefetch_waiting_head_blocks_later_prefill_without_pinning() -> None:
+    scheduler, cache = make()
+    scheduler.enqueue(request(0), 0)
+    scheduler.enqueue(request(1), 1)
+    assert scheduler.head_request_id == 0
+    blocked = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    assert blocked.blocked and not blocked.admitted
+    assert scheduler.num_waiting == 2 and not cache._pins
+    ready = scheduler.select_prefill({}, is_ready=lambda _: True)
+    assert [item.waiting.request.request_id for item in ready.admitted] == [0, 1]
+
+
 def test_restored_full_hit_requires_no_empty_prefill_step() -> None:
     scheduler, cache = make(capacity=192)
     item = request(0, maximum=10)

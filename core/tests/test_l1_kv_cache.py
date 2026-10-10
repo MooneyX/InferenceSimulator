@@ -244,7 +244,7 @@ def tier_page(cache: TieredKVCache, chunk_id: str) -> CacheEntry:
 def assert_tiers_conserved(cache: TieredKVCache) -> None:
     entries = cache._entries
     assert sum(snapshot.resident_blocks for snapshot in cache.tier_snapshots().values()) == (
-        len(entries) + cache.private_pages
+        len(entries) + cache.private_pages + sum(state.reserved for state in cache._tiers.values())
     )
     for tier, snapshot in cache.tier_snapshots().items():
         assert snapshot.free_blocks + snapshot.resident_blocks == snapshot.capacity_blocks
@@ -252,8 +252,10 @@ def assert_tiers_conserved(cache: TieredKVCache) -> None:
         assert snapshot.evictable_blocks == sum(
             entry.tier == tier and entry.ref_count == 0 for entry in entries.values()
         )
-        assert snapshot.resident_blocks == sum(entry.tier == tier for entry in entries.values()) + (
-            cache.private_pages if tier == "L1" else 0
+        assert snapshot.resident_blocks == (
+            sum(entry.tier == tier for entry in entries.values())
+            + (cache.private_pages if tier == "L1" else 0)
+            + cache._tiers[tier].reserved
         )
 
 
@@ -402,4 +404,243 @@ def test_tiered_l3_promotion_uses_source_slot_for_two_level_cascade() -> None:
     assert cache.free_pages == 1
     cache.admit(contender.request_id)
     cache.withdraw(contender.request_id)
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_reserves_destination_without_exposing_page_or_refreshing_source() -> None:
+    cache = TieredKVCache(2, 1, 2)
+    for request_id in range(3):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    source = encode(0, 0)
+    cache.ensure_free(1)
+    before = cache.tier_snapshots()
+    page = tier_page(cache, source)
+    assert page.tier == "L2" and page.ref_count == 0
+    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.page(source) == CacheEntry(source, "L2", 1, page.last_access_seq)
+    assert cache.probe(request(9, 2, (source,)), 2) == ((source, "L2"),)
+    assert cache.tier_snapshot("L1").resident_blocks == before["L1"].resident_blocks + 1
+    assert cache.tier_snapshot("L1").free_blocks == before["L1"].free_blocks - 1
+    assert cache.tier_snapshot("L2").evictable_blocks == before["L2"].evictable_blocks - 1
+    with pytest.raises(ValueError, match="在途"):
+        cache.reserve_transfer(source, "L1")
+    cache.cancel_transfer(source)
+    assert cache.page(source) == page
+    assert cache.tier_snapshots() == before
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_completion_moves_one_page_into_reserved_slot() -> None:
+    cache = TieredKVCache(2, 1, 2)
+    for request_id in range(3):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    cache.ensure_free(1)
+    source = encode(0, 0)
+    old_count = len(cache._entries)
+    old_promotions = cache.promotions
+    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.complete_transfer(source) == "L2"
+    assert tier_page(cache, source).tier == "L1"
+    assert tier_page(cache, source).ref_count == 0
+    assert cache.promotions == old_promotions + 1
+    assert len(cache._entries) == old_count
+    assert cache._tiers["L1"].reserved == 0
+    assert cache._tiers["L2"].reserved == 0
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_failed_reservation_preserves_all_cache_state() -> None:
+    cache = TieredKVCache(1, 1, 1)
+    for request_id in range(2):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    source = encode(0, 0)
+    entries = dict(cache._entries)
+    snapshots = cache.tier_snapshots()
+    heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
+    queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
+    with pytest.raises(CacheCapacityError):
+        cache.reserve_transfer(source, "L1")
+    assert cache._entries == entries
+    assert cache.tier_snapshots() == snapshots
+    assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
+    assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
+    assert cache._transfers == {}
+    assert_tiers_conserved(cache)
+
+
+def test_full_transfer_destination_evicted_by_lru_before_reservation() -> None:
+    cache = TieredKVCache(1, 1, 2, 2)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    source = encode(0, 0)
+    assert tier_page(cache, source).tier == "L3"
+    assert cache.tier_snapshot("L2").free_blocks == 0
+    evictions = cache.tier_snapshot("L2").evictions
+    assert cache.reserve_transfer(source, "L2") == "L3"
+    assert cache.tier_snapshot("L2").evictions == evictions + 1
+    assert tier_page(cache, encode(1, 0)).tier == "L3"
+    assert tier_page(cache, source).tier == "L3"
+    assert cache.tier_snapshot("L2").free_blocks == 0
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(source) == "L3"
+    assert tier_page(cache, source).tier == "L2"
+    assert_tiers_conserved(cache)
+
+
+def test_full_transfer_cascade_failure_protects_source_and_is_atomic() -> None:
+    cache = TieredKVCache(1, 1, 1, 1)
+    for request_id in range(3):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    source = encode(0, 0)
+    assert tier_page(cache, source).tier == "L3"
+    entries = dict(cache._entries)
+    snapshots = cache.tier_snapshots()
+    heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
+    queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
+    counters = (cache._access_seq, cache.promotions, cache.demotions, cache.deletions)
+    with pytest.raises(CacheCapacityError):
+        cache.reserve_transfer(source, "L2")
+    assert cache._entries == entries
+    assert cache.tier_snapshots() == snapshots
+    assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
+    assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
+    assert (cache._access_seq, cache.promotions, cache.demotions, cache.deletions) == counters
+    assert cache._transfers == {}
+    assert_tiers_conserved(cache)
+
+
+def test_incremental_promotion_keeps_unaffected_entries_and_heaps() -> None:
+    cache = TieredKVCache(3, 1, 3)
+    for request_id in range(5):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    source = encode(0, 0)
+    unrelated = encode(4, 0)
+    page = tier_page(cache, unrelated)
+    heaps = {tier: state.heap for tier, state in cache._tiers.items()}
+    cache.pin(request(8, 2, (source,)), 1)
+    assert cache.promote((source,)) == ((source, "L2"),)
+    assert cache.page(unrelated) is page
+    assert all(state.heap is heaps[tier] for tier, state in cache._tiers.items())
+    cache.cancel_pin(8)
+    assert_tiers_conserved(cache)
+
+
+def test_inflight_demotion_retains_source_until_completion_and_rejects_new_active_refs() -> None:
+    cache = TieredKVCache(2, 1, 2)
+    run_prefill(cache, request(0, 1))
+    cache.finish(0)
+    source = encode(0, 0)
+    assert cache.reserve_transfer(source, "L2") == "L1"
+    assert tier_page(cache, source).tier == "L1"
+    assert tier_page(cache, source).ref_count == 1
+    assert cache.tier_snapshot("L2").resident_blocks == 1
+    cache.pin(request(1, 2, (source,)), 1)
+    snapshots = cache.tier_snapshots()
+    with pytest.raises(CacheCapacityError, match="活动引用"):
+        cache.complete_transfer(source)
+    assert cache.tier_snapshots() == snapshots
+    cache.cancel_pin(1)
+    assert cache.complete_transfer(source) == "L1"
+    assert tier_page(cache, source).tier == "L2"
+    assert tier_page(cache, source).ref_count == 0
+    assert cache.l1_to_l2_demotions == 1
+    assert cache.tier_snapshot("L1").evictions == 1
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_promotes_pinned_source_and_retains_request_reference() -> None:
+    cache = TieredKVCache(2, 1, 2)
+    for request_id in range(3):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    cache.ensure_free(1)
+    source = encode(0, 0)
+    cache.pin(request(9, 2, (source,)), 1)
+    page = tier_page(cache, source)
+    assert page.tier == "L2" and page.ref_count == 1
+    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert tier_page(cache, source).tier == "L2"
+    assert tier_page(cache, source).ref_count == 2
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(source) == "L2"
+    assert tier_page(cache, source).tier == "L1"
+    assert tier_page(cache, source).ref_count == 1
+    cache.admit(9)
+    cache.withdraw(9)
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_rejects_pinned_demotion_without_allocating_destination() -> None:
+    cache = TieredKVCache(2, 1, 2)
+    run_prefill(cache, request(0, 1))
+    cache.finish(0)
+    source = encode(0, 0)
+    cache.pin(request(9, 2, (source,)), 1)
+    page = tier_page(cache, source)
+    snapshots = cache.tier_snapshots()
+    with pytest.raises(CacheCapacityError, match="活动引用"):
+        cache.reserve_transfer(source, "L2")
+    assert cache.page(source) == page
+    assert cache.tier_snapshots() == snapshots
+    assert cache._transfers == {}
+    cache.cancel_pin(9)
+    assert_tiers_conserved(cache)
+
+
+def test_parallel_transfer_reservations_are_counted_and_isolated() -> None:
+    cache = TieredKVCache(3, 1, 3)
+    for request_id in range(4):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    cache.ensure_free(2)
+    first, second = encode(0, 0), encode(1, 0)
+    assert cache.reserve_transfer(first, "L1") == "L2"
+    assert cache.reserve_transfer(second, "L1") == "L2"
+    assert cache.tier_snapshot("L1").free_blocks == 0
+    assert_tiers_conserved(cache)
+    snapshots = cache.tier_snapshots()
+    with pytest.raises(CacheCapacityError):
+        cache.plan(reserve_pages=2)
+    assert cache.tier_snapshots() == snapshots
+    cache.cancel_transfer(first)
+    assert cache.tier_snapshot("L1").free_blocks == 1
+    assert cache.complete_transfer(second) == "L2"
+    assert tier_page(cache, first).tier == "L2"
+    assert tier_page(cache, second).tier == "L1"
+    assert_tiers_conserved(cache)
+
+
+def test_l3_to_l2_reload_is_promotion_and_preserves_new_request_refs() -> None:
+    cache = TieredKVCache(2, 1, 2, 2)
+    for request_id in range(5):
+        run_prefill(cache, request(request_id, 1))
+        cache.finish(request_id)
+    cache.ensure_free(1)
+    make_room = encode(2, 0)
+    cache.pin(request(9, 2, (make_room,)), 1)
+    cache.promote((make_room,))
+    cache.cancel_pin(9)
+    source = encode(0, 0)
+    assert tier_page(cache, source).tier == "L3"
+    counters = cache.promotions, cache.l3_promotions, cache.demotions
+    l3_evictions = cache.tier_snapshot("L3").evictions
+    assert cache.reserve_transfer(source, "L2") == "L3"
+    cache.pin(request(10, 2, (source,)), 1)
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(source) == "L3"
+    assert tier_page(cache, source).tier == "L2"
+    assert tier_page(cache, source).ref_count == 1
+    assert (cache.promotions, cache.l3_promotions, cache.demotions) == (
+        counters[0] + 1,
+        counters[1] + 1,
+        counters[2],
+    )
+    assert cache.tier_snapshot("L3").evictions == l3_evictions
+    cache.cancel_pin(10)
     assert_tiers_conserved(cache)

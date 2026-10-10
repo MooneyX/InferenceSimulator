@@ -24,6 +24,7 @@ export type ConfigField =
   | "engine.max_total_tokens"
   | "engine.l2_capacity_tokens"
   | "engine.l3_capacity_tokens"
+  | "engine.l3_prefetch_min_tokens"
   | "engine.max_prefill_tokens"
   | "engine.page_size"
   | "engine.pd_mutually_exclusive"
@@ -32,6 +33,7 @@ export type ConfigField =
   | "perf_model.l3_to_l2_bandwidth_bytes_per_ms"
   | "perf_model.l2_latency_ms"
   | "perf_model.l3_latency_ms"
+  | "perf_model.l3_lookup_latency_ms"
   | "perf_model.prefill_c1"
   | "perf_model.prefill_c2"
   | "perf_model.decode_d1"
@@ -72,6 +74,7 @@ export function createDefaultSimConfig(): SimConfig {
       max_total_tokens: 65_536,
       l2_capacity_tokens: 0,
       l3_capacity_tokens: 0,
+      l3_prefetch_min_tokens: 256,
       max_prefill_tokens: 16_384,
       page_size: 64,
       pd_mutually_exclusive: true,
@@ -86,6 +89,7 @@ export function createDefaultSimConfig(): SimConfig {
       l3_to_l2_bandwidth_bytes_per_ms: null,
       l2_latency_ms: 0,
       l3_latency_ms: 0,
+      l3_lookup_latency_ms: 0,
     },
   };
 }
@@ -198,6 +202,9 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   validatePositiveInteger(errors, "engine.max_running_requests", engine.max_running_requests);
   validatePositiveInteger(errors, "engine.max_total_tokens", engine.max_total_tokens);
   validatePositiveInteger(errors, "engine.max_prefill_tokens", engine.max_prefill_tokens);
+  if (!Number.isInteger(engine.l3_prefetch_min_tokens) || engine.l3_prefetch_min_tokens < 0) {
+    errors.push({ field: "engine.l3_prefetch_min_tokens", message: "必须是大于或等于 0 的整数" });
+  }
   validatePositiveInteger(errors, "engine.page_size", engine.page_size);
   if (typeof engine.pd_mutually_exclusive !== "boolean") {
     errors.push({ field: "engine.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
@@ -250,6 +257,7 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   }
   validateFiniteNumber(errors, "perf_model.l2_latency_ms", perfModel.l2_latency_ms, 0);
   validateFiniteNumber(errors, "perf_model.l3_latency_ms", perfModel.l3_latency_ms, 0);
+  validateFiniteNumber(errors, "perf_model.l3_lookup_latency_ms", perfModel.l3_lookup_latency_ms, 0);
 
   return errors;
 }

@@ -30,6 +30,8 @@ class Coordinator:
         self._completions: dict[int, RequestCompletion] = {}
         self._step_pending = [False] * len(self.engines)
         self._busy_until = [float("-inf")] * len(self.engines)
+        self._transfer_owners: dict[int, tuple[int, int]] = {}
+        self._next_transfer_id = 0
         if isinstance(client, OpenLoopClient):
             arrival_rng = random.Random(stable_derive(client.config.seed, "open-loop-arrival"))
             rate_per_ms = cast(float, client.config.arrival_rate) / 1000.0
@@ -60,10 +62,27 @@ class Coordinator:
                 engine.register_skipped(self.client.on_request_aborted(request_id))
 
     def _schedule_step(self, instance_id: int, now_ms: float) -> None:
-        if not self._step_pending[instance_id]:
+        if not self._step_pending[instance_id] and self.engines[instance_id].can_step:
             time = max(now_ms, self._busy_until[instance_id])
             heapq.heappush(self._heap, self._factory.engine_step(time, instance_id))
             self._step_pending[instance_id] = True
+
+    def _drain_engine_events(self, instance_id: int) -> None:
+        for time, kind, local_ref in self.engines[instance_id].drain_events():
+            if kind is EventKind.L3_LOOKUP_DONE:
+                event = self._factory.l3_lookup_done(time, local_ref)
+            elif kind in (EventKind.L3_L2_DONE, EventKind.L2_L1_DONE):
+                transfer_id = self._next_transfer_id
+                self._next_transfer_id += 1
+                self._transfer_owners[transfer_id] = (instance_id, local_ref)
+                event = (
+                    self._factory.l3_l2_done(time, transfer_id)
+                    if kind is EventKind.L3_L2_DONE
+                    else self._factory.l2_l1_done(time, transfer_id)
+                )
+            else:
+                raise ValueError(f"未知的引擎事件类型: {kind}")
+            heapq.heappush(self._heap, event)
 
     def _submit(self, request: InferenceRequest, output_len: int, now_ms: float) -> None:
         instance_id = self.router.select(request)
@@ -71,6 +90,7 @@ class Coordinator:
         engine.register_output_target(request.request_id, output_len)
         accepted = engine.submit(request, now_ms)
         self._process_aborts(instance_id)
+        self._drain_engine_events(instance_id)
         if accepted:
             self._schedule_step(instance_id, now_ms)
 
@@ -78,11 +98,19 @@ class Coordinator:
         while self._heap:
             event = heapq.heappop(self._heap)
             now_ms = event.time
-            if event.kind is EventKind.REQUEST_DONE:
-                engine = self.engines[self.router.instance_of(event.ref)]
+            if event.kind is EventKind.STEP_DONE:
+                instance_id = event.ref
+                for request_id in self.engines[instance_id].finish_step(now_ms):
+                    heapq.heappush(self._heap, self._factory.request_done(now_ms, request_id))
+                self._drain_engine_events(instance_id)
+                self._schedule_step(instance_id, now_ms)
+            elif event.kind is EventKind.REQUEST_DONE:
+                instance_id = self.router.instance_of(event.ref)
+                engine = self.engines[instance_id]
                 completion = engine.complete(now_ms, event.ref)
                 self._completions[event.ref] = completion
                 heapq.heappush(self._heap, self._factory.client_completion(now_ms, event.ref))
+                self._schedule_step(instance_id, now_ms)
             elif event.kind is EventKind.CLIENT_COMPLETION:
                 completion = self._completions.pop(event.ref)
                 if isinstance(self.client, OpenLoopClient):
@@ -91,6 +119,16 @@ class Coordinator:
                     self._enqueue_wakeups(
                         self.client.on_request_completed(completion), completed_at_ms=now_ms
                     )
+            elif event.kind is EventKind.L3_LOOKUP_DONE:
+                instance_id = self.router.instance_of(event.ref)
+                self.engines[instance_id].on_l3_lookup(event.ref, now_ms)
+                self._drain_engine_events(instance_id)
+                self._schedule_step(instance_id, now_ms)
+            elif event.kind in (EventKind.L3_L2_DONE, EventKind.L2_L1_DONE):
+                instance_id, local_ref = self._transfer_owners.pop(event.ref)
+                self.engines[instance_id].on_transfer_done(event.kind, local_ref, now_ms)
+                self._drain_engine_events(instance_id)
+                self._schedule_step(instance_id, now_ms)
             elif event.kind in (EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND):
                 wakeup = self._wakeups.pop(event.ref)
                 if not isinstance(self.client, ClientDriver):
@@ -106,14 +144,18 @@ class Coordinator:
                 instance_id = event.ref
                 engine = self.engines[instance_id]
                 self._step_pending[instance_id] = False
-                duration, finished = engine.step(now_ms, engine.num_steps)
+                if not engine.can_step:
+                    continue
+                started = engine.start_step(now_ms, engine.num_steps)
                 self._process_aborts(instance_id)
+                self._drain_engine_events(instance_id)
+                if started is None:
+                    self._schedule_step(instance_id, now_ms)
+                    continue
+                duration, _ = started
                 end = now_ms + duration
                 self._busy_until[instance_id] = end
-                for request_id in finished:
-                    heapq.heappush(self._heap, self._factory.request_done(end, request_id))
-                if engine.has_work:
-                    self._schedule_step(instance_id, end)
+                heapq.heappush(self._heap, self._factory.step_done(end, instance_id))
         return tuple(engine.finalize() for engine in self.engines)
 
 

@@ -5,8 +5,16 @@ import statistics
 
 import pytest
 
-from simcore.schemas import FixedLength, LengthDist, LognormalLength, PoissonLength
-from simcore.workload import sample_length
+from simcore.schemas import (
+    EngineConfig,
+    FixedLength,
+    LengthDist,
+    LognormalLength,
+    PoissonLength,
+    SessionConfig,
+    SyntheticWorkloadConfig,
+)
+from simcore.workload import build_plan, sample_length
 
 
 class TestSampleLength:
@@ -55,3 +63,43 @@ class TestSampleLength:
         dist = PoissonLength(mean=20.0)
         rng = random.Random(11)
         assert len({sample_length(dist, rng) for _ in range(500)}) > 10
+
+    def test_poisson_small_mean_keeps_seeded_sequence(self) -> None:
+        rng = random.Random(11)
+        dist = PoissonLength(mean=20.0)
+        assert [sample_length(dist, rng) for _ in range(8)] == [21, 20, 16, 15, 19, 23, 18, 15]
+
+    @pytest.mark.parametrize("mean", [30.0, 128.0, 32768.0])
+    def test_poisson_ptrs_mean_and_variance(self, mean: float) -> None:
+        dist = PoissonLength(mean=mean)
+        rng = random.Random(42)
+        samples = [sample_length(dist, rng) for _ in range(4000)]
+        assert statistics.mean(samples) == pytest.approx(mean, rel=0.03)
+        assert statistics.pvariance(samples) == pytest.approx(mean, rel=0.15)
+
+    def test_poisson_ptrs_is_seeded_and_varies(self) -> None:
+        dist = PoissonLength(mean=32768.0)
+        samples = [sample_length(dist, random.Random(seed)) for seed in range(100)]
+        again = [sample_length(dist, random.Random(seed)) for seed in range(100)]
+        assert samples == again
+        assert len(set(samples)) > 50
+
+    def test_high_mean_prompt_plan_uses_actual_requested_length(self) -> None:
+        config = SyntheticWorkloadConfig(
+            num_requests=1000,
+            arrival_rate=1024,
+            prompt_len=PoissonLength(mean=32768),
+            output_len=PoissonLength(mean=128),
+            seed=42,
+            session=SessionConfig(
+                num_sessions=20, think_time_ms=10000, target_ideal_prefix_hit_rate=0.9
+            ),
+        )
+        engine = EngineConfig(max_running_requests=32, max_total_tokens=4_000_000, page_size=64)
+        plan = build_plan(config, engine)
+        assert len(plan.root_request_ids) == 20
+        assert statistics.mean(turn.prompt_len for turn in plan.turns.values()) == pytest.approx(
+            32768, rel=0.02
+        )
+        assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(0.9, abs=0.001)
+        assert build_plan(config, engine) == plan

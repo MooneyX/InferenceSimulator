@@ -38,7 +38,7 @@ def sample_length(dist: LengthDist, rng: random.Random) -> int:
     且会让性能模型与 KV 容量计算失去定义。
 
     - ``fixed``：直接返回配置值，不消耗随机数。
-    - ``poisson``：以 Knuth 乘积法采样，均值即 ``mean``。
+    - ``poisson``：小均值用 Knuth 乘积法，大均值用 PTRS 拒绝采样；均值即 ``mean``。
     - ``lognormal``：以 ``mean`` 为**期望值**（非对数均值）反解 mu，使
       ``E[X] = exp(mu + sigma^2/2) = mean``，从而调大 ``sigma`` 只加重尾部、
       不改变平均负载——这正是用它对比长尾冲击的前提。
@@ -54,11 +54,9 @@ def sample_length(dist: LengthDist, rng: random.Random) -> int:
 
 
 def _sample_poisson(mean: float, rng: random.Random) -> int:
-    """泊松采样（Knuth 乘积法）。
-
-    循环次数期望为 ``mean + 1``，在 MVP 的长度量级（数十到数千 token）下可接受；
-    选它是因为只依赖 ``rng.random()``，随机流消耗方式稳定、跨 Python 版本可复现。
-    """
+    """小均值保留 Knuth 乘积法及其随机流，大均值使用 PTRS 避免下溢。"""
+    if mean >= 30.0:
+        return _sample_poisson_ptrs(mean, rng)
     target = math.exp(-mean)
     count = 0
     product = rng.random()
@@ -66,6 +64,32 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:
         count += 1
         product *= rng.random()
     return count
+
+
+def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:
+    """Hörmann PTRS 变换拒绝采样；大均值下期望尝试次数不随均值增长。"""
+    root = math.sqrt(mean)
+    b = 0.931 + 2.53 * root
+    a = -0.059 + 0.02483 * b
+    inv_alpha = 1.1239 + 1.1328 / (b - 3.4)
+    vr = 0.9277 - 3.6224 / (b - 2)
+    log_mean = math.log(mean)
+    log_inv_alpha = math.log(inv_alpha)
+    while True:
+        u = rng.random() - 0.5
+        v = 1.0 - rng.random()  # 避免对 0 取对数
+        us = 0.5 - abs(u)
+        if us == 0.0:
+            continue
+        k = math.floor((2 * a / us + b) * u + mean + 0.43)
+        if us >= 0.07 and v <= vr:
+            return k
+        if k < 0 or (us < 0.013 and v > us):
+            continue
+        if math.log(v) + log_inv_alpha - math.log(
+            a / (us * us) + b
+        ) <= -mean + k * log_mean - math.lgamma(k + 1):
+            return k
 
 
 def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:

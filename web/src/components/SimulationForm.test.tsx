@@ -17,12 +17,18 @@ describe("SimulationForm", () => {
     expect(modes[0]).toBeChecked();
     expect(modes[1]).toHaveAttribute("value", "manual");
     expect(screen.getByRole("group", { name: "自动解析参数" })).toBeInTheDocument();
+    expect(screen.getByLabelText("L2 可用容量（GB，仅 KV）")).toHaveValue(2048);
+    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(40);
+    expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
+    expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       config: expect.objectContaining({ workload: expect.objectContaining({
         synthetic: expect.objectContaining({ arrival_mode: "open_loop",
           turn_increment_len: { dist: "poisson", mean: 256 } }),
       }) }),
+      storage: expect.objectContaining({ l2_available_gb: 2048, l3_available_gb: 40_000,
+        l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }),
     }));
   });
 
@@ -360,12 +366,15 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
+    fireEvent.change(screen.getByLabelText("L3 可用容量（TB，仅 KV）"), { target: { value: "1.5" } });
+    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(1.5);
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
       timing: "empirical", model: { hidden_size: 2048 },
       hardware: { memory_bytes_per_gpu: 300_000_000_000 },
+      storage: { l3_available_gb: 1500 },
       config: { workload: { synthetic: { num_requests: 20 } } },
     });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
@@ -376,11 +385,13 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("隐藏维度")).toHaveValue(2048);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
+    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(1.5);
     expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       timing: "empirical", model: expect.objectContaining({ hidden_size: 2048 }),
       hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
+      storage: expect.objectContaining({ l3_available_gb: 1500 }),
     }));
   });
 

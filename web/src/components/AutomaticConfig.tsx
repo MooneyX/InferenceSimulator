@@ -39,8 +39,8 @@ export const initialHardware: Hardware = {
   kernel_overhead_ms: 0,
 };
 export const initialStorage: Storage = {
-  l1_available_gb: 200, l2_available_gb: 0, l3_available_gb: 0,
-  runtime_reserve_bytes: 0, l2_to_l1_gb_s: null, l3_to_l2_gb_s: null,
+  l1_available_gb: 200, l2_available_gb: 2048, l3_available_gb: 40_000,
+  runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
   l2_latency_ms: 0, l3_latency_ms: 0,
 };
 
@@ -175,17 +175,19 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       {([
         ["l1_available_gb", "L1 可用容量（GB，含权重）"],
         ["l2_available_gb", "L2 可用容量（GB，仅 KV）"],
-        ["l3_available_gb", "L3 可用容量（GB，仅 KV）"],
+        ["l3_available_gb", "L3 可用容量（TB，仅 KV）"],
         ["runtime_reserve_bytes", "额外运行时预留（GB）"],
         ["l2_to_l1_gb_s", "L2 → L1 带宽（GB/s）"],
         ["l3_to_l2_gb_s", "L3 → L2 带宽（GB/s）"],
         ["l2_latency_ms", "L2 固定延迟（ms）"],
         ["l3_latency_ms", "L3 固定延迟（ms）"],
       ] as const).map(([field, label]) => <Input key={field} label={label}
-        value={field === "runtime_reserve_bytes" ? storage[field] / 1e9 : storage[field]}
+        value={field === "runtime_reserve_bytes" ? storage[field] / 1e9 :
+          field === "l3_available_gb" ? storage[field] / 1000 : storage[field]}
         optional={field === "l2_to_l1_gb_s" || field === "l3_to_l2_gb_s"}
         onChange={(value) => onStorageChange({ ...storage,
-          [field]: field === "runtime_reserve_bytes" && value !== null ? value * 1e9 : value })} />)}
+          [field]: field === "runtime_reserve_bytes" && value !== null ? value * 1e9 :
+            field === "l3_available_gb" && value !== null ? value * 1000 : value })} />)}
     </div>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、

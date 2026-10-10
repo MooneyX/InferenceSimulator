@@ -36,6 +36,10 @@ npm run test:e2e                         # Playwright：真实后端六组规模
 
 ## 启动服务
 
+Windows 本地一键更新部署：双击项目根目录的 `deploy-local.cmd`，或在 PowerShell 中运行 `./deploy-local.cmd`。脚本只会停止本项目占用的 8000/5173 端口进程，按锁文件同步 Python/前端依赖，重新启动服务并验证页面及仿真接口；不执行 `git pull`，使用当前工作区代码。
+
+手动启动后端：
+
 ```powershell
 uv run uvicorn simserver.app:create_app --factory --reload
 ```

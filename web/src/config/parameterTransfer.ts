@@ -143,9 +143,8 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     ["timing", "tp_size", "ep_size"]);
   const config = parseSimConfigJson(JSON.stringify(root.config));
   const model = physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
-    "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "total_parameters"],
-    ["revision", "vocab_size", "tie_word_embeddings", "weight_dtype", "kv_dtype",
-      "resident_weights_bytes", "moe_layers", "expert_parameters_total", "active_parameters",
+    "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
+    ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
       "num_experts", "experts_per_token", "expert_intermediate_size", "attention_layout"]);
   const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
@@ -170,13 +169,11 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     }
   }
   for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
-    "head_dim", "ffn_intermediate_size", "total_parameters"] as const) physicalNumber(model, "model", key, 1, true);
+    "head_dim", "ffn_intermediate_size", "vocab_size"] as const) physicalNumber(model, "model", key, 1, true);
   for (const key of ["moe_layers", "num_experts", "experts_per_token"] as const) {
     physicalNumber(model, "model", key, 0, true);
   }
-  for (const key of ["vocab_size", "expert_parameters_total", "active_parameters",
-    "expert_intermediate_size"] as const) physicalNumber(model, "model", key, 1, true, true);
-  physicalNumber(model, "model", "resident_weights_bytes", 1, true, true);
+  physicalNumber(model, "model", "expert_intermediate_size", 1, true, true);
   if (Number(model.num_attention_heads) % Number(model.num_kv_heads) ||
       Number(model.moe_layers ?? 0) > Number(model.num_layers)) {
     throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
@@ -224,8 +221,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
       throw new Error("MoE 需要词表、专家数、激活专家数和专家中间维度");
     }
   } else if (epSize !== 1 || Number(model.num_experts ?? 0) > 0 ||
-             Number(model.experts_per_token ?? 0) > 0 || model.expert_intermediate_size != null ||
-             model.expert_parameters_total != null) {
+             Number(model.experts_per_token ?? 0) > 0 || model.expert_intermediate_size != null) {
     throw new Error("Dense 模型不能设置 EP 或 MoE 专家参数");
   }
   return { ...root, config, timing: root.timing ?? "analytical",

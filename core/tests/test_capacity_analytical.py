@@ -41,7 +41,7 @@ def example_request() -> ResolvedRequest:
         model=ModelSpec(
             name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
             num_kv_heads=1, head_dim=8, ffn_intermediate_size=32,
-            total_parameters=1000,
+            vocab_size=16,
         ),
         hardware=HardwareSpec(
             name="toy", memory_bytes_per_gpu=2_000_000,
@@ -61,13 +61,15 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     report = resolved.capacity
     assert report.kv_bytes_per_token == 64
     assert report.kv_bytes_per_page == 256
-    assert report.weights_resident_bytes == 2000
-    assert report.l1_kv_budget_bytes == 997_000
+    assert report.estimated_total_parameters == report.estimated_active_parameters == 5232
+    assert report.estimated_expert_parameters == 0
+    assert report.weights_resident_bytes == 10464
+    assert report.l1_kv_budget_bytes == 988_536
     assert (report.l1_capacity_pages, report.l2_capacity_pages, report.l3_capacity_pages) == (
-        3894, 2, 1,
+        3861, 2, 1,
     )
     assert (resolved.config.engine.max_total_tokens, resolved.config.engine.l2_capacity_tokens,
-            resolved.config.engine.l3_capacity_tokens) == (3894 * 4, 8, 4)
+            resolved.config.engine.l3_capacity_tokens) == (3861 * 4, 8, 4)
     assert report.l2_to_l1_tokens_per_ms == pytest.approx(1000 / 64)
     assert report.l3_to_l2_tokens_per_ms == pytest.approx(2000 / 64)
     assert resolved.config.perf_model.kv_bytes_per_token == 64
@@ -78,7 +80,7 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
     qwen = ModelSpec(
         name="Qwen/Qwen3-8B", num_layers=36, hidden_size=4096,
         num_attention_heads=32, num_kv_heads=8, head_dim=128,
-        ffn_intermediate_size=12288, total_parameters=8_200_000_000,
+        ffn_intermediate_size=12288, vocab_size=151936,
     )
     resolved = resolve_config(request.model_copy(update={
         "model": qwen,
@@ -91,8 +93,10 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
         }),
     }))
     assert resolved.capacity.kv_bytes_per_token == 144 * 1024
-    assert resolved.capacity.weights_resident_bytes == 16_400_000_000
-    assert resolved.capacity.l1_capacity_pages == (200_000_000_000 - 16_400_000_000 - 1000) // (
+    assert resolved.capacity.estimated_total_parameters == 8_190_735_360
+    assert resolved.capacity.estimated_active_parameters == 8_190_735_360
+    assert resolved.capacity.weights_resident_bytes == 2 * 8_190_735_360
+    assert resolved.capacity.l1_capacity_pages == (200_000_000_000 - 2 * 8_190_735_360 - 1000) // (
         4 * 144 * 1024
     )
 
@@ -122,7 +126,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     model = ModelSpec(
         name="Qwen3-8B", num_layers=36, hidden_size=4096,
         num_attention_heads=32, num_kv_heads=8, head_dim=128,
-        ffn_intermediate_size=12288, vocab_size=151936, total_parameters=8_200_000_000,
+        ffn_intermediate_size=12288, vocab_size=151936,
     )
     hardware = request.hardware.model_copy(update={
         "gpu_count": 4, "memory_bytes_per_gpu": 288_000_000_000,
@@ -143,7 +147,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     assert len(report.rank_reports) == 4
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {36 * 1024}
     assert report.kv_bytes_per_token == 144 * 1024
-    assert report.unassigned_parameters == 9_264_640
+    assert report.estimated_total_parameters == 8_190_735_360
     for rank in report.rank_reports:
         assert (rank.sharded_weights_bytes + rank.replicated_weights_bytes
                 + rank.l1_kv_budget_bytes + storage.runtime_reserve_bytes) == 20_000_000_000
@@ -160,7 +164,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     model = ModelSpec(
         name="dense-kv4", num_layers=94, hidden_size=4096,
         num_attention_heads=64, num_kv_heads=4, head_dim=128,
-        ffn_intermediate_size=12288, vocab_size=151936, total_parameters=30_000_000_000,
+        ffn_intermediate_size=12288, vocab_size=151936,
     )
     hardware = request.hardware.model_copy(update={
         "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
@@ -183,7 +187,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
         resolve_config(tp.model_copy(update={"model": model.model_copy(update={"moe_layers": 94})}))
     with pytest.raises(ValueError, match="MoE"):
         resolve_config(tp.model_copy(update={"model": model.model_copy(update={
-            "num_experts": 128, "expert_parameters_total": 1_000_000,
+            "num_experts": 128,
         })}))
 
 
@@ -193,7 +197,7 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
         resolve_config(request.model_copy(update={"tp_size": 4}))
     hardware = request.hardware.model_copy(update={"gpu_count": 4})
     valid_model = request.model.model_copy(update={
-        "vocab_size": 16, "num_attention_heads": 4, "total_parameters": 10_000,
+        "vocab_size": 16, "num_attention_heads": 4,
     })
     storage = request.storage.model_copy(update={"l2_available_gb": 0, "l3_available_gb": 0})
     preview = resolve_config(request.model_copy(update={
@@ -208,7 +212,10 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
         "tp_size": 4, "hardware": hardware, "model": valid_model, "storage": storage,
     })).runnable
     with pytest.raises(ValueError, match="vocab_size"):
-        resolve_config(request.model_copy(update={"tp_size": 4, "hardware": hardware}))
+        resolve_config(request.model_copy(update={
+            "tp_size": 4, "hardware": hardware,
+            "model": valid_model.model_copy(update={"vocab_size": None}),
+        }))
 
 
 def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
@@ -218,7 +225,6 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
         num_attention_heads=2, num_kv_heads=1, head_dim=8,
         ffn_intermediate_size=32, expert_intermediate_size=8,
         num_experts=4, experts_per_token=2, vocab_size=16,
-        total_parameters=5296, active_parameters=100,
     )
     hardware = base.hardware.model_copy(update={"gpu_count": 2})
     storage = base.storage.model_copy(update={
@@ -233,7 +239,9 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
     assert preview.ep_size == preview.tp_size == 2
     assert not preview.runnable
     assert preview.capacity.kv_bytes_per_token == 128
-    assert preview.capacity.unassigned_parameters == 0
+    assert (preview.capacity.estimated_total_parameters,
+            preview.capacity.estimated_active_parameters,
+            preview.capacity.estimated_expert_parameters) == (5296, 4528, 1536)
     assert len(preview.capacity.rank_reports) == 2
     for rank in preview.capacity.rank_reports:
         assert rank.sharded_weights_bytes == 4096
@@ -251,15 +259,12 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
     ({"ep_size": 1}, "EP 数"),
     ({"model": {"experts_per_token": 5}}, "激活专家数"),
     ({"model": {"num_experts": 3}}, "专家数"),
-    ({"model": {"expert_parameters_total": 1}}, "全部专家参数量"),
-    ({"model": {"resident_weights_bytes": 1000}}, "驻留权重"),
     ({"model": {"expert_intermediate_size": None}}, "专家中间维度"),
 ])
 def test_moe_preview_rejects_inconsistent_layout(updates: dict, reason: str) -> None:
     base = example_request()
     model = base.model.model_copy(update={
-        "vocab_size": 16, "total_parameters": 10_000,
-        "moe_layers": 1, "num_experts": 4,
+        "vocab_size": 16, "moe_layers": 1, "num_experts": 4,
         "experts_per_token": 2, "expert_intermediate_size": 8,
         **updates.get("model", {}),
     })
@@ -276,7 +281,7 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
         name="toy-moe", num_layers=2, moe_layers=1, hidden_size=16,
         num_attention_heads=2, num_kv_heads=1, head_dim=8,
         ffn_intermediate_size=32, expert_intermediate_size=8,
-        num_experts=4, experts_per_token=2, vocab_size=16, total_parameters=5296,
+        num_experts=4, experts_per_token=2, vocab_size=16,
     )
     hardware = HardwareSpec(
         name="two-gpu", gpu_count=2, memory_bytes_per_gpu=1_000_000,
@@ -324,7 +329,7 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
 def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> None:
     base = example_request()
     model = base.model.model_copy(update={
-        "vocab_size": 16, "total_parameters": 5296, "moe_layers": 1,
+        "vocab_size": 16, "moe_layers": 1,
         "num_experts": 4, "experts_per_token": 2, "expert_intermediate_size": 8,
     })
     hardware = base.hardware.model_copy(update={
@@ -360,7 +365,7 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
         name="mixed-moe", num_layers=2, moe_layers=1, hidden_size=16,
         num_attention_heads=2, num_kv_heads=1, head_dim=8,
         ffn_intermediate_size=32, num_experts=4, experts_per_token=2,
-        expert_intermediate_size=8, vocab_size=16, total_parameters=10000,
+        expert_intermediate_size=8, vocab_size=16,
     )
     hardware = HardwareSpec(
         name="two-gpu", gpu_count=2, memory_bytes_per_gpu=1_000_000,
@@ -425,7 +430,7 @@ def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
     model = ModelSpec(
         name="toy", num_layers=1, hidden_size=2, num_attention_heads=2,
         num_kv_heads=1, head_dim=1, ffn_intermediate_size=4,
-        total_parameters=1000,
+        vocab_size=16,
     )
     hardware = HardwareSpec(
         name="toy", memory_bytes_per_gpu=10000, effective_fp16_tflops=1e-9,
@@ -448,7 +453,7 @@ def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
     model = ModelSpec(
         name="toy", num_layers=1, hidden_size=2, num_attention_heads=2,
         num_kv_heads=1, head_dim=1, ffn_intermediate_size=4,
-        total_parameters=1000,
+        vocab_size=16,
     )
     hardware = HardwareSpec(
         name="toy", gpu_count=2, memory_bytes_per_gpu=10000,
@@ -473,7 +478,7 @@ def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
 def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> None:
     base = example_request()
     model = base.model.model_copy(update={
-        "vocab_size": 16, "total_parameters": 10_000,
+        "vocab_size": 16,
     })
     hardware = base.hardware.model_copy(update={
         "gpu_count": 2, "effective_interconnect_gb_s": 1e-6,
@@ -504,7 +509,7 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
 def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
     model = ModelSpec(
         name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
-        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, total_parameters=10_000,
+        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
     )
     hardware = HardwareSpec(
         name="toy", gpu_count=2, memory_bytes_per_gpu=1_000_000,
@@ -524,7 +529,7 @@ def test_prefill_kv_hbm_reads_scale_with_context_not_attention_pairs() -> None:
     model = ModelSpec(
         name="toy", num_layers=1, hidden_size=16, num_attention_heads=2,
         num_kv_heads=1, head_dim=8, ffn_intermediate_size=32,
-        total_parameters=1000,
+        vocab_size=16,
     )
     hardware = HardwareSpec(
         name="toy", memory_bytes_per_gpu=1_000_000,

@@ -202,6 +202,12 @@ export interface components {
             kv_bytes_per_page: number;
             /** Weights Resident Bytes */
             weights_resident_bytes: number;
+            /** Estimated Total Parameters */
+            estimated_total_parameters: number;
+            /** Estimated Active Parameters */
+            estimated_active_parameters: number;
+            /** Estimated Expert Parameters */
+            estimated_expert_parameters: number;
             /** L1 Budget Bytes */
             l1_budget_bytes: number;
             /** L1 Kv Budget Bytes */
@@ -222,11 +228,6 @@ export interface components {
             l3_to_l2_tokens_per_ms?: number | null;
             /** Rank Reports */
             rank_reports?: components["schemas"]["RankCapacityReport"][];
-            /**
-             * Unassigned Parameters
-             * @default 0
-             */
-            unassigned_parameters: number;
         };
         /**
          * EngineConfig
@@ -649,10 +650,8 @@ export interface components {
             head_dim: number;
             /** Ffn Intermediate Size */
             ffn_intermediate_size: number;
-            /** Total Parameters */
-            total_parameters: number;
             /** Vocab Size */
-            vocab_size?: number | null;
+            vocab_size: number;
             /**
              * Tie Word Embeddings
              * @default false
@@ -670,17 +669,11 @@ export interface components {
              * @enum {string}
              */
             kv_dtype: "bf16" | "fp16" | "fp8";
-            /** Resident Weights Bytes */
-            resident_weights_bytes?: number | null;
             /**
              * Moe Layers
              * @default 0
              */
             moe_layers: number;
-            /** Expert Parameters Total */
-            expert_parameters_total?: number | null;
-            /** Active Parameters */
-            active_parameters?: number | null;
             /**
              * Num Experts
              * @default 0

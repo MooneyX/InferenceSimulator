@@ -58,7 +58,7 @@ describe("parameter JSON transfer", () => {
     const request = {
       config: createDefaultSimConfig(), model: { name: "toy", num_layers: 1,
         hidden_size: 16, num_attention_heads: 2, num_kv_heads: 1,
-        head_dim: 8, ffn_intermediate_size: 32, total_parameters: 1000 },
+        head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
       hardware: { name: "GPU", gpu_count: 1, memory_bytes_per_gpu: 1000000,
         effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
       storage: { l1_available_gb: 0.001, l2_available_gb: 0, l3_available_gb: 0 },
@@ -73,7 +73,7 @@ describe("parameter JSON transfer", () => {
       config: createDefaultSimConfig(),
       model: { ...initialModel, name: "toy", num_layers: 2, hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8,
-        ffn_intermediate_size: 32, total_parameters: 10000 },
+        ffn_intermediate_size: 32, vocab_size: 16 },
       hardware: { ...initialHardware, name: "GPU", gpu_count: 1,
         memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1,
         ep_communication_latency_ms: null },
@@ -81,6 +81,9 @@ describe("parameter JSON transfer", () => {
       timing: "analytical",
     };
     expect(parseResolvedRequestJson(serializeResolvedRequest(base))).toEqual(base);
+    expect(() => parseResolvedRequestJson(JSON.stringify({ ...base,
+      model: { ...base.model, total_parameters: 10_000 },
+    }))).toThrow("不支持的参数：model.total_parameters");
     const invalid = [
       [{ ...base, model: { ...base.model, moe_layers: -1 } }, "model.moe_layers"],
       [{ ...base, hardware: { ...base.hardware, extra: 2 } }, "不支持的参数：hardware.extra"],

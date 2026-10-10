@@ -239,15 +239,11 @@ class ModelSpec(_Frozen):
     num_kv_heads: int = Field(ge=1)
     head_dim: int = Field(ge=1)
     ffn_intermediate_size: int = Field(ge=1)
-    total_parameters: int = Field(ge=1)
-    vocab_size: int | None = Field(default=None, ge=1)
+    vocab_size: int = Field(ge=1)
     tie_word_embeddings: bool = False
     weight_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
     kv_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
-    resident_weights_bytes: int | None = Field(default=None, gt=0)
     moe_layers: int = Field(default=0, ge=0)
-    expert_parameters_total: int | None = Field(default=None, gt=0)
-    active_parameters: int | None = Field(default=None, ge=1)
     num_experts: int = Field(default=0, ge=0)
     experts_per_token: int = Field(default=0, ge=0)
     expert_intermediate_size: int | None = Field(default=None, gt=0)
@@ -316,6 +312,9 @@ class CapacityReport(_Record):
     kv_bytes_per_token: int
     kv_bytes_per_page: int
     weights_resident_bytes: int
+    estimated_total_parameters: int
+    estimated_active_parameters: int
+    estimated_expert_parameters: int
     l1_budget_bytes: int
     l1_kv_budget_bytes: int
     l2_budget_bytes: int
@@ -326,7 +325,6 @@ class CapacityReport(_Record):
     l2_to_l1_tokens_per_ms: float | None = None
     l3_to_l2_tokens_per_ms: float | None = None
     rank_reports: list[RankCapacityReport] = Field(default_factory=list)
-    unassigned_parameters: int = 0
 
 
 class ResolvedConfig(_Record):

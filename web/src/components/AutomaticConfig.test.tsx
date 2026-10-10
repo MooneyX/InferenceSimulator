@@ -18,7 +18,9 @@ const resolution = {
   },
   model: {}, hardware: {}, storage: {}, timing: "analytical",
   capacity: {
-    kv_bytes_per_token: 147456, weights_resident_bytes: 16400000000,
+    kv_bytes_per_token: 147456, weights_resident_bytes: 16_381_470_720,
+    estimated_total_parameters: 8_190_735_360, estimated_active_parameters: 8_190_735_360,
+    estimated_expert_parameters: 0,
     l1_capacity_pages: 16, l2_capacity_pages: 0, l3_capacity_pages: 0,
   },
 } as ResolvedConfig;
@@ -36,6 +38,9 @@ describe("AutomaticConfig", () => {
       disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1,024 token"));
+    expect(screen.getByRole("status")).toHaveTextContent("结构估算总参数 8.191 B");
+    expect(screen.getByRole("status")).toHaveTextContent("结构估算每 token 激活参数 8.191 B");
+    expect(screen.getByRole("status")).toHaveTextContent("全部专家参数 0.000 B");
     expect(resolveAutomatic).toHaveBeenCalledWith(expect.objectContaining({
       timing: "analytical",
       model: expect.objectContaining({ name: "Qwen/Qwen3-8B", num_layers: 36 }),
@@ -50,7 +55,7 @@ describe("AutomaticConfig", () => {
       ...resolution, tp_size: 4, runnable: true,
       capacity: { ...resolution.capacity, unassigned_parameters: 50,
         rank_reports: [{ rank: 0, sharded_weights_bytes: 1000,
-          replicated_weights_bytes: 200, kv_bytes_per_token: 36864,
+          replicated_weights_bytes: 200, expert_weights_bytes: 0, kv_bytes_per_token: 36864,
           l1_kv_budget_bytes: 800, l1_capacity_pages: 2 }] },
     } as ResolvedConfig;
     vi.mocked(resolveAutomatic).mockResolvedValue(preview);
@@ -103,10 +108,10 @@ describe("AutomaticConfig", () => {
       .toHaveTextContent("body → model → num_experts：专家数必须为正"));
   });
 
-  it("separates model and hardware cards and converts B/GB inputs to API units", async () => {
+  it("separates model and hardware cards and converts GB inputs to API units", async () => {
     vi.mocked(getPresets).mockResolvedValue({
       models: [initialModel, { ...initialModel, name: "Qwen/Qwen3-235B-A22B",
-        total_parameters: 235_000_000_000, moe_layers: 94 }],
+        moe_layers: 94 }],
       hardware: [{ name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
         peak_fp16_tflops: 2250, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
       scenarios: [],
@@ -121,12 +126,19 @@ describe("AutomaticConfig", () => {
     await waitFor(() => expect(screen.getByRole("combobox", { name: "GPU 选择" })).toHaveValue("NVIDIA B300"));
     expect(screen.getByRole("heading", { name: "模型参数" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "硬件配置" })).toBeInTheDocument();
-    expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(8.2);
+    expect(screen.queryByLabelText(/总参数量/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/实际驻留权重/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）")).toHaveValue(0.01);
+    expect(screen.getByLabelText("EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）")).toHaveValue(0.02);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(288);
     expect(screen.getByText(/2,250 TFLOPS 稠密 BF16\/FP16 算力/)).toBeInTheDocument();
     expect(screen.getByText(/8,000 GB\/s HBM 带宽/)).toBeInTheDocument();
     expect(screen.getByText(/1,800 GB\/s 单卡 NVLink 双向标称带宽/)).toBeInTheDocument();
-    expect(screen.getByLabelText("单 rank 有效互联带宽（GB/s，TP>1 必填）")).toHaveValue(1800);
+    expect(screen.getByLabelText("单 rank 有效互联带宽（GB/s，TP>1 必填）")).toHaveValue(600);
+    fireEvent.change(screen.getByLabelText("GPU 选择"), { target: { value: "NVIDIA B300" } });
+    expect(onHardwareChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      effective_interconnect_gb_s: 600,
+    }));
     expect(screen.queryByLabelText("参考组合")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("模型名称")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "导入自动参数" })).not.toBeInTheDocument();
@@ -135,10 +147,10 @@ describe("AutomaticConfig", () => {
         "Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B", "自定义",
       ]);
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "Qwen/Qwen3-235B-A22B" } });
-    expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({ total_parameters: 235_000_000_000 }));
-    fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "10.5" } });
+    expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({ moe_layers: 94 }));
+    fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
     expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      name: "自定义模型", total_parameters: 10_500_000_000,
+      name: "自定义模型", hidden_size: 2048,
     }));
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
     expect(onHardwareChange).toHaveBeenCalledWith(expect.objectContaining({

@@ -17,8 +17,29 @@ def _bytes_from_gb(value: float) -> int:
     return int((Decimal(str(value)) * _GB).to_integral_value(rounding=ROUND_FLOOR))
 
 
-def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
-    """返回每 rank 的分片/复制权重字节及尚未归属的参数数目。"""
+def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:
+    """按当前支持的无偏置全注意力、门控 FFN 与同构专家结构估算参数。"""
+    h, q, kv, d = (
+        model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim
+    )
+    dense_layers = model.num_layers - model.moe_layers
+    expert = (
+        model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
+        if model.moe_layers and model.expert_intermediate_size is not None else 0
+    )
+    non_expert = (
+        model.num_layers * h * (2 * q * d + 2 * kv * d)
+        + dense_layers * 3 * h * model.ffn_intermediate_size
+        + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
+        + model.num_layers * (2 * h + 2 * d) + h
+        + model.moe_layers * h * model.num_experts
+    )
+    active = non_expert + (expert // model.num_experts * model.experts_per_token if expert else 0)
+    return non_expert + expert, active, expert
+
+
+def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int]:
+    """返回每 rank 的结构估算分片与复制权重字节。"""
     if model.vocab_size is None:
         raise ValueError("TP 容量预览需要模型 vocab_size 与词嵌入共享规则")
     if model.num_attention_heads % tp_size or model.ffn_intermediate_size % tp_size:
@@ -46,21 +67,11 @@ def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
     )
     # 两次层归一化、末层归一化及每层 Q/K 归一化。
     replicated = model.num_layers * (2 * h + 2 * d) + h
-    known_total = (
-        model.num_layers * (h * (2 * q * d + 2 * kv * d) + 3 * h * f)
-        + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
-        + replicated
-    )
-    weights = model.resident_weights_bytes or model.total_parameters * 2
-    if weights < known_total * 2:
-        raise ValueError("模型驻留权重小于结构可推导的权重；请核对参数量与精度")
-    extra_bytes = weights - known_total * 2
-    # 未归属的差额保守地计入每张卡，不虚构其分片方式。
-    return sharded * 2, replicated * 2 + extra_bytes, extra_bytes // 2
+    return sharded * 2, replicated * 2
 
 
-def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int]:
-    """返回每 rank 非专家分片、复制、全部驻留专家字节及未归属参数。"""
+def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:
+    """返回每 rank 非专家分片、复制及全部驻留专家字节。"""
     if model.vocab_size is None:
         raise ValueError("MoE 容量预览需要 vocab_size 与词嵌入共享规则")
     if not (model.num_experts and 1 <= model.experts_per_token <= model.num_experts):
@@ -91,25 +102,7 @@ def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int]:
     expert_parameters = (
         model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
     )
-    if model.expert_parameters_total is not None and model.expert_parameters_total != expert_parameters:
-        raise ValueError("全部专家参数量与 MoE 层数、专家数及专家中间维度推导值不一致")
-    known_total = (
-        model.num_layers * h * (2 * q * d + 2 * kv * d)
-        + dense_layers * 3 * h * model.ffn_intermediate_size
-        + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
-        + replicated + expert_parameters
-    )
-    # total_parameters 允许模型名称级约数；结构给出的全部权重始终是下界。
-    weights = model.resident_weights_bytes or max(model.total_parameters, known_total) * 2
-    if weights < known_total * 2:
-        raise ValueError("实际驻留权重小于包含全部专家的结构权重")
-    extra_bytes = weights - known_total * 2
-    return (
-        sharded * 2,
-        replicated * 2 + extra_bytes,
-        expert_parameters // tp_size * 2,
-        extra_bytes // 2,
-    )
+    return sharded * 2, replicated * 2, expert_parameters // tp_size * 2
 
 
 def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
@@ -125,8 +118,7 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
         if request.ep_size != tp_size:
             raise ValueError("MoE 首版要求 EP 数等于 TP 数和 GPU 卡数")
     elif request.ep_size != 1 or any((
-        model.num_experts, model.experts_per_token,
-        model.expert_parameters_total, model.expert_intermediate_size,
+        model.num_experts, model.experts_per_token, model.expert_intermediate_size,
     )):
         raise ValueError("Dense 模型不应配置 EP 或 MoE 专家字段")
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
@@ -135,30 +127,24 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
     kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2
     group_kv_bytes = kv_bytes * tp_size
     page_bytes = group_kv_bytes * page_size
-    weights = model.resident_weights_bytes or model.total_parameters * 2
     l1 = _bytes_from_gb(storage.l1_available_gb)
     l2 = _bytes_from_gb(storage.l2_available_gb)
     l3 = _bytes_from_gb(storage.l3_available_gb)
     if l1 > hardware.memory_bytes_per_gpu:
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
-    unassigned = 0
-    if tp_size == 1 and not is_moe:
-        l1_kv = l1 - weights - storage.runtime_reserve_bytes
-        if l1_kv < page_bytes:
-            raise ValueError("L1 扣除驻留权重与运行时预留后不足一个 KV 页")
-        l1_pages = l1_kv // page_bytes
+    if is_moe:
+        sharded, replicated, expert = _moe_weights(model, tp_size)
     else:
-        if is_moe:
-            sharded, replicated, expert, unassigned = _moe_weights(model, tp_size)
-        else:
-            sharded, replicated, unassigned = _tp_weights(model, tp_size)
-            expert = 0
-        local_page_bytes = kv_bytes * page_size
-        l1_kv = l1 - sharded - replicated - expert - storage.runtime_reserve_bytes
-        if l1_kv < local_page_bytes:
-            raise ValueError("至少一张 GPU 扣除权重和预留后不足一个本地 KV 页")
-        l1_pages = l1_kv // local_page_bytes
+        sharded, replicated = _tp_weights(model, tp_size)
+        expert = 0
+    total_parameters, active_parameters, expert_parameters = _parameter_counts(model)
+    local_page_bytes = kv_bytes * page_size
+    l1_kv = l1 - sharded - replicated - expert - storage.runtime_reserve_bytes
+    if l1_kv < local_page_bytes:
+        raise ValueError("至少一张 GPU 扣除权重和预留后不足一个本地 KV 页")
+    l1_pages = l1_kv // local_page_bytes
+    if tp_size > 1 or is_moe:
         rank_reports = [
             RankCapacityReport(
                 rank=rank,
@@ -171,7 +157,7 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
             )
             for rank in range(tp_size)
         ]
-        weights = (sharded + replicated + expert) * tp_size
+    weights = (sharded + replicated + expert) * tp_size
     if l3 and not l2:
         raise ValueError("启用 L3 时必须先启用 L2")
     if (l2 and l2 < page_bytes) or (l3 and l3 < page_bytes):
@@ -225,6 +211,9 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
             kv_bytes_per_token=group_kv_bytes,
             kv_bytes_per_page=page_bytes,
             weights_resident_bytes=weights,
+            estimated_total_parameters=total_parameters,
+            estimated_active_parameters=active_parameters,
+            estimated_expert_parameters=expert_parameters,
             l1_budget_bytes=l1,
             l1_kv_budget_bytes=l1_kv,
             l2_budget_bytes=l2,
@@ -239,6 +228,5 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:
                 l3_bw * 1_000_000 / group_kv_bytes if l3_bw is not None else None
             ),
             rank_reports=rank_reports,
-            unassigned_parameters=unassigned,
         ),
     )

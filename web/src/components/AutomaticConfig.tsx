@@ -26,18 +26,16 @@ interface Props {
 export const initialModel: Model = {
   name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
   num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
-  ffn_intermediate_size: 12288, total_parameters: 8_200_000_000,
-  vocab_size: 151_936, tie_word_embeddings: false,
-  weight_dtype: "bf16", kv_dtype: "bf16", resident_weights_bytes: null,
-  moe_layers: 0, expert_parameters_total: null, active_parameters: null,
+  ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
+  weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
   attention_layout: "full_gqa",
 };
 export const initialHardware: Hardware = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
   effective_fp16_tflops: 100, effective_fp8_tflops: null,
-  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 1800,
-  collective_latency_ms: null, ep_communication_latency_ms: null,
+  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
+  collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02,
   kernel_overhead_ms: 0,
 };
 export const initialStorage: Storage = {
@@ -114,23 +112,12 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
       ["head_dim", "每头维度"], ["ffn_intermediate_size", "FFN 中间维度"],
-      ["vocab_size", "词表大小（TP 容量预览必填）"],
-      ["total_parameters", "总参数量（B，含全部专家）"], ["moe_layers", "MoE 层数"],
-      ["expert_parameters_total", "全部专家参数量（B）"], ["active_parameters", "激活参数量（B，可选）"],
+      ["vocab_size", "词表大小（结构估算必填）"], ["moe_layers", "MoE 层数"],
       ["num_experts", "专家数"], ["experts_per_token", "每 token 激活专家数"],
-      ["expert_intermediate_size", "专家中间维度（可选）"],
-      ["resident_weights_bytes", "实际驻留权重（GB，可选覆盖）"],
-    ] as const).map(([field, label]) => {
-      const inBillions = field === "total_parameters" || field === "expert_parameters_total" ||
-        field === "active_parameters" || field === "resident_weights_bytes";
-      return <Input key={field} label={label}
-        value={inBillions && model[field] != null ? model[field] / 1e9 : model[field]}
-        optional={field === "vocab_size" || field === "expert_parameters_total" ||
-          field === "active_parameters" || field === "expert_intermediate_size" ||
-          field === "resident_weights_bytes"}
-        onChange={(value) => onModelChange({ ...model, name: "自定义模型",
-          [field]: inBillions && value !== null ? value * 1e9 : value })} />;
-    })}
+      ["expert_intermediate_size", "专家中间维度（MoE 必填）"],
+    ] as const).map(([field, label]) => <Input key={field} label={label}
+      value={model[field]} optional={field === "expert_intermediate_size"}
+      onChange={(value) => onModelChange({ ...model, name: "自定义模型", [field]: value })} />)}
       <div className="form-field"><label>权重精度<select value={model.weight_dtype} onChange={(event) =>
         onModelChange({ ...model, name: "自定义模型", weight_dtype: event.target.value as Model["weight_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
@@ -155,8 +142,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
             onHardwareChange(selected ? { ...hardware, name: selected.name,
-              memory_bytes_per_gpu: selected.memory_bytes_per_gpu,
-              effective_interconnect_gb_s: selected.peak_interconnect_gb_s } :
+              memory_bytes_per_gpu: selected.memory_bytes_per_gpu } :
               { ...hardware, name: "自定义 GPU" });
           }}>{catalog?.hardware.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
@@ -208,7 +194,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       <a href="https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html" target="_blank" rel="noreferrer">显存来源</a>、
       <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>、
       <a href="https://www.nvidia.com/en-us/data-center/hgx/" target="_blank" rel="noreferrer">互联来源</a>；
-      暂以双向标称值作为有效互联带宽假设，非单向实测值，时延可能偏乐观。</p>}
+      有效互联 600 GB/s、TP 固定延迟 0.01 ms/次、EP 固定开销 0.02 ms/次均为未经校准的试算假设，可在上方修改；1800 GB/s 是双向标称值，不等于单 rank 有效带宽。</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>
@@ -221,17 +207,19 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端解析：</strong>KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
-      {preview.tp_size > 1 ? "整组权重" : "权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
+      {preview.tp_size > 1 ? "整组结构估算驻留权重" : "结构估算驻留权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
+      结构估算总参数 {(preview.capacity.estimated_total_parameters / 1e9).toFixed(3)} B；
+      结构估算每 token 激活参数 {(preview.capacity.estimated_active_parameters / 1e9).toFixed(3)} B；
+      全部专家参数 {(preview.capacity.estimated_expert_parameters / 1e9).toFixed(3)} B；
       L1 {preview.capacity.l1_capacity_pages.toLocaleString()} 页 / {preview.config.engine.max_total_tokens.toLocaleString()} token；
       L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页；
       L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页。
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
         <p>TP{preview.tp_size}{preview.model.moe_layers ? ` + EP${preview.ep_size}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
-          {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；
-          未归属参数 {(preview.capacity.unassigned_parameters ?? 0).toLocaleString()} 按逐卡复制保守计入。</p>
+          {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；权重按分片与逐卡复制的结构分别计入。</p>
         {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
           GPU {rank.rank}：分片权重 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB；
-          复制及未归属权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
+          逐卡复制权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
           {preview.model.moe_layers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
           KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token；
           L1 {rank.l1_capacity_pages.toLocaleString()} 页。

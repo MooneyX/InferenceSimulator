@@ -22,7 +22,7 @@ def payload() -> dict[str, Any]:
         "model": {
             "name": "toy", "num_layers": 2, "hidden_size": 16,
             "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
-            "ffn_intermediate_size": 32, "total_parameters": 1000,
+            "ffn_intermediate_size": 32, "vocab_size": 16,
         },
         "hardware": {
             "name": "toy", "gpu_count": 1, "memory_bytes_per_gpu": 2_000_000,
@@ -60,8 +60,8 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     request["model"].update({
         "name": "Qwen3-8B", "num_layers": 36, "hidden_size": 4096,
         "num_attention_heads": 32, "num_kv_heads": 8, "head_dim": 128,
-        "ffn_intermediate_size": 12288, "total_parameters": 8_200_000_000,
-        "vocab_size": 151936, "tie_word_embeddings": False,
+        "ffn_intermediate_size": 12288, "vocab_size": 151936,
+        "tie_word_embeddings": False,
     })
     request["hardware"].update({
         "gpu_count": 4, "memory_bytes_per_gpu": 288_000_000_000,
@@ -97,7 +97,7 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     request["model"] = catalog["models"][1]
     request["hardware"].update({
         "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
-        "effective_interconnect_gb_s": 1800,
+        "effective_interconnect_gb_s": 600,
     })
     request["storage"].update({
         "l1_available_gb": 200, "l2_available_gb": 0, "l3_available_gb": 0,
@@ -110,12 +110,16 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert preview["ep_size"] == 8
     assert len(preview["capacity"]["rank_reports"]) == 8
     expected = 94 * 128 * 3 * 4096 * 1536 // 8 * 2
-    assert {item["expert_weights_bytes"] for item in preview["capacity"]["rank_reports"]} == {expected}
-    assert preview["capacity"]["weights_resident_bytes"] >= 235_000_000_000 * 2
+    expert_weights = {item["expert_weights_bytes"] for item in preview["capacity"]["rank_reports"]}
+    assert expert_weights == {expected}
+    assert preview["capacity"]["estimated_total_parameters"] == 235_093_634_560
+    assert preview["capacity"]["estimated_active_parameters"] == 22_190_763_520
+    assert preview["capacity"]["estimated_expert_parameters"] == 227_096_395_776
+    assert preview["capacity"]["weights_resident_bytes"] >= 2 * 235_093_634_560
     incomplete = client.post("/api/simulate/resolved", json=request)
     assert incomplete.status_code == 422
     request["hardware"].update({
-        "collective_latency_ms": 0.1, "ep_communication_latency_ms": 0.2,
+        "collective_latency_ms": 0.01, "ep_communication_latency_ms": 0.02,
     })
     ready = client.post("/api/resolve", json=request)
     assert ready.status_code == 200 and ready.json()["runnable"] is True
@@ -144,14 +148,25 @@ def test_presets_and_unsupported_modes() -> None:
     assert catalog.json()["hardware"][0]["peak_fp16_tflops"] == 2250
     assert catalog.json()["hardware"][0]["peak_hbm_gb_s"] == 8000
     assert catalog.json()["hardware"][0]["peak_interconnect_gb_s"] == 1800
-    assert catalog.json()["models"][0]["total_parameters"] == 8_200_000_000
-    assert catalog.json()["models"][1]["active_parameters"] == 22_000_000_000
+    assert catalog.json()["models"][0]["vocab_size"] == 151936
+    assert catalog.json()["models"][1]["expert_intermediate_size"] == 1536
+    assert "total_parameters" not in catalog.json()["models"][0]
     assert catalog.json()["scenarios"][1]["stage"] == "requires_tp_ep"
     request = payload()
+    missing_vocab = payload()
+    del missing_vocab["model"]["vocab_size"]
+    assert client.post("/api/resolve", json=missing_vocab).status_code == 422
     request["hardware"]["gpu_count"] = 8
     response = client.post("/api/resolve", json=request)
     assert response.status_code == 422
     assert "TP 数" in response.json()["detail"]
     request["hardware"]["gpu_count"] = 1
+    for field in ("total_parameters", "active_parameters", "expert_parameters_total",
+                  "resident_weights_bytes"):
+        request["model"][field] = 1
+        rejected = client.post("/api/resolve", json=request)
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"][0]["loc"] == ["body", "model", field]
+        del request["model"][field]
     request["model"]["moe_layers"] = 2
     assert client.post("/api/simulate/resolved", json=request).status_code == 422

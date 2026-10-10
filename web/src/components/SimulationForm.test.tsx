@@ -321,28 +321,28 @@ describe("SimulationForm", () => {
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "10.5" } });
+    fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
-      timing: "empirical", model: { total_parameters: 10_500_000_000 },
+      timing: "empirical", model: { hidden_size: 2048 },
       hardware: { memory_bytes_per_gpu: 300_000_000_000 },
       config: { workload: { synthetic: { num_requests: 20 } } },
     });
-    fireEvent.change(screen.getByLabelText("总参数量（B，含全部专家）"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
-    expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(10.5);
+    expect(screen.getByLabelText("隐藏维度")).toHaveValue(2048);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
     expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      timing: "empirical", model: expect.objectContaining({ total_parameters: 10_500_000_000 }),
+      timing: "empirical", model: expect.objectContaining({ hidden_size: 2048 }),
       hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
     }));
   });
@@ -440,7 +440,7 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("专家数"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("每 token 激活专家数"), { target: { value: "2" } });
-    fireEvent.change(screen.getByLabelText("专家中间维度（可选）"), { target: { value: "512" } });
+    fireEvent.change(screen.getByLabelText("专家中间维度（MoE 必填）"), { target: { value: "512" } });
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("EP 数（MoE 须等于 TP）"), { target: { value: "4" } });
@@ -451,7 +451,12 @@ describe("SimulationForm", () => {
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
       tp_size: 4, ep_size: 4,
-      hardware: { ep_communication_latency_ms: 0.2, collective_latency_ms: null },
+      hardware: { ep_communication_latency_ms: 0.2, collective_latency_ms: 0.01,
+        effective_interconnect_gb_s: 600 },
+    });
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
+      target: { value: "" },
     });
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
@@ -522,7 +527,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("radio", { name: /手动配置/ })).toBeChecked();
     expect(screen.queryByLabelText("总参数量（B，含全部专家）")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
-    expect(screen.getByLabelText("总参数量（B，含全部专家）")).toHaveValue(8.2);
+    expect(screen.getByLabelText("词表大小（结构估算必填）")).toHaveValue(151936);
   });
 
   it("preserves the current form when JSON is invalid or incomplete", () => {

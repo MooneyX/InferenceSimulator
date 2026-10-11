@@ -159,14 +159,6 @@ def _hy4_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, i
     )
 
 
-def _hy4_kv_bytes(model: ModelSpec, *, hierarchical: bool = False) -> int:
-    # SGLang 有层级缓存时不省略 shared 层的 index-K 缓冲区；该行并不意味着重新 select。
-    index_layers = model.num_layers if hierarchical else sum(
-        i == 0 or (i - 1) % 4 == 0 for i in range(model.num_layers)
-    )
-    return model.num_layers * (512 + 64) * 2 + index_layers * (128 + 4)
-
-
 def _group_attention_budget(
     group: AttentionGroup, hidden_size: int, tp_size: int, hierarchical: bool
 ) -> tuple[int, int, int, int]:
@@ -263,15 +255,7 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
         raise ValueError("Dense 模型不应配置 EP 或 MoE 专家字段")
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
-    if model.attention_layout == "hy4_preview":
-        if any(size % tp_size for size in (
-            model.num_attention_heads, model.num_experts,
-            model.ffn_intermediate_size, model.vocab_size,
-        )):
-            raise ValueError("HY4-Preview 的 Query 头、专家、FFN 和词表须能按 TP/EP 均分")
-        # MLA + index-K 在该 SGLang TP 路径下逐 rank 复制。
-        kv_bytes = _hy4_kv_bytes(model, hierarchical=storage.l2_available_gb > 0)
-    elif model.attention_groups is not None:
+    if model.attention_groups is not None:
         kv_bytes = sum(
             _group_attention_budget(
                 group, model.hidden_size, tp_size, storage.l2_available_gb > 0
@@ -290,6 +274,11 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
     if model.attention_layout == "hy4_preview":
+        if any(size % tp_size for size in (
+            model.num_attention_heads, model.num_experts,
+            model.ffn_intermediate_size, model.vocab_size,
+        )):
+            raise ValueError("HY4-Preview 的 Query 头、专家、FFN 和词表须能按 TP/EP 均分")
         sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
             _hy4_weight_budget(model, tp_size)
         )

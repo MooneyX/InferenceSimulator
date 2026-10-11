@@ -240,6 +240,57 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
     assert tiered.config.perf_model.kv_bytes_per_token == tiered.capacity.kv_bytes_per_token
 
 
+@pytest.mark.parametrize("tp_size", [1, 8])
+@pytest.mark.parametrize("hierarchical", [False, True])
+def test_hy4_kv_uses_group_budget_and_preserves_restore_cost(
+    tp_size: int, hierarchical: bool,
+) -> None:
+    request = hy4_request()
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": tp_size, "memory_bytes_per_gpu": 3_000_000_000_000,
+    })
+    storage = request.storage.model_copy(update={
+        "l1_available_gb": 2000,
+        "l2_available_gb": 10 if hierarchical else 0,
+        "l3_available_gb": 10 if hierarchical else 0,
+    })
+    request = request.model_copy(update={
+        "hardware": hardware, "storage": storage, "tp_size": tp_size, "ep_size": tp_size,
+    })
+    resolved = resolve_config(request)
+    custom = ModelSpec.model_validate(request.model.model_dump() | {
+        "name": "custom", "revision": None, "attention_layout": "grouped",
+    })
+    grouped = resolve_config(request.model_copy(update={"model": custom}))
+    local_kv = 78 * 576 * 2 + (78 if hierarchical else 21) * 132
+    group_kv = local_kv * tp_size
+    capacity = resolved.capacity
+    assert capacity.kv_bytes_per_token == grouped.capacity.kv_bytes_per_token == group_kv
+    assert capacity.kv_bytes_per_page == grouped.capacity.kv_bytes_per_page == group_kv * 4
+    assert all(rank.kv_bytes_per_token == local_kv for rank in capacity.rank_reports)
+    assert resolved.config.perf_model.kv_bytes_per_token == group_kv
+    assert resolved.config.engine.max_total_tokens == capacity.l1_capacity_pages * 4
+    if hierarchical:
+        expected_pages = 10_000_000_000 // (group_kv * 4)
+        assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == expected_pages
+        assert resolved.config.engine.l2_capacity_tokens == capacity.l2_capacity_pages * 4
+        assert resolved.config.engine.l3_capacity_tokens == capacity.l3_capacity_pages * 4
+        restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"), ("b", "L3")), 4, (0,))
+        expected_ms = 3 + 2 * group_kv * 4 / 1000 + 4 + group_kv * 4 / 2000
+        assert restore_time(restore, resolved.config.perf_model) == pytest.approx(expected_ms)
+        assert restore_time_tokens(
+            restore,
+            l2_tokens_per_ms=capacity.l2_to_l1_tokens_per_ms,
+            l3_tokens_per_ms=capacity.l3_to_l2_tokens_per_ms,
+            l2_latency_ms=storage.l2_latency_ms,
+            l3_latency_ms=storage.l3_latency_ms,
+        ) == pytest.approx(expected_ms)
+        assert restore_time(restore, grouped.config.perf_model) == pytest.approx(expected_ms)
+    else:
+        assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == 0
+    assert request.model.attention_groups[0].full_indexer_layers == 21
+
+
 def test_hy4_dsa_index_reuse_and_sparse_attention_workload() -> None:
     request = hy4_request()
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 100_000),), 0, 1)

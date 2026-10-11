@@ -19,6 +19,7 @@ __all__ = [
     "AbortedRequest",
     "AnalyticalSummary",
     "Arrival",
+    "AttentionGroup",
     "CapacityReport",
     "ClientWakeup",
     "EngineConfig",
@@ -254,8 +255,49 @@ class SimConfig(_Frozen):
         return self
 
 
+class AttentionGroup(_Frozen):
+    """相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。"""
+
+    kind: Literal["gqa", "mla", "mla_dsa"]
+    layers: int = Field(ge=1)
+    num_attention_heads: int = Field(ge=1)
+    num_kv_heads: int | None = Field(default=None, ge=1)
+    head_dim: int | None = Field(default=None, ge=1)
+    q_rank: int | None = Field(default=None, ge=1)
+    kv_rank: int | None = Field(default=None, ge=1)
+    rope_dim: int | None = Field(default=None, ge=1)
+    nope_dim: int | None = Field(default=None, ge=1)
+    value_dim: int | None = Field(default=None, ge=1)
+    index_heads: int | None = Field(default=None, ge=1)
+    index_dim: int | None = Field(default=None, ge=1)
+    topk: int | None = Field(default=None, ge=1)
+    full_indexer_layers: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _check_layout(self) -> Self:
+        mla = (self.q_rank, self.kv_rank, self.rope_dim, self.nope_dim, self.value_dim)
+        index = (self.index_heads, self.index_dim, self.topk, self.full_indexer_layers)
+        if self.kind == "gqa":
+            if (self.num_kv_heads is None or self.head_dim is None
+                    or any(v is not None for v in mla + index)):
+                raise ValueError("GQA 只配置 KV 头数和头维度")
+            if self.num_attention_heads % self.num_kv_heads:
+                raise ValueError("Query 头数须是 KV 头数的整数倍")
+        elif (self.num_kv_heads is not None or self.head_dim is not None
+              or any(v is None for v in mla)):
+            raise ValueError("MLA 须配置 Q/KV 低秩、位置/非位置及 V 维度")
+        if self.kind == "mla_dsa":
+            if any(v is None for v in index) or self.full_indexer_layers > self.layers:
+                raise ValueError("DSA 须配置索引头/维度、top-k 及有效的重算层数")
+            if self.index_dim % 128:
+                raise ValueError("DSA 的 FP8 index-K 维度须为 128 的整数倍")
+        elif any(v is not None for v in index):
+            raise ValueError("仅 MLA+DSA 可以配置索引器")
+        return self
+
+
 class ModelSpec(_Frozen):
-    """全注意力模型的结构规格；MoE 层首版采用相同的专家结构。"""
+    """全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。"""
 
     name: str = Field(min_length=1)
     revision: str | None = None
@@ -273,7 +315,8 @@ class ModelSpec(_Frozen):
     num_experts: int = Field(default=0, ge=0)
     experts_per_token: int = Field(default=0, ge=0)
     expert_intermediate_size: int | None = Field(default=None, gt=0)
-    attention_layout: Literal["full_gqa", "hy4_preview", "other"] = "full_gqa"
+    attention_layout: Literal["full_gqa", "grouped", "hy4_preview", "other"] = "full_gqa"
+    attention_groups: list[AttentionGroup] | None = None
 
     @model_validator(mode="after")
     def _check_heads(self) -> Self:  # 当前模型规格 → 校验注意力结构与 MoE 层数，返回自身
@@ -281,6 +324,16 @@ class ModelSpec(_Frozen):
             raise ValueError("注意力头数须是 KV 头数的整数倍")
         if self.moe_layers > self.num_layers:
             raise ValueError("MoE 层数不得超过总层数")
+        if (self.attention_layout == "grouped" and self.attention_groups is None) or (
+            self.attention_layout not in ("grouped", "hy4_preview")
+            and self.attention_groups is not None
+        ):
+            raise ValueError("grouped 注意力布局必须提供注意力组，其他布局不能混用")
+        if self.attention_groups is not None and (
+            not self.attention_groups
+            or sum(group.layers for group in self.attention_groups) != self.num_layers
+        ):
+            raise ValueError("注意力组层数之和必须等于模型总层数")
         if self.attention_layout == "hy4_preview":
             expected = {
                 "name": "tencent/Hy4-preview",
@@ -294,6 +347,14 @@ class ModelSpec(_Frozen):
             }
             if any(getattr(self, field) != value for field, value in expected.items()):
                 raise ValueError("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP")
+            if self.attention_groups is not None and self.attention_groups != [
+                AttentionGroup(
+                    kind="mla_dsa", layers=78, num_attention_heads=64,
+                    q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
+                    index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
+                )
+            ]:
+                raise ValueError("HY4-Preview 的注意力组须与固定修订结构一致")
         return self
 
 

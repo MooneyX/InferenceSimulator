@@ -1,6 +1,6 @@
 """Dense TP 与平均负载 MoE/EP 的逐步解析计时（未经校准）。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from simcore.perf_model import StepWorkload
 from simcore.schemas import HardwareSpec, ModelSpec
@@ -37,6 +37,8 @@ def step_cost(
         return StepCost(0.0, 0.0, 0.0, 0.0, 0.0)
     if model.attention_layout == "hy4_preview":
         return _hy4_step_cost(workload, model, hardware, tp_size, ep_size)
+    if model.attention_groups is not None:
+        return _group_step_cost(workload, model, hardware, tp_size, ep_size)
     if model.moe_layers:
         return _moe_step_cost(workload, model, hardware, tp_size, ep_size)
     if tp_size > 1:
@@ -84,6 +86,99 @@ def step_cost(
         (projection_hbm + attention_hbm + ffn_hbm) * model.num_layers,
         layer_compute * model.num_layers,
         layer_memory * model.num_layers,
+    )
+
+
+def _group_step_cost(
+    workload: StepWorkload, model: ModelSpec, hardware: HardwareSpec, tp_size: int, ep_size: int
+) -> StepCost:
+    """按组累加注意力阶段 Roofline，FFN 与 TP/EP 仍用原有模型。"""
+    base = step_cost(
+        workload,
+        model.model_copy(update={"attention_layout": "full_gqa", "attention_groups": None}),
+        hardware, tp_size, ep_size
+    )
+    tokens = sum(item.new_tokens for item in workload.prefill) + len(workload.decode)
+    pairs = sum(
+        item.new_tokens * item.reused_tokens + item.new_tokens * (item.new_tokens + 1) / 2
+        for item in workload.prefill
+    ) + sum(item.context_after_decode for item in workload.decode)
+    kv_reads = sum(item.context_after for item in workload.prefill) + sum(
+        item.context_after_decode for item in workload.decode
+    )
+    h, d = model.hidden_size, model.head_dim
+    q_heads = model.num_attention_heads // tp_size
+    kv_heads = max(1, model.num_kv_heads // tp_size)
+    single_dense = not model.moe_layers and tp_size == 1
+    flops_per_ms = hardware.effective_fp16_tflops * 1e9
+    bytes_per_ms = hardware.effective_hbm_gb_s * 1e6
+
+    def stage(flops: float, nbytes: float, layers: int) -> tuple[float, float, float, float, float]:
+        compute, memory = flops / flops_per_ms, nbytes / bytes_per_ms
+        return (layers * (hardware.kernel_overhead_ms + max(compute, memory)),
+                layers * flops, layers * nbytes, layers * compute, layers * memory)
+
+    def gqa_stages(heads: int, kv: int, dim: int, layers: int) -> list[tuple[float, ...]]:
+        qkv = h * (heads + 2 * kv) * dim
+        out = h * heads * dim
+        if single_dense:
+            projections = [stage(2 * tokens * (qkv + out), 2 * (qkv + out), layers)]
+        else:
+            projections = [stage(2 * tokens * qkv, 2 * qkv, layers),
+                           stage(2 * tokens * out, 2 * out, layers)]
+        return [
+            *projections,
+            stage(4 * heads * dim * pairs, 4 * kv * dim * (kv_reads + tokens), layers),
+        ]
+
+    old = gqa_stages(q_heads, kv_heads, d, model.num_layers)
+    current = []
+    for group in model.attention_groups:
+        heads, layers = group.num_attention_heads // tp_size, group.layers
+        if group.kind == "gqa":
+            current.extend(gqa_stages(
+                heads, max(1, group.num_kv_heads // tp_size), group.head_dim, layers
+            ))
+            continue
+        q_rank, kv_rank, rope, nope, value = (
+            group.q_rank, group.kv_rank, group.rope_dim, group.nope_dim, group.value_dim
+        )
+        a = h * (q_rank + kv_rank + rope)
+        b = q_rank * heads * (nope + rope) + kv_rank * heads * (nope + value)
+        out = h * heads * value
+        current.append(stage(2 * tokens * (a + b), 2 * (a + b), layers))
+        if group.kind == "mla_dsa":
+            uncapped_pairs = 0
+            for item in workload.prefill:
+                uncapped = min(item.new_tokens, max(0, group.topk - item.reused_tokens))
+                uncapped_pairs += (
+                    uncapped * item.reused_tokens + uncapped * (uncapped + 1) / 2
+                    + (item.new_tokens - uncapped) * group.topk
+                )
+            uncapped_pairs += sum(
+                min(group.topk, item.context_after_decode) for item in workload.decode
+            )
+            index_weights = group.index_heads * group.index_dim * q_rank + h * (
+                group.index_dim + group.index_heads
+            )
+            index_bytes = group.index_dim + group.index_dim // 128 * 4
+            current.append(stage(
+                2 * tokens * index_weights + 2 * group.index_heads * group.index_dim * pairs,
+                2 * index_weights + index_bytes * (kv_reads + tokens), group.full_indexer_layers,
+            ))
+            attention_pairs = uncapped_pairs
+        else:
+            attention_pairs = pairs
+        current.append(stage(
+            2 * heads * (nope + rope + value) * attention_pairs,
+            (kv_rank + rope) * 2 * (attention_pairs + tokens), layers,
+        ))
+        current.append(stage(2 * tokens * out, 2 * out, layers))
+    delta = [sum(row[i] for row in current) - sum(row[i] for row in old) for i in range(5)]
+    return replace(
+        base, duration_ms=base.duration_ms + delta[0], flops=base.flops + delta[1],
+        hbm_bytes=base.hbm_bytes + delta[2], compute_ms=base.compute_ms + delta[3],
+        memory_ms=base.memory_ms + delta[4],
     )
 
 

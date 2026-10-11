@@ -74,6 +74,26 @@ def test_preview_and_run_resolve_identically() -> None:
     assert empirical["result"]["meta"]["wall_clock_ms"] >= 0
 
 
+def test_custom_attention_groups_preview_and_run() -> None:
+    client = TestClient(create_app())
+    request = payload()
+    mla = {"kind": "mla", "layers": 1, "num_attention_heads": 2,
+           "q_rank": 4, "kv_rank": 4, "rope_dim": 2, "nope_dim": 6, "value_dim": 8}
+    dsa = {**mla, "kind": "mla_dsa", "topk": 4, "index_heads": 2,
+           "index_dim": 128, "full_indexer_layers": 1}
+    request["model"]["attention_layout"] = "grouped"
+    request["model"]["attention_groups"] = [mla, dsa]
+    request["storage"].update({"l2_available_gb": 0, "l3_available_gb": 0})
+    preview = client.post("/api/resolve", json=request)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["capacity"]["kv_bytes_per_token"] == 156
+    run = client.post("/api/simulate/resolved", json=request)
+    assert run.status_code == 200, run.text
+    assert run.json()["resolution"] == preview.json()
+    request["model"]["attention_groups"][1]["layers"] = 2
+    assert client.post("/api/resolve", json=request).status_code == 422
+
+
 def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     client = TestClient(create_app())
     request = payload()

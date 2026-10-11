@@ -14,6 +14,7 @@ from simcore.perf_model import (
 )
 from simcore.runner import simulate_analytical, simulate_resolved
 from simcore.schemas import (
+    AttentionGroup,
     EngineConfig,
     FixedLength,
     HardwareSpec,
@@ -74,6 +75,111 @@ def example_request() -> ResolvedRequest:
             l3_lookup_latency_ms=1.25,
         ),
     )
+
+
+def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
+    request = example_request()
+    mla = AttentionGroup(
+        kind="mla", layers=1, num_attention_heads=2,
+        q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
+    )
+    dsa = AttentionGroup(
+        kind="mla_dsa", layers=1, num_attention_heads=2,
+        q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
+        topk=4, index_heads=2, index_dim=128, full_indexer_layers=1,
+    )
+    model = request.model.model_copy(update={
+        "attention_layout": "grouped", "attention_groups": [mla, dsa],
+    })
+    simple_storage = request.storage.model_copy(update={
+        "l2_available_gb": 0, "l3_available_gb": 0,
+    })
+    resolved = resolve_config(request.model_copy(update={
+        "model": model, "storage": simple_storage,
+    }))
+    assert resolved.capacity.kv_bytes_per_token == (4 + 2) * 2 * 2 + 132
+    assert resolved.capacity.estimated_total_parameters > 0
+    workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
+    cost = step_cost(workload, model, request.hardware)
+    assert cost.flops > 0 and cost.duration_ms > 0
+    gqa = AttentionGroup(kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8)
+    grouped = request.model.model_copy(update={
+        "attention_layout": "grouped", "attention_groups": [gqa],
+    })
+    assert (
+        resolve_config(request.model_copy(update={"model": grouped})).capacity
+        == resolve_config(request).capacity
+    )
+    assert (
+        step_cost(workload, grouped, request.hardware)
+        == step_cost(workload, request.model, request.hardware)
+    )
+
+
+def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> None:
+    request = example_request()
+    group = AttentionGroup(
+        kind="mla_dsa", layers=2, num_attention_heads=2,
+        q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
+        topk=4, index_heads=2, index_dim=128, full_indexer_layers=1,
+    )
+    two_full = group.model_copy(update={"full_indexer_layers": 2})
+    one = request.model.model_copy(update={
+        "attention_layout": "grouped", "attention_groups": [group],
+    })
+    two = request.model.model_copy(update={
+        "attention_layout": "grouped", "attention_groups": [two_full],
+    })
+    short = StepWorkload("DECODE", (), (DecodeWork(1, 10),), 0, 1)
+    long = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
+    assert (
+        step_cost(long, two, request.hardware).flops
+        > step_cost(long, one, request.hardware).flops
+    )
+    storage = request.storage.model_copy(update={"l2_available_gb": 0, "l3_available_gb": 0})
+    assert resolve_config(request.model_copy(update={
+        "model": two, "storage": storage,
+    })).capacity.kv_bytes_per_token == (
+        resolve_config(request.model_copy(update={
+            "model": one, "storage": storage,
+        })).capacity.kv_bytes_per_token + 132
+    )
+    # 超过 top-k 后，随上下文增长的 FLOPs 来自 full 索引器，非共享层主注意力。
+    delta = (
+        step_cost(long, one, request.hardware).flops
+        - step_cost(short, one, request.hardware).flops
+    )
+    assert delta == pytest.approx(2 * 2 * 128 * 90)
+
+
+def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -> None:
+    request = example_request()
+    groups = [
+        AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8),
+        AttentionGroup(kind="mla_dsa", layers=1, num_attention_heads=2,
+                       q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
+                       topk=4, index_heads=2, index_dim=128, full_indexer_layers=1),
+    ]
+    model = request.model.model_copy(update={
+        "attention_layout": "grouped", "attention_groups": groups,
+    })
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": 2, "effective_interconnect_gb_s": 100,
+        "collective_latency_ms": 0.01,
+    })
+    storage = request.storage.model_copy(update={
+        "l2_available_gb": 0.001, "l3_available_gb": 0,
+    })
+    resolved = resolve_config(request.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage, "tp_size": 2,
+    }))
+    # GQA 单 KV 头逐 rank 复制 32B；MLA 的 6 维每层复制 12B；索引 Key 132B。
+    assert resolved.capacity.rank_reports[0].kv_bytes_per_token == 32 + 12 + 132
+    assert resolved.capacity.kv_bytes_per_token == 2 * (32 + 12 + 132)
+    assert resolved.config.perf_model.kv_bytes_per_token == resolved.capacity.kv_bytes_per_token
+    assert resolved.capacity.rank_reports[0].sharded_weights_bytes > 0
+    workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
+    assert step_cost(workload, model, hardware, 2).collectives == 4
 
 
 def hy4_request() -> ResolvedRequest:

@@ -318,6 +318,43 @@ export interface components {
              */
             ep_exchanges: number;
         };
+        /**
+         * AttentionGroup
+         * @description 相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。
+         */
+        AttentionGroup: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "gqa" | "mla" | "mla_dsa";
+            /** Layers */
+            layers: number;
+            /** Num Attention Heads */
+            num_attention_heads: number;
+            /** Num Kv Heads */
+            num_kv_heads?: number | null;
+            /** Head Dim */
+            head_dim?: number | null;
+            /** Q Rank */
+            q_rank?: number | null;
+            /** Kv Rank */
+            kv_rank?: number | null;
+            /** Rope Dim */
+            rope_dim?: number | null;
+            /** Nope Dim */
+            nope_dim?: number | null;
+            /** Value Dim */
+            value_dim?: number | null;
+            /** Index Heads */
+            index_heads?: number | null;
+            /** Index Dim */
+            index_dim?: number | null;
+            /** Topk */
+            topk?: number | null;
+            /** Full Indexer Layers */
+            full_indexer_layers?: number | null;
+        };
         /** CapacityReport */
         CapacityReport: {
             /** Kv Bytes Per Token */
@@ -791,7 +828,7 @@ export interface components {
         };
         /**
          * ModelSpec
-         * @description 全注意力模型的结构规格；MoE 层首版采用相同的专家结构。
+         * @description 全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。
          */
         ModelSpec: {
             /** Name */
@@ -851,7 +888,9 @@ export interface components {
              * @default full_gqa
              * @enum {string}
              */
-            attention_layout: "full_gqa" | "hy4_preview" | "other";
+            attention_layout: "full_gqa" | "grouped" | "hy4_preview" | "other";
+            /** Attention Groups */
+            attention_groups?: components["schemas"]["AttentionGroup"][] | null;
         };
         /**
          * PerfModelConfig

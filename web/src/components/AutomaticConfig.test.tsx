@@ -55,7 +55,10 @@ describe("AutomaticConfig", () => {
       num_layers: 78, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
       head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
       moe_layers: 77, num_experts: 256, experts_per_token: 8,
-      expert_intermediate_size: 2048, attention_layout: "hy4_preview" as const };
+      expert_intermediate_size: 2048, attention_layout: "hy4_preview" as const,
+      attention_groups: [{ kind: "mla_dsa" as const, layers: 78, num_attention_heads: 64,
+        q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+        index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21 }] };
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [], scenarios: [] });
     const onModelChange = vi.fn();
     const onTpSizeChange = vi.fn();
@@ -74,6 +77,31 @@ describe("AutomaticConfig", () => {
     expect(onEpSizeChange).toHaveBeenCalledWith(8);
     expect(onHardwareChange).toHaveBeenCalledWith(expect.objectContaining({ gpu_count: 8 }));
     expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ l1_available_gb: 260 }));
+  });
+
+  it("edits independent MLA and MLA+DSA attention groups without requiring layer indices", async () => {
+    const model = { ...initialModel, name: "自定义模型", num_layers: 2,
+      attention_layout: "grouped" as const, attention_groups: [
+        { kind: "mla" as const, layers: 1, num_attention_heads: 32,
+          q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
+        { kind: "mla_dsa" as const, layers: 1, num_attention_heads: 32,
+          q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+          index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 },
+      ] };
+    const onModelChange = vi.fn();
+    render(<AutomaticConfig config={createDefaultSimConfig()} model={model}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={1} epSize={1} onTpSizeChange={vi.fn()} onEpSizeChange={vi.fn()}
+      onModelChange={onModelChange} onHardwareChange={vi.fn()}
+      onStorageChange={vi.fn()} disabled={false} />);
+    expect(screen.getByText(/已配置 2 \/ 2 层/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "another-mla-model" } });
+    expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({ name: "another-mla-model" }));
+    fireEvent.change(screen.getByLabelText("第 2 组选取 token 数"), { target: { value: "1024" } });
+    expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({ attention_groups: [
+      model.attention_groups[0], expect.objectContaining({ kind: "mla_dsa", topk: 1024 }),
+    ] }));
+    expect(screen.queryByLabelText("第 1 组选取 token 数")).not.toBeInTheDocument();
   });
 
   it("shows TP rank preview and the analytical timing scope", async () => {

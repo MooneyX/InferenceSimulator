@@ -81,6 +81,26 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify(value))).toThrow(message as string);
   });
 
+  it("round-trips mixed MLA and MLA+DSA groups and rejects invalid coverage", () => {
+    const request: ResolvedRequest = {
+      config: createDefaultSimConfig(), model: { ...initialModel, num_layers: 2,
+        attention_layout: "grouped", attention_groups: [
+          { kind: "mla", layers: 1, num_attention_heads: 32,
+            q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
+          { kind: "mla_dsa", layers: 1, num_attention_heads: 32,
+            q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+            topk: 2048, index_heads: 32, index_dim: 128, full_indexer_layers: 1 },
+        ] },
+      hardware: initialHardware, storage: initialStorage,
+      timing: "analytical", tp_size: 1, ep_size: 1,
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(request))).toEqual(request);
+    expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model: {
+      ...request.model, attention_groups: [{ ...request.model.attention_groups![0], layers: 2 },
+        request.model.attention_groups![1]],
+    } }))).toThrow("注意力组层数之和");
+  });
+
   it("round-trips the pinned HY4 BF16 model and rejects unsupported revisions", () => {
     const request: ResolvedRequest = {
       config: createDefaultSimConfig(),

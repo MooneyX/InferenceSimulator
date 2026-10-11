@@ -4,6 +4,7 @@ import { getPresets, resolveAutomatic, SimulationApiError } from "../api/client"
 import type { PresetCatalog, ResolvedConfig, ResolvedRequest, SimConfig } from "../api/types";
 
 export type Model = ResolvedRequest["model"];
+type AttentionGroup = NonNullable<Model["attention_groups"]>[number];
 export type Hardware = ResolvedRequest["hardware"];
 export type Storage = ResolvedRequest["storage"];
 
@@ -29,7 +30,7 @@ export const initialModel: Model = {
   ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
   weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
-  attention_layout: "full_gqa",
+  attention_layout: "full_gqa", attention_groups: null,
 };
 export const initialHardware: Hardware = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
@@ -73,9 +74,25 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
   const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize, config };
   const key = JSON.stringify(request);
   const selectedModel = catalog?.models.find((entry) => entry.name === model.name &&
-    Object.entries(entry).every(([field, value]) => model[field as keyof Model] === value));
+    Object.entries(entry).every(([field, value]) =>
+      JSON.stringify(model[field as keyof Model]) === JSON.stringify(value)));
   const selectedHardware = catalog?.hardware.find((entry) => entry.name === hardware.name &&
     entry.memory_bytes_per_gpu === hardware.memory_bytes_per_gpu);
+
+  function updateGroups(groups: AttentionGroup[] | null) {
+    onModelChange({ ...model,
+      name: selectedModel || model.attention_layout === "hy4_preview" ? "自定义模型" : model.name,
+      revision: selectedModel || model.attention_layout === "hy4_preview" ? null : model.revision,
+      attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups });
+  }
+
+  function newGroup(kind: AttentionGroup["kind"], layers: number): AttentionGroup {
+    const common = { kind, layers, num_attention_heads: model.num_attention_heads };
+    if (kind === "gqa") return { ...common, num_kv_heads: model.num_kv_heads, head_dim: model.head_dim };
+    const mla = { ...common, q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 };
+    return kind === "mla" ? mla : { ...mla, index_heads: 32, index_dim: 128,
+      topk: 2048, full_indexer_layers: 1 };
+  }
 
   async function inspect() {
     setError("");
@@ -102,7 +119,8 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         <select id="auto-model-preset" value={selectedModel?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
-            onModelChange(selected ?? { ...model, name: "自定义模型", attention_layout: "full_gqa" });
+            onModelChange(selected ?? { ...model, name: "自定义模型", revision: null,
+              attention_layout: model.attention_groups ? "grouped" : "full_gqa" });
             if (selected?.attention_layout === "hy4_preview") {
               onTpSizeChange(8);
               onEpSizeChange(8);
@@ -125,7 +143,8 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       ["expert_intermediate_size", "专家中间维度（MoE 必填）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={model[field]} optional={field === "expert_intermediate_size"}
-      disabled={model.attention_layout === "hy4_preview"}
+      disabled={model.attention_layout === "hy4_preview" ||
+        (model.attention_groups != null && (["num_attention_heads", "num_kv_heads", "head_dim"] as string[]).includes(field))}
       onChange={(value) => onModelChange({ ...model, name: "自定义模型", [field]: value })} />)}
       <div className="form-field"><label>权重精度<select disabled={model.attention_layout === "hy4_preview"} value={model.weight_dtype} onChange={(event) =>
         onModelChange({ ...model, name: "自定义模型", weight_dtype: event.target.value as Model["weight_dtype"] })}>
@@ -140,6 +159,62 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           onModelChange({ ...model, name: "自定义模型", tie_word_embeddings: event.target.checked })} />
       </label></div>
     </div>
+    <div className="section-heading"><div><h3>注意力组合</h3></div>
+      <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；启用组合后上方头数仅作为旧模型基线。</p></div>
+    {model.attention_layout === "hy4_preview" && <button type="button" className="transfer-button"
+      onClick={() => updateGroups(model.attention_groups ?? [newGroup("mla_dsa", model.num_layers)])}>
+      复制为自定义模型
+    </button>}
+    {model.attention_layout !== "hy4_preview" && <>
+      {model.attention_groups != null && <div className="form-grid"><div className="form-field">
+        <label>模型名称<input type="text" value={model.name} onChange={(event) =>
+          onModelChange({ ...model, name: event.target.value })} /></label>
+      </div><div className="form-field"><label>修订号（可选）<input type="text"
+        value={model.revision ?? ""} onChange={(event) =>
+          onModelChange({ ...model, revision: event.target.value || null })} /></label></div></div>}
+      {model.attention_groups == null ? <button type="button" className="transfer-button"
+        onClick={() => updateGroups([newGroup("gqa", model.num_layers)])}>启用注意力组合配置</button> : <>
+        <p>已配置 {model.attention_groups.reduce((total, group) => total + group.layers, 0)} / {model.num_layers} 层。
+          不按具体层号排列；不支持顺序敏感的跨层依赖。</p>
+        {model.attention_groups.map((group, index) => <div key={index} className="form-section">
+          <div className="form-grid">
+            <div className="form-field"><label>第 {index + 1} 组注意力方式
+              <select value={group.kind} onChange={(event) => updateGroups(model.attention_groups!.map((item, i) =>
+                i === index ? newGroup(event.target.value as AttentionGroup["kind"], item.layers) : item))}>
+                <option value="gqa">全注意力 GQA/MQA</option>
+                <option value="mla">MLA</option>
+                <option value="mla_dsa">MLA + DSA</option>
+              </select></label></div>
+            <Input label={`第 ${index + 1} 组层数`} value={group.layers} onChange={(value) =>
+              updateGroups(model.attention_groups!.map((item, i) => i === index ? { ...item, layers: value ?? NaN } : item))} />
+            <Input label={`第 ${index + 1} 组 Query 头数`} value={group.num_attention_heads} onChange={(value) =>
+              updateGroups(model.attention_groups!.map((item, i) => i === index ? { ...item, num_attention_heads: value ?? NaN } : item))} />
+            {(group.kind === "gqa" ? ([
+              ["num_kv_heads", "KV 头数"], ["head_dim", "每头维度"],
+            ] as const) : ([
+              ["q_rank", "Q 压缩维度"], ["kv_rank", "KV 压缩维度"],
+              ["rope_dim", "位置 Key 维度"], ["nope_dim", "非位置 Q/K 维度"],
+              ["value_dim", "V 维度"],
+              ...(group.kind === "mla_dsa" ? ([
+                ["index_heads", "索引头数"], ["index_dim", "索引 Key 维度（128 倍数）"],
+                ["topk", "选取 token 数"], ["full_indexer_layers", "重算索引的层数"],
+              ] as const) : []),
+            ] as const)).map(([field, label]) => <Input key={field} label={`第 ${index + 1} 组${label}`}
+              value={group[field]} onChange={(value) => updateGroups(model.attention_groups!.map((item, i) =>
+                i === index ? { ...item, [field]: value ?? NaN } : item))} />)}
+          </div>
+          <button type="button" className="transfer-button" onClick={() => updateGroups(
+            model.attention_groups!.length === 1 ? null : model.attention_groups!.filter((_, i) => i !== index)
+          )}>删除第 {index + 1} 组</button>
+        </div>)}
+        <button type="button" className="transfer-button" onClick={() => {
+          const groups = model.attention_groups!;
+          const last = groups[groups.length - 1];
+          updateGroups([...groups.slice(0, -1), { ...last, layers: Math.max(1, last.layers - 1) }, newGroup("gqa", 1)]);
+        }}>添加注意力组</button>
+      </>}
+      <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；其他门控、iHC、共享专家及运行时空间不自动推断。</p>
+    </>}
     </section>
     <section className="form-section" aria-labelledby="auto-hardware-heading">
       <div className="section-heading"><div>

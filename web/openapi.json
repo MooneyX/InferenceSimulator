@@ -611,6 +611,170 @@
         "type": "object",
         "title": "AnalyticalSummary"
       },
+      "AttentionGroup": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "gqa",
+              "mla",
+              "mla_dsa"
+            ],
+            "title": "Kind"
+          },
+          "layers": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Layers"
+          },
+          "num_attention_heads": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Num Attention Heads"
+          },
+          "num_kv_heads": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Kv Heads"
+          },
+          "head_dim": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Dim"
+          },
+          "q_rank": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q Rank"
+          },
+          "kv_rank": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kv Rank"
+          },
+          "rope_dim": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rope Dim"
+          },
+          "nope_dim": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nope Dim"
+          },
+          "value_dim": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Dim"
+          },
+          "index_heads": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Heads"
+          },
+          "index_dim": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Dim"
+          },
+          "topk": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topk"
+          },
+          "full_indexer_layers": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Indexer Layers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "layers",
+          "num_attention_heads"
+        ],
+        "title": "AttentionGroup",
+        "description": "相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。"
+      },
       "CapacityReport": {
         "properties": {
           "kv_bytes_per_token": {
@@ -1574,11 +1738,26 @@
             "type": "string",
             "enum": [
               "full_gqa",
+              "grouped",
               "hy4_preview",
               "other"
             ],
             "title": "Attention Layout",
             "default": "full_gqa"
+          },
+          "attention_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AttentionGroup"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attention Groups"
           }
         },
         "additionalProperties": false,
@@ -1594,7 +1773,7 @@
           "vocab_size"
         ],
         "title": "ModelSpec",
-        "description": "全注意力模型的结构规格；MoE 层首版采用相同的专家结构。"
+        "description": "全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。"
       },
       "PerfModelConfig": {
         "properties": {

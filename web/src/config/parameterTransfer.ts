@@ -158,7 +158,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   const model = physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
-      "num_experts", "experts_per_token", "expert_intermediate_size", "attention_layout"]);
+      "num_experts", "experts_per_token", "expert_intermediate_size", "attention_layout", "attention_groups"]);
   const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
@@ -176,7 +176,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     throw new Error("model.tie_word_embeddings 必须是布尔值");
   }
   for (const [key, allowed] of [["weight_dtype", ["bf16", "fp16", "fp8"]],
-    ["kv_dtype", ["bf16", "fp16", "fp8"]], ["attention_layout", ["full_gqa", "hy4_preview", "other"]]] as const) {
+    ["kv_dtype", ["bf16", "fp16", "fp8"]], ["attention_layout", ["full_gqa", "grouped", "hy4_preview", "other"]]] as const) {
     if (model[key] !== undefined && !allowed.includes(model[key] as never)) {
       throw new Error(`model.${key} 不支持该配置`);
     }
@@ -194,6 +194,43 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   if (model.weight_dtype === "fp8" || model.kv_dtype === "fp8" || model.attention_layout === "other") {
     throw new Error("当前解析仅支持 BF16/FP16 全注意力或 HY4-Preview BF16");
   }
+  if ((model.attention_layout === "grouped" && model.attention_groups == null) ||
+      (model.attention_layout !== "grouped" && model.attention_layout !== "hy4_preview" &&
+        model.attention_groups != null)) {
+    throw new Error("grouped 注意力布局必须提供注意力组，其他布局不能混用");
+  }
+  if (model.attention_groups !== undefined && model.attention_groups !== null) {
+    if (!Array.isArray(model.attention_groups) || model.attention_groups.length === 0) {
+      throw new Error("model.attention_groups 必须包含至少一个配置组");
+    }
+    const fields = ["num_kv_heads", "head_dim", "q_rank", "kv_rank", "rope_dim", "nope_dim",
+      "value_dim", "index_heads", "index_dim", "topk", "full_indexer_layers"];
+    let layers = 0;
+    for (const [index, raw] of model.attention_groups.entries()) {
+      const path = `model.attention_groups[${index}]`;
+      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"], fields);
+      if (!["gqa", "mla", "mla_dsa"].includes(group.kind as string)) throw new Error(`${path}.kind 不支持`);
+      for (const field of ["layers", "num_attention_heads"])
+        physicalNumber(group, path, field, 1, true);
+      for (const field of fields) physicalNumber(group, path, field, 1, true, true);
+      const present = (field: string) => group[field] != null;
+      const mla = ["q_rank", "kv_rank", "rope_dim", "nope_dim", "value_dim"];
+      const dsa = ["index_heads", "index_dim", "topk", "full_indexer_layers"];
+      if (group.kind === "gqa") {
+        if (!present("num_kv_heads") || !present("head_dim") ||
+            [...mla, ...dsa].some(present) || Number(group.num_attention_heads) % Number(group.num_kv_heads)) {
+          throw new Error(`${path} 的 GQA 头数或字段无效`);
+        }
+      } else if (present("num_kv_heads") || present("head_dim") || mla.some((field) => !present(field)) ||
+        (group.kind === "mla_dsa" ? dsa.some((field) => !present(field)) ||
+          Number(group.full_indexer_layers) > Number(group.layers) || Number(group.index_dim) % 128 !== 0 :
+          dsa.some(present))) {
+        throw new Error(`${path} 的 MLA/DSA 参数无效`);
+      }
+      layers += Number(group.layers);
+    }
+    if (layers !== Number(model.num_layers)) throw new Error("注意力组层数之和必须等于模型总层数");
+  }
   if (model.attention_layout === "hy4_preview") {
     const expected = {
       name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
@@ -207,6 +244,16 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     if (Object.entries(expected).some(([field, expectedValue]) =>
       (model[field] ?? (field === "tie_word_embeddings" ? false : undefined)) !== expectedValue)) {
       throw new Error("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP");
+    }
+    if (model.attention_groups != null) {
+      const group = model.attention_groups[0] as Record<string, unknown>;
+      const expectedGroup = { kind: "mla_dsa", layers: 78, num_attention_heads: 64,
+        q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+        index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21 };
+      if (model.attention_groups.length !== 1 ||
+          Object.entries(expectedGroup).some(([field, value]) => group[field] !== value)) {
+        throw new Error("HY4-Preview 的注意力组须与固定修订结构一致");
+      }
     }
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {

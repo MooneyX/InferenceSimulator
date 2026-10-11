@@ -3,6 +3,7 @@
 from decimal import ROUND_FLOOR, Decimal
 
 from simcore.schemas import (
+    AttentionGroup,
     CapacityReport,
     ModelSpec,
     RankCapacityReport,
@@ -157,6 +158,80 @@ def _hy4_kv_bytes(model: ModelSpec, *, hierarchical: bool = False) -> int:
     return model.num_layers * (512 + 64) * 2 + index_layers * (128 + 4)
 
 
+def _group_attention_budget(
+    group: AttentionGroup, hidden_size: int, tp_size: int, hierarchical: bool
+) -> tuple[int, int, int, int]:
+    """返回每 rank KV 字节、分片/复制权重参数量和逻辑参数量。"""
+    heads, layers = group.num_attention_heads, group.layers
+    if heads % tp_size:
+        raise ValueError("注意力组的 Query 头数须能按 TP 均分")
+    local_heads = heads // tp_size
+    if group.kind == "gqa":
+        kv_heads, dim = group.num_kv_heads, group.head_dim
+        if ((kv_heads >= tp_size and kv_heads % tp_size)
+                or (kv_heads < tp_size and tp_size % kv_heads)):
+            raise ValueError("注意力组的 KV 头数与 TP 不满足均分或复制条件")
+        local_kv = max(1, kv_heads // tp_size)
+        local_params = layers * hidden_size * (2 * local_heads + 2 * local_kv) * dim
+        logical = layers * hidden_size * (2 * heads + 2 * kv_heads) * dim
+        return (
+            layers * 2 * local_kv * dim * 2, local_params,
+            layers * 2 * dim, logical + layers * 2 * dim,
+        )
+    q_rank, kv_rank, rope, nope, value = (
+        group.q_rank, group.kv_rank, group.rope_dim, group.nope_dim, group.value_dim
+    )
+    local_params = layers * (
+        q_rank * local_heads * (nope + rope)
+        + kv_rank * local_heads * (nope + value)
+        + hidden_size * local_heads * value
+    )
+    replicated = layers * (hidden_size * (q_rank + kv_rank + rope) + q_rank + kv_rank)
+    logical = layers * (
+        hidden_size * (q_rank + kv_rank + rope)
+        + q_rank * heads * (nope + rope)
+        + kv_rank * heads * (nope + value)
+        + hidden_size * heads * value + q_rank + kv_rank
+    )
+    kv_bytes = layers * (kv_rank + rope) * 2
+    if group.kind == "mla_dsa":
+        full = group.full_indexer_layers
+        index_params = full * (
+            group.index_heads * group.index_dim * q_rank
+            + hidden_size * (group.index_dim + group.index_heads)
+            + 2 * group.index_dim
+        )
+        replicated += index_params
+        logical += index_params
+        index_layers = layers if hierarchical else full
+        kv_bytes += index_layers * (group.index_dim + group.index_dim // 128 * 4)
+    return kv_bytes, local_params, replicated, logical
+
+
+def _group_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
+    """按组替换普通注意力参数；FFN/MoE 仍遵循原同构层数口径。"""
+    if model.moe_layers:
+        sharded, replicated, expert = _moe_weights(model, tp_size)
+    else:
+        sharded, replicated = _tp_weights(model, tp_size)
+        expert = 0
+    total, active, expert_params = _parameter_counts(model)
+    h, heads, kv_heads, dim = (
+        model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim
+    )
+    old_local_kv = max(1, kv_heads // tp_size)
+    old_local = model.num_layers * h * (2 * heads // tp_size + 2 * old_local_kv) * dim
+    old_logical = model.num_layers * h * (2 * heads + 2 * kv_heads) * dim
+    old_norm = model.num_layers * 2 * dim
+    group_budgets = [
+        _group_attention_budget(group, h, tp_size, False) for group in model.attention_groups
+    ]
+    sharded += 2 * (sum(item[1] for item in group_budgets) - old_local)
+    replicated += 2 * (sum(item[2] for item in group_budgets) - old_norm)
+    delta = sum(item[3] for item in group_budgets) - old_logical - old_norm
+    return sharded, replicated, expert, total + delta, active + delta, expert_params
+
+
 def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬件、存储及仿真请求 → 物理页容量与运行可行性报告
     model, hardware, storage = request.model, request.hardware, request.storage
     page_size = request.config.engine.page_size
@@ -164,8 +239,8 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     is_moe = model.moe_layers > 0
     if hardware.gpu_count != tp_size:
         raise ValueError("TP 数必须等于分配给当前实例的 GPU 卡数")
-    if model.attention_layout not in ("full_gqa", "hy4_preview"):
-        raise ValueError("仅支持全注意力 GQA/MQA 或 HY4-Preview BF16")
+    if model.attention_layout not in ("full_gqa", "grouped", "hy4_preview"):
+        raise ValueError("仅支持全注意力 GQA/MQA、注意力组合或 HY4-Preview BF16")
     if is_moe:
         if request.ep_size != tp_size:
             raise ValueError("MoE 首版要求 EP 数等于 TP 数和 GPU 卡数")
@@ -187,6 +262,13 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
             raise ValueError("HY4-Preview 的 Query 头、专家、FFN 和词表须能按 TP/EP 均分")
         # MLA + index-K 在该 SGLang TP 路径下逐 rank 复制。
         kv_bytes = _hy4_kv_bytes(model, hierarchical=storage.l2_available_gb > 0)
+    elif model.attention_groups is not None:
+        kv_bytes = sum(
+            _group_attention_budget(
+                group, model.hidden_size, tp_size, storage.l2_available_gb > 0
+            )[0]
+            for group in model.attention_groups
+        )
     else:
         local_kv_heads = max(1, model.num_kv_heads // tp_size)
         kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2  # 单 rank 每 token 的 K/V BF16 字节
@@ -201,6 +283,10 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     if model.attention_layout == "hy4_preview":
         sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
             _hy4_weight_budget(model, tp_size)
+        )
+    elif model.attention_groups is not None:
+        sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
+            _group_weight_budget(model, tp_size)
         )
     else:
         if is_moe:

@@ -8,12 +8,14 @@ from pydantic import TypeAdapter, ValidationError
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
+    AttentionGroup,
     EngineConfig,
     FixedLength,
     InstanceResult,
     LengthDist,
     LognormalLength,
     Metrics,
+    ModelSpec,
     PerfModelConfig,
     PoissonLength,
     RequestRecord,
@@ -50,6 +52,22 @@ def make_config(**engine_overrides: object) -> SimConfig:
         ),
         perf_model=PerfModelConfig(prefill_c1=0.5, decode_d1=10.0, decode_d2=0.001),
     )
+
+
+def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() -> None:
+    base = dict(name="mixed", num_layers=2, hidden_size=16, num_attention_heads=2,
+                num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16)
+    gqa = AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
+    with pytest.raises(ValidationError, match="注意力组层数之和"):
+        ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa])
+    with pytest.raises(ValidationError, match="DSA 须配置"):
+        AttentionGroup(kind="mla_dsa", layers=1, num_attention_heads=2,
+                       q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8)
+    with pytest.raises(ValidationError, match="GQA 只配置"):
+        AttentionGroup(kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1,
+                       head_dim=8, kv_rank=4)
+    model = ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa, gqa])
+    assert model.attention_groups == [gqa, gqa]
 
 
 class TestLengthDist:

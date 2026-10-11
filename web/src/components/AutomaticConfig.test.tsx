@@ -25,6 +25,16 @@ const resolution = {
   },
 } as ResolvedConfig;
 
+const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
+  num_layers: 78, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
+  head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
+  moe_layers: 77, num_experts: 256, experts_per_token: 8,
+  expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
+  attention_layout: "hy4_preview" as const,
+  attention_groups: [{ kind: "mla_dsa" as const, layers: 78, num_attention_heads: 64,
+    q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+    index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true }] };
+
 describe("AutomaticConfig", () => {
   beforeEach(() => {
     vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [], scenarios: [] });
@@ -51,14 +61,6 @@ describe("AutomaticConfig", () => {
   });
 
   it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
-    const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
-      num_layers: 78, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
-      head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
-      moe_layers: 77, num_experts: 256, experts_per_token: 8,
-      expert_intermediate_size: 2048, attention_layout: "hy4_preview" as const,
-      attention_groups: [{ kind: "mla_dsa" as const, layers: 78, num_attention_heads: 64,
-        q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-        index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21 }] };
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [], scenarios: [] });
     const onModelChange = vi.fn();
     const onTpSizeChange = vi.fn();
@@ -79,12 +81,142 @@ describe("AutomaticConfig", () => {
     expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ l1_available_gb: 260 }));
   });
 
+  it("keeps HY4 gates and shared experts locked and preserves them when copying", async () => {
+    vi.mocked(getPresets).mockResolvedValue({ models: [hy4], hardware: [], scenarios: [] });
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model: hy4, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 8, epSize: 8,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
+    expect(screen.getByText(/保留包含 iHC、attention sink 等 FP32 辅助参数的专用容量账本/)).toBeInTheDocument();
+    expect(screen.getByText(/输出门控、共享专家与性能组件保留，但不包含 iHC、attention sink 等辅助容量/)).toBeInTheDocument();
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(1);
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toHaveValue(2048);
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeChecked();
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeDisabled();
+    const custom = { ...hy4, name: "自定义模型", revision: null, attention_layout: "grouped" };
+    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "custom" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(custom);
+    fireEvent.click(screen.getByRole("button", { name: "复制为自定义模型" }));
+    expect(onModelChange).toHaveBeenLastCalledWith(custom);
+    const copied = onModelChange.mock.lastCall![0];
+    rerender(<AutomaticConfig {...props} model={copied} />);
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeEnabled();
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeEnabled();
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeEnabled();
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      num_shared_experts: 1, shared_expert_intermediate_size: 2048,
+      attention_groups: [expect.objectContaining({ output_gate: false })],
+    }));
+  });
+
+  it.each(["mla", "mla_dsa"] as const)("edits %s output gates and resets them when switching to GQA", (kind) => {
+    const model = { ...initialModel, name: "自定义模型", attention_layout: "grouped" as const,
+      attention_groups: [{ ...hy4.attention_groups[0], kind, layers: initialModel.num_layers,
+        full_indexer_layers: kind === "mla_dsa" ? 1 : undefined,
+        index_heads: kind === "mla_dsa" ? 32 : undefined,
+        index_dim: kind === "mla_dsa" ? 128 : undefined,
+        topk: kind === "mla_dsa" ? 2048 : undefined, output_gate: false }] };
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ attention_groups: [
+      expect.objectContaining({ kind, output_gate: true }),
+    ] }));
+    const gated = onModelChange.mock.lastCall![0];
+    rerender(<AutomaticConfig {...props} model={gated} />);
+    fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), {
+      target: { value: kind === "mla" ? "mla_dsa" : "mla" },
+    });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ attention_groups: [
+      expect.objectContaining({ output_gate: true }),
+    ] }));
+    fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "gqa" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ attention_groups: [
+      expect.objectContaining({ kind: "gqa", output_gate: false }),
+    ] }));
+    rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeDisabled();
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).not.toBeChecked();
+  });
+
+  it("creates attention groups with output gates disabled by default", () => {
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model: initialModel, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "启用注意力组合配置" }));
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ attention_groups: [
+      expect.objectContaining({ kind: "gqa", output_gate: false }),
+    ] }));
+    rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "mla" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ attention_groups: [
+      expect.objectContaining({ kind: "mla", output_gate: false }),
+    ] }));
+  });
+
+  it("enables shared experts only for MoE and clears their dimension when disabled", () => {
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model: initialModel, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(0);
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toHaveValue(null);
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
+    const moe = { ...initialModel, moe_layers: 1, num_experts: 8,
+      experts_per_token: 2, expert_intermediate_size: 512 };
+    rerender(<AutomaticConfig {...props} model={moe} />);
+    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("共享专家数（0 为关闭）"), { target: { value: "2" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      num_shared_experts: 2, shared_expert_intermediate_size: null,
+    }));
+    rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("共享专家中间维度（启用时必填）"), { target: { value: "1024" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      num_shared_experts: 2, shared_expert_intermediate_size: 1024,
+    }));
+    const shared = onModelChange.mock.lastCall![0];
+    rerender(<AutomaticConfig {...props} model={shared} />);
+    fireEvent.change(screen.getByLabelText("共享专家中间维度（启用时必填）"), { target: { value: "" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({ shared_expert_intermediate_size: null }));
+    fireEvent.change(screen.getByLabelText("共享专家数（0 为关闭）"), { target: { value: "0" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      num_shared_experts: 0, shared_expert_intermediate_size: null,
+    }));
+    rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
+    rerender(<AutomaticConfig {...props} model={shared} />);
+    fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "0" } });
+    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      moe_layers: 0, num_shared_experts: 0, shared_expert_intermediate_size: null,
+    }));
+  });
+
   it("edits independent MLA and MLA+DSA attention groups without requiring layer indices", async () => {
     const model = { ...initialModel, name: "自定义模型", num_layers: 2,
       attention_layout: "grouped" as const, attention_groups: [
-        { kind: "mla" as const, layers: 1, num_attention_heads: 32,
+        { kind: "mla" as const, layers: 1, num_attention_heads: 32, output_gate: false,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
-        { kind: "mla_dsa" as const, layers: 1, num_attention_heads: 32,
+        { kind: "mla_dsa" as const, layers: 1, num_attention_heads: 32, output_gate: false,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
           index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 },
       ] };

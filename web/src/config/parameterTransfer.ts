@@ -158,7 +158,8 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   const model = physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
-      "num_experts", "experts_per_token", "expert_intermediate_size", "attention_layout", "attention_groups"]);
+      "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
+      "shared_expert_intermediate_size", "attention_layout", "attention_groups"]);
   const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
@@ -183,10 +184,18 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   }
   for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
     "head_dim", "ffn_intermediate_size", "vocab_size"] as const) physicalNumber(model, "model", key, 1, true);
-  for (const key of ["moe_layers", "num_experts", "experts_per_token"] as const) {
+  for (const key of ["moe_layers", "num_experts", "experts_per_token", "num_shared_experts"] as const) {
     physicalNumber(model, "model", key, 0, true);
   }
   physicalNumber(model, "model", "expert_intermediate_size", 1, true, true);
+  physicalNumber(model, "model", "shared_expert_intermediate_size", 1, true, true);
+  if (Number(model.num_shared_experts ?? 0) > 0) {
+    if (!Number(model.moe_layers ?? 0) || model.shared_expert_intermediate_size == null) {
+      throw new Error("启用共享专家需要 MoE 层及 model.shared_expert_intermediate_size");
+    }
+  } else if (model.shared_expert_intermediate_size != null) {
+    throw new Error("关闭共享专家时 model.shared_expert_intermediate_size 必须为 null");
+  }
   if (Number(model.num_attention_heads) % Number(model.num_kv_heads) ||
       Number(model.moe_layers ?? 0) > Number(model.num_layers)) {
     throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
@@ -208,8 +217,14 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     let layers = 0;
     for (const [index, raw] of model.attention_groups.entries()) {
       const path = `model.attention_groups[${index}]`;
-      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"], fields);
+      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"], [...fields, "output_gate"]);
       if (!["gqa", "mla", "mla_dsa"].includes(group.kind as string)) throw new Error(`${path}.kind 不支持`);
+      if (group.output_gate !== undefined && typeof group.output_gate !== "boolean") {
+        throw new Error(`${path}.output_gate 必须是布尔值`);
+      }
+      if (group.kind === "gqa" && group.output_gate === true) {
+        throw new Error(`${path}.output_gate 仅支持 MLA/DSA`);
+      }
       for (const field of ["layers", "num_attention_heads"])
         physicalNumber(group, path, field, 1, true);
       for (const field of fields) physicalNumber(group, path, field, 1, true, true);
@@ -238,22 +253,23 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
       num_attention_heads: 64, num_kv_heads: 8, head_dim: 256,
       ffn_intermediate_size: 18432, vocab_size: 120832,
       moe_layers: 77, num_experts: 256, experts_per_token: 8,
-      expert_intermediate_size: 2048, tie_word_embeddings: false,
-      weight_dtype: "bf16", kv_dtype: "bf16",
+      expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
+      tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16",
     };
     if (Object.entries(expected).some(([field, expectedValue]) =>
       (model[field] ?? (field === "tie_word_embeddings" ? false : undefined)) !== expectedValue)) {
       throw new Error("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP");
     }
-    if (model.attention_groups != null) {
-      const group = model.attention_groups[0] as Record<string, unknown>;
-      const expectedGroup = { kind: "mla_dsa", layers: 78, num_attention_heads: 64,
-        q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-        index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21 };
-      if (model.attention_groups.length !== 1 ||
-          Object.entries(expectedGroup).some(([field, value]) => group[field] !== value)) {
-        throw new Error("HY4-Preview 的注意力组须与固定修订结构一致");
-      }
+    if (model.attention_groups == null) {
+      throw new Error("HY4-Preview 必须提供完整固定注意力组");
+    }
+    const group = model.attention_groups[0] as Record<string, unknown>;
+    const expectedGroup = { kind: "mla_dsa", layers: 78, num_attention_heads: 64,
+      q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+      index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true };
+    if (model.attention_groups.length !== 1 ||
+        Object.entries(expectedGroup).some(([field, value]) => group[field] !== value)) {
+      throw new Error("HY4-Preview 的注意力组须与固定修订结构一致");
     }
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {

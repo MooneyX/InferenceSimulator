@@ -1,6 +1,9 @@
 """阶段一：单卡物理容量与逐步 Roofline 计时金标准。"""
 
+from dataclasses import asdict
+
 import pytest
+from pydantic import ValidationError
 
 from simcore.analytical import step_cost
 from simcore.capacity import resolve_config
@@ -191,6 +194,13 @@ def hy4_request() -> ResolvedRequest:
         ffn_intermediate_size=18432, vocab_size=120832,
         moe_layers=77, num_experts=256, experts_per_token=8,
         expert_intermediate_size=2048, attention_layout="hy4_preview",
+        num_shared_experts=1, shared_expert_intermediate_size=2048,
+        attention_groups=[AttentionGroup(
+            kind="mla_dsa", layers=78, num_attention_heads=64,
+            q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
+            index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
+            output_gate=True,
+        )],
     )
     hardware = request.hardware.model_copy(update={
         "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
@@ -245,6 +255,399 @@ def test_hy4_dsa_index_reuse_and_sparse_attention_workload() -> None:
     assert long_cost.communication_ms == short_cost.communication_ms
     assert long_cost.ep_exchanges == 2 * 77
     assert long_cost.collectives == 78 + 1
+
+
+@pytest.mark.parametrize(
+    (
+        "phase",
+        "reused",
+        "new",
+        "context",
+        "flops",
+        "hbm",
+        "duration",
+        "communication_bytes",
+        "tp_bytes",
+        "ep_bytes",
+        "communication_ms",
+    ),
+    [
+        (
+            "PREFILL",
+            2046,
+            5,
+            None,
+            106949074944,
+            200870670696,
+            200889.1739939991,
+            13978799.462155823,
+            8494080,
+            2742359.731077911,
+            3.893297999103593,
+        ),
+        (
+            "PREFILL",
+            0,
+            4,
+            None,
+            78923415552,
+            199942575312,
+            199961.0739503993,
+            11183039.569724657,
+            6795264,
+            2193887.7848623283,
+            3.8886383992828746,
+        ),
+        (
+            "DECODE",
+            0,
+            0,
+            2047,
+            21388959744,
+            200131632840,
+            200150.1184328367,
+            3355702,
+            1698816,
+            828443,
+            3.8755928366666668,
+        ),
+        (
+            "DECODE",
+            0,
+            0,
+            2048,
+            21389770752,
+            200131725780,
+            200150.2113728367,
+            3355702,
+            1698816,
+            828443,
+            3.8755928366666668,
+        ),
+        (
+            "DECODE",
+            0,
+            0,
+            2049,
+            21389942784,
+            200131728552,
+            200150.2141448367,
+            3355702,
+            1698816,
+            828443,
+            3.8755928366666668,
+        ),
+        (
+            "DECODE",
+            0,
+            0,
+            100000,
+            38240649216,
+            200403248724,
+            200421.7343168367,
+            3355702,
+            1698816,
+            828443,
+            3.8755928366666668,
+        ),
+        (
+            "MIXED",
+            2046,
+            5,
+            100000,
+            145189724160,
+            201332627388,
+            201351.13534559894,
+            16774559.354586985,
+            10192896,
+            3290831.677293493,
+            3.897957598924312,
+        ),
+    ],
+)
+def test_hy4_generic_cost_preserves_original_step_cost(
+    phase,
+    reused,
+    new,
+    context,
+    flops,
+    hbm,
+    duration,
+    communication_bytes,
+    tp_bytes,
+    ep_bytes,
+    communication_ms,
+) -> None:
+    request = hy4_request()
+    hardware = request.hardware.model_copy(update={"kernel_overhead_ms": 0.03})
+    prefill = (PrefillWork(1, reused, new, reused + new),) if new else ()
+    decode = (DecodeWork(2, context),) if context is not None else ()
+    workload = StepWorkload(phase, prefill, decode, 0, len(prefill) + len(decode))
+    cost = step_cost(workload, request.model, hardware, 8, 8)
+    assert asdict(cost) == pytest.approx(
+        {
+            "duration_ms": duration,
+            "flops": flops,
+            "hbm_bytes": hbm,
+            "compute_ms": flops / 1e9,
+            "memory_ms": hbm / 1e6,
+            "communication_ms": communication_ms,
+            "communication_bytes": communication_bytes,
+            "collectives": 79,
+            "tp_communication_ms": 0.79 + tp_bytes / 600e6,
+            "tp_communication_bytes": tp_bytes,
+            "ep_dispatch_ms": 1.54 + ep_bytes / 600e6,
+            "ep_combine_ms": 1.54 + ep_bytes / 600e6,
+            "ep_dispatch_bytes": ep_bytes,
+            "ep_combine_bytes": ep_bytes,
+            "ep_exchanges": 154,
+        }
+    )
+    custom = ModelSpec.model_validate(
+        request.model.model_dump()
+        | {
+            "name": "custom",
+            "revision": None,
+            "attention_layout": "grouped",
+        }
+    )
+    assert step_cost(workload, custom, hardware, 8, 8) == cost
+
+
+def test_hy4_requires_complete_explicit_components_and_empty_steps_are_free() -> None:
+    request = hy4_request()
+    payload = request.model.model_dump()
+    for update in (
+        {"attention_groups": None},
+        {"attention_groups": [payload["attention_groups"][0] | {"output_gate": False}]},
+        {"num_shared_experts": 0, "shared_expert_intermediate_size": None},
+    ):
+        with pytest.raises(ValidationError, match="HY4-Preview"):
+            ModelSpec.model_validate(payload | update)
+    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
+    cost = step_cost(restore, request.model, request.hardware, 8, 8)
+    assert all(value == 0 for value in asdict(cost).values())
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("kind", ["mla", "mla_dsa"])
+def test_output_gate_uses_group_dimensions_and_sharded_capacity(kind, tp_size) -> None:
+    request = example_request()
+    group = AttentionGroup(
+        kind=kind,
+        layers=2,
+        num_attention_heads=4,
+        q_rank=4,
+        kv_rank=4,
+        rope_dim=2,
+        nope_dim=6,
+        value_dim=6,
+        **(
+            {"index_heads": 2, "index_dim": 128, "topk": 4, "full_indexer_layers": 1}
+            if kind == "mla_dsa"
+            else {}
+        ),
+    )
+    model = request.model.model_copy(
+        update={
+            "attention_layout": "grouped",
+            "attention_groups": [group],
+        }
+    )
+    gated = model.model_copy(
+        update={"attention_groups": [group.model_copy(update={"output_gate": True})]}
+    )
+    hardware = request.hardware.model_copy(
+        update={
+            "gpu_count": tp_size,
+            "effective_interconnect_gb_s": 100,
+            "collective_latency_ms": 0.01,
+            "kernel_overhead_ms": 0.03,
+        }
+    )
+    workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
+    base = step_cost(workload, model, hardware, tp_size)
+    cost = step_cost(workload, gated, hardware, tp_size)
+    local_gate = 2 * 16 * (4 // tp_size) * 6
+    assert cost.flops - base.flops == pytest.approx(2 * local_gate)
+    assert cost.hbm_bytes - base.hbm_bytes == pytest.approx(2 * local_gate)
+    assert cost.duration_ms - base.duration_ms == pytest.approx(2 * local_gate / 1e6)
+    assert cost.communication_bytes == base.communication_bytes
+    storage = request.storage.model_copy(update={"l2_available_gb": 0, "l3_available_gb": 0})
+    base_capacity = resolve_config(
+        request.model_copy(
+            update={
+                "model": model,
+                "hardware": hardware,
+                "storage": storage,
+                "tp_size": tp_size,
+            }
+        )
+    ).capacity
+    capacity = resolve_config(
+        request.model_copy(
+            update={
+                "model": gated,
+                "hardware": hardware,
+                "storage": storage,
+                "tp_size": tp_size,
+            }
+        )
+    ).capacity
+    logical_gate = local_gate * tp_size
+    assert (
+        capacity.weights_resident_bytes - base_capacity.weights_resident_bytes == 2 * logical_gate
+    )
+    assert (
+        capacity.estimated_total_parameters - base_capacity.estimated_total_parameters
+        == logical_gate
+    )
+    assert (
+        capacity.estimated_active_parameters - base_capacity.estimated_active_parameters
+        == logical_gate
+    )
+    assert capacity.kv_bytes_per_token == base_capacity.kv_bytes_per_token
+    if tp_size > 1:
+        assert (
+            capacity.rank_reports[0].sharded_weights_bytes
+            - base_capacity.rank_reports[0].sharded_weights_bytes
+        ) == 2 * local_gate
+        assert (
+            capacity.rank_reports[0].replicated_weights_bytes
+            == base_capacity.rank_reports[0].replicated_weights_bytes
+        )
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_shared_experts_are_replicated_and_do_not_change_routing(tp_size, grouped) -> None:
+    request = example_request()
+    model = request.model.model_copy(
+        update={
+            "moe_layers": 1,
+            "num_experts": 4,
+            "experts_per_token": 2,
+            "expert_intermediate_size": 16,
+        }
+    )
+    if grouped:
+        model = model.model_copy(
+            update={
+                "attention_layout": "grouped",
+                "attention_groups": [
+                    AttentionGroup(
+                        kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8
+                    ),
+                ],
+            }
+        )
+    shared = model.model_copy(
+        update={"num_shared_experts": 2, "shared_expert_intermediate_size": 8}
+    )
+    hardware = request.hardware.model_copy(
+        update={
+            "gpu_count": tp_size,
+            "effective_interconnect_gb_s": 100,
+            "collective_latency_ms": 0.01,
+            "ep_communication_latency_ms": 0.02,
+            "kernel_overhead_ms": 0.03,
+        }
+    )
+    workload = StepWorkload("MIXED", (PrefillWork(1, 3, 2, 5),), (DecodeWork(2, 10),), 0, 2)
+    base = step_cost(workload, model, hardware, tp_size, tp_size)
+    cost = step_cost(workload, shared, hardware, tp_size, tp_size)
+    shared_params = 1 * 2 * 3 * 16 * 8
+    assert cost.flops - base.flops == pytest.approx(2 * 3 * shared_params)
+    assert cost.hbm_bytes - base.hbm_bytes == pytest.approx(2 * shared_params)
+    assert cost.duration_ms - base.duration_ms == pytest.approx(0.03 + 2 * shared_params / 1e6)
+    for name, value in asdict(base).items():
+        if name not in {"duration_ms", "flops", "hbm_bytes", "compute_ms", "memory_ms"}:
+            assert getattr(cost, name) == value
+    storage = request.storage.model_copy(update={"l2_available_gb": 0, "l3_available_gb": 0})
+    base_capacity = resolve_config(
+        request.model_copy(
+            update={
+                "model": model,
+                "hardware": hardware,
+                "storage": storage,
+                "tp_size": tp_size,
+                "ep_size": tp_size,
+            }
+        )
+    ).capacity
+    capacity = resolve_config(
+        request.model_copy(
+            update={
+                "model": shared,
+                "hardware": hardware,
+                "storage": storage,
+                "tp_size": tp_size,
+                "ep_size": tp_size,
+            }
+        )
+    ).capacity
+    assert (
+        capacity.weights_resident_bytes - base_capacity.weights_resident_bytes
+        == 2 * shared_params * tp_size
+    )
+    assert (
+        capacity.estimated_total_parameters - base_capacity.estimated_total_parameters
+        == shared_params
+    )
+    assert (
+        capacity.estimated_active_parameters - base_capacity.estimated_active_parameters
+        == shared_params
+    )
+    assert capacity.estimated_expert_parameters == base_capacity.estimated_expert_parameters
+    if tp_size > 1:
+        assert (
+            capacity.rank_reports[0].replicated_weights_bytes
+            - base_capacity.rank_reports[0].replicated_weights_bytes
+        ) == 2 * shared_params
+        assert (
+            capacity.rank_reports[0].expert_weights_bytes
+            == base_capacity.rank_reports[0].expert_weights_bytes
+        )
+
+
+def test_dsa_charges_int32_candidate_reads_in_each_attention_layer() -> None:
+    request = example_request()
+    mla = AttentionGroup(
+        kind="mla",
+        layers=2,
+        num_attention_heads=2,
+        q_rank=4,
+        kv_rank=4,
+        rope_dim=2,
+        nope_dim=6,
+        value_dim=8,
+    )
+    dsa = AttentionGroup(
+        kind="mla_dsa",
+        layers=2,
+        num_attention_heads=2,
+        q_rank=4,
+        kv_rank=4,
+        rope_dim=2,
+        nope_dim=6,
+        value_dim=8,
+        index_heads=2,
+        index_dim=128,
+        topk=10,
+        full_indexer_layers=1,
+    )
+    model = request.model.model_copy(
+        update={"attention_layout": "grouped", "attention_groups": [mla]}
+    )
+    sparse = model.model_copy(update={"attention_groups": [dsa]})
+    workload = StepWorkload("MIXED", (PrefillWork(1, 1, 2, 3),), (DecodeWork(2, 4),), 0, 2)
+    base = step_cost(workload, model, request.hardware)
+    cost = step_cost(workload, sparse, request.hardware)
+    pairs = 2 + 3 + 4
+    index_weights = 2 * 128 * 4 + 16 * (128 + 2)
+    index_hbm = 2 * index_weights + 132 * (3 + 4 + 3)
+    assert cost.hbm_bytes - base.hbm_bytes == pytest.approx(index_hbm + 2 * 4 * pairs)
+    assert cost.flops - base.flops == pytest.approx(2 * 3 * index_weights + 2 * 2 * 128 * pairs)
 
 
 def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:

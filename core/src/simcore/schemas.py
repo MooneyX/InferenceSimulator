@@ -272,12 +272,17 @@ class AttentionGroup(_Frozen):
     index_dim: int | None = Field(default=None, ge=1)
     topk: int | None = Field(default=None, ge=1)
     full_indexer_layers: int | None = Field(default=None, ge=1)
+    output_gate: bool = Field(
+        default=False, description="MLA 输出门控投影，按头分片并与输出投影合并计时"
+    )
 
     @model_validator(mode="after")
     def _check_layout(self) -> Self:
         mla = (self.q_rank, self.kv_rank, self.rope_dim, self.nope_dim, self.value_dim)
         index = (self.index_heads, self.index_dim, self.topk, self.full_indexer_layers)
         if self.kind == "gqa":
+            if self.output_gate:
+                raise ValueError("输出门控当前仅支持 MLA 注意力组")
             if (self.num_kv_heads is None or self.head_dim is None
                     or any(v is not None for v in mla + index)):
                 raise ValueError("GQA 只配置 KV 头数和头维度")
@@ -315,6 +320,10 @@ class ModelSpec(_Frozen):
     num_experts: int = Field(default=0, ge=0)
     experts_per_token: int = Field(default=0, ge=0)
     expert_intermediate_size: int | None = Field(default=None, gt=0)
+    num_shared_experts: int = Field(
+        default=0, ge=0, description="每个 MoE 层逐 rank 复制、始终参与计算的共享专家数"
+    )
+    shared_expert_intermediate_size: int | None = Field(default=None, gt=0)
     attention_layout: Literal["full_gqa", "grouped", "hy4_preview", "other"] = "full_gqa"
     attention_groups: list[AttentionGroup] | None = None
 
@@ -324,6 +333,11 @@ class ModelSpec(_Frozen):
             raise ValueError("注意力头数须是 KV 头数的整数倍")
         if self.moe_layers > self.num_layers:
             raise ValueError("MoE 层数不得超过总层数")
+        if self.num_shared_experts:
+            if not self.moe_layers or self.shared_expert_intermediate_size is None:
+                raise ValueError("共享专家需要 MoE 层及共享专家中间维度")
+        elif self.shared_expert_intermediate_size is not None:
+            raise ValueError("未启用共享专家时不能配置其中间维度")
         if (self.attention_layout == "grouped" and self.attention_groups is None) or (
             self.attention_layout not in ("grouped", "hy4_preview")
             and self.attention_groups is not None
@@ -343,15 +357,17 @@ class ModelSpec(_Frozen):
                 "ffn_intermediate_size": 18432, "vocab_size": 120832,
                 "moe_layers": 77, "num_experts": 256, "experts_per_token": 8,
                 "expert_intermediate_size": 2048, "tie_word_embeddings": False,
+                "num_shared_experts": 1, "shared_expert_intermediate_size": 2048,
                 "weight_dtype": "bf16", "kv_dtype": "bf16",
             }
             if any(getattr(self, field) != value for field, value in expected.items()):
                 raise ValueError("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP")
-            if self.attention_groups is not None and self.attention_groups != [
+            if self.attention_groups != [
                 AttentionGroup(
                     kind="mla_dsa", layers=78, num_attention_heads=64,
                     q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
                     index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
+                    output_gate=True,
                 )
             ]:
                 raise ValueError("HY4-Preview 的注意力组须与固定修订结构一致")

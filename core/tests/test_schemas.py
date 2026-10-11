@@ -68,6 +68,50 @@ def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() 
                        head_dim=8, kv_rank=4)
     model = ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa, gqa])
     assert model.attention_groups == [gqa, gqa]
+    assert not gqa.output_gate
+    with pytest.raises(ValidationError, match="输出门控当前仅支持 MLA"):
+        AttentionGroup(
+            kind="gqa",
+            layers=1,
+            num_attention_heads=2,
+            num_kv_heads=1,
+            head_dim=8,
+            output_gate=True,
+        )
+
+
+def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> None:
+    base = dict(
+        name="shared",
+        num_layers=2,
+        hidden_size=16,
+        num_attention_heads=2,
+        num_kv_heads=1,
+        head_dim=8,
+        ffn_intermediate_size=32,
+        vocab_size=16,
+    )
+    model = ModelSpec(**base)
+    assert model.num_shared_experts == 0
+    assert model.shared_expert_intermediate_size is None
+    with pytest.raises(ValidationError, match="共享专家需要 MoE 层"):
+        ModelSpec(**base, num_shared_experts=1, shared_expert_intermediate_size=8)
+    with pytest.raises(ValidationError, match="共享专家需要 MoE 层"):
+        ModelSpec(**base, moe_layers=1, num_shared_experts=1)
+    with pytest.raises(ValidationError, match="未启用共享专家"):
+        ModelSpec(**base, moe_layers=1, shared_expert_intermediate_size=8)
+    with pytest.raises(ValidationError):
+        ModelSpec(**base, moe_layers=1, num_shared_experts=1, shared_expert_intermediate_size=0)
+    shared = ModelSpec(
+        **base,
+        moe_layers=1,
+        num_experts=4,
+        experts_per_token=2,
+        expert_intermediate_size=16,
+        num_shared_experts=2,
+        shared_expert_intermediate_size=8,
+    )
+    assert ModelSpec.model_validate_json(shared.model_dump_json()) == shared
 
 
 class TestLengthDist:

@@ -85,9 +85,9 @@ describe("parameter JSON transfer", () => {
     const request: ResolvedRequest = {
       config: createDefaultSimConfig(), model: { ...initialModel, num_layers: 2,
         attention_layout: "grouped", attention_groups: [
-          { kind: "mla", layers: 1, num_attention_heads: 32,
+          { kind: "mla", layers: 1, num_attention_heads: 32, output_gate: false,
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
-          { kind: "mla_dsa", layers: 1, num_attention_heads: 32,
+          { kind: "mla_dsa", layers: 1, num_attention_heads: 32, output_gate: true,
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
             topk: 2048, index_heads: 32, index_dim: 128, full_indexer_layers: 1 },
         ] },
@@ -110,7 +110,12 @@ describe("parameter JSON transfer", () => {
         num_kv_heads: 8, head_dim: 256, ffn_intermediate_size: 18432,
         vocab_size: 120832, moe_layers: 77, num_experts: 256,
         experts_per_token: 8, expert_intermediate_size: 2048,
-        attention_layout: "hy4_preview" },
+        num_shared_experts: 1, shared_expert_intermediate_size: 2048,
+        attention_layout: "hy4_preview", attention_groups: [{
+          kind: "mla_dsa", layers: 78, num_attention_heads: 64,
+          q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+          index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
+        }] },
       hardware: { ...initialHardware, gpu_count: 8 },
       storage: initialStorage, timing: "analytical", tp_size: 8, ep_size: 8,
     };
@@ -118,6 +123,88 @@ describe("parameter JSON transfer", () => {
     expect(() => parseResolvedRequestJson(JSON.stringify({ ...request,
       model: { ...request.model, revision: "other" },
     }))).toThrow("仅支持已核对");
+    for (const attention_groups of [undefined, null]) {
+      expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model: {
+        ...request.model, attention_groups,
+      } }))).toThrow("必须提供完整固定注意力组");
+    }
+    for (const output_gate of [undefined, false]) {
+      const invalid = { ...request, model: { ...request.model,
+        attention_groups: [{ ...request.model.attention_groups![0], output_gate }],
+      } };
+      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
+      expect(() => serializeResolvedRequest(invalid as unknown as ResolvedRequest)).toThrow("固定修订结构一致");
+    }
+    for (const model of [
+      { ...request.model, num_shared_experts: 2 },
+      { ...request.model, shared_expert_intermediate_size: 1024 },
+    ]) {
+      expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model }))).toThrow("仅支持已核对");
+    }
+  });
+
+  it.each(["mla", "mla_dsa"] as const)("round-trips %s output gates with shared experts", (kind) => {
+    const request: ResolvedRequest = {
+      config: createDefaultSimConfig(), model: { ...initialModel, num_layers: 2,
+        moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
+        num_shared_experts: 2, shared_expert_intermediate_size: 1024,
+        attention_layout: "grouped", attention_groups: [{ kind, layers: 2, num_attention_heads: 32,
+          q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
+          ...(kind === "mla_dsa" ? { index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 } : {}),
+          output_gate: true,
+        }] }, hardware: initialHardware, storage: initialStorage,
+      timing: "analytical", tp_size: 1, ep_size: 1,
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(request))).toEqual(request);
+    const disabled = { ...request, model: { ...request.model,
+      num_shared_experts: 0, shared_expert_intermediate_size: null,
+      attention_groups: [{ ...request.model.attention_groups![0], output_gate: false }],
+    } };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(disabled))).toEqual(disabled);
+    for (const output_gate of [null, 1, "true"]) {
+      expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model: { ...request.model,
+        attention_groups: [{ ...request.model.attention_groups![0], output_gate }],
+      } }))).toThrow("output_gate 必须是布尔值");
+    }
+    const gqa = { ...request, model: { ...request.model, attention_groups: [{
+      kind: "gqa" as const, layers: 2, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+      output_gate: true,
+    }] } };
+    expect(() => parseResolvedRequestJson(JSON.stringify(gqa))).toThrow("output_gate 仅支持 MLA/DSA");
+    expect(() => serializeResolvedRequest(gqa)).toThrow("output_gate 仅支持 MLA/DSA");
+    const gqaWithoutGate = { ...gqa, model: { ...gqa.model, attention_groups: [{
+      ...gqa.model.attention_groups[0], output_gate: false,
+    }] } };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(gqaWithoutGate))).toEqual(gqaWithoutGate);
+  });
+
+  it("rejects invalid shared expert dimensions and missing MoE layers on import and export", () => {
+    const base: ResolvedRequest = { config: createDefaultSimConfig(),
+      model: { ...initialModel, moe_layers: 1, num_experts: 8, experts_per_token: 2,
+        expert_intermediate_size: 512, num_shared_experts: 1, shared_expert_intermediate_size: 1024 },
+      hardware: initialHardware, storage: initialStorage, timing: "analytical", tp_size: 1, ep_size: 1 };
+    const invalid = [
+      [{ ...base.model, num_shared_experts: -1 }, "model.num_shared_experts"],
+      [{ ...base.model, num_shared_experts: 0.5 }, "model.num_shared_experts"],
+      [{ ...base.model, num_shared_experts: null }, "model.num_shared_experts"],
+      [{ ...base.model, shared_expert_intermediate_size: 0 }, "model.shared_expert_intermediate_size"],
+      [{ ...base.model, shared_expert_intermediate_size: 1.5 }, "model.shared_expert_intermediate_size"],
+      [{ ...base.model, shared_expert_intermediate_size: "1024" }, "model.shared_expert_intermediate_size"],
+      [{ ...base.model, shared_expert_intermediate_size: null }, "启用共享专家需要"],
+      [{ ...base.model, shared_expert_intermediate_size: undefined }, "启用共享专家需要"],
+      [{ ...base.model, moe_layers: 0 }, "启用共享专家需要"],
+      [{ ...base.model, num_shared_experts: 0 }, "关闭共享专家时"],
+    ] as const;
+    for (const [model, message] of invalid) {
+      expect(() => parseResolvedRequestJson(JSON.stringify({ ...base, model }))).toThrow(message);
+      expect(() => serializeResolvedRequest({ ...base, model } as unknown as ResolvedRequest)).toThrow(message);
+    }
+    for (const model of [
+      { ...base.model, num_shared_experts: Number.NaN },
+      { ...base.model, shared_expert_intermediate_size: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(() => serializeResolvedRequest({ ...base, model })).toThrow("有限数值");
+    }
   });
 
   it("defaults legacy automatic requests to EP1 and rejects invalid EP widths", () => {

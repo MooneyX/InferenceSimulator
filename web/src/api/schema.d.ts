@@ -354,6 +354,12 @@ export interface components {
             topk?: number | null;
             /** Full Indexer Layers */
             full_indexer_layers?: number | null;
+            /**
+             * Output Gate
+             * @description MLA 输出门控投影，按头分片并与输出投影合并计时
+             * @default false
+             */
+            output_gate: boolean;
         };
         /** CapacityReport */
         CapacityReport: {
@@ -883,6 +889,14 @@ export interface components {
             experts_per_token: number;
             /** Expert Intermediate Size */
             expert_intermediate_size?: number | null;
+            /**
+             * Num Shared Experts
+             * @description 每个 MoE 层逐 rank 复制、始终参与计算的共享专家数
+             * @default 0
+             */
+            num_shared_experts: number;
+            /** Shared Expert Intermediate Size */
+            shared_expert_intermediate_size?: number | null;
             /**
              * Attention Layout
              * @default full_gqa

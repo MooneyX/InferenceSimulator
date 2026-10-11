@@ -34,11 +34,13 @@ step_time_ms = max(P_cost, D_cost) + restore_time_ms
 
 ## 按层数组合的注意力解析粗估
 
-`ModelSpec.attention_groups` 可选：按 `gqa`、`mla`、`mla_dsa` 组合填写层数和对应结构参数，层数之和必须等于总层数；MLA+DSA 的 `full_indexer_layers` 表示重算索引的层数，其余复用，所有层仍各自执行主注意力。自定义组按压缩 KV BF16/FP16、索引 Key FP8（每 128 元素另有 4 字节 scale）、普通 TP 下缓存复制与等成本页假设计算容量；开启 L2 时为 DSA 每层预留 index-K。按组替换普通 GQA 注意力投影、KV 读写和稀疏选位阶段，FFN/MoE 以及 TP/EP 平均通信沿用现有模型；自定义组**不自动包含**注意力门控、iHC、attention sink、独立共享专家等模型特有权重和算子，也不支持层顺序敏感的复用、滑动窗口、线性状态或 FP8 KV。未核对具体推理后端与硬件效率，结果仅为条件化粗估，不可当成任意同名注意力模型的精确显存或延迟。
+`ModelSpec.attention_groups` 可选：按 `gqa`、`mla`、`mla_dsa` 组合填写层数和对应结构参数，层数之和必须等于总层数；MLA+DSA 的 `full_indexer_layers` 表示重算索引的层数，其余复用，所有层仍各自执行主注意力。自定义组按压缩 KV BF16/FP16、索引 Key FP8（每 128 元素另有 4 字节 scale）、普通 TP 下缓存复制与等成本页假设计算容量；开启 L2 时为 DSA 每层预留 index-K。按组替换普通 GQA 注意力投影、KV 读写和稀疏选位阶段，FFN/MoE 以及 TP/EP 平均通信沿用现有模型；MLA 组可通过 `output_gate` 启用按头分片的输出门控投影，与输出投影合并为一个 Roofline 阶段；默认关闭。`num_shared_experts` 与 `shared_expert_intermediate_size` 配置每个 MoE 层始终参与计算、逐 rank 复制的独立共享专家，其计算和权重读取单列，不新增 TP/EP 通信；默认不启用。门控和共享专家也计入自定义模型的驻留权重与总/激活参数；不自动包含 iHC、attention sink 等辅助权重和算子，也不支持层顺序敏感的复用、滑动窗口、线性状态或 FP8 KV。未核对具体推理后端与硬件效率，结果仅为条件化粗估，不可当成任意同名注意力模型的精确显存或延迟。
+
+DSA 主注意力每层另按有效候选数计一次 INT32 选位索引读取，即 `4 × sparse_pairs` 字节，不乘 Query/index 头数。依据 SGLang 的 `sgl_kernel/flash_mla.py` 中 `indices: [s_q, h_kv, topk], int32` 接口，以及 `dsa_backend.py` 中单 KV 头的调用（本地参考见 `refs/sglang/python/sglang/kernels/aot/python/sgl_kernel/flash_mla.py`）。这是有效索引流量粗估，不包含 top-k 输出写入、排序、padding 扫描或真实缓存命中，不能解释为精确 HBM 访问。
 
 ## HY4-Preview BF16 MLA/DSA 条件化粗估
 
-固定官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe`，78 层中 21 层 full indexer 执行选位，其余复用索引；所有层仍处理每个 query 的至多 2048 个候选。解析模式按一组 step 聚合查询与历史位置对数，full 层另计索引 Key（FP8 + scale）读写、投影与打分，所有层计压缩 KV 读写、稀疏 MLA、注意力门控；独立共享专家的计算亦单列。复用下文 TP/EP 平均负载通信公式，不含 MTP、算子融合、top-k 排序和 iHC 的逐算子成本，也未做形状/硬件校准。结果用于趋势对比，不能视为 SGLang 真实延迟。
+固定官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe`，预设必须显式提供完整注意力组、输出门控和独立共享专家配置，性能与自定义组使用同一条通用计算路径，不按 HY4 名称或布局分派性能公式。HY4 专用容量账本暂时保留，用于 FP32 router、iHC、sink 等辅助权重；复制为自定义模型保持性能配置，但不包含这些专用容量项。78 层中 21 层 full indexer 执行选位，其余复用索引；所有层仍处理每个 query 的至多 2048 个候选。解析模式按一组 step 聚合查询与历史位置对数，full 层另计索引 Key（FP8 + scale）读写、投影与打分，所有层计压缩 KV 读写、稀疏 MLA、注意力门控；独立共享专家的计算亦单列。复用下文 TP/EP 平均负载通信公式，不含 MTP、算子融合、top-k 排序和 iHC 的逐算子成本，也未做形状/硬件校准。结果用于趋势对比，不能视为 SGLang 真实延迟。
 
 ## 平均负载 MoE/EP 解析计时（未经校准）
 

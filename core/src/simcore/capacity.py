@@ -27,8 +27,12 @@ def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:  # 模型规格
         if model.moe_layers and model.expert_intermediate_size is not None
         else 0
     )
+    shared = (
+        model.moe_layers * model.num_shared_experts * 3 * h * model.shared_expert_intermediate_size
+        if model.num_shared_experts else 0
+    )
     non_expert = (
-        model.num_layers * h * (2 * q * d + 2 * kv * d)
+        shared + model.num_layers * h * (2 * q * d + 2 * kv * d)
         + dense_layers * 3 * h * model.ffn_intermediate_size
         + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
         + model.num_layers * (2 * h + 2 * d)
@@ -98,6 +102,11 @@ def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:  # 模
     )
     # Router 对全部专家打分；首版每个 TP rank 复制 gate、norm 等非专家小权重。
     replicated = model.num_layers * (2 * h + 2 * d) + h + model.moe_layers * h * model.num_experts
+    if model.num_shared_experts:
+        replicated += (
+            model.moe_layers * model.num_shared_experts * 3 * h
+            * model.shared_expert_intermediate_size
+        )
     expert_parameters = (
         model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
     )
@@ -110,8 +119,8 @@ def _hy4_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, i
     heads, vocab = model.num_attention_heads, model.vocab_size
     q_rank, kv_rank, rope, nope, value = 2048, 512, 64, 192, 256
     index_heads, index_dim, full = 32, 128, 21
-    shared_params = 3 * h * model.expert_intermediate_size
-    routed_params = moe * model.num_experts * shared_params
+    shared_params = model.num_shared_experts * 3 * h * model.shared_expert_intermediate_size
+    routed_params = moe * model.num_experts * 3 * h * model.expert_intermediate_size
     # q_b、kv_b、o_proj、elementwise gate、dense FFN、embedding 和 lm_head 按 TP 分片。
     sharded_params = (
         layers * (q_rank * heads * (nope + rope)
@@ -184,14 +193,14 @@ def _group_attention_budget(
     local_params = layers * (
         q_rank * local_heads * (nope + rope)
         + kv_rank * local_heads * (nope + value)
-        + hidden_size * local_heads * value
+        + hidden_size * local_heads * value * (2 if group.output_gate else 1)
     )
     replicated = layers * (hidden_size * (q_rank + kv_rank + rope) + q_rank + kv_rank)
     logical = layers * (
         hidden_size * (q_rank + kv_rank + rope)
         + q_rank * heads * (nope + rope)
         + kv_rank * heads * (nope + value)
-        + hidden_size * heads * value + q_rank + kv_rank
+        + hidden_size * heads * value * (2 if group.output_gate else 1) + q_rank + kv_rank
     )
     kv_bytes = layers * (kv_rank + rope) * 2
     if group.kind == "mla_dsa":

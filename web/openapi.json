@@ -763,6 +763,12 @@
               }
             ],
             "title": "Full Indexer Layers"
+          },
+          "output_gate": {
+            "type": "boolean",
+            "title": "Output Gate",
+            "description": "MLA 输出门控投影，按头分片并与输出投影合并计时",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -1733,6 +1739,25 @@
               }
             ],
             "title": "Expert Intermediate Size"
+          },
+          "num_shared_experts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Num Shared Experts",
+            "description": "每个 MoE 层逐 rank 复制、始终参与计算的共享专家数",
+            "default": 0
+          },
+          "shared_expert_intermediate_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared Expert Intermediate Size"
           },
           "attention_layout": {
             "type": "string",

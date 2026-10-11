@@ -283,7 +283,7 @@ class TieredKVCache:
                 self._entries[chunk_id] = CacheEntry(chunk_id, "L1", 1, self._access_seq)
                 self._tiers["L1"].ids.add(chunk_id)
             elif existing.tier == "L1":  # 同 ID 私有页并入已有共享页，退还多占的一页
-                self._add_ref(chunk_id, refresh=True)
+                self._add_ref(chunk_id, refresh=True) # publish阶段请求仍然引用这些发布的KV, 后续才会释放引用, 因此KV块的引用数需要算上这个请求
                 self._tiers["L1"].resident -= 1
                 freed += 1
             else:  # 低层旧页被新计算出的 L1 页替换
@@ -306,7 +306,7 @@ class TieredKVCache:
         if len(set(request_ids)) != len(request_ids):
             raise ValueError("同批请求 ID 不得重复")
         for request_id in request_ids:
-            self.state(request_id)
+            self.state(request_id) #确保id存在, 不存在的话会报错
         return sum(self.publish(request_id) for request_id in sorted(request_ids))
 
     def finish(self, request_id: int) -> None:  # 完成请求 ID → 发布整页并归还活动引用；无返回值
@@ -324,7 +324,7 @@ class TieredKVCache:
         for index in range(state.f // self.page_size):
             self._drop_ref(self._chunk_id(request, index))
         count = self.private_page_count(request_id)
-        self._private_pages -= count
+        self._private_pages -= count # 末尾不足一页的私有token的KV, 没有被公布, 随请求释放而被删除
         self._tiers["L1"].resident -= count
         del self._states[request_id]
 

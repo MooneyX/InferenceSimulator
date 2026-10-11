@@ -100,7 +100,7 @@ class Coordinator:
             now_ms = event.time
             if event.kind is EventKind.STEP_DONE:
                 instance_id = event.ref
-                for request_id in self.engines[instance_id].finish_step(now_ms):
+                for request_id in self.engines[instance_id].finish_step(now_ms): #finish_step提交本步的prefill计算过程中产生的新的KV块
                     heapq.heappush(self._heap, self._factory.request_done(now_ms, request_id))
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
@@ -110,7 +110,7 @@ class Coordinator:
                 completion = engine.complete(now_ms, event.ref)
                 self._completions[event.ref] = completion
                 heapq.heappush(self._heap, self._factory.client_completion(now_ms, event.ref))
-                self._schedule_step(instance_id, now_ms)
+                self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.CLIENT_COMPLETION:
                 completion = self._completions.pop(event.ref)
                 if isinstance(self.client, OpenLoopClient):

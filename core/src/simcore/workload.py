@@ -99,7 +99,7 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
     )
 
 
-def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:  # 合成负载与 KV 引擎配置 → 会话拓扑和根到达计划
+def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:  # 合成负载与 KV 引擎配置 → 会话拓扑和根到达计划, 仅用于闭环模式
     """预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
     block_size = engine.page_size
     sessions = cast(int, cfg.session.num_sessions)

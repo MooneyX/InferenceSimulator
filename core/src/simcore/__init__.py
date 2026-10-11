@@ -6,7 +6,7 @@
 模块间单向依赖关系见 ``docs/design/architecture.md``「内核内部模块」。
 """
 
-from simcore.runner import simulate
+from simcore.runner import simulate, simulate_plan
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
@@ -53,4 +53,5 @@ __all__ = [
     "WorkloadMode",
     "__version__",
     "simulate",
+    "simulate_plan",
 ]

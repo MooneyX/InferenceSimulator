@@ -13,3 +13,6 @@ export type ResolvedRequest = components["schemas"]["ResolvedRequest"];
 export type ResolvedConfig = components["schemas"]["ResolvedConfig"];
 export type ResolvedRun = components["schemas"]["ResolvedRun"];
 export type PresetCatalog = components["schemas"]["PresetCatalog"];
+export type TraceSessionSummary = components["schemas"]["SessionSummary"];
+export type TraceJob = components["schemas"]["TraceJob"];
+export type PlanReceipt = components["schemas"]["PlanReceipt"];

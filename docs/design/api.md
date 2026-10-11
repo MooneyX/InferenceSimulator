@@ -4,7 +4,7 @@
 
 ```yaml
 workload:
-  mode: synthetic | trace        # trace 请求返回 501
+  mode: synthetic | trace        # 普通 simulate 仅支持 synthetic；trace 使用计划专用端点
   synthetic:
     num_requests: int            # 所有 session 的总轮次数
     arrival_rate: float | null   # 仅 open_loop 必填，目标请求 QPS
@@ -75,7 +75,7 @@ skipped_requests:  # 父轮未完成、从未发送：id、父轮 instance_id、
 warnings:          # 非致命告警；不代替请求级失败状态
 ```
 
-`aborted_requests.reason` 为 `input_exceeds_kv_capacity` 或 `decode_kv_exhausted`；`skipped_requests.reason` 为 `parent_not_completed`。未发送后代没有 arrival；`requests` 才供甘特图绘制。
+`aborted_requests.reason` 为 `input_exceeds_kv_capacity`、`decode_kv_exhausted`，或 trace 专用的 `invalid_trace_output`、`output_exceeds_kv_capacity`；`skipped_requests.reason` 为 `parent_not_completed`。未发送后代没有 arrival；`requests` 才供甘特图绘制。
 
 - 请求体即 `SimConfig`，响应体即 `SimResult`，服务层不另行定义数据类型。
 - 响应体字节与内核 `SimResult` 的 JSON 序列化一致：同种子两次请求的响应逐字节相同。
@@ -85,13 +85,19 @@ warnings:          # 非致命告警；不代替请求级失败状态
 | 状态码 | 场景 | 响应体 |
 |---|---|---|
 | `422` | config 校验失败（类型、范围、未知字段、缺少子轮增量分布、非整页容量、`mode` 与载荷不匹配）或配置业务错误 | 配置错误为 FastAPI 默认 `HTTPValidationError`；业务错误为 `{"detail": str}` |
-| `501` | `workload.mode = trace`（预留接缝，MVP 未实现） | `{"detail": str}` |
+| `501` | 普通 `/api/simulate` 直接传 `workload.mode = trace`（应改用计划入口） | `{"detail": str}` |
 
 运行中的单请求容量不足不归入 HTTP 422，而是正常结果的 `aborted_requests`；其他请求可继续执行。开环模式不预建未来子轮，失败时下一节拍可创建新根；闭环模式的预建后代才进入 `skipped_requests`。
 
 错误响应体属于 HTTP 边界，由服务层定义并登记进 OpenAPI，不进入 `core.schemas`。
 
 `metrics` 包含 TTFT、TPOT、完成吞吐、makespan、L1/L2/L3 命中与驻留、驱逐/提升/降级及恢复字节和时间；`requests` 的分层命中只记录首次准入。计算与空值口径统一见 [metrics.md](metrics.md)。
+
+## Trace 文件与计划接口
+
+原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划，最大 64 MiB；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID；`POST /api/replay-plans/{id}/simulate` 接受 `{ "config": SimConfig, "mode": "open_loop" | "session", "session_rate": 会话每秒, "seed": 非负整数 }`，同步返回 `SimResult`。此处 `config` 使用手动模式引擎和性能参数，synthetic 负载字段不参与计划运行；返回 `meta.config.workload.mode=trace`。
+
+原始文件与计划暂存于服务进程的临时目录，闲置 24 小时后在后续访问时清理；服务进程退出后失效，当前版本不支持跨实例共享任务或断点续传。文件超限为 413，解析/校验失败为 422，处理中尝试导出为 409，未知或过期 ID 为 404。上传计划的块 ID 必须是会话局部一致的前缀身份；原始输入块参与运行时连续缓存匹配，不包含原始输出块身份。计划不能直接传入普通 `/api/simulate`。
 
 ## 自动解析与 TP/EP 容量预览
 

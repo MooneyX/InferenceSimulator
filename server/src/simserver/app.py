@@ -6,6 +6,8 @@
 from fastapi import FastAPI
 
 from simserver.routes import router
+from simserver.trace_routes import router as trace_router
+from simserver.trace_store import TraceStore
 
 __all__ = ["create_app"]
 
@@ -23,5 +25,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         separate_input_output_schemas=False,
     )
+    app.state.trace_store = TraceStore()
     app.include_router(router)
+    app.include_router(trace_router)
     return app

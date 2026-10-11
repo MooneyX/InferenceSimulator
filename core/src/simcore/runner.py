@@ -28,11 +28,24 @@ from simcore.schemas import (
     SimResult,
     SkippedRequest,
     SyntheticWorkloadConfig,
+    TracePlan,
+    WorkloadConfig,
     WorkloadPlan,
 )
+from simcore.trace_client import TraceClient
 from simcore.workload import build_plan
 
-__all__ = ["simulate"]
+__all__ = ["simulate", "simulate_plan"]
+
+
+def simulate_plan(
+    config: SimConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int
+) -> SimResult:
+    """运行已经在本地或服务端编译好的 trace 请求计划。"""
+    client = TraceClient(plan, config.engine, mode=mode, session_rate=session_rate, seed=seed)
+    trace_config = config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
+    result, _ = _simulate(trace_config, None, trace_client=client)
+    return result
 
 
 def simulate(config: SimConfig) -> SimResult:  # 仿真配置 → 完整的经验计时仿真结果
@@ -73,15 +86,21 @@ def _simulate(
     config: SimConfig,
     analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
     token_bandwidths: tuple[float | None, float | None] | None = None,
+    *,
+    trace_client: TraceClient | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:  # 配置、可选解析规格和链路带宽 → 全场结果/可选成本
-    if config.workload.mode == "trace":
-        raise NotImplementedError("trace replay 尚未实现，MVP 仅支持 workload.mode='synthetic'")
+    if config.workload.mode == "trace" and trace_client is None:
+        raise NotImplementedError("trace replay 须通过请求计划入口执行")
     started_at = perf_counter()
-    synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
-    if synthetic.arrival_mode == "open_loop":
-        client: ClientDriver | OpenLoopClient = OpenLoopClient(synthetic, config.engine)
+    client: ClientDriver | OpenLoopClient | TraceClient
+    if trace_client is not None:
+        client = trace_client
     else:
-        client = ClientDriver(build_plan(synthetic, config.engine), config.engine)
+        synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
+        if synthetic.arrival_mode == "open_loop":
+            client = OpenLoopClient(synthetic, config.engine)
+        else:
+            client = ClientDriver(build_plan(synthetic, config.engine), config.engine)
     runs = Coordinator(
         tuple(
             Engine(
@@ -95,7 +114,7 @@ def _simulate(
             for _ in range(config.num_instances)
         ),
         client,
-        Router(config.num_instances),
+        Router(config.num_instances, session_affinity=trace_client is not None),
     ).run()
     plan = client.plan
     instances: list[InstanceResult] = []

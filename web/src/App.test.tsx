@@ -129,7 +129,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
-      "多实例 · TP 可选Synthetic workloadFCFS 调度",
+      "多实例 · TP 可选Synthetic / Trace workloadFCFS 调度",
     );
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
   });

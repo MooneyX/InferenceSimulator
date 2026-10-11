@@ -65,7 +65,18 @@ curl.exe -X POST http://127.0.0.1:8000/api/simulate `
 Remove-Item simulate-request.json
 ```
 
-响应包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`；各请求含 `instance_id`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；尚未实现的 `workload.mode=trace` 返回 `501`。
+响应包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`；各请求含 `instance_id`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；普通接口直接传 `workload.mode=trace` 返回 `501`，请求计划回放须使用独立接口。
+
+## Trace 数据集 replay
+
+页面切换到「手动配置」，在「轨迹回放」区域可上传原始 JSONL、等待后台扫描、预览并选择会话后下载请求计划，也可直接上传既有计划 JSON 运行。上传完整数据集需要服务端磁盘空间；更推荐先在数据所在机器本地执行：
+
+```powershell
+uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --output trace-summary.json
+uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --sessions "002001296e8a8c38ad9d7cc436d691afc602" --output trace-plan.json
+```
+
+本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式，并用当前手动引擎/性能参数仿真。原始模型字段不参与计算；本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
 
 ## 同步前端类型
 

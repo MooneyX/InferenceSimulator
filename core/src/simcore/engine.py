@@ -268,6 +268,12 @@ class Engine:
         output_len = self._output_targets.get(key)
         if output_len is None:
             raise ValueError("请求缺少引擎持有的输出目标")
+        if request.is_trace and (output_len == 0 or output_len > request.max_new_tokens):
+            self._requests[key] = request
+            self._arrival_times[key] = now_ms
+            self._log.record(ArrivalTrace(now_ms, key, request.prompt_len, output_len))
+            self._abort(key, now_ms, "invalid_trace_output" if output_len == 0 else "output_exceeds_kv_capacity")
+            return False
         if request.max_new_tokens > 0 and not 1 <= output_len <= request.max_new_tokens:
             raise ValueError("请求实际输出长度与可见上限不一致")
         self._requests[key] = request
@@ -338,7 +344,10 @@ class Engine:
         self,
         request_id: int,
         now_ms: float,
-        reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"],
+        reason: Literal[
+            "input_exceeds_kv_capacity", "decode_kv_exhausted",
+            "invalid_trace_output", "output_exceeds_kv_capacity",
+        ],
     ) -> None:  # 请求 ID、失败时刻和容量原因 → 登记中止记录；无返回值
         self._aborted[request_id] = AbortedRequest(
             id=request_id,

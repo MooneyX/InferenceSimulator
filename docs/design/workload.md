@@ -14,7 +14,15 @@
 
 闭环不配置目标请求 QPS；`session_rate` 直接设定根会话的泊松到达频率（会话/秒），首根同样采样指数间隔，不固定在时刻 0。子轮须等父轮实际完成后，再经过独立采样的平均思考间隔投放；实际请求 QPS 由所有已发送轮次的首末时间计算，而非由会话速率推导。`S=N` 时每个会话仅有一个根请求。根到达、根输入、子轮新增内容、输出、拓扑及思考时间分别由 `stable_derive(seed, domain)` 派生独立随机流，保持相同配置与种子的计划可复现。`session.think_time_ms` 是子轮思考时间的指数分布均值（毫秒），每个子轮独立采样一次；设为 `0` 时始终无等待。根轮不采样思考时间，子轮实际到达仍由父轮完成时刻决定。
 
-`prompt_len`（仅根轮）、`turn_increment_len`（仅子轮）和 `output_len` 均使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。每个子轮的计划输入 `P_child=P_parent+O_parent+sample(turn_increment_len)`，其中 `O_parent` 已按父轮容量和输出上限截断；不截断或摘要超长上下文。对本轮输入长 `P` 计算可见上限 `M=max(0,min(配置 max_new_tokens, max_total_tokens-(ceil(P/B)+1)*B))`，实际输出目标 `O=min(采样输出长,M)`；引擎持有 `O`，调度器只看到 `M`。`M<1` 的请求仍在父轮成功后按计划发送并失败，子轮只有在父轮实际完成后才发送；失败父轮的后代标记跳过。手写 `Arrival.max_new_tokens` 默认 128，经 `run_engine`/`plan_from_arrivals` 适配为各自独立的根 session，同样截断。`trace` 模式目前未实现。
+`prompt_len`（仅根轮）、`turn_increment_len`（仅子轮）和 `output_len` 均使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。每个子轮的计划输入 `P_child=P_parent+O_parent+sample(turn_increment_len)`，其中 `O_parent` 已按父轮容量和输出上限截断；不截断或摘要超长上下文。对本轮输入长 `P` 计算可见上限 `M=max(0,min(配置 max_new_tokens, max_total_tokens-(ceil(P/B)+1)*B))`，实际输出目标 `O=min(采样输出长,M)`；引擎持有 `O`，调度器只看到 `M`。`M<1` 的请求仍在父轮成功后按计划发送并失败，子轮只有在父轮实际完成后才发送；失败父轮的后代标记跳过。手写 `Arrival.max_new_tokens` 默认 128，经 `run_engine`/`plan_from_arrivals` 适配为各自独立的根 session，同样截断。trace 回放通过独立的计划入口执行，不使用合成长度分布。
+
+## Trace 请求计划回放
+
+`simserver.trace_processing` 可在本地逐行扫描 AgentX JSONL：每行一原始会话，展开 `subagent` 分组，汇总请求量、token 数、按原到达窗口计算的会话 QPS、历史块 set-hit 与最长连续前缀 prefix-hit。仅在同一主对话或同一 subagent 分组内，用原始 `t_parent + api_time_parent + think_time_child ≈ t_child`（容差 1 ms）推断唯一投放依赖；不以输入复用决定父子关系。无唯一父请求的请求保留相对本会话起点的到达偏移。报告 HTML 不参与扫描。
+
+`TracePlan(version=1)` 存所选原始会话 ID、64-token 块大小和每次请求的本场 ID、会话编号、父 ID、相对到达偏移（ms）、子思考时间（ms）、原始输入输出长度及输入块 ID。上传前校验块 ID 的会话局部命名空间、位置/前驱一致性与父子拓扑；原始模型名不参与仿真，统一使用用户指定的引擎与性能配置。没有输出块 ID，不推断尚未计算的输出块。计划不按引擎容量截短输入或输出；零输出与超出输出可见上限在运行时记请求级失败。
+
+`simulate_plan(config, plan, mode, session_rate, seed)` 对每个所选原始会话采样均值 `1000/session_rate` ms 的指数间隔。开环把所有请求投放于会话起点加原始偏移，父请求失败不阻止后续固定到达；闭环的有父请求在仿真完成后加原始思考时间发送，无父分支按同一会话起点加偏移发送。不同分支共用原会话的实例 KV；跨原会话同数字块 ID 不可互相命中。trace 的 `constructed_ideal_prefix_hit_rate` 是整份所选计划中其他请求具有相同输入块 ID 的连续完整前缀**潜在上界**，可能包含当前请求到达后才出现的块，并非按历史可用块计算的原轨迹 prefix-hit；实际命中只取运行时已发布且尚在缓存中的连续页。
 
 ## 理想继承块
 

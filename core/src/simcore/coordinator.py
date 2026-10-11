@@ -11,6 +11,7 @@ from simcore.events import Event, EventFactory, EventKind
 from simcore.prefix_hash import stable_derive
 from simcore.router import Router
 from simcore.schemas import ClientWakeup, InferenceRequest, RequestCompletion
+from simcore.trace_client import TraceClient
 
 __all__ = ["Coordinator", "SimulationCoordinator"]
 
@@ -19,7 +20,10 @@ class Coordinator:
     """持有唯一客户端和事件堆；每个实例独立安排步进与完成结算。"""
 
     def __init__(
-        self, engines: Sequence[Engine], client: ClientDriver | OpenLoopClient, router: Router
+        self,
+        engines: Sequence[Engine],
+        client: ClientDriver | OpenLoopClient | TraceClient,
+        router: Router,
     ) -> None:  # 引擎副本、客户端、选路器 → 建立统一事件队列；无返回值
         self.engines = tuple(engines)
         self.client = client
@@ -131,8 +135,8 @@ class Coordinator:
                 self._schedule_step(instance_id, now_ms)
             elif event.kind in (EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND):
                 wakeup = self._wakeups.pop(event.ref)
-                if not isinstance(self.client, ClientDriver):
-                    raise RuntimeError("开环客户端不接受闭环唤醒")
+                if not isinstance(self.client, (ClientDriver, TraceClient)):
+                    raise RuntimeError("合成开环客户端不接受计划唤醒")
                 request = self.client.on_wakeup(wakeup)
                 self._submit(request, self.client.plan.turns[request.request_id].output_len, now_ms)
             elif event.kind is EventKind.OPEN_LOOP_TICK:

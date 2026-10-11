@@ -174,6 +174,241 @@
           }
         }
       }
+    },
+    "/api/traces": {
+      "post": {
+        "summary": "Upload Trace",
+        "operationId": "upload_trace_api_traces_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceJob"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traces/{key}": {
+      "get": {
+        "summary": "Trace Status",
+        "operationId": "trace_status_api_traces__key__get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traces/{key}/sessions": {
+      "get": {
+        "summary": "Sessions",
+        "operationId": "sessions_api_traces__key__sessions_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traces/{key}/plans": {
+      "post": {
+        "summary": "Export Plan",
+        "operationId": "export_plan_api_traces__key__plans_post",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanSelection"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TracePlan"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay-plans": {
+      "post": {
+        "summary": "Upload Plan",
+        "operationId": "upload_plan_api_replay_plans_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanReceipt"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay-plans/{key}/simulate": {
+      "post": {
+        "summary": "Run Plan",
+        "operationId": "run_plan_api_replay_plans__key__simulate_post",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -205,7 +440,9 @@
             "type": "string",
             "enum": [
               "input_exceeds_kv_capacity",
-              "decode_kv_exhausted"
+              "decode_kv_exhausted",
+              "invalid_trace_output",
+              "output_exceeds_kv_capacity"
             ],
             "title": "Reason"
           },
@@ -1397,6 +1634,46 @@
         "title": "PerfModelConfig",
         "description": "性能模型系数，单位 ms。\n\n- prefill 耗时 = ``prefill_c1 * P + prefill_c2 * P**2``（P = prompt_tokens）\n- decode 单步耗时 = ``decode_d1 + decode_d2 * batch_total_tokens``"
       },
+      "PlanReceipt": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "sessions": {
+            "type": "integer",
+            "title": "Sessions"
+          },
+          "requests": {
+            "type": "integer",
+            "title": "Requests"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "sessions",
+          "requests"
+        ],
+        "title": "PlanReceipt"
+      },
+      "PlanSelection": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Sessions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "title": "PlanSelection"
+      },
       "PoissonLength": {
         "properties": {
           "dist": {
@@ -1495,6 +1772,39 @@
           "l1_capacity_pages"
         ],
         "title": "RankCapacityReport"
+      },
+      "ReplayRun": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SimConfig"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "open_loop",
+              "session"
+            ],
+            "title": "Mode"
+          },
+          "session_rate": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Session Rate"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "config",
+          "mode",
+          "session_rate"
+        ],
+        "title": "ReplayRun"
       },
       "RequestRecord": {
         "properties": {
@@ -1831,6 +2141,107 @@
         "type": "object",
         "title": "SessionConfig",
         "description": "线性多轮会话；未指定会话数时每个请求各自成为一个根。"
+      },
+      "SessionPage": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "type": "array",
+            "title": "Sessions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "sessions"
+        ],
+        "title": "SessionPage"
+      },
+      "SessionSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "requests": {
+            "type": "integer",
+            "title": "Requests"
+          },
+          "subagent_groups": {
+            "type": "integer",
+            "title": "Subagent Groups"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "start_s": {
+            "type": "number",
+            "title": "Start S"
+          },
+          "end_s": {
+            "type": "number",
+            "title": "End S"
+          },
+          "open_loop_qps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Loop Qps"
+          },
+          "set_hit_rate": {
+            "type": "number",
+            "title": "Set Hit Rate"
+          },
+          "prefix_hit_rate": {
+            "type": "number",
+            "title": "Prefix Hit Rate"
+          },
+          "inferred_dependencies": {
+            "type": "integer",
+            "title": "Inferred Dependencies"
+          },
+          "timed_roots": {
+            "type": "integer",
+            "title": "Timed Roots"
+          },
+          "ambiguous_dependencies": {
+            "type": "integer",
+            "title": "Ambiguous Dependencies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "requests",
+          "subagent_groups",
+          "input_tokens",
+          "output_tokens",
+          "start_s",
+          "end_s",
+          "open_loop_qps",
+          "set_hit_rate",
+          "prefix_hit_rate",
+          "inferred_dependencies",
+          "timed_roots",
+          "ambiguous_dependencies"
+        ],
+        "title": "SessionSummary"
       },
       "SimConfig": {
         "properties": {
@@ -2235,6 +2646,153 @@
         ],
         "title": "SyntheticWorkloadConfig",
         "description": "合成负载：开环按请求速率、闭环按新会话速率投放。"
+      },
+      "TraceJob": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "session_count": {
+            "type": "integer",
+            "title": "Session Count",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "TraceJob"
+      },
+      "TracePlan": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "block_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Block Size"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sessions"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/TraceTurn"
+            },
+            "type": "array",
+            "title": "Requests"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "block_size",
+          "sessions",
+          "requests"
+        ],
+        "title": "TracePlan"
+      },
+      "TraceTurn": {
+        "properties": {
+          "request_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Request Id"
+          },
+          "session_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Session Id"
+          },
+          "parent_request_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Request Id"
+          },
+          "arrival_offset_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Arrival Offset Ms"
+          },
+          "think_time_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Think Time Ms"
+          },
+          "prompt_len": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Prompt Len"
+          },
+          "output_len": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Output Len"
+          },
+          "hash_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Hash Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "session_id",
+          "arrival_offset_ms",
+          "prompt_len",
+          "output_len",
+          "hash_ids"
+        ],
+        "title": "TraceTurn"
       },
       "ValidationError": {
         "properties": {

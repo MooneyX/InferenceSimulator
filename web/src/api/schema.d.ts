@@ -81,6 +81,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Trace */
+        post: operations["upload_trace_api_traces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/traces/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Trace Status */
+        get: operations["trace_status_api_traces__key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/traces/{key}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sessions */
+        get: operations["sessions_api_traces__key__sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/traces/{key}/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Plan */
+        post: operations["export_plan_api_traces__key__plans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Plan */
+        post: operations["upload_plan_api_replay_plans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay-plans/{key}/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Plan */
+        post: operations["run_plan_api_replay_plans__key__simulate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -105,7 +207,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "input_exceeds_kv_capacity" | "decode_kv_exhausted";
+            reason: "input_exceeds_kv_capacity" | "decode_kv_exhausted" | "invalid_trace_output" | "output_exceeds_kv_capacity";
             /** Generated Tokens */
             generated_tokens: number;
             /** Retry Count */
@@ -775,6 +877,20 @@ export interface components {
              */
             l3_lookup_latency_ms: number;
         };
+        /** PlanReceipt */
+        PlanReceipt: {
+            /** Id */
+            id: string;
+            /** Sessions */
+            sessions: number;
+            /** Requests */
+            requests: number;
+        };
+        /** PlanSelection */
+        PlanSelection: {
+            /** Sessions */
+            sessions: string[];
+        };
         /**
          * PoissonLength
          * @description 泊松分布长度。
@@ -819,6 +935,22 @@ export interface components {
              * @default 0
              */
             expert_weights_bytes: number;
+        };
+        /** ReplayRun */
+        ReplayRun: {
+            config: components["schemas"]["SimConfig"];
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "open_loop" | "session";
+            /** Session Rate */
+            session_rate: number;
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
         };
         /**
          * RequestRecord
@@ -998,6 +1130,42 @@ export interface components {
              */
             think_time_ms: number;
         };
+        /** SessionPage */
+        SessionPage: {
+            /** Total */
+            total: number;
+            /** Sessions */
+            sessions: components["schemas"]["SessionSummary"][];
+        };
+        /** SessionSummary */
+        SessionSummary: {
+            /** Id */
+            id: string;
+            /** Requests */
+            requests: number;
+            /** Subagent Groups */
+            subagent_groups: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Start S */
+            start_s: number;
+            /** End S */
+            end_s: number;
+            /** Open Loop Qps */
+            open_loop_qps: number | null;
+            /** Set Hit Rate */
+            set_hit_rate: number;
+            /** Prefix Hit Rate */
+            prefix_hit_rate: number;
+            /** Inferred Dependencies */
+            inferred_dependencies: number;
+            /** Timed Roots */
+            timed_roots: number;
+            /** Ambiguous Dependencies */
+            ambiguous_dependencies: number;
+        };
         /**
          * SimConfig
          * @description 一场仿真的完整输入。
@@ -1176,6 +1344,57 @@ export interface components {
             seed: number;
             session?: components["schemas"]["SessionConfig"];
         };
+        /** TraceJob */
+        TraceJob: {
+            /** Id */
+            id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "ready" | "failed";
+            /**
+             * Session Count
+             * @default 0
+             */
+            session_count: number;
+            /** Error */
+            error?: string | null;
+        };
+        /** TracePlan */
+        TracePlan: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Block Size */
+            block_size: number;
+            /** Sessions */
+            sessions: string[];
+            /** Requests */
+            requests: components["schemas"]["TraceTurn"][];
+        };
+        /** TraceTurn */
+        TraceTurn: {
+            /** Request Id */
+            request_id: number;
+            /** Session Id */
+            session_id: number;
+            /** Parent Request Id */
+            parent_request_id?: number | null;
+            /** Arrival Offset Ms */
+            arrival_offset_ms: number;
+            /** Think Time Ms */
+            think_time_ms?: number | null;
+            /** Prompt Len */
+            prompt_len: number;
+            /** Output Len */
+            output_len: number;
+            /** Hash Ids */
+            hash_ids: number[];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1344,6 +1563,181 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    upload_trace_api_traces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceJob"];
+                };
+            };
+        };
+    };
+    trace_status_api_traces__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sessions_api_traces__key__sessions_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_plan_api_traces__key__plans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanSelection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TracePlan"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_plan_api_replay_plans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanReceipt"];
+                };
+            };
+        };
+    };
+    run_plan_api_replay_plans__key__simulate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayRun"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

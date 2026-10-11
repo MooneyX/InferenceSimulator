@@ -8,7 +8,12 @@ import type {
   SimConfig,
   SimResult,
   ValidationError,
+  PlanReceipt,
+  TraceJob,
+  TraceSessionSummary,
 } from "./types";
+
+export type { PlanReceipt, TraceJob, TraceSessionSummary } from "./types";
 
 const SIMULATE_ENDPOINT = "/api/simulate";
 
@@ -169,4 +174,55 @@ export function resolveAutomatic(request: ResolvedRequest): Promise<ResolvedConf
 
 export function simulateAutomatic(request: ResolvedRequest): Promise<ResolvedRun> {
   return requestAuto<ResolvedRun>("/api/simulate/resolved", request);
+}
+
+async function replayRequest(endpoint: string, init?: RequestInit): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(endpoint, init);
+  } catch (cause) {
+    throw new SimulationApiError("无法连接轨迹处理服务", { kind: "network", cause });
+  }
+  if (!response.ok) {
+    const detail = getErrorDetail(await readJson(response));
+    throw new SimulationApiError(detail ?? `轨迹请求失败（HTTP ${response.status}）`, {
+      kind: response.status === 422 ? "validation" : "http", status: response.status,
+    });
+  }
+  return response;
+}
+
+export async function uploadTrace(file: File): Promise<TraceJob> {
+  return (await replayRequest("/api/traces", { method: "POST", body: file })).json() as Promise<TraceJob>;
+}
+
+export async function traceStatus(id: string): Promise<TraceJob> {
+  return (await replayRequest(`/api/traces/${id}`)).json() as Promise<TraceJob>;
+}
+
+export async function traceSessions(id: string, offset: number): Promise<{
+  total: number; sessions: TraceSessionSummary[];
+}> {
+  return (await replayRequest(`/api/traces/${id}/sessions?offset=${offset}&limit=50`)).json();
+}
+
+export async function downloadTracePlan(id: string, sessions: string[]): Promise<Blob> {
+  const response = await replayRequest(`/api/traces/${id}/plans`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessions }),
+  });
+  return response.blob();
+}
+
+export async function uploadReplayPlan(file: Blob): Promise<PlanReceipt> {
+  return (await replayRequest("/api/replay-plans", { method: "POST", body: file })).json() as Promise<PlanReceipt>;
+}
+
+export async function simulateReplayPlan(
+  id: string, config: SimConfig, mode: "open_loop" | "session", sessionRate: number, seed: number,
+): Promise<SimResult> {
+  const response = await replayRequest(`/api/replay-plans/${id}/simulate`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config, mode, session_rate: sessionRate, seed }),
+  });
+  return response.json() as Promise<SimResult>;
 }

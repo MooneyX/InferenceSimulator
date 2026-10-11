@@ -9,11 +9,13 @@ import {
 } from "../config/simulation";
 import { AutomaticConfig, initialHardware, initialModel, initialStorage } from "./AutomaticConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
+import { TracePanel } from "./TracePanel";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
   onSubmitAuto?: (request: ResolvedRequest) => void;
+  onReplay?: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number) => void;
   disabled?: boolean;
 }
 
@@ -102,7 +104,7 @@ function NumberField({
   );
 }
 
-export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: SimulationFormProps) {
+export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = false }: SimulationFormProps) {
   const [mode, setMode] = useState<"manual" | "automatic">(onSubmitAuto ? "automatic" : "manual");
   const [manualConfig, setManualConfig] = useState<SimConfig>(createDefaultSimConfig);
   const [automaticConfig, setAutomaticConfig] = useState<SimConfig>(createDefaultSimConfig);
@@ -252,6 +254,13 @@ export function SimulationForm({ onSubmit, onSubmitAuto, disabled = false }: Sim
         </label>
       </fieldset>}
       <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
+      {onReplay && mode === "manual" && <TracePanel disabled={disabled} onRun={(id, replayMode, rate, seed) => {
+        if (validateSimConfig(manualConfig).length > 0) {
+          setShowValidation(true);
+          return;
+        }
+        onReplay(id, manualConfig, replayMode, rate, seed);
+      }} />}
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
           <div>

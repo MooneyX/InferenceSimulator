@@ -45,6 +45,8 @@ __all__ = [
     "SkippedRequest",
     "StorageSpec",
     "SyntheticWorkloadConfig",
+    "TracePlan",
+    "TraceTurn",
     "TurnPlan",
     "WorkloadConfig",
     "WorkloadMode",
@@ -390,6 +392,69 @@ class ResolvedRun(_Record):
     analysis: AnalyticalSummary | None = None
 
 
+# ---------------------------------------------------------------- 外部 trace 请求计划
+
+
+class TraceTurn(_Frozen):
+    request_id: int = Field(ge=0)
+    session_id: int = Field(ge=0)
+    parent_request_id: int | None = Field(default=None, ge=0)
+    arrival_offset_ms: float = Field(ge=0, allow_inf_nan=False)
+    think_time_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    prompt_len: int = Field(ge=1)
+    output_len: int = Field(ge=0)
+    hash_ids: tuple[int, ...]
+
+
+class TracePlan(_Frozen):
+    version: Literal[1] = 1
+    block_size: int = Field(ge=1)
+    sessions: tuple[str, ...]
+    requests: tuple[TraceTurn, ...]
+
+    @model_validator(mode="after")
+    def _check_plan(self) -> Self:
+        if not self.sessions or len(set(self.sessions)) != len(self.sessions) or not self.requests:
+            raise ValueError("计划须包含非空且唯一的会话及请求")
+        ids = {turn.request_id for turn in self.requests}
+        if len(ids) != len(self.requests):
+            raise ValueError("计划中的 request_id 必须唯一")
+        by_id = {turn.request_id: turn for turn in self.requests}
+        if any(
+            previous.request_id >= following.request_id
+            for previous, following in zip(self.requests, self.requests[1:])
+        ):
+            raise ValueError("请求须按 ID 严格递增")
+        contexts: dict[tuple[int, int], tuple[int, int | None]] = {}
+        for turn in self.requests:
+            if turn.session_id >= len(self.sessions):
+                raise ValueError("请求引用了不存在的会话")
+            if len(turn.hash_ids) != turn.prompt_len // self.block_size or any(
+                not isinstance(item, int) or item < 0 for item in turn.hash_ids
+            ):
+                raise ValueError("输入块 ID 数量或取值不合法")
+            predecessor: int | None = None
+            for position, block in enumerate(turn.hash_ids):
+                key = (turn.session_id, block)
+                context = (position, predecessor)
+                if key in contexts and contexts[key] != context:
+                    raise ValueError("同一会话的块 ID 指向不同输入上下文")
+                contexts[key] = context
+                predecessor = block
+            parent_id = turn.parent_request_id
+            if parent_id is None:
+                if turn.think_time_ms is not None:
+                    raise ValueError("无父请求不得设置思考时间")
+            elif (
+                parent_id not in by_id
+                or parent_id >= turn.request_id
+                or by_id[parent_id].session_id != turn.session_id
+                or turn.think_time_ms is None
+            ):
+                raise ValueError("父请求必须是同会话中更早的有效请求")
+        return self
+
+
 # ---------------------------------------------------------------- 内部不可变计划与消息
 
 
@@ -428,6 +493,8 @@ class InferenceRequest:
     max_new_tokens: int
     inherited_prefix_ids: tuple[str, ...]
     ideal_reuse_blocks: int
+    trace_hash_ids: tuple[int, ...] = ()
+    is_trace: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,7 +581,10 @@ class AbortedRequest(_Record):
     instance_id: int = Field(default=0, ge=0)
     arrival: float = Field(ge=0)
     failed_at: float = Field(ge=0)
-    reason: Literal["input_exceeds_kv_capacity", "decode_kv_exhausted"]
+    reason: Literal[
+        "input_exceeds_kv_capacity", "decode_kv_exhausted",
+        "invalid_trace_output", "output_exceeds_kv_capacity",
+    ]
     generated_tokens: int = Field(ge=0)
     retry_count: int = Field(ge=0)
 

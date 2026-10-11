@@ -592,6 +592,8 @@ class TieredKVCache:
 
     @staticmethod
     def _chunk_id(request: InferenceRequest, index: int) -> str:  # 请求与逻辑页序号 → 可继承的稳定页身份
+        if request.is_trace and index < len(request.trace_hash_ids):
+            return f"trace:{request.session_id}:{request.trace_hash_ids[index]}"
         return logical_chunk_id(request.request_id, index, request.inherited_prefix_ids)
 
 

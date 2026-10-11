@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 
-import { simulate, simulateAutomatic, SimulationApiError } from "./api/client";
+import { simulate, simulateAutomatic, simulateReplayPlan, SimulationApiError } from "./api/client";
 import type { ResolvedRequest, ResolvedRun, SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
@@ -86,6 +86,23 @@ export default function App() {
     }
   }
 
+  async function handleReplay(
+    id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number,
+  ): Promise<void> {
+    setIsRunning(true);
+    setError(null);
+    setResult(null);
+    setSelectedInstanceId(null);
+    setAutomatic(null);
+    try {
+      setResult(await simulateReplayPlan(id, config, mode, rate, seed));
+    } catch (cause) {
+      setError(presentError(cause));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
   return (
     <>
       <header className="topbar">
@@ -118,12 +135,13 @@ export default function App() {
           </div>
           <div className="hero-badges" aria-label="当前仿真范围">
             <span>多实例 · TP 可选</span>
-            <span>Synthetic workload</span>
+            <span>Synthetic / Trace workload</span>
             <span>FCFS 调度</span>
           </div>
         </header>
 
-        <SimulationForm onSubmit={handleSubmit} onSubmitAuto={handleSubmitAuto} disabled={isRunning} />
+        <SimulationForm onSubmit={handleSubmit} onSubmitAuto={handleSubmitAuto}
+          onReplay={handleReplay} disabled={isRunning} />
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">

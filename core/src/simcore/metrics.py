@@ -68,7 +68,12 @@ def compute_metrics(
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
     constructed = plan.constructed_ideal_prefix_hit_rate if plan else 0.0
     num_sessions = len(plan.root_request_ids) if plan else 0
-    root_ratio = num_sessions / len(plan.turns) if plan and plan.turns else 0.0
+    root_count = (
+        sum(turn.parent_request_id is None for turn in plan.turns.values())
+        if plan and config and config.workload.mode == "trace"
+        else num_sessions
+    )
+    root_ratio = root_count / len(plan.turns) if plan and plan.turns else 0.0
     arrival_qps = (
         (num_sent - 1) * _MS_PER_SECOND / (latest_sent_arrival - earliest_sent_arrival)
         if num_sent is not None and num_sent > 1

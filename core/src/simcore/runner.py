@@ -39,10 +39,14 @@ __all__ = ["simulate", "simulate_plan", "simulate_plan_resolved"]
 
 
 def simulate_plan(
-    config: SimConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int
+    config: SimConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int,
+    target_qps: float | None = None,
 ) -> SimResult:
     """运行已经在本地或服务端编译好的 trace 请求计划。"""
-    client = TraceClient(plan, config.engine, mode=mode, session_rate=session_rate, seed=seed)
+    client = TraceClient(
+        plan, config.engine, mode=mode, session_rate=session_rate, seed=seed,
+        target_qps=target_qps,
+    )
     trace_config = config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
     result, _ = _simulate(trace_config, None, trace_client=client)
     return result
@@ -70,11 +74,13 @@ def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, Analytical
 
 
 def simulate_plan_resolved(
-    resolution: ResolvedConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int
+    resolution: ResolvedConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int,
+    target_qps: float | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:
     """在解析后的模型、硬件配置上运行同一份 trace 请求计划。"""
     client = TraceClient(
-        plan, resolution.config.engine, mode=mode, session_rate=session_rate, seed=seed
+        plan, resolution.config.engine, mode=mode, session_rate=session_rate, seed=seed,
+        target_qps=target_qps,
     )
     trace_config = resolution.config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
     return _run_resolved(

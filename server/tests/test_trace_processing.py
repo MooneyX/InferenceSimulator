@@ -86,6 +86,20 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert body["meta"]["num_completed"] == 2
         assert body["aborted_requests"][0]["reason"] == "invalid_trace_output"
         assert body["meta"]["config"]["workload"]["mode"] == "trace"
+        scaled = client.post(
+            f"/api/replay-plans/{plan_id}/simulate",
+            json={"config": config(), "mode": "open_loop", "session_rate": 1,
+                  "seed": 1, "target_qps": 4},
+        )
+        assert scaled.status_code == 200, scaled.text
+        assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
+        assert scaled.json()["meta"]["num_requests"] == 3
+        invalid = client.post(
+            f"/api/replay-plans/{plan_id}/simulate",
+            json={"config": config(), "mode": "session", "session_rate": 1,
+                  "target_qps": 4},
+        )
+        assert invalid.status_code == 422
 
 
 def test_resolved_plan_uses_parsed_capacity_and_timing() -> None:
@@ -113,6 +127,12 @@ def test_resolved_plan_uses_parsed_capacity_and_timing() -> None:
         assert data["result"]["meta"]["num_requests"] == 3
         assert data["analysis"]["steps"] == data["result"]["meta"]["num_engine_steps"]
         assert data["resolution"]["config"]["engine"]["max_total_tokens"] != 2048
+        body["target_qps"] = 4
+        scaled = client.post(url, json=body)
+        assert scaled.status_code == 200, scaled.text
+        assert scaled.json()["result"]["metrics"]["arrival_qps"] == pytest.approx(4)
+        assert scaled.json()["analysis"] is not None
+        body.pop("target_qps")
         resolved["timing"] = "empirical"
         empirical = client.post(url, json=body)
         assert empirical.status_code == 200, empirical.text

@@ -35,6 +35,34 @@ describe("TracePanel", () => {
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
   });
 
+  it("only sends a valid target QPS when open-loop scaling is enabled", async () => {
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 3 });
+    const onChange = vi.fn();
+    render(<TracePanel disabled={false} onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
+      id: "plan-1", mode: "open_loop", rate: 1, seed: 0,
+    }));
+    fireEvent.click(screen.getByLabelText("按目标 QPS 等比例缩放到达间隔"));
+    fireEvent.change(screen.getByLabelText("目标发送 QPS（请求/秒）"), {
+      target: { value: "8" },
+    });
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
+      id: "plan-1", mode: "open_loop", rate: 1, seed: 0, targetQps: 8,
+    }));
+    fireEvent.change(screen.getByLabelText("目标发送 QPS（请求/秒）"), {
+      target: { value: "0" },
+    });
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    expect(screen.queryByLabelText("目标发送 QPS（请求/秒）")).not.toBeInTheDocument();
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
+      id: "plan-1", mode: "session", rate: 1, seed: 0,
+    }));
+  });
+
   it("uploads raw trace and previews paginated sessions", async () => {
     vi.mocked(uploadTrace).mockResolvedValue({ id: "trace-1", status: "ready", session_count: 1, error: null });
     vi.mocked(traceSessions).mockResolvedValue({ total: 1, sessions: [{

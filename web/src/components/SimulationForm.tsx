@@ -15,8 +15,10 @@ import "./SimulationForm.css";
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
   onSubmitAuto?: (request: ResolvedRequest) => void;
-  onReplay?: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number) => void;
-  onReplayAuto?: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number, seed: number) => void;
+  onReplay?: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number,
+    seed: number, targetQps?: number) => void;
+  onReplayAuto?: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number,
+    seed: number, targetQps?: number) => void;
   disabled?: boolean;
 }
 
@@ -185,9 +187,11 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
       if (!replay) return;
       if (mode === "automatic") {
         onReplayAuto?.(replay.id, { config: submissionConfig, model, hardware, storage,
-          timing, tp_size: tpSize, ep_size: epSize }, replay.mode, replay.rate, replay.seed);
+          timing, tp_size: tpSize, ep_size: epSize }, replay.mode, replay.rate, replay.seed,
+        replay.targetQps);
       } else {
-        onReplay?.(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed);
+        onReplay?.(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed,
+          replay.targetQps);
       }
       return;
     }

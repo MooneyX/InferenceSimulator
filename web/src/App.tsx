@@ -88,6 +88,7 @@ export default function App() {
 
   async function handleReplay(
     id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number,
+    targetQps?: number,
   ): Promise<void> {
     setIsRunning(true);
     setError(null);
@@ -95,7 +96,7 @@ export default function App() {
     setSelectedInstanceId(null);
     setAutomatic(null);
     try {
-      setResult(await simulateReplayPlan(id, config, mode, rate, seed));
+      setResult(await simulateReplayPlan(id, config, mode, rate, seed, targetQps));
     } catch (cause) {
       setError(presentError(cause));
     } finally {
@@ -105,6 +106,7 @@ export default function App() {
 
   async function handleReplayAuto(
     id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number, seed: number,
+    targetQps?: number,
   ): Promise<void> {
     setIsRunning(true);
     setError(null);
@@ -112,7 +114,7 @@ export default function App() {
     setSelectedInstanceId(null);
     setAutomatic(null);
     try {
-      const response = await simulateReplayPlanAutomatic(id, request, mode, rate, seed);
+      const response = await simulateReplayPlanAutomatic(id, request, mode, rate, seed, targetQps);
       setAutomatic(response);
       setResult(response.result);
     } catch (cause) {

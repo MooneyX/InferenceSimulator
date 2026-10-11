@@ -1,10 +1,10 @@
 """原始轨迹上传、后台摘要、计划导出与直接计划回放接口。"""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from simcore import SimConfig, SimResult, simulate_plan
 from simcore.capacity import resolve_config
@@ -58,6 +58,13 @@ class ReplaySettings(BaseModel):
     mode: Literal["open_loop", "session"]
     session_rate: float = Field(gt=0, allow_inf_nan=False)
     seed: int = Field(default=0, ge=0)
+    target_qps: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _check_target_qps(self) -> Self:
+        if self.mode != "open_loop" and self.target_qps is not None:
+            raise ValueError("目标 QPS 仅适用于开环 trace 回放")
+        return self
 
 
 class ReplayRun(ReplaySettings):
@@ -161,7 +168,8 @@ def run_plan(key: str, run: ReplayRun, request: Request) -> Response:
     try:
         plan = _store(request).plan(key)
         result = simulate_plan(
-            run.config, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed
+            run.config, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
+            target_qps=run.target_qps,
         )
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -178,7 +186,8 @@ def run_resolved_plan(key: str, run: ResolvedReplayRun, request: Request) -> Res
             raise ValueError("请求计划回放须使用 workload.mode='trace'")
         resolution = resolve_config(run.request)
         result, analysis = simulate_plan_resolved(
-            resolution, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed
+            resolution, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
+            target_qps=run.target_qps,
         )
         return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
     except KeyError as exc:

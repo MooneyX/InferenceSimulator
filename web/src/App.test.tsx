@@ -213,11 +213,15 @@ describe("App", () => {
     });
     await screen.findByText(/计划已校验/);
     await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("按目标 QPS 等比例缩放到达间隔"));
+    fireEvent.change(screen.getByLabelText("目标发送 QPS（请求/秒）"), {
+      target: { value: "9" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateReplayAutoMock).toHaveBeenCalledWith("plan-1", expect.objectContaining({
       config: expect.objectContaining({ workload: { mode: "trace" } }),
       timing: "analytical",
-    }), "open_loop", 1, 0);
+    }), "open_loop", 1, 0, 9);
     expect(simulateAutomaticMock).not.toHaveBeenCalled();
     expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();

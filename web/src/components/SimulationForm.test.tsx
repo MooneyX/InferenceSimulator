@@ -39,18 +39,35 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onReplayAuto).toHaveBeenCalledWith("plan-1", expect.objectContaining({
       config: expect.objectContaining({ workload: { mode: "trace" } }), timing: "analytical",
-    }), "session", 2, 0);
+    }), "session", 2, 0, undefined);
     expect(onSubmitAuto).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByText(/计划已校验/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onReplay).toHaveBeenCalledWith("plan-1", expect.objectContaining({
       workload: { mode: "trace" },
-    }), "session", 2, 0);
+    }), "session", 2, 0, undefined);
     expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "synthetic" } });
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
     expect(screen.queryByLabelText("已导出的计划 JSON")).not.toBeInTheDocument();
+  });
+
+  it("passes optional open-loop target QPS through the single run button", async () => {
+    const onReplay = vi.fn();
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 3 });
+    render(<SimulationForm onSubmit={vi.fn()} onReplay={onReplay} />);
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("按目标 QPS 等比例缩放到达间隔"));
+    fireEvent.change(screen.getByLabelText("目标发送 QPS（请求/秒）"), {
+      target: { value: "7.5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onReplay).toHaveBeenCalledWith("plan-1", expect.anything(), "open_loop", 1, 0, 7.5);
   });
 
   it("exports trace parameters without a plan and requires reupload after import", async () => {

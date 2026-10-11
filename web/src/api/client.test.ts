@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveAutomatic, simulate, simulateAutomatic, simulateReplayPlanAutomatic, SimulationApiError } from "./client";
+import { resolveAutomatic, simulate, simulateAutomatic, simulateReplayPlan, simulateReplayPlanAutomatic, SimulationApiError } from "./client";
 import type { ResolvedRequest, SimConfig, SimResult } from "./types";
 
 const config: SimConfig = {
@@ -249,6 +249,23 @@ describe("simulate", () => {
   });
 });
 
+describe("trace replay requests", () => {
+  it("sends target QPS to the manual replay endpoint only when enabled", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, result));
+    vi.stubGlobal("fetch", fetchMock);
+    await simulateReplayPlan("plan-1", config, "open_loop", 2, 7, 12);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config, mode: "open_loop", session_rate: 2, seed: 7, target_qps: 12 }),
+    });
+    await simulateReplayPlan("plan-1", config, "session", 2, 7);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config, mode: "session", session_rate: 2, seed: 7 }),
+    });
+  });
+});
+
 describe("automatic resolution errors", () => {
   const request = { config } as ResolvedRequest;
 
@@ -260,6 +277,11 @@ describe("automatic resolution errors", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/replay-plans/plan-1/simulate/resolved", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request, mode: "session", session_rate: 2, seed: 7 }),
+    });
+    await simulateReplayPlanAutomatic("plan-1", request, "open_loop", 2, 7, 8);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate/resolved", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request, mode: "open_loop", session_rate: 2, seed: 7, target_qps: 8 }),
     });
   });
 

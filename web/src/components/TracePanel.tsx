@@ -11,6 +11,7 @@ export interface ReplaySelection {
   mode: "open_loop" | "session";
   rate: number;
   seed: number;
+  targetQps?: number;
 }
 
 interface TracePanelProps {
@@ -27,15 +28,19 @@ export function TracePanel({ disabled, onChange }: TracePanelProps) {
   const [planId, setPlanId] = useState<string | null>(null);
   const [mode, setMode] = useState<"open_loop" | "session">("open_loop");
   const [rate, setRate] = useState(1);
+  const [scaleToTarget, setScaleToTarget] = useState(false);
+  const [targetQps, setTargetQps] = useState(64);
   const [seed, setSeed] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [problem, setProblem] = useState("");
 
   useEffect(() => {
-    onChange(planId && Number.isFinite(rate) && rate > 0 && Number.isInteger(seed) && seed >= 0 && !busy
-      ? { id: planId, mode, rate, seed } : null);
-  }, [planId, mode, rate, seed, busy, onChange]);
+    const scale = mode === "open_loop" && scaleToTarget;
+    onChange(planId && Number.isFinite(rate) && rate > 0 && Number.isInteger(seed) && seed >= 0
+      && (!scale || (Number.isFinite(targetQps) && targetQps > 0)) && !busy
+      ? { id: planId, mode, rate, seed, ...(scale ? { targetQps } : {}) } : null);
+  }, [planId, mode, rate, seed, scaleToTarget, targetQps, busy, onChange]);
 
   useEffect(() => {
     if (!job || job.status !== "processing") return;
@@ -168,7 +173,7 @@ export function TracePanel({ disabled, onChange }: TracePanelProps) {
           <div className="form-field"><label htmlFor="trace-arrival-mode">投放模式</label>
             <select id="trace-arrival-mode" value={mode} disabled={locked}
               onChange={(event) => setMode(event.target.value as typeof mode)}>
-              <option value="open_loop">开环 · 原轨迹相对时间</option>
+              <option value="open_loop">开环 · 按轨迹时间投放</option>
               <option value="session">闭环 · 父完成后投放</option>
             </select></div>
           <div className="form-field"><label htmlFor="trace-session-rate">会话/秒</label>
@@ -178,6 +183,21 @@ export function TracePanel({ disabled, onChange }: TracePanelProps) {
             <input id="trace-seed" type="number" min="0" step="1" value={seed} disabled={locked}
               onChange={(event) => setSeed(event.target.valueAsNumber)} /></div>
         </div>
+        {mode === "open_loop" && <div className="trace-target-settings">
+          <label htmlFor="trace-scale-target">
+            <input id="trace-scale-target" type="checkbox" checked={scaleToTarget} disabled={locked}
+              onChange={(event) => setScaleToTarget(event.target.checked)} />
+            按目标 QPS 等比例缩放到达间隔
+          </label>
+          {scaleToTarget && <div className="form-field">
+            <label htmlFor="trace-target-qps">目标发送 QPS（请求/秒）</label>
+            <input id="trace-target-qps" type="number" min="0.000001" step="any"
+              value={Number.isNaN(targetQps) ? "" : targetQps} disabled={locked}
+              aria-invalid={!Number.isFinite(targetQps) || targetQps <= 0}
+              onChange={(event) => setTargetQps(event.target.valueAsNumber)} />
+          </div>}
+          <p className="trace-hint">先按会话/秒合流，再缩放整条时间线；保留原有突发和空闲比例，不保证均匀投放。</p>
+        </div>}
         {planId && !busy && <p className="trace-notice" role="status">计划已就绪，请使用下方「运行仿真」按钮。</p>}
       </div>
       {message && <p className="trace-notice" role="status">{message}</p>}

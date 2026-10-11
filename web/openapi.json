@@ -1843,6 +1843,18 @@
             "title": "Seed",
             "default": 0
           },
+          "target_qps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Qps"
+          },
           "config": {
             "$ref": "#/components/schemas/SimConfig"
           }
@@ -2071,6 +2083,18 @@
             "minimum": 0.0,
             "title": "Seed",
             "default": 0
+          },
+          "target_qps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Qps"
           },
           "request": {
             "$ref": "#/components/schemas/ResolvedRequest"

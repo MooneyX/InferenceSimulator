@@ -967,6 +967,8 @@ export interface components {
              * @default 0
              */
             seed: number;
+            /** Target Qps */
+            target_qps?: number | null;
             config: components["schemas"]["SimConfig"];
         };
         /**
@@ -1096,6 +1098,8 @@ export interface components {
              * @default 0
              */
             seed: number;
+            /** Target Qps */
+            target_qps?: number | null;
             request: components["schemas"]["ResolvedRequest"];
         };
         /**

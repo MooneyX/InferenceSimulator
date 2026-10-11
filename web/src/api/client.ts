@@ -220,20 +220,24 @@ export async function uploadReplayPlan(file: Blob): Promise<PlanReceipt> {
 
 export async function simulateReplayPlan(
   id: string, config: SimConfig, mode: "open_loop" | "session", sessionRate: number, seed: number,
+  targetQps?: number,
 ): Promise<SimResult> {
   const response = await replayRequest(`/api/replay-plans/${id}/simulate`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config, mode, session_rate: sessionRate, seed }),
+    body: JSON.stringify({ config, mode, session_rate: sessionRate, seed,
+      ...(targetQps === undefined ? {} : { target_qps: targetQps }) }),
   });
   return response.json() as Promise<SimResult>;
 }
 
 export async function simulateReplayPlanAutomatic(
   id: string, request: ResolvedRequest, mode: "open_loop" | "session", sessionRate: number, seed: number,
+  targetQps?: number,
 ): Promise<ResolvedRun> {
   const response = await replayRequest(`/api/replay-plans/${id}/simulate/resolved`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ request, mode, session_rate: sessionRate, seed }),
+    body: JSON.stringify({ request, mode, session_rate: sessionRate, seed,
+      ...(targetQps === undefined ? {} : { target_qps: targetQps }) }),
   });
   return response.json() as Promise<ResolvedRun>;
 }

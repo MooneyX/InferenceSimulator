@@ -170,6 +170,27 @@
 .trace-panel .trace-settings .form-field input,
 .trace-panel .trace-settings .form-field select { background: var(--surface); }
 
+.trace-target-settings {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.trace-target-settings > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.trace-target-settings input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+.trace-target-settings .form-field { max-width: 320px; }
+.trace-target-settings .form-field [aria-invalid="true"] { border-color: var(--accent4); }
+
 .trace-notice {
   margin: 0;
   padding: 8px 10px;

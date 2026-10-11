@@ -19,7 +19,8 @@ from simcore.workload import _visible_limit
 
 class TraceClient:
     def __init__(
-        self, source: TracePlan, engine: EngineConfig, *, mode: str, session_rate: float, seed: int
+        self, source: TracePlan, engine: EngineConfig, *, mode: str, session_rate: float,
+        seed: int, target_qps: float | None = None,
     ) -> None:
         if (
             mode not in ("open_loop", "session")
@@ -28,6 +29,10 @@ class TraceClient:
             or seed < 0
         ):
             raise ValueError("无效的 trace 投放模式、会话速率或随机种子")
+        if target_qps is not None and (
+            mode != "open_loop" or not math.isfinite(target_qps) or target_qps <= 0
+        ):
+            raise ValueError("目标 QPS 仅适用于开环，且必须是正的有限数值")
         if source.block_size != engine.page_size:
             raise ValueError("trace 块大小必须与引擎 page_size 一致")
         self.source = source
@@ -45,15 +50,27 @@ class TraceClient:
         for _ in source.sessions:
             clock += rng.expovariate(session_rate / 1000)
             starts.append(clock)
+        arrivals = [starts[item.session_id] + item.arrival_offset_ms for item in source.requests]
+        if target_qps is not None:
+            if len(arrivals) < 2 or max(arrivals) == min(arrivals):
+                raise ValueError("目标 QPS 至少需要两个到达时刻不同的请求")
+            first = min(arrivals)
+            scale = (len(arrivals) - 1) * 1000 / (target_qps * (max(arrivals) - first))
+            if not math.isfinite(scale) or scale <= 0:
+                raise ValueError("目标 QPS 超出当前时间精度可表示的范围")
+            arrivals = [first + (arrival - first) * scale for arrival in arrivals]
+            if (
+                not all(math.isfinite(arrival) for arrival in arrivals)
+                or max(arrivals) == min(arrivals)
+            ):
+                raise ValueError("缩放后的请求时刻超出可表示范围")
         self._wakeups = tuple(
-            ClientWakeup(
-                item.session_id, item.request_id, starts[item.session_id] + item.arrival_offset_ms
-            )
-            for item in source.requests
+            ClientWakeup(item.session_id, item.request_id, arrivals[index])
+            for index, item in enumerate(source.requests)
             if mode == "open_loop" or item.parent_request_id is None
         )
         turns: dict[int, TurnPlan] = {}
-        for item in source.requests:
+        for index, item in enumerate(source.requests):
             if item.parent_request_id is not None:
                 self._children.setdefault(item.parent_request_id, []).append(item.request_id)
             reusable = 0
@@ -66,8 +83,7 @@ class TraceClient:
                 session_id=item.session_id,
                 parent_request_id=item.parent_request_id,
                 root_arrival_time_ms=(
-                    starts[item.session_id] + item.arrival_offset_ms
-                    if mode == "open_loop" or item.parent_request_id is None
+                    arrivals[index] if mode == "open_loop" or item.parent_request_id is None
                     else None
                 ),
                 think_time_ms=item.think_time_ms,

@@ -76,6 +76,71 @@ def example_request() -> ResolvedRequest:
     )
 
 
+def hy4_request() -> ResolvedRequest:
+    request = example_request()
+    model = ModelSpec(
+        name="tencent/Hy4-preview", revision="705d81ee51566a186d645b74c974d642ef2828fe",
+        num_layers=78, hidden_size=6144,
+        num_attention_heads=64, num_kv_heads=8, head_dim=256,
+        ffn_intermediate_size=18432, vocab_size=120832,
+        moe_layers=77, num_experts=256, experts_per_token=8,
+        expert_intermediate_size=2048, attention_layout="hy4_preview",
+    )
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 600, "collective_latency_ms": 0.01,
+        "ep_communication_latency_ms": 0.02,
+    })
+    storage = request.storage.model_copy(update={
+        "l1_available_gb": 260, "l2_available_gb": 0, "l3_available_gb": 0,
+    })
+    return request.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage,
+        "tp_size": 8, "ep_size": 8,
+    })
+
+
+def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
+    resolved = resolve_config(hy4_request())
+    capacity = resolved.capacity
+    assert resolved.runnable
+    assert capacity.kv_bytes_per_token == 8 * (78 * 576 * 2 + 21 * 132)
+    assert capacity.estimated_total_parameters == 769_907_402_653  # 仅主干，不含 MTP
+    assert capacity.estimated_active_parameters == 49_057_539_997
+    assert len(capacity.rank_reports) == 8
+    rank = capacity.rank_reports[0]
+    assert rank.kv_bytes_per_token == 92_628
+    assert rank.sharded_weights_bytes == 5_322_574_272
+    assert rank.replicated_weights_bytes == 9_331_865_716
+    assert rank.expert_weights_bytes == 186_025_771_008
+    assert capacity.weights_resident_bytes == 8 * (
+        rank.sharded_weights_bytes + rank.replicated_weights_bytes + rank.expert_weights_bytes
+    )
+    assert resolved.config.engine.max_total_tokens == rank.l1_capacity_pages * 4
+    request = hy4_request()
+    storage = request.storage.model_copy(update={"l2_available_gb": 10})
+    tiered = resolve_config(request.model_copy(update={"storage": storage}))
+    assert tiered.capacity.rank_reports[0].kv_bytes_per_token == 78 * (512 + 64) * 2 + 78 * 132
+    assert tiered.config.perf_model.kv_bytes_per_token == tiered.capacity.kv_bytes_per_token
+
+
+def test_hy4_dsa_index_reuse_and_sparse_attention_workload() -> None:
+    request = hy4_request()
+    workload = StepWorkload("DECODE", (), (DecodeWork(1, 100_000),), 0, 1)
+    short = StepWorkload("DECODE", (), (DecodeWork(1, 1_000),), 0, 1)
+    long_cost = step_cost(workload, request.model, request.hardware, 8, 8)
+    short_cost = step_cost(short, request.model, request.hardware, 8, 8)
+    near = StepWorkload("DECODE", (), (DecodeWork(1, 90_000),), 0, 1)
+    near_cost = step_cost(near, request.model, request.hardware, 8, 8)
+    # 主注意力已经达到 2048 上限，继续增长的只有 21 个 full 索引器的扫描。
+    assert long_cost.flops - near_cost.flops == pytest.approx(21 * 2 * 32 * 128 * 10_000)
+    assert long_cost.hbm_bytes - near_cost.hbm_bytes == pytest.approx(21 * 132 * 10_000)
+    assert long_cost.flops > short_cost.flops
+    assert long_cost.communication_ms == short_cost.communication_ms
+    assert long_cost.ep_exchanges == 2 * 77
+    assert long_cost.collectives == 78 + 1
+
+
 def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     resolved = resolve_config(example_request())
     report = resolved.capacity

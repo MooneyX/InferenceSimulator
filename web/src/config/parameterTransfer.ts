@@ -176,7 +176,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     throw new Error("model.tie_word_embeddings 必须是布尔值");
   }
   for (const [key, allowed] of [["weight_dtype", ["bf16", "fp16", "fp8"]],
-    ["kv_dtype", ["bf16", "fp16", "fp8"]], ["attention_layout", ["full_gqa", "other"]]] as const) {
+    ["kv_dtype", ["bf16", "fp16", "fp8"]], ["attention_layout", ["full_gqa", "hy4_preview", "other"]]] as const) {
     if (model[key] !== undefined && !allowed.includes(model[key] as never)) {
       throw new Error(`model.${key} 不支持该配置`);
     }
@@ -192,7 +192,22 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
   }
   if (model.weight_dtype === "fp8" || model.kv_dtype === "fp8" || model.attention_layout === "other") {
-    throw new Error("当前解析仅支持 BF16/FP16 与全注意力 GQA/MQA");
+    throw new Error("当前解析仅支持 BF16/FP16 全注意力或 HY4-Preview BF16");
+  }
+  if (model.attention_layout === "hy4_preview") {
+    const expected = {
+      name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
+      num_layers: 78, hidden_size: 6144,
+      num_attention_heads: 64, num_kv_heads: 8, head_dim: 256,
+      ffn_intermediate_size: 18432, vocab_size: 120832,
+      moe_layers: 77, num_experts: 256, experts_per_token: 8,
+      expert_intermediate_size: 2048, tie_word_embeddings: false,
+      weight_dtype: "bf16", kv_dtype: "bf16",
+    };
+    if (Object.entries(expected).some(([field, expectedValue]) =>
+      (model[field] ?? (field === "tie_word_embeddings" ? false : undefined)) !== expectedValue)) {
+      throw new Error("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP");
+    }
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {
     physicalNumber(hardware, "hardware", key, 1, true);

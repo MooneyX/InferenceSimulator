@@ -273,14 +273,27 @@ class ModelSpec(_Frozen):
     num_experts: int = Field(default=0, ge=0)
     experts_per_token: int = Field(default=0, ge=0)
     expert_intermediate_size: int | None = Field(default=None, gt=0)
-    attention_layout: Literal["full_gqa", "other"] = "full_gqa"
+    attention_layout: Literal["full_gqa", "hy4_preview", "other"] = "full_gqa"
 
     @model_validator(mode="after")
-    def _check_heads(self) -> Self:  # 当前模型规格 → 校验 GQA 分头与 MoE 层数，返回自身
+    def _check_heads(self) -> Self:  # 当前模型规格 → 校验注意力结构与 MoE 层数，返回自身
         if self.num_attention_heads % self.num_kv_heads:
             raise ValueError("注意力头数须是 KV 头数的整数倍")
         if self.moe_layers > self.num_layers:
             raise ValueError("MoE 层数不得超过总层数")
+        if self.attention_layout == "hy4_preview":
+            expected = {
+                "name": "tencent/Hy4-preview",
+                "revision": "705d81ee51566a186d645b74c974d642ef2828fe",
+                "num_layers": 78, "hidden_size": 6144,
+                "num_attention_heads": 64, "num_kv_heads": 8, "head_dim": 256,
+                "ffn_intermediate_size": 18432, "vocab_size": 120832,
+                "moe_layers": 77, "num_experts": 256, "experts_per_token": 8,
+                "expert_intermediate_size": 2048, "tie_word_embeddings": False,
+                "weight_dtype": "bf16", "kv_dtype": "bf16",
+            }
+            if any(getattr(self, field) != value for field, value in expected.items()):
+                raise ValueError("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP")
         return self
 
 

@@ -851,7 +851,7 @@ export interface components {
              * @default full_gqa
              * @enum {string}
              */
-            attention_layout: "full_gqa" | "other";
+            attention_layout: "full_gqa" | "hy4_preview" | "other";
         };
         /**
          * PerfModelConfig

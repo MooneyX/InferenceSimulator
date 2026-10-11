@@ -74,6 +74,31 @@ def test_preview_and_run_resolve_identically() -> None:
     assert empirical["result"]["meta"]["wall_clock_ms"] >= 0
 
 
+def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
+    client = TestClient(create_app())
+    request = payload()
+    request["model"] = client.get("/api/presets").json()["models"][2]
+    request["hardware"].update({
+        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
+        "effective_interconnect_gb_s": 600, "collective_latency_ms": 0.01,
+        "ep_communication_latency_ms": 0.02,
+    })
+    request["storage"].update({"l1_available_gb": 260, "l2_available_gb": 0, "l3_available_gb": 0})
+    request.update({"tp_size": 8, "ep_size": 8})
+    preview = client.post("/api/resolve", json=request)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["capacity"]["rank_reports"][0]["kv_bytes_per_token"] == 92_628
+    result = client.post("/api/simulate/resolved", json=request)
+    assert result.status_code == 200, result.text
+    assert result.json()["resolution"] == preview.json()
+    assert result.json()["analysis"]["ep_exchanges"] > 0
+    request["model"]["kv_dtype"] = "fp8"
+    assert client.post("/api/resolve", json=request).status_code == 422
+    request["model"]["kv_dtype"] = "bf16"
+    request["model"]["revision"] = "different-checkpoint"
+    assert client.post("/api/resolve", json=request).status_code == 422
+
+
 def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:
     client = TestClient(create_app())
     request = payload()
@@ -183,6 +208,7 @@ def test_presets_and_unsupported_modes() -> None:
     assert {item["name"] for item in catalog.json()["models"]} == {
         "Qwen/Qwen3-8B",
         "Qwen/Qwen3-235B-A22B",
+        "tencent/Hy4-preview",
     }
     assert catalog.json()["hardware"][0]["gpu_count"] == 8
     assert catalog.json()["hardware"][0]["memory_bytes_per_gpu"] == 288_000_000_000

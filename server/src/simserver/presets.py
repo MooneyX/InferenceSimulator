@@ -32,6 +32,24 @@ MODELS = (
         experts_per_token=8,
         moe_layers=94,
     ),
+    # BF16 主干；不计独立 MTP 草稿层。规格来自该 revision 的 config.json。
+    ModelSpec(
+        name="tencent/Hy4-preview",
+        revision="705d81ee51566a186d645b74c974d642ef2828fe",
+        num_layers=78,
+        hidden_size=6144,
+        num_attention_heads=64,
+        num_kv_heads=8,
+        head_dim=256,
+        ffn_intermediate_size=18432,
+        expert_intermediate_size=2048,
+        vocab_size=120_832,
+        tie_word_embeddings=False,
+        num_experts=256,
+        experts_per_token=8,
+        moe_layers=77,
+        attention_layout="hy4_preview",
+    ),
 )
 
 # 单卡显存：https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html

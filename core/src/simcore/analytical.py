@@ -35,6 +35,8 @@ def step_cost(
     """按真实单步工作量计算各层依赖；MoE 替换 Dense FFN。"""
     if not workload.prefill and not workload.decode:
         return StepCost(0.0, 0.0, 0.0, 0.0, 0.0)
+    if model.attention_layout == "hy4_preview":
+        return _hy4_step_cost(workload, model, hardware, tp_size, ep_size)
     if model.moe_layers:
         return _moe_step_cost(workload, model, hardware, tp_size, ep_size)
     if tp_size > 1:
@@ -82,6 +84,87 @@ def step_cost(
         (projection_hbm + attention_hbm + ffn_hbm) * model.num_layers,
         layer_compute * model.num_layers,
         layer_memory * model.num_layers,
+    )
+
+
+def _hy4_step_cost(
+    workload: StepWorkload, model: ModelSpec, hardware: HardwareSpec, tp_size: int, ep_size: int
+) -> StepCost:
+    """HY4 MLA/DSA 未校准粗估：替换 GQA 注意力三阶段，保留 MoE/TP/EP 基线。"""
+    from dataclasses import replace
+
+    base = _moe_step_cost(workload, model, hardware, tp_size, ep_size)
+    h, heads, d = model.hidden_size, model.num_attention_heads // tp_size, model.head_dim
+    kv_heads = max(1, model.num_kv_heads // tp_size)
+    tokens = sum(item.new_tokens for item in workload.prefill) + len(workload.decode)
+    full_pairs = sum(
+        item.new_tokens * item.reused_tokens + item.new_tokens * (item.new_tokens + 1) / 2
+        for item in workload.prefill
+    ) + sum(item.context_after_decode for item in workload.decode)
+    kv_reads = sum(item.context_after for item in workload.prefill) + sum(
+        item.context_after_decode for item in workload.decode
+    )
+    topk = 2048
+    sparse_pairs = 0
+    for item in workload.prefill:
+        # 第 i 个新 token 最多访问 min(topk, reused+i) 个位置。
+        uncapped = min(item.new_tokens, max(0, topk - item.reused_tokens))
+        sparse_pairs += (
+            uncapped * item.reused_tokens + uncapped * (uncapped + 1) / 2
+            + (item.new_tokens - uncapped) * topk
+        )
+    sparse_pairs += sum(min(topk, item.context_after_decode) for item in workload.decode)
+    full_layers = sum(i == 0 or (i - 1) % 4 == 0 for i in range(model.num_layers))
+    flops_per_ms = hardware.effective_fp16_tflops * 1e9
+    bytes_per_ms = hardware.effective_hbm_gb_s * 1e6
+
+    def stage(
+        flops: float, nbytes: float, repeats: int
+    ) -> tuple[float, float, float, float, float]:
+        compute, memory = flops / flops_per_ms, nbytes / bytes_per_ms
+        return (
+            repeats * (hardware.kernel_overhead_ms + max(compute, memory)),
+            repeats * flops, repeats * nbytes, repeats * compute, repeats * memory,
+        )
+
+    old_qkv = h * (heads + 2 * kv_heads) * d
+    old_out = h * heads * d
+    old_stages = (
+        stage(2 * tokens * old_qkv, 2 * old_qkv, model.num_layers),
+        stage(4 * heads * d * full_pairs, 4 * kv_heads * d * (kv_reads + tokens), model.num_layers),
+        stage(2 * tokens * old_out, 2 * old_out, model.num_layers),
+    )
+    # A 投影和 full indexer 在 TP rank 上复制；B、输出与门控按头分片。
+    a_weights = h * (2048 + 512 + 64)
+    q_b = 2048 * heads * 256
+    kv_b = 512 * heads * (192 + 256)
+    gate = h * heads * 256
+    out = h * heads * 256
+    index_weights = 32 * 128 * 2048 + h * (128 + 32)
+    new_stages = (
+        stage(2 * tokens * (a_weights + q_b + kv_b),
+              2 * (a_weights + q_b + kv_b), model.num_layers),
+        stage(2 * tokens * index_weights + 2 * 32 * 128 * full_pairs,
+              2 * index_weights + 132 * (kv_reads + tokens), full_layers),
+        stage(4 * heads * 256 * sparse_pairs,
+              (512 + 64) * 2 * (sparse_pairs + tokens) + 4 * sparse_pairs,
+              model.num_layers),
+        stage(2 * tokens * (gate + out), 2 * (gate + out), model.num_layers),
+        # SGLang 的独立共享专家在该 EP 放置口径下每 rank 常驻并参与每个 MoE 层。
+        stage(2 * tokens * 3 * h * model.expert_intermediate_size,
+              2 * 3 * h * model.expert_intermediate_size, model.moe_layers),
+    )
+    delta = [
+        sum(row[i] for row in new_stages) - sum(row[i] for row in old_stages)
+        for i in range(5)
+    ]
+    return replace(
+        base,
+        duration_ms=base.duration_ms + delta[0],
+        flops=base.flops + delta[1],
+        hbm_bytes=base.hbm_bytes + delta[2],
+        compute_ms=base.compute_ms + delta[3],
+        memory_ms=base.memory_ms + delta[4],
     )
 
 

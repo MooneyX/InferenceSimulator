@@ -50,6 +50,32 @@ describe("AutomaticConfig", () => {
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
+  it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
+    const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
+      num_layers: 78, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
+      head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
+      moe_layers: 77, num_experts: 256, experts_per_token: 8,
+      expert_intermediate_size: 2048, attention_layout: "hy4_preview" as const };
+    vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [], scenarios: [] });
+    const onModelChange = vi.fn();
+    const onTpSizeChange = vi.fn();
+    const onEpSizeChange = vi.fn();
+    const onHardwareChange = vi.fn();
+    const onStorageChange = vi.fn();
+    render(<AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={1} epSize={1} onTpSizeChange={onTpSizeChange} onEpSizeChange={onEpSizeChange}
+      onModelChange={onModelChange} onHardwareChange={onHardwareChange}
+      onStorageChange={onStorageChange} disabled={false} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: "tencent/Hy4-preview" })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "tencent/Hy4-preview" } });
+    expect(onModelChange).toHaveBeenCalledWith(hy4);
+    expect(onTpSizeChange).toHaveBeenCalledWith(8);
+    expect(onEpSizeChange).toHaveBeenCalledWith(8);
+    expect(onHardwareChange).toHaveBeenCalledWith(expect.objectContaining({ gpu_count: 8 }));
+    expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ l1_available_gb: 260 }));
+  });
+
   it("shows TP rank preview and the analytical timing scope", async () => {
     const preview = {
       ...resolution, tp_size: 4, runnable: true,

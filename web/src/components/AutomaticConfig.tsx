@@ -44,12 +44,12 @@ export const initialStorage: Storage = {
   l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
 };
 
-function Input({ label, value, onChange, optional = false }: {
+function Input({ label, value, onChange, optional = false, disabled = false }: {
   label: string; value: number | null | undefined;
-  onChange: (value: number | null) => void; optional?: boolean;
+  onChange: (value: number | null) => void; optional?: boolean; disabled?: boolean;
 }) {
   return <div className="form-field"><label>{label}
-    <input type="number" step="any" value={value ?? ""}
+    <input type="number" step="any" disabled={disabled} value={value ?? ""}
       onChange={(event) => onChange(event.currentTarget.value === ""
         ? (optional ? null : NaN) : event.currentTarget.valueAsNumber)} />
   </label></div>;
@@ -102,12 +102,20 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         <select id="auto-model-preset" value={selectedModel?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
-            onModelChange(selected ?? { ...model, name: "自定义模型" });
-            if (selected) onEpSizeChange(selected.moe_layers ? tpSize : 1);
+            onModelChange(selected ?? { ...model, name: "自定义模型", attention_layout: "full_gqa" });
+            if (selected?.attention_layout === "hy4_preview") {
+              onTpSizeChange(8);
+              onEpSizeChange(8);
+              onHardwareChange({ ...hardware, gpu_count: 8 });
+              if (storage.l1_available_gb === 200 && hardware.memory_bytes_per_gpu >= 260e9) {
+                onStorageChange({ ...storage, l1_available_gb: 260 });
+              }
+            } else if (selected) onEpSizeChange(selected.moe_layers ? tpSize : 1);
           }}>{catalog?.models.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
       </div></div>
+    {model.attention_layout === "hy4_preview" && <p>HY4-Preview 仅支持 BF16 主干：MLA + DSA 的容量和时延粗估，不含 MTP；结构字段固定，调整 TP/EP、硬件和负载可进行情景试算。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
     <div className="form-grid">{([
       ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
@@ -117,17 +125,18 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       ["expert_intermediate_size", "专家中间维度（MoE 必填）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={model[field]} optional={field === "expert_intermediate_size"}
+      disabled={model.attention_layout === "hy4_preview"}
       onChange={(value) => onModelChange({ ...model, name: "自定义模型", [field]: value })} />)}
-      <div className="form-field"><label>权重精度<select value={model.weight_dtype} onChange={(event) =>
+      <div className="form-field"><label>权重精度<select disabled={model.attention_layout === "hy4_preview"} value={model.weight_dtype} onChange={(event) =>
         onModelChange({ ...model, name: "自定义模型", weight_dtype: event.target.value as Model["weight_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
       </select></label></div>
-      <div className="form-field"><label>KV 精度<select value={model.kv_dtype} onChange={(event) =>
+      <div className="form-field"><label>KV 精度<select disabled={model.attention_layout === "hy4_preview"} value={model.kv_dtype} onChange={(event) =>
         onModelChange({ ...model, name: "自定义模型", kv_dtype: event.target.value as Model["kv_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
       </select></label></div>
       <div className="form-field"><label>输入输出词嵌入共享
-        <input type="checkbox" checked={model.tie_word_embeddings} onChange={(event) =>
+        <input type="checkbox" disabled={model.attention_layout === "hy4_preview"} checked={model.tie_word_embeddings} onChange={(event) =>
           onModelChange({ ...model, name: "自定义模型", tie_word_embeddings: event.target.checked })} />
       </label></div>
     </div>

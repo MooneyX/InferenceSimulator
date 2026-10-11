@@ -81,6 +81,25 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify(value))).toThrow(message as string);
   });
 
+  it("round-trips the pinned HY4 BF16 model and rejects unsupported revisions", () => {
+    const request: ResolvedRequest = {
+      config: createDefaultSimConfig(),
+      model: { ...initialModel, name: "tencent/Hy4-preview",
+        revision: "705d81ee51566a186d645b74c974d642ef2828fe",
+        num_layers: 78, hidden_size: 6144, num_attention_heads: 64,
+        num_kv_heads: 8, head_dim: 256, ffn_intermediate_size: 18432,
+        vocab_size: 120832, moe_layers: 77, num_experts: 256,
+        experts_per_token: 8, expert_intermediate_size: 2048,
+        attention_layout: "hy4_preview" },
+      hardware: { ...initialHardware, gpu_count: 8 },
+      storage: initialStorage, timing: "analytical", tp_size: 8, ep_size: 8,
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(request))).toEqual(request);
+    expect(() => parseResolvedRequestJson(JSON.stringify({ ...request,
+      model: { ...request.model, revision: "other" },
+    }))).toThrow("仅支持已核对");
+  });
+
   it("defaults legacy automatic requests to EP1 and rejects invalid EP widths", () => {
     const request = {
       config: createDefaultSimConfig(), model: { name: "toy", num_layers: 1,

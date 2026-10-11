@@ -103,6 +103,60 @@ def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:  # 模
     return sharded * 2, replicated * 2, expert_parameters // tp_size * 2
 
 
+def _hy4_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
+    """BF16 HY4 主干在 SGLang TP=EP 下的单 rank 结构权重账本（不含 MTP）。"""
+    h, layers, moe = model.hidden_size, model.num_layers, model.moe_layers
+    heads, vocab = model.num_attention_heads, model.vocab_size
+    q_rank, kv_rank, rope, nope, value = 2048, 512, 64, 192, 256
+    index_heads, index_dim, full = 32, 128, 21
+    shared_params = 3 * h * model.expert_intermediate_size
+    routed_params = moe * model.num_experts * shared_params
+    # q_b、kv_b、o_proj、elementwise gate、dense FFN、embedding 和 lm_head 按 TP 分片。
+    sharded_params = (
+        layers * (q_rank * heads * (nope + rope)
+                  + kv_rank * heads * (nope + value)
+                  + 2 * h * heads * value)
+        + 3 * h * model.ffn_intermediate_size
+        + 2 * vocab * h
+    )
+    # MLA A 投影、full 索引器与独立共享专家在本口径下逐 rank 复制。
+    replicated_bf16 = (
+        layers * (h * (q_rank + kv_rank + rope) + q_rank + kv_rank + 2 * h)
+        + full * (index_heads * index_dim * q_rank + h * (index_dim + index_heads))
+        + moe * shared_params
+    )
+    # HY4 的 router、iHC、sink 等使用 FP32，不可一律按 BF16 计费。
+    replicated_fp32 = (
+        moe * (model.num_experts * h + model.num_experts)
+        + layers * 2 * (2 * 4 * h * 4 + 2 + 8)
+        + 4 * 4 * h + 1 + 4
+        + full * 2 * index_dim
+    )
+    sharded_fp32 = layers * heads  # attention sink，每头一个
+    sharded_bytes = sharded_params * 2 // tp_size + sharded_fp32 * 4 // tp_size
+    replicated_bytes = replicated_bf16 * 2 + replicated_fp32 * 4
+    expert_bytes = routed_params * 2 // tp_size
+    total_parameters = (
+        sharded_params + replicated_bf16 + replicated_fp32 + sharded_fp32 + routed_params
+    )
+    active_parameters = (
+        total_parameters - routed_params
+        + routed_params * model.experts_per_token // model.num_experts
+    )
+    return (
+        sharded_bytes, replicated_bytes, expert_bytes,
+        total_parameters, active_parameters, routed_params,
+    )
+
+
+def _hy4_kv_bytes(model: ModelSpec, *, hierarchical: bool = False) -> int:
+    # SGLang 有层级缓存时不省略 shared 层的 index-K 缓冲区；该行并不意味着重新 select。
+    index_layers = model.num_layers if hierarchical else sum(
+        i == 0 or (i - 1) % 4 == 0 for i in range(model.num_layers)
+    )
+    return model.num_layers * (512 + 64) * 2 + index_layers * (128 + 4)
+
+
 def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬件、存储及仿真请求 → 物理页容量与运行可行性报告
     model, hardware, storage = request.model, request.hardware, request.storage
     page_size = request.config.engine.page_size
@@ -110,8 +164,8 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     is_moe = model.moe_layers > 0
     if hardware.gpu_count != tp_size:
         raise ValueError("TP 数必须等于分配给当前实例的 GPU 卡数")
-    if model.attention_layout != "full_gqa":
-        raise ValueError("仅支持全注意力 GQA/MQA 模型")
+    if model.attention_layout not in ("full_gqa", "hy4_preview"):
+        raise ValueError("仅支持全注意力 GQA/MQA 或 HY4-Preview BF16")
     if is_moe:
         if request.ep_size != tp_size:
             raise ValueError("MoE 首版要求 EP 数等于 TP 数和 GPU 卡数")
@@ -125,8 +179,17 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
         raise ValueError("Dense 模型不应配置 EP 或 MoE 专家字段")
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
-    local_kv_heads = max(1, model.num_kv_heads // tp_size)
-    kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2  # 单 rank 每 token 的 K/V BF16 字节
+    if model.attention_layout == "hy4_preview":
+        if any(size % tp_size for size in (
+            model.num_attention_heads, model.num_experts,
+            model.ffn_intermediate_size, model.vocab_size,
+        )):
+            raise ValueError("HY4-Preview 的 Query 头、专家、FFN 和词表须能按 TP/EP 均分")
+        # MLA + index-K 在该 SGLang TP 路径下逐 rank 复制。
+        kv_bytes = _hy4_kv_bytes(model, hierarchical=storage.l2_available_gb > 0)
+    else:
+        local_kv_heads = max(1, model.num_kv_heads // tp_size)
+        kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2  # 单 rank 每 token 的 K/V BF16 字节
     group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = _bytes_from_gb(storage.l1_available_gb)
@@ -135,12 +198,17 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     if l1 > hardware.memory_bytes_per_gpu:
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
-    if is_moe:
-        sharded, replicated, expert = _moe_weights(model, tp_size)
+    if model.attention_layout == "hy4_preview":
+        sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
+            _hy4_weight_budget(model, tp_size)
+        )
     else:
-        sharded, replicated = _tp_weights(model, tp_size)
-        expert = 0
-    total_parameters, active_parameters, expert_parameters = _parameter_counts(model)
+        if is_moe:
+            sharded, replicated, expert = _moe_weights(model, tp_size)
+        else:
+            sharded, replicated = _tp_weights(model, tp_size)
+            expert = 0
+        total_parameters, active_parameters, expert_parameters = _parameter_counts(model)
     local_page_bytes = kv_bytes * page_size
     l1_kv = l1 - sharded - replicated - expert - storage.runtime_reserve_bytes
     if l1_kv < local_page_bytes:

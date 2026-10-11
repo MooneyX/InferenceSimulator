@@ -1,6 +1,6 @@
 # 模型与硬件预置、KV 容量实施计划（F002 子计划）
 
-**状态：单 GPU Dense/GQA 自定义规格、三级容量换算和两项参考模型 + B300 标称显存目录已接入；版本化预置来源认证、更多硬件与高级缓存布局待实现。资料核查基准日：2026-10-08。** 本计划记录 [F002 性能模型](perf-model.md) 的后续模型/设备预置及显存容量工作；当前已实现行为以 [API](../design/api.md)、[L1 缓存](../design/kv-prefix-reuse.md) 为准。
+**状态：全注意力 GQA/MQA 和 BF16 HY4-Preview（SGLang 抽象口径）支持三级容量与未校准解析试算；其他高级缓存布局、实测驻留权重及性能校准待实现。资料核查基准日：2026-10-12。** 本计划记录 [F002 性能模型](perf-model.md) 的后续模型/设备预置及显存容量工作；当前已实现行为以 [API](../design/api.md)、[L1 缓存](../design/kv-prefix-reuse.md) 为准。
 
 ## 1. 目标与边界
 
@@ -17,7 +17,7 @@
 | 模型预置 | 可核验配置/结构 | 首期容量状态 |
 |---|---|---|
 | DeepSeek-V4.1-Flash（截至基准日的最新官方发布） | [官方新闻索引](https://www.deepseek.com/en/news/)；[模型配置](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/main/config.json) 显示跨层来源、分层压缩/滑动窗口及索引结构 | `catalog_only`：不可按普通 GQA 或简化 MLA 推断真实 KV；等待部署实现与逐层缓存口径验证。 |
-| Tencent Hy4 Preview | [官方配置](https://huggingface.co/tencent/HY4-Preview/raw/main/config.json) 含稀疏注意力/MLA、MoE；“Hy4”固定到 `HY4-Preview`，不得泛指后续版本 | `catalog_only`：核对实际 KV 存储布局与推理配置后再解锁。 |
+| Tencent Hy4 Preview | [固定修订](https://huggingface.co/tencent/Hy4-preview/tree/705d81ee51566a186d645b74c974d642ef2828fe) 含 MLA、DSA、MoE；SGLang 默认 TP/EP 与 index-K 分配作为模型假设 | BF16 主干条件化试算：TP/EP 逐卡结构权重估算、固定 MLA + DSA 页成本与未校准性能粗估；不计 MTP，权重未逐 tensor 校对 safetensors header，运行时显存与后端性能不保证。 |
 | Qwen3.5-397B-A17B | [官方配置](https://huggingface.co/Qwen/Qwen3.5-397B-A17B/raw/main/config.json) 含线性注意力与全注意力混合、MoE | `catalog_only`：线性状态不能套全注意力 KV 页公式。 |
 | GLM-5 | [模型配置](https://huggingface.co/zai-org/GLM-5/raw/main/config.json) 含 DSA/低秩 KV 字段 | `catalog_only`：先核验推理缓存布局。 |
 | Kimi-K2.5 | [模型配置](https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json) 含 MLA 字段 | `catalog_only`：先核验推理缓存布局。 |

@@ -1574,6 +1574,7 @@
             "type": "string",
             "enum": [
               "full_gqa",
+              "hy4_preview",
               "other"
             ],
             "title": "Attention Layout",

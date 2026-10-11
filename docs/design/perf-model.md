@@ -32,6 +32,10 @@ step_time_ms = max(P_cost, D_cost) + restore_time_ms
 
 `POST /api/simulate/resolved` 在 Dense 全注意力 GQA/MQA、BF16/FP16、单 GPU 条件下，以已解析的 `ModelSpec` 和 `HardwareSpec` 使用 `analytical.step_cost` 替代上述四系数整步计算。投影、因果注意力、FFN 各阶段分别取 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，逐层顺序相加；融合步汇总本步 Prefill 和 Decode 的工作量、权重每层计一次。纯恢复步不产生算子成本，低层恢复仍按相同的 KV 字节数和链路计费并另加到步长。自动模式把物理链路带宽解析为 token/ms，`restore_time_tokens` 按迁移页的 token 数和两段链路时延计费；`restore_bytes` 仍使用派生的 KV bytes/token 供指标展示。结果包装中的 `analysis` 汇总执行步数、计算量、HBM 访问与解析耗时；该单卡模型不包括 embedding/输出词表投影、形状校准或 TP/EP 通信，不得解释为真实设备测量值。未选择解析模式的旧 API 仍执行本文件前述经验计时。同构 TP>1 仅支持全注意力 Dense BF16/FP16 的解析模式：Query 头与 FFN 按 rank 均分，KV 头不足 TP 数时在不同 rank 复制。每 rank 对 QKV、注意力、输出投影和 FFN 分别按本地 FLOPs/HBM 做 Roofline；同组工作均匀，取任意一张卡的阶段耗时。每层注意力输出与 FFN 输出各计一次等效 Ring AllReduce，不模拟内部通信事件或计算/通信重叠。对每次通信，令 `S=本步新计算 token 数×hidden_size×2 bytes`（Decode 每请求计 1 token），`N=tp_size`，`B=单 rank 有效互联 bytes/ms`，则 `t=collective_latency_ms+2×(N-1)/N×S/B`；这不是对 SGLang 实际 collective 调用的逐算子复刻。纯恢复步无 TP collective，L2/L3 的物理传输仍在设备计时后另加。解析结果的 `flops`、`hbm_bytes`、`compute_ms` 与 `memory_ms` 均是同构单 rank 口径；`analysis.device_ms` 含 TP 通信，`communication_ms` 为其中的同步时间，`communication_bytes` 为单 rank 总传输量，`collectives` 为次数；不将通信时间再次加到 `device_ms`。TP1 的原单 GPU 公式及旧经验模式不变，TP>1 经验四系数不运行。
 
+## HY4-Preview BF16 MLA/DSA 条件化粗估
+
+固定官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe`，78 层中 21 层 full indexer 执行选位，其余复用索引；所有层仍处理每个 query 的至多 2048 个候选。解析模式按一组 step 聚合查询与历史位置对数，full 层另计索引 Key（FP8 + scale）读写、投影与打分，所有层计压缩 KV 读写、稀疏 MLA、注意力门控；独立共享专家的计算亦单列。复用下文 TP/EP 平均负载通信公式，不含 MTP、算子融合、top-k 排序和 iHC 的逐算子成本，也未做形状/硬件校准。结果用于趋势对比，不能视为 SGLang 真实延迟。
+
 ## 平均负载 MoE/EP 解析计时（未经校准）
 
 `TP=EP=GPU 数` 且 BF16/FP16 时，用本步新 Prefill token 数加 Decode 请求数作为同一批 MoE 输入；每层保留注意力输出的 TP 同步，Dense 层继续计 FFN 及第二次 TP 同步，MoE 层则改计 gate、均匀放置的本地专家计算、dispatch、combine，**不重复计 Dense FFN 与第二次 TP 同步**。专家计算每 rank 的平均任务数为 `tokens * experts_per_token / ep_size`，权重 HBM 按本 rank 全部驻留专家保守计入；不存在逐 token 路由或热点专家的尾延迟预测。`MIXED` 一次合并批次收费，`RESTORE` 不做专家计算/通信，只单独计 KV 恢复时间。

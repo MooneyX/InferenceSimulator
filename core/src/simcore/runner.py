@@ -4,7 +4,7 @@
 事件流不经 API 暴露，默认关闭记录；手写 Arrival 由 ``engine.run_engine`` 适配。
 """
 
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from time import perf_counter
 from typing import cast
 
@@ -35,77 +35,53 @@ from simcore.schemas import (
 from simcore.trace_client import TraceClient
 from simcore.workload import build_plan
 
-__all__ = ["simulate", "simulate_plan", "simulate_plan_resolved"]
+__all__ = ["TraceReplay", "simulate"]
 
 
-def simulate_plan(
-    config: SimConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int,
-    target_qps: float | None = None,
-) -> SimResult:
-    """运行已经在本地或服务端编译好的 trace 请求计划。"""
-    client = TraceClient(
-        plan, config.engine, mode=mode, session_rate=session_rate, seed=seed,
-        target_qps=target_qps,
-    )
-    trace_config = config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
-    result, _ = _simulate(trace_config, None, trace_client=client)
-    return result
+@dataclass(frozen=True)
+class TraceReplay:
+    """Trace 负载来源及投放设置；长度、块身份和依赖保留在请求计划中。"""
+
+    plan: TracePlan
+    mode: str
+    session_rate: float
+    seed: int = 0
+    target_qps: float | None = None
 
 
-def simulate(config: SimConfig) -> SimResult:  # 仿真配置 → 完整的经验计时仿真结果
-    """沿用单实例经验模型的完整仿真入口。"""
-    result, _ = _simulate(config, None)
-    return result
-
-
-def simulate_analytical(
-    config: SimConfig, model: ModelSpec, hardware: HardwareSpec
-) -> tuple[SimResult, AnalyticalSummary]:  # 配置、模型、硬件 → 仿真结果与解析成本汇总
-    """单 GPU Roofline 模式使用相同的调度与 KV 生命周期。"""
-    result, analysis = _simulate(config, (model, hardware, 1, 1))
-    if analysis is None:
-        raise RuntimeError("解析运行未生成成本汇总")
-    return result, analysis
-
-
-def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
-    """自动模式使用解析后的容量、链路带宽与计时参数。"""
-    return _run_resolved(resolution)
-
-
-def simulate_plan_resolved(
-    resolution: ResolvedConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int,
-    target_qps: float | None = None,
+def simulate(
+    spec: SimConfig | ResolvedConfig, *, replay: TraceReplay | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:
-    """在解析后的模型、硬件配置上运行同一份 trace 请求计划。"""
-    client = TraceClient(
-        plan, resolution.config.engine, mode=mode, session_rate=session_rate, seed=seed,
-        target_qps=target_qps,
-    )
-    trace_config = resolution.config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
-    return _run_resolved(
-        resolution.model_copy(update={"config": trace_config}), trace_client=client
-    )
+    """统一运行合成负载或 Trace；经验计时的解析成本为 None。
 
-
-def _run_resolved(
-    resolution: ResolvedConfig, trace_client: TraceClient | None = None
-) -> tuple[SimResult, AnalyticalSummary | None]:
-    if not resolution.runnable:
-        if resolution.timing == "analytical":
-            raise ValueError("多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销")
-        raise NotImplementedError("TP/EP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
-    analytical = (
-        (resolution.model, resolution.hardware, resolution.tp_size, resolution.ep_size)
-        if resolution.timing == "analytical"
-        else None
-    )
-    return _simulate(
-        resolution.config,
-        analytical,
-        (resolution.capacity.l2_to_l1_tokens_per_ms, resolution.capacity.l3_to_l2_tokens_per_ms),
-        trace_client=trace_client,
-    )
+    SimConfig 使用手动容量与经验计时；ResolvedConfig 使用已解析的容量、
+    链路带宽和计时规格。提供 replay 时以 Trace 计划替代合成负载。
+    """
+    analytical: tuple[ModelSpec, HardwareSpec, int, int] | None = None
+    token_bandwidths: tuple[float | None, float | None] | None = None
+    if isinstance(spec, ResolvedConfig):
+        if not spec.runnable:
+            if spec.timing == "analytical":
+                raise ValueError(
+                    "多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销"
+                )
+            raise NotImplementedError("TP/EP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
+        config = spec.config
+        if spec.timing == "analytical":
+            analytical = (spec.model, spec.hardware, spec.tp_size, spec.ep_size)
+        token_bandwidths = (
+            spec.capacity.l2_to_l1_tokens_per_ms, spec.capacity.l3_to_l2_tokens_per_ms,
+        )
+    else:
+        config = spec
+    trace_client = None
+    if replay is not None:
+        trace_client = TraceClient(
+            replay.plan, config.engine, mode=replay.mode, session_rate=replay.session_rate,
+            seed=replay.seed, target_qps=replay.target_qps,
+        )
+        config = config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
+    return _simulate(config, analytical, token_bandwidths, trace_client=trace_client)
 
 
 def _simulate(
@@ -116,7 +92,7 @@ def _simulate(
     trace_client: TraceClient | None = None,
 ) -> tuple[SimResult, AnalyticalSummary | None]:  # 配置、可选解析规格和链路带宽 → 全场结果/可选成本
     if config.workload.mode == "trace" and trace_client is None:
-        raise NotImplementedError("trace replay 须通过请求计划入口执行")
+        raise NotImplementedError("trace replay 须向 simulate 提供 TraceReplay 请求计划")
     started_at = perf_counter()
     client: ClientDriver | OpenLoopClient | TraceClient
     if trace_client is not None:

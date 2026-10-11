@@ -30,6 +30,7 @@ from simcore import (
 
 def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=requests,
@@ -70,12 +71,13 @@ def main() -> None:
     if args.sessions > args.requests:
         parser.error("sessions cannot exceed requests")
     config = bench_config(args.requests, args.sessions, args.block_size)
-    warmup = simulate(config).model_dump_json()
+    result, _ = simulate(config)
+    warmup = result.model_dump_json()
     durations: list[float] = []
     for _ in range(args.repeats):
         gc.collect()
         start = time.perf_counter()
-        result = simulate(config)
+        result, _ = simulate(config)
         durations.append(time.perf_counter() - start)
     if warmup != result.model_dump_json():
         raise RuntimeError("same seed produced different simulation results")
@@ -85,7 +87,7 @@ def main() -> None:
 
     tracemalloc.start()
     try:
-        result = simulate(config)
+        result, _ = simulate(config)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

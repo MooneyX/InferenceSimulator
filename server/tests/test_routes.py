@@ -159,8 +159,8 @@ class TestSuccess:
     def test_matches_kernel_serialization(self, client: TestClient) -> None:
         """响应字节即本次内核 ``SimResult`` 的 JSON 序列化。"""
         payload = make_payload(seed=3)
-        expected = simulate(SimConfig.model_validate(payload))
-        with patch("simserver.routes.simulate", return_value=expected):
+        expected, _ = simulate(SimConfig.model_validate(payload))
+        with patch("simserver.routes.simulate", return_value=(expected, None)):
             response = client.post(URL, json=payload)
         assert response.text == expected.model_dump_json()
 

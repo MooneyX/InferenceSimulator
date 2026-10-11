@@ -4,10 +4,10 @@ from dataclasses import fields
 
 import pytest
 
+from simcore import simulate
 from simcore.engine import Engine, run_engine
 from simcore.events import DoneTrace
 from simcore.prefix_hash import encode
-from simcore.runner import simulate
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -209,8 +209,8 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
         engine=EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64),
         perf_model=PERF,
     )
-    first = simulate(config)
-    second = simulate(config)
+    first, _ = simulate(config)
+    second, _ = simulate(config)
     exclude = {"meta": {"wall_clock_ms"}}
     assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert first.meta.num_completed == first.meta.num_requests == 3

@@ -33,6 +33,7 @@ from simcore import (
     WorkloadConfig,
     simulate,
 )
+from simcore.schemas import AnalyticalSummary
 
 BENCHMARK_SIZES = (100, 1_000, 10_000)
 REPEATS = 3
@@ -47,6 +48,7 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
     固定不变——修改会使历史耗时不可比。
     """
     return SimConfig(
+        num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
@@ -88,13 +90,15 @@ class Timing:
         )
 
 
-def measure(fn: Callable[[], SimResult], repeats: int = REPEATS) -> tuple[SimResult, list[float]]:
+def measure(
+    fn: Callable[[], tuple[SimResult, AnalyticalSummary | None]], repeats: int = REPEATS
+) -> tuple[SimResult, list[float]]:
     """运行 ``repeats`` 次，返回最后一次结果与每次耗时（秒）。"""
     durations: list[float] = []
     result: SimResult | None = None
     for _ in range(repeats):
         start = time.perf_counter()
-        result = fn()
+        result, _ = fn()
         durations.append(time.perf_counter() - start)
     assert result is not None
     return result, durations
@@ -132,9 +136,9 @@ def test_scale_report(num_requests: int, exclusive: bool) -> None:
 def test_acceptance_same_seed_byte_identical(exclusive: bool) -> None:
     cfg = bench_config(100, seed=42, exclusive=exclusive)
     exclude = {"meta": {"wall_clock_ms"}}
-    assert simulate(cfg).model_dump_json(exclude=exclude) == simulate(cfg).model_dump_json(
-        exclude=exclude
-    )
+    first, _ = simulate(cfg)
+    second, _ = simulate(cfg)
+    assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
 
 
 # ---------------------------------------------------------------- 脚本入口

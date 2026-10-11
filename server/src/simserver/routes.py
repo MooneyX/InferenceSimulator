@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult, simulate
 from simcore.capacity import resolve_config
-from simcore.runner import simulate_resolved
 from simcore.schemas import ModelSpec, ResolvedConfig, ResolvedRequest, ResolvedRun
 from simserver.presets import HARDWARE, MODELS
 
@@ -121,7 +120,7 @@ def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
 def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
     try:
         resolution = resolve_config(request)
-        result, analysis = simulate_resolved(resolution)
+        result, analysis = simulate(resolution)
         return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
     except NotImplementedError as exc:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
@@ -150,7 +149,7 @@ def simulate_endpoint(config: SimConfig) -> Response:
       响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。
     """
     try:
-        result = simulate(config)
+        result, _ = simulate(config)
     except NotImplementedError as exc:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ValueError as exc:

@@ -6,9 +6,8 @@ from typing import Literal, Self
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from simcore import SimConfig, SimResult, simulate_plan
+from simcore import SimConfig, SimResult, TraceReplay, simulate
 from simcore.capacity import resolve_config
-from simcore.runner import simulate_plan_resolved
 from simcore.schemas import ResolvedRequest, ResolvedRun, TracePlan
 from simserver.trace_processing import PlanTooLargeError
 from simserver.trace_store import MAX_PLAN_BYTES, MAX_TRACE_BYTES, TraceStore
@@ -167,9 +166,12 @@ async def upload_plan(request: Request) -> PlanReceipt:
 def run_plan(key: str, run: ReplayRun, request: Request) -> Response:
     try:
         plan = _store(request).plan(key)
-        result = simulate_plan(
-            run.config, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
-            target_qps=run.target_qps,
+        result, _ = simulate(
+            run.config,
+            replay=TraceReplay(
+                plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
+                target_qps=run.target_qps,
+            ),
         )
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -185,9 +187,12 @@ def run_resolved_plan(key: str, run: ResolvedReplayRun, request: Request) -> Res
         if run.request.config.workload.mode != "trace":
             raise ValueError("请求计划回放须使用 workload.mode='trace'")
         resolution = resolve_config(run.request)
-        result, analysis = simulate_plan_resolved(
-            resolution, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
-            target_qps=run.target_qps,
+        result, analysis = simulate(
+            resolution,
+            replay=TraceReplay(
+                plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
+                target_qps=run.target_qps,
+            ),
         )
         return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
     except KeyError as exc:

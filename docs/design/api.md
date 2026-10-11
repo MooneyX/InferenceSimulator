@@ -4,7 +4,7 @@
 
 ```yaml
 workload:
-  mode: synthetic | trace        # 普通 simulate 仅支持 synthetic；trace 使用计划专用端点
+  mode: synthetic | trace        # HTTP /api/simulate 仅支持 synthetic；trace 使用计划专用端点
   synthetic:
     num_requests: int            # 所有 session 的总轮次数
     arrival_rate: float | null   # 仅 open_loop 必填，目标请求 QPS

@@ -27,10 +27,16 @@ events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与�
 router       根请求轮询、子请求严格继承父实例的路由策略（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
-runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、client、coordinator、engine、metrics）
+runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, AnalyticalSummary | None)（依赖 workload、client、trace_client、coordinator、engine、metrics）
 ```
 
-`runner.simulate` 是 `core` 唯一的对外调用入口，输入输出均为 `schemas` 类型。
+`runner.simulate` 是统一的完整仿真入口，包顶层导出 `simulate` 与不可变的 `TraceReplay` 参数对象：
+
+- `spec: SimConfig | ResolvedConfig`：手动配置使用经验计时；已解析规格使用其有效容量、链路带宽及经验/解析计时，执行前检查 `runnable`。容量解析仍由 `capacity.resolve_config` 独立完成。
+- `replay: TraceReplay | None`（仅关键字参数）：未提供时使用配置中的合成负载；提供时以原始请求计划和回放设置替代合成负载，并将结果有效配置规范化为 Trace，不修改输入对象。仅配置 `mode="trace"` 而未提供计划时拒绝运行。
+- 始终返回 `(result, analysis)`，经验计时的 `analysis` 为 `None`。服务层取出所需部分，现有 HTTP 路径及响应结构不变。
+
+合成开环、合成闭环和 Trace 仍使用各自的客户端，共用 `_simulate → Coordinator → Engine` 执行与指标汇总。
 
 规则：
 
@@ -42,7 +48,7 @@ runner       顶层入口 simulate(SimConfig) -> SimResult（依赖 workload、c
 
 分两层边界：
 
-- **对外边界（`core` ↔ `server`）**：只通过 `schemas` 中的 Pydantic 类型交换数据。`schemas` 是对外配置和结果契约的单一事实源；同一模块另定义不对外暴露的不可变内部消息。
+- **对外边界（`core` ↔ `server`）**：可序列化的配置、计划和结果通过 `schemas` 中的 Pydantic 类型交换，`schemas` 是 HTTP 数据契约的单一事实源。服务层在调用统一入口时另构造 `runner.TraceReplay` 不可变参数对象；它不加入 HTTP schema。
 - **内核内部模块间**：只交换不可变值对象（`frozen` dataclass 或 `schemas` 类型）。内部计划与客户端/引擎消息在 `schemas` 中定义，其余值对象由提供方模块定义，只允许依赖图中的下游模块引用。
 - **禁止跨模块共享可变状态**。唯一例外是依赖图中明确列出的协作者注入，须写明所有权（见下文）。
 

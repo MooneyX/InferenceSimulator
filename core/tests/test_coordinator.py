@@ -42,9 +42,10 @@ def config(think: float = 0) -> SimConfig:
 
 def test_single_session_children_arrive_only_after_completion() -> None:
     cfg = config(think=12)
-    first = simulate(cfg)
+    first, _ = simulate(cfg)
+    second, _ = simulate(cfg)
     exclude = {"meta": {"wall_clock_ms"}}
-    assert first.model_dump_json(exclude=exclude) == simulate(cfg).model_dump_json(exclude=exclude)
+    assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     records = first.requests
     workload = cfg.workload.synthetic
     assert workload is not None

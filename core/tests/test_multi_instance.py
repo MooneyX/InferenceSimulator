@@ -38,7 +38,7 @@ def config(
 
 def test_parallel_engines_and_parent_affinity() -> None:
     settings = config()
-    result = simulate(settings)
+    result, _ = simulate(settings)
     assert result.meta.num_completed == 4
     assert [item.instance_id for item in result.requests if item.parent_request_id is None] == [
         0,
@@ -55,20 +55,21 @@ def test_parallel_engines_and_parent_affinity() -> None:
         sum(item.prefill_end - item.arrival for item in result.requests) / 4
     )
     assert result.metrics.throughput == pytest.approx(4000 / result.metrics.makespan)
-    assert result.model_dump_json(exclude={"meta": {"wall_clock_ms"}}) == simulate(
-        settings
-    ).model_dump_json(exclude={"meta": {"wall_clock_ms"}})
+    repeated, _ = simulate(settings)
+    assert result.model_dump_json(exclude={"meta": {"wall_clock_ms"}}) == repeated.model_dump_json(
+        exclude={"meta": {"wall_clock_ms"}}
+    )
 
 
 def test_idle_instance_keeps_capacity_without_requests() -> None:
-    result = simulate(config(instances=3, requests=1, sessions=1))
+    result, _ = simulate(config(instances=3, requests=1, sessions=1))
     assert [item.num_completed for item in result.instances] == [1, 0, 0]
     assert result.instances[1].metrics.throughput is None
     assert result.metrics.l1_capacity_blocks == 3 * result.instances[0].metrics.l1_capacity_blocks
 
 
 def test_failures_and_descendants_stay_with_original_instance() -> None:
-    result = simulate(config(capacity=4, prompt=8))
+    result, _ = simulate(config(capacity=4, prompt=8))
     assert result.meta.num_completed == 0
     assert (result.meta.num_aborted, result.meta.num_skipped) == (2, 2)
     assert [item.instance_id for item in result.aborted_requests] == [0, 1]

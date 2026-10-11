@@ -44,7 +44,9 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
 
 @pytest.fixture(scope="module")
 def result() -> SimResult:
-    return simulate(make_config())
+    result, analysis = simulate(make_config())
+    assert analysis is None
+    return result
 
 
 def expected_open_loop_arrivals(seed: int, qps: float, count: int) -> list[float]:
@@ -74,7 +76,7 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     assert result.meta.num_completed == 5
     assert result.meta.num_skipped == 0
     arrivals = expected_open_loop_arrivals(42, 10, 5)
@@ -87,7 +89,8 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
     assert result.metrics.num_sessions == 1
     assert result.metrics.child_ideal_prefix_hit_rate == pytest.approx(144 / (39 + 46 + 53 + 60))
     assert result.metrics.mean_prompt_tokens == pytest.approx(46)
-    assert simulate(config).requests == result.requests
+    repeated, _ = simulate(config)
+    assert repeated.requests == result.requests
 
 
 def test_open_loop_completion_at_tick_is_ready() -> None:
@@ -108,7 +111,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
         perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
     with patch("simcore.coordinator.random.Random.expovariate", side_effect=[7.0, 32.0]):
-        result = simulate(config)
+        result, _ = simulate(config)
     assert [record.arrival for record in result.requests] == [7.0, 39.0]
     assert result.requests[0].finish == 39.0
     assert result.requests[1].parent_request_id == 0
@@ -132,7 +135,7 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     assert result.meta.num_completed + result.meta.num_aborted == 4
     arrivals = expected_open_loop_arrivals(42, 10, 4)
     assert [record.arrival for record in result.requests] == pytest.approx(arrivals)
@@ -159,7 +162,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     assert result.meta.num_completed == 2
     assert result.meta.num_aborted == 1
     assert result.meta.num_skipped == 0
@@ -189,7 +192,7 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     assert result.requests[0].arrival == pytest.approx(expected_open_loop_arrivals(1, 10, 1)[0])
     assert result.metrics.arrival_qps is None
 
@@ -211,7 +214,7 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     arrivals = expected_open_loop_arrivals(1, 10, 2)
     assert result.meta.num_completed == 0
     assert [request.arrival for request in result.aborted_requests] == pytest.approx(arrivals)
@@ -222,6 +225,8 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
 class TestEndToEnd:
     def test_package_exports_simulate(self) -> None:
         assert simcore.simulate is simulate
+        assert not hasattr(simcore, "simulate_resolved")
+        assert not hasattr(simcore, "simulate_analytical")
 
     def test_all_requests_recorded(self, result: SimResult) -> None:
         assert [r.id for r in result.requests] == list(range(200))
@@ -236,7 +241,7 @@ class TestEndToEnd:
 
     def test_wall_clock_measures_kernel_run(self) -> None:
         with patch("simcore.runner.perf_counter", side_effect=[10.0, 10.125]) as clock:
-            result = simulate(make_config(num_requests=1))
+            result, _ = simulate(make_config(num_requests=1))
         assert clock.call_count == 2
         assert result.meta.wall_clock_ms == pytest.approx(125.0)
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
@@ -278,7 +283,7 @@ class TestEndToEnd:
             ),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
-        result = simulate(config)
+        result, _ = simulate(config)
         m = result.metrics
         assert m.total_input_tokens == 41
         assert m.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
@@ -315,7 +320,8 @@ class TestEndToEnd:
         synthetic = config.workload.synthetic
         assert synthetic is not None
         plan = build_plan(synthetic, config.engine)
-        metrics = simulate(config).metrics
+        result, _ = simulate(config)
+        metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
         empty = compute_metrics([], plan=plan, config=config)
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
@@ -336,7 +342,7 @@ class TestEndToEnd:
             engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
-        result = simulate(cfg)
+        result, _ = simulate(cfg)
         assert (result.meta.num_requests, result.meta.num_aborted) == (2, 2)
         assert result.requests == []
         assert all(item.reason == "input_exceeds_kv_capacity" for item in result.aborted_requests)
@@ -372,7 +378,7 @@ class TestEndToEnd:
                 l3_to_l2_bandwidth_bytes_per_ms=32,
             ),
         )
-        result = simulate(cfg)
+        result, _ = simulate(cfg)
         assert result.meta.num_completed == 1
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
@@ -397,7 +403,7 @@ class TestEndToEnd:
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
             perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
         )
-        result = simulate(cfg)
+        result, _ = simulate(cfg)
         assert (result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped) == (
             0,
             1,
@@ -421,12 +427,13 @@ class TestReproducibility:
     def test_same_seed_json_bit_identical(self, result: SimResult) -> None:
         """同种子仿真结果（除运行耗时）逐字节一致。"""
         exclude = {"meta": {"wall_clock_ms"}}
-        assert result.model_dump_json(exclude=exclude) == simulate(make_config()).model_dump_json(
-            exclude=exclude
-        )
+        repeated, _ = simulate(make_config())
+        assert result.model_dump_json(exclude=exclude) == repeated.model_dump_json(exclude=exclude)
 
     def test_different_seed_differs(self) -> None:
-        assert simulate(make_config(seed=1)).requests != simulate(make_config(seed=2)).requests
+        first, _ = simulate(make_config(seed=1))
+        second, _ = simulate(make_config(seed=2))
+        assert first.requests != second.requests
 
 
 class TestSmallCases:
@@ -448,7 +455,7 @@ class TestSmallCases:
             engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
-        result = simulate(cfg)
+        result, _ = simulate(cfg)
         synthetic = cfg.workload.synthetic
         assert synthetic is not None
         plan = build_plan(synthetic, cfg.engine)
@@ -482,7 +489,7 @@ class TestSmallCases:
             engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
-        r = simulate(cfg)
+        r, _ = simulate(cfg)
         record = r.requests[0]
         assert record.prefill_end - record.arrival == pytest.approx(5.0)
         assert record.finish - record.prefill_end == pytest.approx(20.0)

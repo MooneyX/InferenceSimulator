@@ -5,6 +5,7 @@ from dataclasses import asdict
 import pytest
 from pydantic import ValidationError
 
+from simcore import simulate
 from simcore.analytical import step_cost
 from simcore.capacity import resolve_config
 from simcore.engine import Engine
@@ -15,7 +16,6 @@ from simcore.perf_model import (
     restore_time,
     restore_time_tokens,
 )
-from simcore.runner import simulate_analytical, simulate_resolved
 from simcore.schemas import (
     AttentionGroup,
     EngineConfig,
@@ -908,7 +908,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     report = resolve_config(tp).capacity
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {48_128}
     assert report.kv_bytes_per_token == 8 * 48_128
-    result, analysis = simulate_resolved(resolve_config(tp))
+    result, analysis = simulate(resolve_config(tp))
     assert result.meta.num_completed == 1 and analysis is not None
     assert analysis.collectives == 2 * 94 * analysis.steps
     assert analysis.communication_ms > 0
@@ -952,7 +952,7 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
     )
     assert not preview.runnable and len(preview.capacity.rank_reports) == 4
     with pytest.raises(ValueError, match="集合通信延迟"):
-        simulate_resolved(preview)
+        simulate(preview)
     hardware = hardware.model_copy(
         update={"effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1}
     )
@@ -1031,7 +1031,7 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
     assert preview.capacity.weights_resident_bytes == 2 * (4096 + 352 + 1536)
     assert preview.config.engine.max_total_tokens == 4 * preview.capacity.l1_capacity_pages
     with pytest.raises(ValueError, match="EP 单次通信开销"):
-        simulate_resolved(preview)
+        simulate(preview)
 
 
 @pytest.mark.parametrize(
@@ -1170,7 +1170,7 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
     )
     resolution = resolve_config(request)
     assert resolution.runnable
-    result, summary = simulate_resolved(resolution)
+    result, summary = simulate(resolution)
     assert summary is not None and result.meta.num_completed == 1
     assert summary.steps == result.meta.num_engine_steps
     assert summary.collectives == 3 * summary.steps
@@ -1182,7 +1182,7 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
         summary.device_ms + summary.restore_ms
     )
     with pytest.raises(NotImplementedError, match="四系数"):
-        simulate_resolved(resolve_config(request.model_copy(update={"timing": "empirical"})))
+        simulate(resolve_config(request.model_copy(update={"timing": "empirical"})))
 
 
 def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
@@ -1370,7 +1370,7 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
         }
     )
     resolved = resolve_config(request)
-    result, analysis = simulate_resolved(resolved)
+    result, analysis = simulate(resolved)
     assert resolved.runnable and analysis is not None
     assert result.meta.num_completed == 1
     assert result.meta.num_aborted == result.meta.num_skipped == 0
@@ -1381,7 +1381,7 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
         analysis.device_ms + analysis.restore_ms
     )
     with pytest.raises(NotImplementedError, match="四系数"):
-        simulate_resolved(resolve_config(request.model_copy(update={"timing": "empirical"})))
+        simulate(resolve_config(request.model_copy(update={"timing": "empirical"})))
 
 
 def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
@@ -1450,7 +1450,8 @@ def test_prefill_kv_hbm_reads_scale_with_context_not_attention_pairs() -> None:
 
 def test_analytical_clock_uses_workload_not_empirical_coefficients() -> None:
     resolution = resolve_config(example_request())
-    result, summary = simulate_analytical(resolution.config, resolution.model, resolution.hardware)
+    result, summary = simulate(resolution)
+    assert summary is not None
     assert result.meta.num_completed == 1
     assert summary.steps == result.meta.num_engine_steps
     assert summary.device_ms > 0

@@ -1,10 +1,10 @@
 """F001 Decode 缺页、回撤重算与请求级失败的闭环验收。"""
 
+from simcore import simulate
 from simcore.engine import Engine, run_engine
 from simcore.kv_cache import L1KVCache, TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import encode
-from simcore.runner import simulate
 from simcore.scheduler import F001Scheduler
 from simcore.schemas import (
     Arrival,
@@ -288,7 +288,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
         engine=EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=64),
         perf_model=PERF,
     )
-    result = simulate(config)
+    result, _ = simulate(config)
     assert (result.meta.num_requests, result.meta.num_completed) == (3, 0)
     assert (result.meta.num_aborted, result.meta.num_skipped, result.meta.num_engine_steps) == (
         1,
@@ -301,9 +301,8 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
     assert result.metrics.ttft_mean is None and result.metrics.throughput is None
     assert result.metrics.makespan == 0
     exclude = {"meta": {"wall_clock_ms"}}
-    assert result.model_dump_json(exclude=exclude) == simulate(config).model_dump_json(
-        exclude=exclude
-    )
+    repeated, _ = simulate(config)
+    assert result.model_dump_json(exclude=exclude) == repeated.model_dump_json(exclude=exclude)
 
 
 def test_requeue_after_future_step_end_preserves_fcfs_of_midstep_arrival() -> None:

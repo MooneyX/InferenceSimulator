@@ -94,9 +94,10 @@ npm run gen:api
 ```python
 from simcore import SimConfig, simulate
 
-result = simulate(
+result, analysis = simulate(
     SimConfig.model_validate(
         {
+            "num_instances": 1,
             "workload": {
                 "mode": "synthetic",
                 "synthetic": {
@@ -121,3 +122,7 @@ result = simulate(
 )
 print(result.metrics)
 ```
+
+`simulate` 始终返回 `(SimResult, AnalyticalSummary | None)`；手动 `SimConfig` 使用经验计时，`analysis` 为 `None`。自动模式先调用 `simcore.capacity.resolve_config(request)`，再将返回的 `ResolvedConfig` 传给同一个 `simulate`，使用解析后的容量、带宽及计时规格。
+
+Trace 回放使用 `from simcore import TraceReplay`，调用 `simulate(config_or_resolution, replay=TraceReplay(plan, mode="open_loop", session_rate=1, seed=0))`；可选 `target_qps` 仅适用于开环。未提供 `replay` 时使用合成负载，Trace 请求长度、块身份和依赖语义不变。

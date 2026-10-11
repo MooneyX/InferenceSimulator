@@ -5,10 +5,10 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from simcore import simulate
 from simcore.engine import Engine, run_engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
-from simcore.runner import simulate
 from simcore.schemas import (
     AbortedRequest,
     EngineConfig,
@@ -78,8 +78,8 @@ def mixed_plan() -> WorkloadPlan:
 def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     settings = config()
     with patch("simcore.runner.build_plan", return_value=mixed_plan()):
-        result = simulate(settings)
-        second = simulate(settings)
+        result, _ = simulate(settings)
+        second, _ = simulate(settings)
     exclude = {"meta": {"wall_clock_ms"}}
     assert result.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert (result.meta.num_requests, result.meta.num_completed) == (4, 2)
@@ -139,7 +139,7 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
         engine=EngineConfig(max_running_requests=1, max_total_tokens=16, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     )
-    result = simulate(settings)
+    result, _ = simulate(settings)
     assert (result.meta.num_completed, result.meta.num_engine_steps) == (1, 2)
     assert result.metrics.makespan == 0 and result.metrics.throughput is None
     assert result.metrics.tpot_mean == 0

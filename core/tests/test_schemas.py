@@ -1,6 +1,6 @@
 """schemas 模块单测：可判别联合、校验边界、不可变性、序列化往返。"""
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -9,16 +9,20 @@ from simcore.schemas import (
     AbortedRequest,
     Arrival,
     AttentionGroup,
+    AuxWeightDtype,
     EngineConfig,
     FixedLength,
+    IHCSpec,
     InstanceResult,
     LengthDist,
     LognormalLength,
     Metrics,
     ModelSpec,
+    NormSpec,
     PerfModelConfig,
     PoissonLength,
     RequestRecord,
+    RouterSpec,
     SessionConfig,
     SimConfig,
     SimMeta,
@@ -112,6 +116,130 @@ def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> No
         shared_expert_intermediate_size=8,
     )
     assert ModelSpec.model_validate_json(shared.model_dump_json()) == shared
+
+
+def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
+    model = ModelSpec(
+        name="auxiliary", num_layers=2, hidden_size=16, num_attention_heads=2,
+        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+    )
+    assert model.norms.model_dump() == {
+        "kind": "rms", "block_per_layer": 2, "final_norm": True, "dtype": None,
+    }
+    assert model.router.model_dump() == {
+        "dtype": None, "correction_bias": False, "correction_dtype": "fp32",
+    }
+    assert model.ihc is None
+    group = AttentionGroup(
+        kind="mla_dsa", layers=2, num_attention_heads=2, q_rank=4, kv_rank=4,
+        rope_dim=2, nope_dim=6, value_dim=8, index_heads=2, index_dim=128,
+        topk=4, full_indexer_layers=1,
+    )
+    assert group.qk_norm and group.norm_dtype is None
+    assert group.index_norm == "layer" and group.index_norm_dtype is None
+    assert group.sink_dtype is None
+    payload = model.model_dump() | {
+        "moe_layers": 1, "num_experts": 4, "experts_per_token": 2,
+        "expert_intermediate_size": 8, "attention_layout": "grouped",
+        "norms": {"kind": "layer", "block_per_layer": 0, "final_norm": False, "dtype": "fp32"},
+        "router": {"dtype": "fp32", "correction_bias": True, "correction_dtype": "fp16"},
+        "ihc": {"mult": 1},
+        "attention_groups": [group.model_dump() | {
+            "qk_norm": False, "norm_dtype": "fp16", "index_norm": "rms",
+            "index_norm_dtype": "fp32", "sink_dtype": "bf16",
+        }],
+    }
+    explicit = ModelSpec.model_validate(payload)
+    assert explicit.ihc == IHCSpec(mult=1, dtype="fp32")
+    assert ModelSpec.model_validate_json(explicit.model_dump_json()) == explicit
+    assert ModelSpec.model_validate(explicit.model_dump() | {"ihc": None}).ihc is None
+
+
+@pytest.mark.parametrize("spec,payload", [
+    (NormSpec, {"kind": "batch"}), (NormSpec, {"block_per_layer": -1}),
+    (NormSpec, {"block_per_layer": None}), (NormSpec, {"dtype": "fp8"}),
+    (RouterSpec, {"dtype": "fp8"}), (RouterSpec, {"correction_dtype": "fp8"}),
+    (RouterSpec, {"correction_dtype": None}), (IHCSpec, {}),
+    (IHCSpec, {"mult": 0}), (IHCSpec, {"mult": -1}),
+    (IHCSpec, {"mult": 1.5}), (IHCSpec, {"mult": None}),
+    (IHCSpec, {"mult": 1, "dtype": "fp8"}), (IHCSpec, {"mult": 1, "dtype": None}),
+])
+def test_auxiliary_weight_spec_rejects_invalid_dtype_counts_and_null(
+    spec: type[NormSpec] | type[RouterSpec] | type[IHCSpec], payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        spec.model_validate(payload)
+
+
+@pytest.mark.parametrize("dtype", [None, "bf16", "fp16", "fp32"])
+def test_auxiliary_dtype_accepts_supported_precision_and_nullable_inheritance(
+    dtype: AuxWeightDtype | None,
+) -> None:
+    assert NormSpec(dtype=dtype).dtype == dtype
+    assert RouterSpec(dtype=dtype).dtype == dtype
+    group = AttentionGroup(
+        kind="mla_dsa", layers=1, num_attention_heads=2, q_rank=4, kv_rank=4,
+        rope_dim=2, nope_dim=6, value_dim=8, index_heads=2, index_dim=128,
+        topk=4, full_indexer_layers=1,
+        norm_dtype=dtype, index_norm_dtype=dtype, sink_dtype=dtype,
+    )
+    assert group.norm_dtype == group.index_norm_dtype == group.sink_dtype == dtype
+    if dtype is not None:
+        assert IHCSpec(mult=1, dtype=dtype).dtype == dtype
+        assert RouterSpec(correction_dtype=dtype).correction_dtype == dtype
+
+
+@pytest.mark.parametrize("field,invalid", [
+    ("norm_dtype", "fp8"), ("index_norm_dtype", "fp8"), ("sink_dtype", "fp8"),
+    ("index_norm", "batch"), ("index_norm", None),
+])
+def test_attention_auxiliary_spec_rejects_invalid_precision_or_norm(
+    field: str, invalid: str | None,
+) -> None:
+    with pytest.raises(ValidationError, match=field):
+        AttentionGroup.model_validate({
+            "kind": "mla_dsa", "layers": 1, "num_attention_heads": 2,
+            "q_rank": 4, "kv_rank": 4, "rope_dim": 2, "nope_dim": 6, "value_dim": 8,
+            "index_heads": 2, "index_dim": 128, "topk": 4, "full_indexer_layers": 1,
+            field: invalid,
+        })
+
+
+@pytest.mark.parametrize("kind", ["gqa", "mla"])
+@pytest.mark.parametrize("update", [
+    {"index_norm": "none"}, {"index_norm": "rms"}, {"index_norm_dtype": "fp32"},
+])
+def test_index_norm_overrides_require_dsa(
+    kind: Literal["gqa", "mla"], update: dict[str, object],
+) -> None:
+    group = (
+        AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
+        if kind == "gqa" else
+        AttentionGroup(kind="mla", layers=1, num_attention_heads=2,
+                       q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8)
+    )
+    assert group.index_norm == "layer" and group.index_norm_dtype is None
+    with pytest.raises(ValidationError, match="仅 MLA\\+DSA 可以配置索引器归一化"):
+        AttentionGroup.model_validate(group.model_dump() | update)
+
+
+@pytest.mark.parametrize("router", [
+    {"dtype": "fp32"}, {"correction_bias": True}, {"correction_dtype": "bf16"},
+])
+def test_non_default_router_requires_moe(router: dict[str, object]) -> None:
+    payload = dict(
+        name="router", num_layers=1, hidden_size=16, num_attention_heads=2,
+        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+    )
+    assert ModelSpec.model_validate(payload | {"router": {}}).router == RouterSpec()
+    with pytest.raises(ValidationError, match="Router 辅助配置需要 MoE 层"):
+        ModelSpec.model_validate(payload | {"router": router})
+    assert ModelSpec.model_validate(payload | {"moe_layers": 1, "router": router}).router == (
+        RouterSpec.model_validate(router)
+    )
+    for field in ("norms", "router"):
+        with pytest.raises(ValidationError, match=field):
+            ModelSpec.model_validate(payload | {field: None})
 
 
 class TestLengthDist:

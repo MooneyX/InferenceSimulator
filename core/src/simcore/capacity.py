@@ -1,6 +1,7 @@
 """从全注意力规格解析单卡或 TP/EP 组的固定大小 KV 页容量。"""
 
 from decimal import ROUND_FLOOR, Decimal
+from typing import cast
 
 from simcore.schemas import (
     AttentionGroup,
@@ -18,219 +19,149 @@ def _bytes_from_gb(value: float) -> int:  # 十进制 GB 数值 → 向下取整
     return int((Decimal(str(value)) * _GB).to_integral_value(rounding=ROUND_FLOOR))
 
 
-def _parameter_counts(model: ModelSpec) -> tuple[int, int, int]:  # 模型规格 → 总参数、激活参数、专家参数数目
-    """按当前支持的无偏置全注意力、门控 FFN 与同构专家结构估算参数。"""
-    h, q, kv, d = (model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim)
-    dense_layers = model.num_layers - model.moe_layers
-    expert = (
-        model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
-        if model.moe_layers and model.expert_intermediate_size is not None
-        else 0
-    )
-    shared = (
-        model.moe_layers * model.num_shared_experts * 3 * h * model.shared_expert_intermediate_size
-        if model.num_shared_experts else 0
-    )
-    non_expert = (
-        shared + model.num_layers * h * (2 * q * d + 2 * kv * d)
-        + dense_layers * 3 * h * model.ffn_intermediate_size
-        + (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
-        + model.num_layers * (2 * h + 2 * d)
-        + h
-        + model.moe_layers * h * model.num_experts
-    )
-    active = non_expert + (expert // model.num_experts * model.experts_per_token if expert else 0)
-    return non_expert + expert, active, expert
+def _dtype_bytes(dtype: str | None) -> int:
+    return 4 if dtype == "fp32" else 2
 
 
-def _tp_weights(model: ModelSpec, tp_size: int) -> tuple[int, int]:  # 模型与 TP 份数 → 单 rank 分片/复制权重字节数
-    """返回每 rank 的结构估算分片与复制权重字节。"""
-    if model.vocab_size is None:
-        raise ValueError("TP 容量预览需要模型 vocab_size 与词嵌入共享规则")
-    if model.num_attention_heads % tp_size or model.ffn_intermediate_size % tp_size:
-        raise ValueError("Query 头数和 FFN 中间维度必须能被 TP 数整除")
-    h, q, kv, d, f = (
-        model.hidden_size,
-        model.num_attention_heads,
-        model.num_kv_heads,
-        model.head_dim,
-        model.ffn_intermediate_size,
-    )
-    if (kv >= tp_size and kv % tp_size) or (kv < tp_size and tp_size % kv):
-        raise ValueError("KV 头数与 TP 数不满足均分或按头复制条件")
-    if model.vocab_size % tp_size:
-        raise ValueError("第一版词表大小必须能被 TP 数整除")
-    local_kv_heads = max(1, kv // tp_size)
-    sharded = (
-        model.num_layers
-        * (
-            h * ((q // tp_size + 2 * local_kv_heads) * d)
-            + h * (q // tp_size * d)
-            + 3 * h * (f // tp_size)
-        )
-        + (1 if model.tie_word_embeddings else 2) * model.vocab_size // tp_size * h
-    )
-    # 两次层归一化、末层归一化及每层 Q/K 归一化。
-    replicated = model.num_layers * (2 * h + 2 * d) + h
-    return sharded * 2, replicated * 2
-
-
-def _moe_weights(model: ModelSpec, tp_size: int) -> tuple[int, int, int]:  # 模型与 TP 份数（EP 同数）→ 单 rank 分片、复制及专家权重字节
-    """返回每 rank 非专家分片、复制及全部驻留专家字节。"""
-    if model.vocab_size is None:
-        raise ValueError("MoE 容量预览需要 vocab_size 与词嵌入共享规则")
-    if not (model.num_experts and 1 <= model.experts_per_token <= model.num_experts):
-        raise ValueError("MoE 需要专家数及有效的每 token 激活专家数")
-    if model.expert_intermediate_size is None:
-        raise ValueError("MoE 需要专家中间维度以放置全部驻留专家权重")
-    if model.num_experts % tp_size or model.num_attention_heads % tp_size:
-        raise ValueError("专家数和 Query 头数必须能被 TP=EP 数整除")
-    dense_layers = model.num_layers - model.moe_layers
-    if dense_layers and model.ffn_intermediate_size % tp_size:
-        raise ValueError("Dense FFN 中间维度必须能被 TP 数整除")
-    h, q, kv, d = (model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim)
-    if (kv >= tp_size and kv % tp_size) or (kv < tp_size and tp_size % kv):
-        raise ValueError("KV 头数与 TP 数不满足均分或按头复制条件")
-    if model.vocab_size % tp_size:
-        raise ValueError("词表大小必须能被 TP 数整除")
-    local_kv_heads = max(1, kv // tp_size)
-    attention = h * ((q // tp_size + 2 * local_kv_heads) * d + (q // tp_size) * d)
-    sharded = (
-        model.num_layers * attention
-        + dense_layers * 3 * h * (model.ffn_intermediate_size // tp_size)
-        + (1 if model.tie_word_embeddings else 2) * model.vocab_size // tp_size * h
-    )
-    # Router 对全部专家打分；首版每个 TP rank 复制 gate、norm 等非专家小权重。
-    replicated = model.num_layers * (2 * h + 2 * d) + h + model.moe_layers * h * model.num_experts
-    if model.num_shared_experts:
-        replicated += (
-            model.moe_layers * model.num_shared_experts * 3 * h
-            * model.shared_expert_intermediate_size
-        )
-    expert_parameters = (
-        model.moe_layers * model.num_experts * 3 * h * model.expert_intermediate_size
-    )
-    return sharded * 2, replicated * 2, expert_parameters // tp_size * 2
-
-
-def _hy4_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
-    """BF16 HY4 主干在 SGLang TP=EP 下的单 rank 结构权重账本（不含 MTP）。"""
-    h, layers, moe = model.hidden_size, model.num_layers, model.moe_layers
-    heads, vocab = model.num_attention_heads, model.vocab_size
-    q_rank, kv_rank, rope, nope, value = 2048, 512, 64, 192, 256
-    index_heads, index_dim, full = 32, 128, 21
-    shared_params = model.num_shared_experts * 3 * h * model.shared_expert_intermediate_size
-    routed_params = moe * model.num_experts * 3 * h * model.expert_intermediate_size
-    # q_b、kv_b、o_proj、elementwise gate、dense FFN、embedding 和 lm_head 按 TP 分片。
-    sharded_params = (
-        layers * (q_rank * heads * (nope + rope)
-                  + kv_rank * heads * (nope + value)
-                  + 2 * h * heads * value)
-        + 3 * h * model.ffn_intermediate_size
-        + 2 * vocab * h
-    )
-    # MLA A 投影、full 索引器与独立共享专家在本口径下逐 rank 复制。
-    replicated_bf16 = (
-        layers * (h * (q_rank + kv_rank + rope) + q_rank + kv_rank + 2 * h)
-        + full * (index_heads * index_dim * q_rank + h * (index_dim + index_heads))
-        + moe * shared_params
-    )
-    # HY4 的 router、iHC、sink 等使用 FP32，不可一律按 BF16 计费。
-    replicated_fp32 = (
-        moe * (model.num_experts * h + model.num_experts)
-        + layers * 2 * (2 * 4 * h * 4 + 2 + 8)
-        + 4 * 4 * h + 1 + 4
-        + full * 2 * index_dim
-    )
-    sharded_fp32 = layers * heads  # attention sink，每头一个
-    sharded_bytes = sharded_params * 2 // tp_size + sharded_fp32 * 4 // tp_size
-    replicated_bytes = replicated_bf16 * 2 + replicated_fp32 * 4
-    expert_bytes = routed_params * 2 // tp_size
-    total_parameters = (
-        sharded_params + replicated_bf16 + replicated_fp32 + sharded_fp32 + routed_params
-    )
-    active_parameters = (
-        total_parameters - routed_params
-        + routed_params * model.experts_per_token // model.num_experts
-    )
-    return (
-        sharded_bytes, replicated_bytes, expert_bytes,
-        total_parameters, active_parameters, routed_params,
-    )
+def _norm_parameters(kind: str, width: int) -> int:
+    return width * {"none": 0, "rms": 1, "layer": 2}[kind]
 
 
 def _group_attention_budget(
-    group: AttentionGroup, hidden_size: int, tp_size: int, hierarchical: bool
+    group: AttentionGroup,
+    hidden_size: int,
+    tp_size: int,
+    hierarchical: bool,
+    weight_dtype: str = "bf16",
 ) -> tuple[int, int, int, int]:
-    """返回每 rank KV 字节、分片/复制权重参数量和逻辑参数量。"""
+    """返回每 rank KV、分片/复制权重字节及全组逻辑参数数。"""
     heads, layers = group.num_attention_heads, group.layers
     if heads % tp_size:
         raise ValueError("注意力组的 Query 头数须能按 TP 均分")
     local_heads = heads // tp_size
+    weight_bytes = _dtype_bytes(weight_dtype)
+    norm_bytes = _dtype_bytes(group.norm_dtype or weight_dtype)
     if group.kind == "gqa":
-        kv_heads, dim = group.num_kv_heads, group.head_dim
-        if ((kv_heads >= tp_size and kv_heads % tp_size)
-                or (kv_heads < tp_size and tp_size % kv_heads)):
+        kv_heads, dim = cast(int, group.num_kv_heads), cast(int, group.head_dim)
+        if (kv_heads >= tp_size and kv_heads % tp_size) or (
+            kv_heads < tp_size and tp_size % kv_heads
+        ):
             raise ValueError("注意力组的 KV 头数与 TP 不满足均分或复制条件")
         local_kv = max(1, kv_heads // tp_size)
         local_params = layers * hidden_size * (2 * local_heads + 2 * local_kv) * dim
         logical = layers * hidden_size * (2 * heads + 2 * kv_heads) * dim
-        return (
-            layers * 2 * local_kv * dim * 2, local_params,
-            layers * 2 * dim, logical + layers * 2 * dim,
-        )
-    q_rank, kv_rank, rope, nope, value = (
-        group.q_rank, group.kv_rank, group.rope_dim, group.nope_dim, group.value_dim
-    )
-    local_params = layers * (
-        q_rank * local_heads * (nope + rope)
-        + kv_rank * local_heads * (nope + value)
-        + hidden_size * local_heads * value * (2 if group.output_gate else 1)
-    )
-    replicated = layers * (hidden_size * (q_rank + kv_rank + rope) + q_rank + kv_rank)
-    logical = layers * (
-        hidden_size * (q_rank + kv_rank + rope)
-        + q_rank * heads * (nope + rope)
-        + kv_rank * heads * (nope + value)
-        + hidden_size * heads * value * (2 if group.output_gate else 1) + q_rank + kv_rank
-    )
-    kv_bytes = layers * (kv_rank + rope) * 2
-    if group.kind == "mla_dsa":
-        full = group.full_indexer_layers
-        index_params = full * (
-            group.index_heads * group.index_dim * q_rank
-            + hidden_size * (group.index_dim + group.index_heads)
-            + 2 * group.index_dim
-        )
-        replicated += index_params
-        logical += index_params
-        index_layers = layers if hierarchical else full
-        kv_bytes += index_layers * (group.index_dim + group.index_dim // 128 * 4)
-    return kv_bytes, local_params, replicated, logical
-
-
-def _group_weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
-    """按组替换普通注意力参数；FFN/MoE 仍遵循原同构层数口径。"""
-    if model.moe_layers:
-        sharded, replicated, expert = _moe_weights(model, tp_size)
+        norm_params = layers * 2 * dim if group.qk_norm else 0
+        kv_bytes = layers * 2 * local_kv * dim * 2
+        replicated_bytes = norm_params * norm_bytes
     else:
-        sharded, replicated = _tp_weights(model, tp_size)
-        expert = 0
-    total, active, expert_params = _parameter_counts(model)
-    h, heads, kv_heads, dim = (
-        model.hidden_size, model.num_attention_heads, model.num_kv_heads, model.head_dim
-    )
-    old_local_kv = max(1, kv_heads // tp_size)
-    old_local = model.num_layers * h * (2 * heads // tp_size + 2 * old_local_kv) * dim
-    old_logical = model.num_layers * h * (2 * heads + 2 * kv_heads) * dim
-    old_norm = model.num_layers * 2 * dim
-    group_budgets = [
-        _group_attention_budget(group, h, tp_size, False) for group in model.attention_groups
+        q_rank, kv_rank, rope, nope, value = (
+            cast(int, value)
+            for value in (
+                group.q_rank,
+                group.kv_rank,
+                group.rope_dim,
+                group.nope_dim,
+                group.value_dim,
+            )
+        )
+        local_params = layers * (
+            q_rank * local_heads * (nope + rope)
+            + kv_rank * local_heads * (nope + value)
+            + hidden_size * local_heads * value * (2 if group.output_gate else 1)
+        )
+        a_params = layers * hidden_size * (q_rank + kv_rank + rope)
+        norm_params = layers * (q_rank + kv_rank) if group.qk_norm else 0
+        logical = local_params * tp_size + a_params
+        replicated_bytes = a_params * weight_bytes + norm_params * norm_bytes
+        kv_bytes = layers * (kv_rank + rope) * 2
+        if group.kind == "mla_dsa":
+            full = cast(int, group.full_indexer_layers)
+            index_dim, index_heads = cast(int, group.index_dim), cast(int, group.index_heads)
+            index_params = full * (
+                index_heads * index_dim * q_rank + hidden_size * (index_dim + index_heads)
+            )
+            index_norm_params = full * _norm_parameters(group.index_norm, index_dim)
+            replicated_bytes += index_params * weight_bytes + index_norm_params * _dtype_bytes(
+                group.index_norm_dtype or weight_dtype
+            )
+            logical += index_params + index_norm_params
+            index_layers = layers if hierarchical else full
+            kv_bytes += index_layers * (index_dim + index_dim // 128 * 4)
+    sharded_bytes = local_params * weight_bytes
+    if group.sink_dtype is not None:
+        sharded_bytes += layers * local_heads * _dtype_bytes(group.sink_dtype)
+        logical += layers * heads
+    return kv_bytes, sharded_bytes, replicated_bytes, logical + norm_params
+
+
+def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
+    """按组件与存储精度直接累加权重，TP/EP 采用当前同构放置口径。"""
+    h, layers, moe = model.hidden_size, model.num_layers, model.moe_layers
+    dense_layers = layers - moe
+    if model.vocab_size is None:
+        raise ValueError("容量预览需要模型 vocab_size 与词嵌入共享规则")
+    if model.vocab_size % tp_size:
+        raise ValueError("词表大小必须能被 TP 数整除")
+    if dense_layers and model.ffn_intermediate_size % tp_size:
+        raise ValueError("Dense FFN 中间维度必须能被 TP 数整除")
+    if moe:
+        if not (model.num_experts and 1 <= model.experts_per_token <= model.num_experts):
+            raise ValueError("MoE 需要专家数及有效的每 token 激活专家数")
+        if model.expert_intermediate_size is None:
+            raise ValueError("MoE 需要专家中间维度以放置全部驻留专家权重")
+        if model.num_experts % tp_size:
+            raise ValueError("MoE 专家数必须能被 TP=EP 数整除")
+    groups = model.attention_groups or [
+        AttentionGroup(
+            kind="gqa",
+            layers=layers,
+            num_attention_heads=model.num_attention_heads,
+            num_kv_heads=model.num_kv_heads,
+            head_dim=model.head_dim,
+        )
     ]
-    sharded += 2 * (sum(item[1] for item in group_budgets) - old_local)
-    replicated += 2 * (sum(item[2] for item in group_budgets) - old_norm)
-    delta = sum(item[3] for item in group_budgets) - old_logical - old_norm
-    return sharded, replicated, expert, total + delta, active + delta, expert_params
+    budgets = [
+        _group_attention_budget(group, h, tp_size, False, model.weight_dtype) for group in groups
+    ]
+    weight_bytes = _dtype_bytes(model.weight_dtype)
+    dense_params = dense_layers * 3 * h * model.ffn_intermediate_size
+    embedding_params = (1 if model.tie_word_embeddings else 2) * model.vocab_size * h
+    sharded = (
+        sum(row[1] for row in budgets) + (dense_params + embedding_params) // tp_size * weight_bytes
+    )
+    norm_params = (
+        layers * model.norms.block_per_layer + int(model.norms.final_norm)
+    ) * _norm_parameters(model.norms.kind, h)
+    replicated = sum(row[2] for row in budgets)
+    replicated += norm_params * _dtype_bytes(model.norms.dtype or model.weight_dtype)
+    router_params = moe * h * model.num_experts
+    correction_params = moe * model.num_experts if model.router.correction_bias else 0
+    replicated += router_params * _dtype_bytes(model.router.dtype or model.weight_dtype)
+    replicated += correction_params * _dtype_bytes(model.router.correction_dtype)
+    shared_params = (
+        moe * model.num_shared_experts * 3 * h * cast(int, model.shared_expert_intermediate_size)
+        if model.num_shared_experts
+        else 0
+    )
+    replicated += shared_params * weight_bytes
+    ihc_params = 0
+    if model.ihc is not None:
+        mult = model.ihc.mult
+        ihc_params = layers * 2 * (2 * mult * mult * h + 2 + 2 * mult) + mult * mult * h + 1 + mult
+        replicated += ihc_params * _dtype_bytes(model.ihc.dtype)
+    expert_params = (
+        moe * model.num_experts * 3 * h * cast(int, model.expert_intermediate_size) if moe else 0
+    )
+    expert = expert_params // tp_size * weight_bytes
+    non_expert = (
+        sum(row[3] for row in budgets) + dense_params + embedding_params
+        + norm_params + router_params + correction_params + shared_params + ihc_params
+    )
+    active_expert = expert_params // model.num_experts * model.experts_per_token if moe else 0
+    return (
+        sharded, replicated, expert,
+        non_expert + expert_params, non_expert + active_expert, expert_params,
+    )
 
 
 def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬件、存储及仿真请求 → 物理页容量与运行可行性报告
@@ -273,26 +204,9 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     if l1 > hardware.memory_bytes_per_gpu:
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
-    if model.attention_layout == "hy4_preview":
-        if any(size % tp_size for size in (
-            model.num_attention_heads, model.num_experts,
-            model.ffn_intermediate_size, model.vocab_size,
-        )):
-            raise ValueError("HY4-Preview 的 Query 头、专家、FFN 和词表须能按 TP/EP 均分")
-        sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
-            _hy4_weight_budget(model, tp_size)
-        )
-    elif model.attention_groups is not None:
-        sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
-            _group_weight_budget(model, tp_size)
-        )
-    else:
-        if is_moe:
-            sharded, replicated, expert = _moe_weights(model, tp_size)
-        else:
-            sharded, replicated = _tp_weights(model, tp_size)
-            expert = 0
-        total_parameters, active_parameters, expert_parameters = _parameter_counts(model)
+    sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
+        _weight_budget(model, tp_size)
+    )
     local_page_bytes = kv_bytes * page_size
     l1_kv = l1 - sharded - replicated - expert - storage.runtime_reserve_bytes
     if l1_kv < local_page_bytes:

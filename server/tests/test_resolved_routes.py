@@ -112,6 +112,16 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     assert result.status_code == 200, result.text
     assert result.json()["resolution"] == preview.json()
     assert result.json()["analysis"]["ep_exchanges"] > 0
+    custom = dict(request, model=dict(
+        request["model"], name="custom", revision=None, attention_layout="grouped",
+    ))
+    custom_preview = client.post("/api/resolve", json=custom)
+    assert custom_preview.status_code == 200, custom_preview.text
+    assert custom_preview.json()["capacity"] == preview.json()["capacity"]
+    assert custom_preview.json()["config"] == preview.json()["config"]
+    custom_run = client.post("/api/simulate/resolved", json=custom)
+    assert custom_run.status_code == 200, custom_run.text
+    assert custom_run.json()["analysis"] == result.json()["analysis"]
     request["model"]["kv_dtype"] = "fp8"
     assert client.post("/api/resolve", json=request).status_code == 422
     request["model"]["kv_dtype"] = "bf16"

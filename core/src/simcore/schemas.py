@@ -25,12 +25,14 @@ __all__ = [
     "EngineConfig",
     "FixedLength",
     "HardwareSpec",
+    "IHCSpec",
     "InferenceRequest",
     "InstanceResult",
     "LengthDist",
     "LognormalLength",
     "Metrics",
     "ModelSpec",
+    "NormSpec",
     "PerfModelConfig",
     "PoissonLength",
     "RankCapacityReport",
@@ -39,6 +41,7 @@ __all__ = [
     "ResolvedConfig",
     "ResolvedRequest",
     "ResolvedRun",
+    "RouterSpec",
     "SessionConfig",
     "SimConfig",
     "SimMeta",
@@ -255,6 +258,33 @@ class SimConfig(_Frozen):
         return self
 
 
+AuxWeightDtype = Literal["bf16", "fp16", "fp32"]
+
+
+class NormSpec(_Frozen):
+    """Block 与最终归一化的容量规格；dtype 为 null 时跟随主权重。"""
+
+    kind: Literal["none", "rms", "layer"] = "rms"
+    block_per_layer: int = Field(default=2, ge=0)
+    final_norm: bool = True
+    dtype: AuxWeightDtype | None = None
+
+
+class RouterSpec(_Frozen):
+    """逐 rank 复制的专家打分矩阵及选位修正向量。"""
+
+    dtype: AuxWeightDtype | None = None
+    correction_bias: bool = False
+    correction_dtype: AuxWeightDtype = "fp32"
+
+
+class IHCSpec(_Frozen):
+    """每层两处 iHC 与最终汇总 head 的容量规格，不包含运行耗时。"""
+
+    mult: int = Field(ge=1)
+    dtype: AuxWeightDtype = "fp32"
+
+
 class AttentionGroup(_Frozen):
     """相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。"""
 
@@ -275,6 +305,12 @@ class AttentionGroup(_Frozen):
     output_gate: bool = Field(
         default=False, description="MLA 输出门控投影，按头分片并与输出投影合并计时"
     )
+
+    qk_norm: bool = True
+    norm_dtype: AuxWeightDtype | None = None
+    index_norm: Literal["none", "rms", "layer"] = "layer"
+    index_norm_dtype: AuxWeightDtype | None = None
+    sink_dtype: AuxWeightDtype | None = None
 
     @model_validator(mode="after")
     def _check_layout(self) -> Self:
@@ -298,6 +334,10 @@ class AttentionGroup(_Frozen):
                 raise ValueError("DSA 的 FP8 index-K 维度须为 128 的整数倍")
         elif any(v is not None for v in index):
             raise ValueError("仅 MLA+DSA 可以配置索引器")
+        if self.kind != "mla_dsa" and (
+            self.index_norm != "layer" or self.index_norm_dtype is not None
+        ):
+            raise ValueError("仅 MLA+DSA 可以配置索引器归一化")
         return self
 
 
@@ -326,6 +366,9 @@ class ModelSpec(_Frozen):
     shared_expert_intermediate_size: int | None = Field(default=None, gt=0)
     attention_layout: Literal["full_gqa", "grouped", "hy4_preview", "other"] = "full_gqa"
     attention_groups: list[AttentionGroup] | None = None
+    norms: NormSpec = Field(default_factory=NormSpec)
+    router: RouterSpec = Field(default_factory=RouterSpec)
+    ihc: IHCSpec | None = None
 
     @model_validator(mode="after")
     def _check_heads(self) -> Self:  # 当前模型规格 → 校验注意力结构与 MoE 层数，返回自身
@@ -333,6 +376,8 @@ class ModelSpec(_Frozen):
             raise ValueError("注意力头数须是 KV 头数的整数倍")
         if self.moe_layers > self.num_layers:
             raise ValueError("MoE 层数不得超过总层数")
+        if not self.moe_layers and self.router != RouterSpec():
+            raise ValueError("Router 辅助配置需要 MoE 层")
         if self.num_shared_experts:
             if not self.moe_layers or self.shared_expert_intermediate_size is None:
                 raise ValueError("共享专家需要 MoE 层及共享专家中间维度")
@@ -359,6 +404,9 @@ class ModelSpec(_Frozen):
                 "expert_intermediate_size": 2048, "tie_word_embeddings": False,
                 "num_shared_experts": 1, "shared_expert_intermediate_size": 2048,
                 "weight_dtype": "bf16", "kv_dtype": "bf16",
+                "norms": NormSpec(),
+                "router": RouterSpec(dtype="fp32", correction_bias=True),
+                "ihc": IHCSpec(mult=4),
             }
             if any(getattr(self, field) != value for field, value in expected.items()):
                 raise ValueError("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP")
@@ -367,7 +415,7 @@ class ModelSpec(_Frozen):
                     kind="mla_dsa", layers=78, num_attention_heads=64,
                     q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
                     index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
-                    output_gate=True,
+                    output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
                 )
             ]:
                 raise ValueError("HY4-Preview 的注意力组须与固定修订结构一致")

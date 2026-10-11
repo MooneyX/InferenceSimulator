@@ -31,9 +31,14 @@ const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee5
   moe_layers: 77, num_experts: 256, experts_per_token: 8,
   expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
   attention_layout: "hy4_preview" as const,
+  norms: { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null },
+  router: { dtype: "fp32" as const, correction_bias: true, correction_dtype: "fp32" as const },
+  ihc: { mult: 4, dtype: "fp32" as const },
   attention_groups: [{ kind: "mla_dsa" as const, layers: 78, num_attention_heads: 64,
     q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-    index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true }] };
+    index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
+    qk_norm: true, norm_dtype: null, index_norm: "layer" as const,
+    index_norm_dtype: "fp32" as const, sink_dtype: "fp32" as const }] };
 
 describe("AutomaticConfig", () => {
   beforeEach(() => {
@@ -90,8 +95,17 @@ describe("AutomaticConfig", () => {
       onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
     const { rerender } = render(<AutomaticConfig {...props} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
-    expect(screen.getByText(/保留包含 iHC、attention sink 等 FP32 辅助参数的专用容量账本/)).toBeInTheDocument();
-    expect(screen.getByText(/输出门控、共享专家与性能组件保留，但不包含 iHC、attention sink 等辅助容量/)).toBeInTheDocument();
+    expect(screen.getByText(/复制为自定义模型保留完整辅助配置/)).toBeInTheDocument();
+    expect(screen.queryByText(/专用容量账本|不包含 iHC、attention sink 等辅助容量/)).not.toBeInTheDocument();
+    for (const label of ["主干归一化类型", "每层主干归一化数量", "最终主干归一化", "主干归一化精度",
+      "路由权重精度", "路由选位修正向量", "路由选位修正向量精度", "启用 iHC", "iHC 信息通路数（mult）", "iHC 精度",
+      "第 1 组 Q/K 归一化", "第 1 组 Q/K 归一化精度", "第 1 组索引归一化类型",
+      "第 1 组索引归一化精度", "第 1 组启用 attention sink", "第 1 组 attention sink 精度"]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByLabelText("路由权重精度")).toHaveValue("fp32");
+    expect(screen.getByLabelText("iHC 信息通路数（mult）")).toHaveValue(4);
+    expect(screen.getByLabelText("第 1 组启用 attention sink")).toBeChecked();
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(1);
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
@@ -104,7 +118,14 @@ describe("AutomaticConfig", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制为自定义模型" }));
     expect(onModelChange).toHaveBeenLastCalledWith(custom);
     const copied = onModelChange.mock.lastCall![0];
+    expect(copied.norms).toEqual(hy4.norms);
+    expect(copied.router).toEqual(hy4.router);
+    expect(copied.ihc).toEqual(hy4.ihc);
+    expect(copied.attention_groups).toEqual(hy4.attention_groups);
     rerender(<AutomaticConfig {...props} model={copied} />);
+    expect(screen.getByLabelText("主干归一化类型")).toBeEnabled();
+    expect(screen.getByLabelText("iHC 精度")).toBeEnabled();
+    expect(screen.getByLabelText("第 1 组 attention sink 精度")).toBeEnabled();
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeEnabled();
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeEnabled();
     expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeEnabled();
@@ -122,7 +143,8 @@ describe("AutomaticConfig", () => {
         full_indexer_layers: kind === "mla_dsa" ? 1 : undefined,
         index_heads: kind === "mla_dsa" ? 32 : undefined,
         index_dim: kind === "mla_dsa" ? 128 : undefined,
-        topk: kind === "mla_dsa" ? 2048 : undefined, output_gate: false }] };
+        topk: kind === "mla_dsa" ? 2048 : undefined,
+        index_norm_dtype: kind === "mla_dsa" ? "fp32" as const : null, output_gate: false }] };
     const onModelChange = vi.fn();
     const props = { config: createDefaultSimConfig(), model, hardware: initialHardware,
       storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
@@ -169,6 +191,93 @@ describe("AutomaticConfig", () => {
     ] }));
   });
 
+  it.each(["bf16", "fp16", "fp32"] as const)("edits every auxiliary precision as %s without dropping settings", (dtype) => {
+    const model = { ...hy4, name: "自定义模型", revision: null, attention_layout: "grouped" as const };
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    for (const [label, field] of [["主干归一化精度", "norms"], ["路由权重精度", "router"],
+      ["路由选位修正向量精度", "router"], ["iHC 精度", "ihc"],
+      ["第 1 组 Q/K 归一化精度", "attention_groups"], ["第 1 组索引归一化精度", "attention_groups"],
+      ["第 1 组 attention sink 精度", "attention_groups"]] as const) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value: dtype } });
+      const changed = onModelChange.mock.lastCall![0];
+      const actual = field === "attention_groups" ? changed.attention_groups[0] : changed[field];
+      const key = label === "路由选位修正向量精度" ? "correction_dtype" :
+        label === "第 1 组 Q/K 归一化精度" ? "norm_dtype" :
+        label === "第 1 组索引归一化精度" ? "index_norm_dtype" :
+        label === "第 1 组 attention sink 精度" ? "sink_dtype" : "dtype";
+      expect(actual[key]).toBe(dtype);
+      expect(changed.ihc.mult).toBe(4);
+      expect(changed.norms.block_per_layer).toBe(2);
+      expect(changed.attention_groups[0].output_gate).toBe(true);
+      rerender(<AutomaticConfig {...props} model={changed} />);
+    }
+    for (const label of ["主干归一化精度", "路由权重精度", "第 1 组 Q/K 归一化精度", "第 1 组索引归一化精度"]) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value: "" } });
+      rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+      expect(screen.getByLabelText(label)).toHaveValue("");
+    }
+  });
+
+  it("edits auxiliary counts, kinds and switches including GQA sinks", () => {
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model: { ...hy4,
+      name: "自定义模型", revision: null, attention_layout: "grouped" as const }, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    const refresh = () => rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    fireEvent.change(screen.getByLabelText("每层主干归一化数量"), { target: { value: "3" } });
+    expect(onModelChange.mock.lastCall![0].norms.block_per_layer).toBe(3);
+    refresh();
+    fireEvent.click(screen.getByLabelText("最终主干归一化"));
+    expect(onModelChange.mock.lastCall![0].norms.final_norm).toBe(false);
+    refresh();
+    fireEvent.change(screen.getByLabelText("主干归一化类型"), { target: { value: "none" } });
+    expect(onModelChange.mock.lastCall![0].norms.kind).toBe("none");
+    refresh();
+    expect(screen.getByLabelText("每层主干归一化数量")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("路由选位修正向量"));
+    expect(onModelChange.mock.lastCall![0].router.correction_bias).toBe(false);
+    refresh();
+    expect(screen.getByLabelText("路由选位修正向量精度")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("iHC 信息通路数（mult）"), { target: { value: "2" } });
+    expect(onModelChange.mock.lastCall![0].ihc.mult).toBe(2);
+    refresh();
+    fireEvent.click(screen.getByLabelText("启用 iHC"));
+    expect(onModelChange.mock.lastCall![0].ihc).toBeNull();
+    refresh();
+    expect(screen.getByLabelText("iHC 精度")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("启用 iHC"));
+    expect(onModelChange.mock.lastCall![0].ihc).toEqual({ mult: 4, dtype: "fp32" });
+    refresh();
+    fireEvent.click(screen.getByLabelText("第 1 组 Q/K 归一化"));
+    expect(onModelChange.mock.lastCall![0].attention_groups[0].qk_norm).toBe(false);
+    refresh();
+    expect(screen.getByLabelText("第 1 组 Q/K 归一化精度")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("第 1 组索引归一化类型"), { target: { value: "rms" } });
+    expect(onModelChange.mock.lastCall![0].attention_groups[0].index_norm).toBe("rms");
+    refresh();
+    fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "gqa" } });
+    expect(onModelChange.mock.lastCall![0].attention_groups[0]).toEqual(expect.objectContaining({
+      kind: "gqa", qk_norm: false, index_norm: "layer", index_norm_dtype: null,
+      sink_dtype: "fp32", output_gate: false,
+    }));
+    refresh();
+    expect(screen.queryByLabelText("第 1 组索引归一化类型")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("第 1 组启用 attention sink"));
+    expect(onModelChange.mock.lastCall![0].attention_groups[0].sink_dtype).toBeNull();
+    refresh();
+    expect(screen.getByLabelText("第 1 组 attention sink 精度")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("第 1 组启用 attention sink"));
+    expect(onModelChange.mock.lastCall![0].attention_groups[0].sink_dtype).toBe("fp32");
+  });
+
   it("enables shared experts only for MoE and clears their dimension when disabled", () => {
     const onModelChange = vi.fn();
     const props = { config: createDefaultSimConfig(), model: initialModel, hardware: initialHardware,
@@ -180,9 +289,15 @@ describe("AutomaticConfig", () => {
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toHaveValue(null);
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
+    expect(screen.getByLabelText("路由权重精度")).toBeDisabled();
+    expect(screen.getByLabelText("路由选位修正向量")).toBeDisabled();
+    expect(screen.getByLabelText("路由选位修正向量精度")).toBeDisabled();
     const moe = { ...initialModel, moe_layers: 1, num_experts: 8,
-      experts_per_token: 2, expert_intermediate_size: 512 };
+      experts_per_token: 2, expert_intermediate_size: 512, router: hy4.router };
     rerender(<AutomaticConfig {...props} model={moe} />);
+    expect(screen.getByLabelText("路由权重精度")).toBeEnabled();
+    expect(screen.getByLabelText("路由选位修正向量")).toBeEnabled();
+    expect(screen.getByLabelText("路由选位修正向量精度")).toBeEnabled();
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeEnabled();
     fireEvent.change(screen.getByLabelText("共享专家数（0 为关闭）"), { target: { value: "2" } });
     expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -208,15 +323,22 @@ describe("AutomaticConfig", () => {
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "0" } });
     expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
       moe_layers: 0, num_shared_experts: 0, shared_expert_intermediate_size: null,
+      router: { dtype: null, correction_bias: false, correction_dtype: "fp32" },
     }));
+    rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+    expect(screen.getByLabelText("路由权重精度")).toBeDisabled();
+    expect(screen.getByLabelText("路由权重精度")).toHaveValue("");
+    expect(screen.getByLabelText("路由选位修正向量")).not.toBeChecked();
   });
 
   it("edits independent MLA and MLA+DSA attention groups without requiring layer indices", async () => {
     const model = { ...initialModel, name: "自定义模型", num_layers: 2,
       attention_layout: "grouped" as const, attention_groups: [
         { kind: "mla" as const, layers: 1, num_attention_heads: 32, output_gate: false,
+          qk_norm: true, index_norm: "layer" as const,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
         { kind: "mla_dsa" as const, layers: 1, num_attention_heads: 32, output_gate: false,
+          qk_norm: true, index_norm: "layer" as const,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
           index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 },
       ] };

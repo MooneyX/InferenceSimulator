@@ -360,6 +360,23 @@ export interface components {
              * @default false
              */
             output_gate: boolean;
+            /**
+             * Qk Norm
+             * @default true
+             */
+            qk_norm: boolean;
+            /** Norm Dtype */
+            norm_dtype?: ("bf16" | "fp16" | "fp32") | null;
+            /**
+             * Index Norm
+             * @default layer
+             * @enum {string}
+             */
+            index_norm: "none" | "rms" | "layer";
+            /** Index Norm Dtype */
+            index_norm_dtype?: ("bf16" | "fp16" | "fp32") | null;
+            /** Sink Dtype */
+            sink_dtype?: ("bf16" | "fp16" | "fp32") | null;
         };
         /** CapacityReport */
         CapacityReport: {
@@ -535,6 +552,20 @@ export interface components {
              * @default 0
              */
             kernel_overhead_ms: number;
+        };
+        /**
+         * IHCSpec
+         * @description 每层两处 iHC 与最终汇总 head 的容量规格，不包含运行耗时。
+         */
+        IHCSpec: {
+            /** Mult */
+            mult: number;
+            /**
+             * Dtype
+             * @default fp32
+             * @enum {string}
+             */
+            dtype: "bf16" | "fp16" | "fp32";
         };
         /**
          * InstanceResult
@@ -905,6 +936,33 @@ export interface components {
             attention_layout: "full_gqa" | "grouped" | "hy4_preview" | "other";
             /** Attention Groups */
             attention_groups?: components["schemas"]["AttentionGroup"][] | null;
+            norms?: components["schemas"]["NormSpec"];
+            router?: components["schemas"]["RouterSpec"];
+            ihc?: components["schemas"]["IHCSpec"] | null;
+        };
+        /**
+         * NormSpec
+         * @description Block 与最终归一化的容量规格；dtype 为 null 时跟随主权重。
+         */
+        NormSpec: {
+            /**
+             * Kind
+             * @default rms
+             * @enum {string}
+             */
+            kind: "none" | "rms" | "layer";
+            /**
+             * Block Per Layer
+             * @default 2
+             */
+            block_per_layer: number;
+            /**
+             * Final Norm
+             * @default true
+             */
+            final_norm: boolean;
+            /** Dtype */
+            dtype?: ("bf16" | "fp16" | "fp32") | null;
         };
         /**
          * PerfModelConfig
@@ -1186,6 +1244,25 @@ export interface components {
             result: components["schemas"]["SimResult"];
             resolution: components["schemas"]["ResolvedConfig"];
             analysis?: components["schemas"]["AnalyticalSummary"] | null;
+        };
+        /**
+         * RouterSpec
+         * @description 逐 rank 复制的专家打分矩阵及选位修正向量。
+         */
+        RouterSpec: {
+            /** Dtype */
+            dtype?: ("bf16" | "fp16" | "fp32") | null;
+            /**
+             * Correction Bias
+             * @default false
+             */
+            correction_bias: boolean;
+            /**
+             * Correction Dtype
+             * @default fp32
+             * @enum {string}
+             */
+            correction_dtype: "bf16" | "fp16" | "fp32";
         };
         /** ScenarioCatalogEntry */
         ScenarioCatalogEntry: {

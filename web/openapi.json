@@ -769,6 +769,69 @@
             "title": "Output Gate",
             "description": "MLA 输出门控投影，按头分片并与输出投影合并计时",
             "default": false
+          },
+          "qk_norm": {
+            "type": "boolean",
+            "title": "Qk Norm",
+            "default": true
+          },
+          "norm_dtype": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bf16",
+                  "fp16",
+                  "fp32"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Norm Dtype"
+          },
+          "index_norm": {
+            "type": "string",
+            "enum": [
+              "none",
+              "rms",
+              "layer"
+            ],
+            "title": "Index Norm",
+            "default": "layer"
+          },
+          "index_norm_dtype": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bf16",
+                  "fp16",
+                  "fp32"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Norm Dtype"
+          },
+          "sink_dtype": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bf16",
+                  "fp16",
+                  "fp32"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sink Dtype"
           }
         },
         "additionalProperties": false,
@@ -1148,6 +1211,32 @@
         ],
         "title": "HardwareSpec",
         "description": "单卡容量及用户假设的有效性能，不使用标称峰值代入。"
+      },
+      "IHCSpec": {
+        "properties": {
+          "mult": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Mult"
+          },
+          "dtype": {
+            "type": "string",
+            "enum": [
+              "bf16",
+              "fp16",
+              "fp32"
+            ],
+            "title": "Dtype",
+            "default": "fp32"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mult"
+        ],
+        "title": "IHCSpec",
+        "description": "每层两处 iHC 与最终汇总 head 的容量规格，不包含运行耗时。"
       },
       "InstanceResult": {
         "properties": {
@@ -1783,6 +1872,22 @@
               }
             ],
             "title": "Attention Groups"
+          },
+          "norms": {
+            "$ref": "#/components/schemas/NormSpec"
+          },
+          "router": {
+            "$ref": "#/components/schemas/RouterSpec"
+          },
+          "ihc": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IHCSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -1799,6 +1904,51 @@
         ],
         "title": "ModelSpec",
         "description": "全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。"
+      },
+      "NormSpec": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "none",
+              "rms",
+              "layer"
+            ],
+            "title": "Kind",
+            "default": "rms"
+          },
+          "block_per_layer": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Block Per Layer",
+            "default": 2
+          },
+          "final_norm": {
+            "type": "boolean",
+            "title": "Final Norm",
+            "default": true
+          },
+          "dtype": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bf16",
+                  "fp16",
+                  "fp32"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dtype"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NormSpec",
+        "description": "Block 与最终归一化的容量规格；dtype 为 null 时跟随主权重。"
       },
       "PerfModelConfig": {
         "properties": {
@@ -2386,6 +2536,45 @@
           "resolution"
         ],
         "title": "ResolvedRun"
+      },
+      "RouterSpec": {
+        "properties": {
+          "dtype": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bf16",
+                  "fp16",
+                  "fp32"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dtype"
+          },
+          "correction_bias": {
+            "type": "boolean",
+            "title": "Correction Bias",
+            "default": false
+          },
+          "correction_dtype": {
+            "type": "string",
+            "enum": [
+              "bf16",
+              "fp16",
+              "fp32"
+            ],
+            "title": "Correction Dtype",
+            "default": "fp32"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RouterSpec",
+        "description": "逐 rank 复制的专家打分矩阵及选位修正向量。"
       },
       "ScenarioCatalogEntry": {
         "properties": {

@@ -1,6 +1,6 @@
 """预置结构与标称规格；仿真用有效性能及驻留权重由使用者填写。"""
 
-from simcore.schemas import AttentionGroup, ModelSpec
+from simcore.schemas import AttentionGroup, IHCSpec, ModelSpec, RouterSpec
 
 # Qwen 官方模型卡及 config.json：
 # https://huggingface.co/Qwen/Qwen3-8B
@@ -50,12 +50,14 @@ MODELS = (
         moe_layers=77,
         num_shared_experts=1,
         shared_expert_intermediate_size=2048,
+        router=RouterSpec(dtype="fp32", correction_bias=True),
+        ihc=IHCSpec(mult=4),
         attention_layout="hy4_preview",
         attention_groups=[AttentionGroup(
             kind="mla_dsa", layers=78, num_attention_heads=64,
             q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
             index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
-            output_gate=True,
+            output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
         )],
     ),
 )

@@ -7,6 +7,9 @@ export type Model = ResolvedRequest["model"];
 type AttentionGroup = NonNullable<Model["attention_groups"]>[number];
 export type Hardware = ResolvedRequest["hardware"];
 export type Storage = ResolvedRequest["storage"];
+type AuxiliaryDtype = "bf16" | "fp16" | "fp32";
+const defaultNorms = { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null };
+const defaultRouter = { dtype: null, correction_bias: false, correction_dtype: "fp32" as const };
 
 interface Props {
   config: SimConfig;
@@ -32,6 +35,7 @@ export const initialModel: Model = {
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
   num_shared_experts: 0, shared_expert_intermediate_size: null,
   attention_layout: "full_gqa", attention_groups: null,
+  norms: defaultNorms, router: defaultRouter, ihc: null,
 };
 export const initialHardware: Hardware = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
@@ -45,6 +49,19 @@ export const initialStorage: Storage = {
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
   l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
 };
+
+function DtypeInput({ label, value, onChange, disabled = false, nullable = true }: {
+  label: string; value: AuxiliaryDtype | null | undefined;
+  onChange: (value: AuxiliaryDtype | null) => void; disabled?: boolean; nullable?: boolean;
+}) {
+  return <div className="form-field"><label>{label}
+    <select value={value ?? ""} disabled={disabled}
+      onChange={(event) => onChange((event.currentTarget.value || null) as AuxiliaryDtype | null)}>
+      {nullable && <option value="">跟随主权重</option>}
+      <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp32">FP32</option>
+    </select>
+  </label></div>;
+}
 
 function Input({ label, value, onChange, optional = false, disabled = false }: {
   label: string; value: number | null | undefined;
@@ -87,9 +104,26 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups });
   }
 
-  function newGroup(kind: AttentionGroup["kind"], layers: number, outputGate = false): AttentionGroup {
+  const fixedModel = model.attention_layout === "hy4_preview";
+  const norms = { ...defaultNorms, ...model.norms };
+  const router = { ...defaultRouter, ...model.router };
+
+  function updateModel(patch: Partial<Model>) {
+    onModelChange({ ...model, name: selectedModel ? "自定义模型" : model.name,
+      revision: selectedModel ? null : model.revision, ...patch });
+  }
+
+  function updateGroup(index: number, patch: Partial<AttentionGroup>) {
+    updateGroups(model.attention_groups!.map((group, i) => i === index ? { ...group, ...patch } : group));
+  }
+
+  function newGroup(kind: AttentionGroup["kind"], layers: number, previous?: AttentionGroup): AttentionGroup {
     const common = { kind, layers, num_attention_heads: model.num_attention_heads,
-      output_gate: kind === "gqa" ? false : outputGate };
+      output_gate: kind === "gqa" ? false : previous?.output_gate ?? false,
+      qk_norm: previous?.qk_norm ?? true, norm_dtype: previous?.norm_dtype ?? null,
+      index_norm: kind === "mla_dsa" ? previous?.index_norm ?? "layer" : "layer",
+      index_norm_dtype: kind === "mla_dsa" ? previous?.index_norm_dtype ?? null : null,
+      sink_dtype: previous?.sink_dtype ?? null } as AttentionGroup;
     if (kind === "gqa") return { ...common, num_kv_heads: model.num_kv_heads, head_dim: model.head_dim };
     const mla = { ...common, q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 };
     return kind === "mla" ? mla : { ...mla, index_heads: 32, index_dim: 128,
@@ -135,7 +169,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
       </div></div>
-    {model.attention_layout === "hy4_preview" && <p>HY4-Preview 仅支持 BF16 主干：含输出门控与共享专家的 MLA + DSA 容量和时延粗估，不含 MTP；保留包含 iHC、attention sink 等 FP32 辅助参数的专用容量账本。复制为自定义模型后，输出门控、共享专家与性能组件保留，但不包含 iHC、attention sink 等辅助容量。结构字段固定，调整 TP/EP、硬件和负载可进行情景试算。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
+    {fixedModel && <p>HY4-Preview 仅支持 BF16 主干：含输出门控与共享专家的 MLA + DSA 容量和时延粗估，不含 MTP。归一化、路由、iHC 与 attention sink 使用统一通用权重账本，复制为自定义模型保留完整辅助配置，不使用专用容量公式。结构字段固定，调整 TP/EP、硬件和负载可进行情景试算。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
     <div className="form-grid">{([
       ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
@@ -149,7 +183,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         (model.attention_groups != null && (["num_attention_heads", "num_kv_heads", "head_dim"] as string[]).includes(field))}
       onChange={(value) => onModelChange({ ...model, name: "自定义模型", [field]: value,
         ...(field === "moe_layers" && value === 0
-          ? { num_shared_experts: 0, shared_expert_intermediate_size: null } : {}) })} />)}
+          ? { num_shared_experts: 0, shared_expert_intermediate_size: null, router: defaultRouter } : {}) })} />)}
       <Input label="共享专家数（0 为关闭）" value={model.num_shared_experts ?? 0}
         disabled={model.attention_layout === "hy4_preview" || !model.moe_layers}
         onChange={(value) => onModelChange({ ...model, name: "自定义模型",
@@ -172,8 +206,69 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           onModelChange({ ...model, name: "自定义模型", tie_word_embeddings: event.target.checked })} />
       </label></div>
     </div>
+    <details>
+      <summary>辅助权重容量配置</summary>
+      <p>辅助参数只计入容量，不增加性能耗时。精度留空跟随主权重；none 归一化不含参数。路由选位修正向量不是 Linear bias；iHC 固定为每层两处和最终 head。</p>
+      <fieldset disabled={fixedModel}>
+        <div className="form-grid">
+          <div className="form-field"><label>主干归一化类型
+            <select value={norms.kind} onChange={(event) => updateModel({
+              norms: { ...norms, kind: event.currentTarget.value as typeof norms.kind },
+            })}><option value="none">关闭（无参数）</option><option value="rms">RMSNorm</option><option value="layer">LayerNorm</option></select>
+          </label></div>
+          <Input label="每层主干归一化数量" value={norms.block_per_layer} disabled={norms.kind === "none"}
+            onChange={(value) => updateModel({ norms: { ...norms, block_per_layer: value ?? NaN } })} />
+          <div className="form-field"><label>最终主干归一化
+            <input type="checkbox" checked={norms.final_norm} disabled={norms.kind === "none"}
+              onChange={(event) => updateModel({ norms: { ...norms, final_norm: event.currentTarget.checked } })} />
+          </label></div>
+          <DtypeInput label="主干归一化精度" value={norms.dtype} disabled={norms.kind === "none"}
+            onChange={(dtype) => updateModel({ norms: { ...norms, dtype } })} />
+          <DtypeInput label="路由权重精度" value={router.dtype} disabled={!model.moe_layers}
+            onChange={(dtype) => updateModel({ router: { ...router, dtype } })} />
+          <div className="form-field"><label>路由选位修正向量
+            <input type="checkbox" checked={router.correction_bias} disabled={!model.moe_layers}
+              onChange={(event) => updateModel({ router: { ...router, correction_bias: event.currentTarget.checked } })} />
+          </label></div>
+          <DtypeInput label="路由选位修正向量精度" value={router.correction_dtype}
+            nullable={false} disabled={!model.moe_layers || !router.correction_bias}
+            onChange={(dtype) => updateModel({ router: { ...router, correction_dtype: dtype! } })} />
+          <div className="form-field"><label>启用 iHC
+            <input type="checkbox" checked={model.ihc != null}
+              onChange={(event) => updateModel({ ihc: event.currentTarget.checked ? { mult: 4, dtype: "fp32" } : null })} />
+          </label></div>
+          <Input label="iHC 信息通路数（mult）" value={model.ihc?.mult} disabled={model.ihc == null}
+            onChange={(value) => updateModel({ ihc: { mult: value ?? NaN, dtype: model.ihc?.dtype ?? "fp32" } })} />
+          <DtypeInput label="iHC 精度" value={model.ihc?.dtype ?? "fp32"} nullable={false} disabled={model.ihc == null}
+            onChange={(dtype) => updateModel({ ihc: { mult: model.ihc!.mult, dtype: dtype! } })} />
+        </div>
+        {model.attention_groups?.map((group, index) => <div key={index} className="form-grid">
+          <div className="form-field"><label>第 {index + 1} 组 Q/K 归一化
+            <input type="checkbox" checked={group.qk_norm ?? true}
+              onChange={(event) => updateGroup(index, { qk_norm: event.currentTarget.checked })} />
+          </label></div>
+          <DtypeInput label={`第 ${index + 1} 组 Q/K 归一化精度`} value={group.norm_dtype}
+            disabled={group.qk_norm === false} onChange={(norm_dtype) => updateGroup(index, { norm_dtype })} />
+          {group.kind === "mla_dsa" && <>
+            <div className="form-field"><label>第 {index + 1} 组索引归一化类型
+              <select value={group.index_norm ?? "layer"} onChange={(event) => updateGroup(index, {
+                index_norm: event.currentTarget.value as AttentionGroup["index_norm"],
+              })}><option value="none">关闭（无参数）</option><option value="rms">RMSNorm</option><option value="layer">LayerNorm</option></select>
+            </label></div>
+            <DtypeInput label={`第 ${index + 1} 组索引归一化精度`} value={group.index_norm_dtype}
+              disabled={group.index_norm === "none"} onChange={(index_norm_dtype) => updateGroup(index, { index_norm_dtype })} />
+          </>}
+          <div className="form-field"><label>第 {index + 1} 组启用 attention sink
+            <input type="checkbox" checked={group.sink_dtype != null}
+              onChange={(event) => updateGroup(index, { sink_dtype: event.currentTarget.checked ? "fp32" : null })} />
+          </label></div>
+          <DtypeInput label={`第 ${index + 1} 组 attention sink 精度`} value={group.sink_dtype ?? "fp32"}
+            nullable={false} disabled={group.sink_dtype == null} onChange={(sink_dtype) => updateGroup(index, { sink_dtype })} />
+        </div>)}
+      </fieldset>
+    </details>
     <div className="section-heading"><div><h3>注意力组合</h3></div>
-      <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；启用组合后上方头数仅作为旧模型基线。</p></div>
+      <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；组合内头数决定容量与注意力计算，上方头数仅保留在当前性能基线。</p></div>
     {model.attention_layout === "hy4_preview" && <>
       <div className="form-grid">{model.attention_groups?.map((group, index) =>
         <div key={index} className="form-field"><label>第 {index + 1} 组注意力输出门控
@@ -199,8 +294,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           <div className="form-grid">
             <div className="form-field"><label>第 {index + 1} 组注意力方式
               <select value={group.kind} onChange={(event) => updateGroups(model.attention_groups!.map((item, i) =>
-                i === index ? newGroup(event.target.value as AttentionGroup["kind"], item.layers,
-                  item.output_gate ?? false) : item))}>
+                i === index ? newGroup(event.target.value as AttentionGroup["kind"], item.layers, item) : item))}>
                 <option value="gqa">全注意力 GQA/MQA</option>
                 <option value="mla">MLA</option>
                 <option value="mla_dsa">MLA + DSA</option>
@@ -238,7 +332,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           updateGroups([...groups.slice(0, -1), { ...last, layers: Math.max(1, last.layers - 1) }, newGroup("gqa", 1)]);
         }}>添加注意力组</button>
       </>}
-      <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延，iHC 与 attention sink 参数尚未计入容量，其他运行时空间不自动推断。</p>
+      <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延。归一化、路由修正向量、iHC 与 attention sink 使用统一通用容量公式，只计容量、不增加性能耗时；其他运行时空间不自动推断。</p>
     </>}
     </section>
     <section className="form-section" aria-labelledby="auto-hardware-heading">

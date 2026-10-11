@@ -1,6 +1,7 @@
 """阶段一：单卡物理容量与逐步 Roofline 计时金标准。"""
 
 from dataclasses import asdict
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -18,13 +19,17 @@ from simcore.perf_model import (
 )
 from simcore.schemas import (
     AttentionGroup,
+    AuxWeightDtype,
     EngineConfig,
     FixedLength,
     HardwareSpec,
+    IHCSpec,
     InferenceRequest,
     ModelSpec,
+    NormSpec,
     PerfModelConfig,
     ResolvedRequest,
+    RouterSpec,
     SimConfig,
     StorageSpec,
     SyntheticWorkloadConfig,
@@ -195,11 +200,12 @@ def hy4_request() -> ResolvedRequest:
         moe_layers=77, num_experts=256, experts_per_token=8,
         expert_intermediate_size=2048, attention_layout="hy4_preview",
         num_shared_experts=1, shared_expert_intermediate_size=2048,
+        router=RouterSpec(dtype="fp32", correction_bias=True), ihc=IHCSpec(mult=4),
         attention_groups=[AttentionGroup(
             kind="mla_dsa", layers=78, num_attention_heads=64,
             q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
             index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
-            output_gate=True,
+            output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
         )],
     )
     hardware = request.hardware.model_copy(update={
@@ -221,13 +227,13 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
     capacity = resolved.capacity
     assert resolved.runnable
     assert capacity.kv_bytes_per_token == 8 * (78 * 576 * 2 + 21 * 132)
-    assert capacity.estimated_total_parameters == 769_907_402_653  # 仅主干，不含 MTP
-    assert capacity.estimated_active_parameters == 49_057_539_997
+    assert capacity.estimated_total_parameters == 769_907_408_797  # 仅主干，不含 MTP
+    assert capacity.estimated_active_parameters == 49_057_546_141
     assert len(capacity.rank_reports) == 8
     rank = capacity.rank_reports[0]
     assert rank.kv_bytes_per_token == 92_628
     assert rank.sharded_weights_bytes == 5_322_574_272
-    assert rank.replicated_weights_bytes == 9_331_865_716
+    assert rank.replicated_weights_bytes == 9_331_878_004
     assert rank.expert_weights_bytes == 186_025_771_008
     assert capacity.weights_resident_bytes == 8 * (
         rank.sharded_weights_bytes + rank.replicated_weights_bytes + rank.expert_weights_bytes
@@ -238,6 +244,20 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
     tiered = resolve_config(request.model_copy(update={"storage": storage}))
     assert tiered.capacity.rank_reports[0].kv_bytes_per_token == 78 * (512 + 64) * 2 + 78 * 132
     assert tiered.config.perf_model.kv_bytes_per_token == tiered.capacity.kv_bytes_per_token
+    assert tiered.capacity.weights_resident_bytes == capacity.weights_resident_bytes
+    assert tiered.capacity.estimated_total_parameters == capacity.estimated_total_parameters
+    for main_rank, tiered_rank in zip(
+        capacity.rank_reports, tiered.capacity.rank_reports, strict=True,
+    ):
+        assert (
+            tiered_rank.sharded_weights_bytes,
+            tiered_rank.replicated_weights_bytes,
+            tiered_rank.expert_weights_bytes,
+        ) == (
+            main_rank.sharded_weights_bytes,
+            main_rank.replicated_weights_bytes,
+            main_rank.expert_weights_bytes,
+        )
 
 
 @pytest.mark.parametrize("tp_size", [1, 8])
@@ -265,6 +285,7 @@ def test_hy4_kv_uses_group_budget_and_preserves_restore_cost(
     local_kv = 78 * 576 * 2 + (78 if hierarchical else 21) * 132
     group_kv = local_kv * tp_size
     capacity = resolved.capacity
+    assert capacity == grouped.capacity
     assert capacity.kv_bytes_per_token == grouped.capacity.kv_bytes_per_token == group_kv
     assert capacity.kv_bytes_per_page == grouped.capacity.kv_bytes_per_page == group_kv * 4
     assert all(rank.kv_bytes_per_token == local_kv for rank in capacity.rank_reports)
@@ -468,16 +489,228 @@ def test_hy4_generic_cost_preserves_original_step_cost(
 def test_hy4_requires_complete_explicit_components_and_empty_steps_are_free() -> None:
     request = hy4_request()
     payload = request.model.model_dump()
-    for update in (
+    updates: tuple[dict[str, object], ...] = (
         {"attention_groups": None},
         {"attention_groups": [payload["attention_groups"][0] | {"output_gate": False}]},
         {"num_shared_experts": 0, "shared_expert_intermediate_size": None},
-    ):
+        {"norms": payload["norms"] | {"kind": "layer"}},
+        {"norms": payload["norms"] | {"block_per_layer": 1}},
+        {"norms": payload["norms"] | {"final_norm": False}},
+        {"norms": payload["norms"] | {"dtype": "fp32"}},
+        {"router": payload["router"] | {"dtype": "bf16"}},
+        {"router": payload["router"] | {"correction_bias": False}},
+        {"router": payload["router"] | {"correction_dtype": "fp16"}},
+        {"ihc": None},
+        {"ihc": payload["ihc"] | {"mult": 2}},
+        {"ihc": payload["ihc"] | {"dtype": "bf16"}},
+    )
+    for update in updates:
         with pytest.raises(ValidationError, match="HY4-Preview"):
             ModelSpec.model_validate(payload | update)
+    for field, value in (
+        ("qk_norm", False), ("norm_dtype", "fp32"),
+        ("index_norm", "rms"), ("index_norm_dtype", None), ("sink_dtype", None),
+    ):
+        with pytest.raises(ValidationError, match="HY4-Preview"):
+            ModelSpec.model_validate(payload | {
+                "attention_groups": [payload["attention_groups"][0] | {field: value}],
+            })
     restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
     cost = step_cost(restore, request.model, request.hardware, 8, 8)
     assert all(value == 0 for value in asdict(cost).values())
+
+
+def auxiliary_weight_request(tp_size: int) -> ResolvedRequest:
+    request = example_request()
+    model = ModelSpec.model_validate(request.model.model_dump() | {
+        "num_layers": 4, "num_attention_heads": 4, "num_kv_heads": 2,
+        "moe_layers": 2, "num_experts": 4, "experts_per_token": 2,
+        "expert_intermediate_size": 8, "attention_layout": "grouped",
+        "attention_groups": [
+            AttentionGroup(kind="gqa", layers=1, num_attention_heads=4,
+                           num_kv_heads=2, head_dim=8),
+            AttentionGroup(kind="mla", layers=1, num_attention_heads=4,
+                           q_rank=4, kv_rank=6, rope_dim=2, nope_dim=6, value_dim=8),
+            AttentionGroup(kind="mla_dsa", layers=2, num_attention_heads=4,
+                           q_rank=4, kv_rank=6, rope_dim=2, nope_dim=6, value_dim=8,
+                           index_heads=2, index_dim=128, topk=4, full_indexer_layers=1),
+        ],
+    })
+    return request.model_copy(update={
+        "model": model, "tp_size": tp_size, "ep_size": tp_size,
+        "hardware": request.hardware.model_copy(update={
+            "gpu_count": tp_size, "effective_interconnect_gb_s": 100,
+            "collective_latency_ms": 0.01, "ep_communication_latency_ms": 0.02,
+        }),
+        "storage": request.storage.model_copy(update={
+            "l2_available_gb": 0.001, "l3_available_gb": 0.001,
+        }),
+    })
+
+
+def assert_auxiliary_weight_delta(
+    request: ResolvedRequest, model: ModelSpec, parameters: int,
+    replicated_bytes: int, sharded_bytes: int = 0,
+) -> None:
+    base = resolve_config(request)
+    resolved = resolve_config(request.model_copy(update={"model": model}))
+    capacity, original = resolved.capacity, base.capacity
+    assert capacity.estimated_total_parameters - original.estimated_total_parameters == parameters
+    assert capacity.estimated_active_parameters - original.estimated_active_parameters == parameters
+    assert capacity.estimated_expert_parameters == original.estimated_expert_parameters
+    assert capacity.weights_resident_bytes - original.weights_resident_bytes == (
+        replicated_bytes + sharded_bytes
+    ) * request.tp_size
+    for rank, base_rank in zip(capacity.rank_reports, original.rank_reports, strict=True):
+        assert (
+            rank.replicated_weights_bytes - base_rank.replicated_weights_bytes == replicated_bytes
+        )
+        assert rank.sharded_weights_bytes - base_rank.sharded_weights_bytes == sharded_bytes
+        assert rank.expert_weights_bytes == base_rank.expert_weights_bytes
+        assert rank.l1_kv_budget_bytes - base_rank.l1_kv_budget_bytes == -(
+            replicated_bytes + sharded_bytes
+        )
+        assert rank.kv_bytes_per_token == base_rank.kv_bytes_per_token
+    assert capacity.kv_bytes_per_token == original.kv_bytes_per_token
+    assert capacity.kv_bytes_per_page == original.kv_bytes_per_page
+    assert capacity.l2_capacity_pages == original.l2_capacity_pages
+    assert capacity.l3_capacity_pages == original.l3_capacity_pages
+    assert resolved.config.perf_model == base.config.perf_model
+    workload = StepWorkload("MIXED", (PrefillWork(1, 3, 2, 5),), (DecodeWork(2, 10),), 0, 2)
+    assert step_cost(workload, model, request.hardware, request.tp_size, request.ep_size) == (
+        step_cost(workload, request.model, request.hardware, request.tp_size, request.ep_size)
+    )
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("kind,blocks,final,dtype,parameters,bytes_per_parameter", [
+    ("none", 3, True, "fp32", 0, 4),
+    ("rms", 0, False, None, 0, 2),
+    ("rms", 0, True, None, 16, 2),
+    ("rms", 3, False, "fp16", 192, 2),
+    ("rms", 2, True, "bf16", 144, 2),
+    ("layer", 1, True, "fp32", 160, 4),
+])
+def test_block_and_final_norm_capacity_follows_explicit_spec(
+    tp_size: int, kind: Literal["none", "rms", "layer"], blocks: int, final: bool,
+    dtype: AuxWeightDtype | None, parameters: int, bytes_per_parameter: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    request = request.model_copy(update={
+        "model": request.model.model_copy(update={"norms": NormSpec(kind="none")}),
+    })
+    model = request.model.model_copy(update={
+        "norms": NormSpec(kind=kind, block_per_layer=blocks, final_norm=final, dtype=dtype),
+    })
+    assert_auxiliary_weight_delta(request, model, parameters, parameters * bytes_per_parameter)
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("group_index,parameters", [(0, 16), (1, 10), (2, 20)])
+@pytest.mark.parametrize("dtype,bytes_per_parameter", [(None, 2), ("fp16", 2), ("fp32", 4)])
+def test_qk_norm_uses_head_or_low_rank_width_and_is_replicated(
+    tp_size: int, group_index: int, parameters: int,
+    dtype: AuxWeightDtype | None, bytes_per_parameter: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    assert request.model.attention_groups is not None
+    groups = list(request.model.attention_groups)
+    groups[group_index] = groups[group_index].model_copy(update={"qk_norm": False})
+    request = request.model_copy(update={
+        "model": request.model.model_copy(update={"attention_groups": groups}),
+    })
+    enabled = list(groups)
+    enabled[group_index] = groups[group_index].model_copy(update={
+        "qk_norm": True, "norm_dtype": dtype,
+    })
+    model = request.model.model_copy(update={"attention_groups": enabled})
+    assert_auxiliary_weight_delta(request, model, parameters, parameters * bytes_per_parameter)
+    disabled = list(groups)
+    disabled[group_index] = groups[group_index].model_copy(update={"norm_dtype": dtype})
+    assert_auxiliary_weight_delta(
+        request, request.model.model_copy(update={"attention_groups": disabled}), 0, 0,
+    )
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("dtype,bytes_per_parameter", [("bf16", 2), ("fp16", 2), ("fp32", 4)])
+def test_attention_sink_is_sharded_by_each_groups_heads(
+    tp_size: int, dtype: AuxWeightDtype, bytes_per_parameter: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    assert request.model.attention_groups is not None
+    model = request.model.model_copy(update={
+        "attention_groups": [
+            group.model_copy(update={"sink_dtype": dtype})
+            for group in request.model.attention_groups
+        ],
+    })
+    assert_auxiliary_weight_delta(request, model, 16, 0, 16 // tp_size * bytes_per_parameter)
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("full_layers", [1, 2])
+@pytest.mark.parametrize("kind,dtype,parameters_per_layer,bytes_per_parameter", [
+    ("none", "fp32", 0, 4), ("rms", None, 128, 2),
+    ("rms", "fp16", 128, 2), ("layer", "bf16", 256, 2),
+    ("layer", "fp32", 256, 4),
+])
+def test_index_norm_counts_only_full_indexer_layers(
+    tp_size: int, full_layers: int, kind: Literal["none", "rms", "layer"],
+    dtype: AuxWeightDtype | None, parameters_per_layer: int, bytes_per_parameter: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    assert request.model.attention_groups is not None
+    groups = list(request.model.attention_groups)
+    groups[2] = groups[2].model_copy(update={
+        "index_norm": "none", "full_indexer_layers": full_layers,
+    })
+    request = request.model_copy(update={
+        "model": request.model.model_copy(update={"attention_groups": groups}),
+    })
+    normalized = list(groups)
+    normalized[2] = groups[2].model_copy(update={"index_norm": kind, "index_norm_dtype": dtype})
+    parameters = full_layers * parameters_per_layer
+    assert_auxiliary_weight_delta(
+        request, request.model.model_copy(update={"attention_groups": normalized}),
+        parameters, parameters * bytes_per_parameter,
+    )
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("dtype,correction,correction_dtype,matrix_bytes,correction_bytes", [
+    (None, False, "fp32", 2, 4), ("fp16", False, "fp32", 2, 4),
+    ("fp32", False, "fp32", 4, 4), ("fp32", True, "fp32", 4, 4),
+    ("bf16", True, "fp16", 2, 2), ("fp16", True, "bf16", 2, 2),
+])
+def test_router_dtype_replaces_matrix_bytes_and_adds_correction_once(
+    tp_size: int, dtype: AuxWeightDtype | None, correction: bool,
+    correction_dtype: AuxWeightDtype, matrix_bytes: int, correction_bytes: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    model = request.model.model_copy(update={
+        "router": RouterSpec(dtype=dtype, correction_bias=correction,
+                             correction_dtype=correction_dtype),
+    })
+    correction_parameters = 8 if correction else 0
+    assert_auxiliary_weight_delta(
+        request, model, correction_parameters,
+        128 * (matrix_bytes - 2) + correction_parameters * correction_bytes,
+    )
+
+
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("mult,parameters", [(1, 306), (2, 1139), (4, 4437)])
+def test_ihc_counts_two_sites_per_layer_and_final_head_as_fp32_copies(
+    tp_size: int, mult: int, parameters: int,
+) -> None:
+    request = auxiliary_weight_request(tp_size)
+    model = request.model.model_copy(update={"ihc": IHCSpec(mult=mult)})
+    assert_auxiliary_weight_delta(request, model, parameters, parameters * 4)
+    disabled = model.model_copy(update={"ihc": None})
+    assert resolve_config(request.model_copy(update={"model": disabled})).capacity == (
+        resolve_config(request).capacity
+    )
 
 
 @pytest.mark.parametrize("tp_size", [1, 2])

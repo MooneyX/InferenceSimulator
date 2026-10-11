@@ -151,6 +151,20 @@ function physicalNumber(record: Record<string, unknown>, path: string, key: stri
   }
 }
 
+function physicalBoolean(record: Record<string, unknown>, path: string, key: string): void {
+  if (record[key] !== undefined && typeof record[key] !== "boolean") {
+    throw new Error(`${path}.${key} 必须是布尔值`);
+  }
+}
+
+function physicalDtype(record: Record<string, unknown>, path: string, key: string, nullable = true): void {
+  const value = record[key];
+  if (value === undefined || (nullable && value === null)) return;
+  if (!["bf16", "fp16", "fp32"].includes(value as string)) {
+    throw new Error(`${path}.${key} 仅支持 BF16/FP16/FP32${nullable ? " 或 null" : ""}`);
+  }
+}
+
 function validateResolvedRequest(value: unknown): ResolvedRequest {
   const root = physicalObject(value, "自动解析参数", ["config", "model", "hardware", "storage"],
     ["timing", "tp_size", "ep_size"]);
@@ -159,7 +173,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
       "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
-      "shared_expert_intermediate_size", "attention_layout", "attention_groups"]);
+      "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]);
   const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
@@ -181,6 +195,30 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     if (model[key] !== undefined && !allowed.includes(model[key] as never)) {
       throw new Error(`model.${key} 不支持该配置`);
     }
+  }
+  if (model.norms !== undefined) {
+    const norms = physicalObject(model.norms, "model.norms", [], ["kind", "block_per_layer", "final_norm", "dtype"]);
+    if (norms.kind !== undefined && !["none", "rms", "layer"].includes(norms.kind as string)) {
+      throw new Error("model.norms.kind 仅支持 none/rms/layer");
+    }
+    physicalNumber(norms, "model.norms", "block_per_layer", 0, true);
+    physicalBoolean(norms, "model.norms", "final_norm");
+    physicalDtype(norms, "model.norms", "dtype");
+  }
+  if (model.router !== undefined) {
+    const router = physicalObject(model.router, "model.router", [], ["dtype", "correction_bias", "correction_dtype"]);
+    physicalDtype(router, "model.router", "dtype");
+    physicalBoolean(router, "model.router", "correction_bias");
+    physicalDtype(router, "model.router", "correction_dtype", false);
+    if (Number(model.moe_layers ?? 0) === 0 && (router.dtype != null ||
+        (router.correction_bias ?? false) !== false || (router.correction_dtype ?? "fp32") !== "fp32")) {
+      throw new Error("Router 辅助配置需要 MoE 层");
+    }
+  }
+  if (model.ihc !== undefined && model.ihc !== null) {
+    const ihc = physicalObject(model.ihc, "model.ihc", ["mult"], ["dtype"]);
+    physicalNumber(ihc, "model.ihc", "mult", 1, true);
+    physicalDtype(ihc, "model.ihc", "dtype", false);
   }
   for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
     "head_dim", "ffn_intermediate_size", "vocab_size"] as const) physicalNumber(model, "model", key, 1, true);
@@ -217,7 +255,16 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     let layers = 0;
     for (const [index, raw] of model.attention_groups.entries()) {
       const path = `model.attention_groups[${index}]`;
-      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"], [...fields, "output_gate"]);
+      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"],
+        [...fields, "output_gate", "qk_norm", "norm_dtype", "index_norm", "index_norm_dtype", "sink_dtype"]);
+      physicalBoolean(group, path, "qk_norm");
+      for (const field of ["norm_dtype", "index_norm_dtype", "sink_dtype"]) physicalDtype(group, path, field);
+      if (group.index_norm !== undefined && !["none", "rms", "layer"].includes(group.index_norm as string)) {
+        throw new Error(`${path}.index_norm 仅支持 none/rms/layer`);
+      }
+      if (group.kind !== "mla_dsa" && ((group.index_norm ?? "layer") !== "layer" || group.index_norm_dtype != null)) {
+        throw new Error(`${path}.index_norm/index_norm_dtype 仅支持 DSA 自定义配置`);
+      }
       if (!["gqa", "mla", "mla_dsa"].includes(group.kind as string)) throw new Error(`${path}.kind 不支持`);
       if (group.output_gate !== undefined && typeof group.output_gate !== "boolean") {
         throw new Error(`${path}.output_gate 必须是布尔值`);
@@ -260,6 +307,24 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
       (model[field] ?? (field === "tie_word_embeddings" ? false : undefined)) !== expectedValue)) {
       throw new Error("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP");
     }
+    const expectedAuxiliary = {
+      norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
+      router: { dtype: "fp32", correction_bias: true, correction_dtype: "fp32" },
+      ihc: { mult: 4, dtype: "fp32" },
+    };
+    const auxiliaryDefaults = {
+      norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
+      router: { dtype: null, correction_bias: false, correction_dtype: "fp32" },
+      ihc: { dtype: "fp32" },
+    };
+    for (const key of ["norms", "router", "ihc"] as const) {
+      const actual = model[key] === null || (key === "ihc" && model[key] === undefined)
+        ? null : { ...auxiliaryDefaults[key], ...model[key] as Record<string, unknown> | undefined };
+      if (actual === null || Object.entries(expectedAuxiliary[key]).some(([field, value]) =>
+        (actual as Record<string, unknown>)[field] !== value)) {
+        throw new Error(`HY4-Preview 的 model.${key} 须与固定修订结构一致`);
+      }
+    }
     if (model.attention_groups == null) {
       throw new Error("HY4-Preview 必须提供完整固定注意力组");
     }
@@ -267,8 +332,15 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     const expectedGroup = { kind: "mla_dsa", layers: 78, num_attention_heads: 64,
       q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
       index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true };
+    const expectedGroupAuxiliary = { qk_norm: true, norm_dtype: null, index_norm: "layer",
+      index_norm_dtype: "fp32", sink_dtype: "fp32" };
+    const effectiveGroupAuxiliary = { qk_norm: true, norm_dtype: null, index_norm: "layer",
+      index_norm_dtype: null, sink_dtype: null,
+      ...Object.fromEntries(Object.entries(group).filter(([, value]) => value !== undefined)) };
     if (model.attention_groups.length !== 1 ||
-        Object.entries(expectedGroup).some(([field, value]) => group[field] !== value)) {
+        Object.entries(expectedGroup).some(([field, value]) => group[field] !== value) ||
+        Object.entries(expectedGroupAuxiliary).some(([field, value]) =>
+          (effectiveGroupAuxiliary as Record<string, unknown>)[field] !== value)) {
       throw new Error("HY4-Preview 的注意力组须与固定修订结构一致");
     }
   }

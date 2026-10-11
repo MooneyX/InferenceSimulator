@@ -22,6 +22,86 @@ describe("parameter JSON transfer", () => {
     expect(JSON.parse(json)).not.toHaveProperty("requests");
   });
 
+  it.each(["bf16", "fp16", "fp32"] as const)("round-trips complete auxiliary weight settings in %s", (dtype) => {
+    const request: ResolvedRequest = {
+      config: createDefaultSimConfig(), model: { ...initialModel, name: "custom", num_layers: 2,
+        moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
+        norms: { kind: "layer", block_per_layer: 3, final_norm: false, dtype },
+        router: { dtype, correction_bias: true, correction_dtype: dtype },
+        ihc: { mult: 2, dtype },
+        attention_layout: "grouped", attention_groups: [{ kind: "mla_dsa", layers: 2,
+          num_attention_heads: 32, q_rank: 2048, kv_rank: 512, rope_dim: 64,
+          nope_dim: 192, value_dim: 256, index_heads: 32, index_dim: 128,
+          topk: 2048, full_indexer_layers: 1, output_gate: true,
+          qk_norm: false, norm_dtype: dtype, index_norm: "rms", index_norm_dtype: dtype, sink_dtype: dtype,
+        }] }, hardware: initialHardware, storage: initialStorage, timing: "analytical", tp_size: 1, ep_size: 1,
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(request))).toEqual(request);
+    const disabled: ResolvedRequest = { ...request, model: { ...request.model,
+      norms: { kind: "none", block_per_layer: 0, final_norm: false, dtype: null },
+      router: { dtype: null, correction_bias: false, correction_dtype: "fp32" }, ihc: null,
+      attention_groups: [{ ...request.model.attention_groups![0], qk_norm: true,
+        norm_dtype: null, index_norm: "none", index_norm_dtype: null, sink_dtype: null }],
+    } };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(disabled))).toEqual(disabled);
+  });
+
+  it("rejects invalid auxiliary settings on import and export", () => {
+    const base: ResolvedRequest = { config: createDefaultSimConfig(), model: { ...initialModel,
+      attention_layout: "grouped", attention_groups: [{ kind: "gqa", layers: initialModel.num_layers,
+        num_attention_heads: 32, num_kv_heads: 8, head_dim: 128, output_gate: false,
+        qk_norm: true, index_norm: "layer" }],
+    }, hardware: initialHardware, storage: initialStorage, timing: "analytical", tp_size: 1, ep_size: 1 };
+    const invalid = [
+      [{ norms: null }, "model.norms"], [{ norms: [] }, "model.norms"],
+      [{ norms: { kind: "unknown" } }, "model.norms.kind"],
+      [{ norms: { block_per_layer: -1 } }, "model.norms.block_per_layer"],
+      [{ norms: { block_per_layer: 1.5 } }, "model.norms.block_per_layer"],
+      [{ norms: { block_per_layer: Number.NaN } }, "model.norms.block_per_layer"],
+      [{ norms: { final_norm: null } }, "model.norms.final_norm"],
+      [{ norms: { dtype: "fp8" } }, "model.norms.dtype"],
+      [{ norms: { extra: 1 } }, "model.norms.extra"],
+      [{ router: null }, "model.router"], [{ router: { dtype: "fp8" } }, "model.router.dtype"],
+      [{ router: { correction_bias: "true" } }, "model.router.correction_bias"],
+      [{ router: { correction_dtype: null } }, "model.router.correction_dtype"],
+      [{ router: { linear_bias: true } }, "model.router.linear_bias"],
+      [{ router: { dtype: "fp32" } }, "Router 辅助配置需要 MoE 层"],
+      [{ router: { correction_bias: true } }, "Router 辅助配置需要 MoE 层"],
+      [{ router: { correction_dtype: "bf16" } }, "Router 辅助配置需要 MoE 层"],
+      [{ ihc: {} }, "model.ihc.mult"], [{ ihc: { mult: 0 } }, "model.ihc.mult"],
+      [{ ihc: { mult: 1.5 } }, "model.ihc.mult"],
+      [{ ihc: { mult: Number.POSITIVE_INFINITY } }, "model.ihc.mult"],
+      [{ ihc: { mult: 4, dtype: null } }, "model.ihc.dtype"],
+      [{ ihc: { mult: 4, extra: 1 } }, "model.ihc.extra"],
+    ] as const;
+    for (const [patch, message] of invalid) {
+      const request = { ...base, model: { ...base.model, ...patch } } as unknown as ResolvedRequest;
+      expect(() => parseResolvedRequestJson(JSON.stringify(request))).toThrow(message);
+      expect(() => serializeResolvedRequest(request)).toThrow(message);
+    }
+    for (const [patch, message] of [
+      [{ qk_norm: null }, "qk_norm"], [{ norm_dtype: "fp8" }, "norm_dtype"],
+      [{ index_norm: "unknown" }, "index_norm"], [{ index_norm_dtype: "fp8" }, "index_norm_dtype"],
+      [{ sink_dtype: false }, "sink_dtype"], [{ index_norm: "none" }, "仅支持 DSA"],
+      [{ index_norm_dtype: "fp32" }, "仅支持 DSA"],
+    ] as const) {
+      const request = { ...base, model: { ...base.model,
+        attention_groups: [{ ...base.model.attention_groups![0], ...patch }],
+      } } as unknown as ResolvedRequest;
+      expect(() => parseResolvedRequestJson(JSON.stringify(request))).toThrow(message);
+      expect(() => serializeResolvedRequest(request)).toThrow(message);
+    }
+    const legacy = { ...base, model: { ...base.model, norms: undefined, router: undefined, ihc: undefined } };
+    const parsed = parseResolvedRequestJson(serializeResolvedRequest(legacy));
+    expect(parsed.model).not.toHaveProperty("norms");
+    expect(parsed.model).not.toHaveProperty("router");
+    expect(parsed.model).not.toHaveProperty("ihc");
+    const gqaSink = { ...base, model: { ...base.model, attention_groups: [{
+      ...base.model.attention_groups![0], sink_dtype: "fp32" as const,
+    }] } };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(gqaSink))).toEqual(gqaSink);
+  });
+
   it("round-trips trace parameters without serializing the temporary plan ID", () => {
     const config = { ...createDefaultSimConfig(), workload: { mode: "trace" as const } };
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
@@ -86,8 +166,10 @@ describe("parameter JSON transfer", () => {
       config: createDefaultSimConfig(), model: { ...initialModel, num_layers: 2,
         attention_layout: "grouped", attention_groups: [
           { kind: "mla", layers: 1, num_attention_heads: 32, output_gate: false,
+            qk_norm: true, index_norm: "layer",
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
           { kind: "mla_dsa", layers: 1, num_attention_heads: 32, output_gate: true,
+            qk_norm: true, index_norm: "layer",
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
             topk: 2048, index_heads: 32, index_dim: 128, full_indexer_layers: 1 },
         ] },
@@ -111,10 +193,14 @@ describe("parameter JSON transfer", () => {
         vocab_size: 120832, moe_layers: 77, num_experts: 256,
         experts_per_token: 8, expert_intermediate_size: 2048,
         num_shared_experts: 1, shared_expert_intermediate_size: 2048,
+        norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
+        router: { dtype: "fp32", correction_bias: true, correction_dtype: "fp32" },
+        ihc: { mult: 4, dtype: "fp32" },
         attention_layout: "hy4_preview", attention_groups: [{
           kind: "mla_dsa", layers: 78, num_attention_heads: 64,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
           index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
+          qk_norm: true, norm_dtype: null, index_norm: "layer", index_norm_dtype: "fp32", sink_dtype: "fp32",
         }] },
       hardware: { ...initialHardware, gpu_count: 8 },
       storage: initialStorage, timing: "analytical", tp_size: 8, ep_size: 8,
@@ -141,6 +227,39 @@ describe("parameter JSON transfer", () => {
     ]) {
       expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model }))).toThrow("仅支持已核对");
     }
+    for (const model of [
+      { ...request.model, norms: { ...request.model.norms!, kind: "none" } },
+      { ...request.model, norms: { ...request.model.norms!, block_per_layer: 1 } },
+      { ...request.model, norms: { ...request.model.norms!, final_norm: false } },
+      { ...request.model, norms: { ...request.model.norms!, dtype: "fp32" } },
+      { ...request.model, router: { ...request.model.router!, dtype: null } },
+      { ...request.model, router: { ...request.model.router!, correction_bias: false } },
+      { ...request.model, router: { ...request.model.router!, correction_dtype: "bf16" } },
+      { ...request.model, router: undefined },
+      { ...request.model, ihc: undefined },
+      { ...request.model, ihc: null },
+      { ...request.model, ihc: { mult: 2, dtype: "fp32" } },
+      { ...request.model, ihc: { mult: 4, dtype: "bf16" } },
+    ]) {
+      const invalid = { ...request, model } as unknown as ResolvedRequest;
+      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
+      expect(() => serializeResolvedRequest(invalid)).toThrow("固定修订结构一致");
+    }
+    const omittedDefaults = { ...request, model: { ...request.model, norms: undefined,
+      attention_groups: [{ ...request.model.attention_groups![0], qk_norm: undefined, norm_dtype: undefined,
+        index_norm: undefined }],
+    } };
+    const parsedDefaults = parseResolvedRequestJson(JSON.stringify(omittedDefaults));
+    expect(parseResolvedRequestJson(serializeResolvedRequest(parsedDefaults)))
+      .toEqual(JSON.parse(JSON.stringify(omittedDefaults)));
+    for (const patch of [{ qk_norm: false }, { norm_dtype: "fp32" }, { index_norm: "rms" },
+      { index_norm_dtype: undefined }, { sink_dtype: undefined }, { index_norm_dtype: null }, { sink_dtype: null }]) {
+      const invalid = { ...request, model: { ...request.model,
+        attention_groups: [{ ...request.model.attention_groups![0], ...patch }],
+      } } as unknown as ResolvedRequest;
+      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
+      expect(() => serializeResolvedRequest(invalid)).toThrow("固定修订结构一致");
+    }
   });
 
   it.each(["mla", "mla_dsa"] as const)("round-trips %s output gates with shared experts", (kind) => {
@@ -151,7 +270,7 @@ describe("parameter JSON transfer", () => {
         attention_layout: "grouped", attention_groups: [{ kind, layers: 2, num_attention_heads: 32,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
           ...(kind === "mla_dsa" ? { index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 } : {}),
-          output_gate: true,
+          output_gate: true, qk_norm: true, index_norm: "layer",
         }] }, hardware: initialHardware, storage: initialStorage,
       timing: "analytical", tp_size: 1, ep_size: 1,
     };
@@ -168,7 +287,7 @@ describe("parameter JSON transfer", () => {
     }
     const gqa = { ...request, model: { ...request.model, attention_groups: [{
       kind: "gqa" as const, layers: 2, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
-      output_gate: true,
+      output_gate: true, qk_norm: true, index_norm: "layer" as const,
     }] } };
     expect(() => parseResolvedRequestJson(JSON.stringify(gqa))).toThrow("output_gate 仅支持 MLA/DSA");
     expect(() => serializeResolvedRequest(gqa)).toThrow("output_gate 仅支持 MLA/DSA");

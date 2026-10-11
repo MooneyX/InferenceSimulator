@@ -1,14 +1,15 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { simulate, simulateAutomatic, SimulationApiError } from "./api/client";
+import { simulate, simulateAutomatic, simulateReplayPlanAutomatic, uploadReplayPlan, SimulationApiError } from "./api/client";
 import type { ResolvedRun, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
-  return { ...actual, simulate: vi.fn(), simulateAutomatic: vi.fn() };
+  return { ...actual, simulate: vi.fn(), simulateAutomatic: vi.fn(),
+    simulateReplayPlanAutomatic: vi.fn(), uploadReplayPlan: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -113,10 +114,14 @@ result.instances.push({ instance_id: 0, num_completed: 1, num_aborted: 0, num_sk
 
 const simulateMock = vi.mocked(simulate);
 const simulateAutomaticMock = vi.mocked(simulateAutomatic);
+const simulateReplayAutoMock = vi.mocked(simulateReplayPlanAutomatic);
+const uploadReplayPlanMock = vi.mocked(uploadReplayPlan);
 
 beforeEach(() => {
   simulateMock.mockReset();
   simulateAutomaticMock.mockReset();
+  simulateReplayAutoMock.mockReset();
+  uploadReplayPlanMock.mockReset();
 });
 
 describe("App", () => {
@@ -187,6 +192,35 @@ describe("App", () => {
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 0 · 跳过 0");
     expect(screen.queryByRole("heading", { name: "等待仿真结果" })).not.toBeInTheDocument();
+  });
+
+  it("shows resolved capacity and cost after running an automatic trace plan", async () => {
+    const traceConfig = { ...result.meta.config, workload: { mode: "trace" as const } };
+    uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
+    simulateReplayAutoMock.mockResolvedValue({
+      result: { ...result, meta: { ...result.meta, config: traceConfig } },
+      resolution: {
+        config: traceConfig, timing: "analytical", tp_size: 1, ep_size: 1,
+        model: { name: "Qwen/Qwen3-8B" }, hardware: { name: "NVIDIA B300" },
+        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
+      },
+      analysis: null,
+    } as ResolvedRun);
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await screen.findByText(/计划已校验/);
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(simulateReplayAutoMock).toHaveBeenCalledWith("plan-1", expect.objectContaining({
+      config: expect.objectContaining({ workload: { mode: "trace" } }),
+      timing: "analytical",
+    }), "open_loop", 1, 0);
+    expect(simulateAutomaticMock).not.toHaveBeenCalled();
+    expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
+    expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
   });
 
   it("routes the single run button to the resolved API in automatic mode", async () => {

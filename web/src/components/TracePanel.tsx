@@ -6,12 +6,19 @@ import {
 } from "../api/client";
 import "./TracePanel.css";
 
-interface TracePanelProps {
-  disabled: boolean;
-  onRun: (id: string, mode: "open_loop" | "session", rate: number, seed: number) => void;
+export interface ReplaySelection {
+  id: string;
+  mode: "open_loop" | "session";
+  rate: number;
+  seed: number;
 }
 
-export function TracePanel({ disabled, onRun }: TracePanelProps) {
+interface TracePanelProps {
+  disabled: boolean;
+  onChange: (selection: ReplaySelection | null) => void;
+}
+
+export function TracePanel({ disabled, onChange }: TracePanelProps) {
   const [job, setJob] = useState<TraceJob | null>(null);
   const [sessions, setSessions] = useState<TraceSessionSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -24,6 +31,11 @@ export function TracePanel({ disabled, onRun }: TracePanelProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [problem, setProblem] = useState("");
+
+  useEffect(() => {
+    onChange(planId && Number.isFinite(rate) && rate > 0 && Number.isInteger(seed) && seed >= 0 && !busy
+      ? { id: planId, mode, rate, seed } : null);
+  }, [planId, mode, rate, seed, busy, onChange]);
 
   useEffect(() => {
     if (!job || job.status !== "processing") return;
@@ -94,7 +106,7 @@ export function TracePanel({ disabled, onRun }: TracePanelProps) {
     <section className="trace-panel" aria-labelledby="trace-heading">
       <div className="trace-intro">
         <div><p className="section-kicker">Trace replay</p><h3 id="trace-heading">轨迹回放</h3></div>
-        <p>上传原始 JSONL 预览并选择会话，或直接上传本地处理器导出的计划。模型与性能由当前手动配置决定。</p>
+        <p>上传原始 JSONL 预览并选择会话，或直接上传本地处理器导出的计划。模型与性能由当前配置方式决定。</p>
       </div>
       <div className="trace-upload-grid">
         <label>原始轨迹 JSONL <input type="file" accept=".jsonl" disabled={locked}
@@ -144,8 +156,7 @@ export function TracePanel({ disabled, onRun }: TracePanelProps) {
           onChange={(event) => setRate(event.target.valueAsNumber)} /></label>
         <label>随机种子 <input type="number" min="0" step="1" value={seed} disabled={locked}
           onChange={(event) => setSeed(event.target.valueAsNumber)} /></label>
-        <button type="button" disabled={locked || !planId || !(rate > 0) || !Number.isInteger(seed) || seed < 0}
-          onClick={() => { if (planId) onRun(planId, mode, rate, seed); }}>运行计划</button>
+        {planId && !busy && <span role="status">计划已就绪，请使用下方「运行仿真」按钮。</span>}
       </div>
       {message && <p role="status">{message}</p>}
       {problem && <p role="alert" className="field-error">{problem}</p>}

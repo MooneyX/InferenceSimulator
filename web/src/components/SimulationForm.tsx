@@ -9,13 +9,14 @@ import {
 } from "../config/simulation";
 import { AutomaticConfig, initialHardware, initialModel, initialStorage } from "./AutomaticConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
-import { TracePanel } from "./TracePanel";
+import { TracePanel, type ReplaySelection } from "./TracePanel";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
   onSubmitAuto?: (request: ResolvedRequest) => void;
   onReplay?: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number) => void;
+  onReplayAuto?: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number, seed: number) => void;
   disabled?: boolean;
 }
 
@@ -104,8 +105,11 @@ function NumberField({
   );
 }
 
-export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = false }: SimulationFormProps) {
+export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto, disabled = false }: SimulationFormProps) {
   const [mode, setMode] = useState<"manual" | "automatic">(onSubmitAuto ? "automatic" : "manual");
+  const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
+  const [replay, setReplay] = useState<ReplaySelection | null>(null);
+  const [traceKey, setTraceKey] = useState(0);
   const [manualConfig, setManualConfig] = useState<SimConfig>(createDefaultSimConfig);
   const [automaticConfig, setAutomaticConfig] = useState<SimConfig>(createDefaultSimConfig);
   const config = mode === "automatic" ? automaticConfig : manualConfig;
@@ -120,7 +124,10 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
   const paramsInputRef = useRef<HTMLInputElement>(null);
-  const submissionConfig = mode === "automatic" ? configForAutomaticResolution(config, timing) : config;
+  const draftConfig = mode === "automatic" ? configForAutomaticResolution(config, timing) : config;
+  const submissionConfig: SimConfig = workloadMode === "trace"
+    ? { ...draftConfig, workload: { mode: "trace" } }
+    : draftConfig;
   const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
   const errorByField = new Map(
     validationErrors.map(({ field, message }) => [field, message]),
@@ -173,12 +180,21 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
     event.preventDefault();
     setShowValidation(true);
 
-    if (validateSimConfig(submissionConfig).length === 0 && !automaticRunUnavailable) {
+    if (validateSimConfig(submissionConfig).length > 0 || automaticRunUnavailable) return;
+    if (workloadMode === "trace") {
+      if (!replay) return;
       if (mode === "automatic") {
-        onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
+        onReplayAuto?.(replay.id, { config: submissionConfig, model, hardware, storage,
+          timing, tp_size: tpSize, ep_size: epSize }, replay.mode, replay.rate, replay.seed);
       } else {
-        onSubmit(submissionConfig);
+        onReplay?.(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed);
       }
+      return;
+    }
+    if (mode === "automatic") {
+      onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
+    } else {
+      onSubmit(submissionConfig);
     }
   }
 
@@ -216,7 +232,9 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
       if (value !== null && typeof value === "object" && "config" in value) {
         const imported = parseResolvedRequestJson(paramsJson.trim());
         if (!onSubmitAuto) throw new Error("当前页面不支持自动解析参数");
-        setAutomaticConfig(imported.config);
+        setAutomaticConfig(imported.config.workload.mode === "trace"
+          ? { ...imported.config, workload: automaticConfig.workload } : imported.config);
+        setWorkloadMode(imported.config.workload.mode);
         setModel(imported.model);
         setHardware(imported.hardware);
         setStorage(imported.storage);
@@ -225,9 +243,14 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
         setEpSize(imported.ep_size);
         setMode("automatic");
       } else {
-        setManualConfig(parseSimConfigJson(paramsJson.trim()));
+        const imported = parseSimConfigJson(paramsJson.trim());
+        setManualConfig(imported.workload.mode === "trace"
+          ? { ...imported, workload: manualConfig.workload } : imported);
+        setWorkloadMode(imported.workload.mode);
         setMode("manual");
       }
+      setReplay(null);
+      setTraceKey((key) => key + 1);
       setShowValidation(false);
       setTransferNote({ message: "参数已导入，可检查后运行仿真", error: false });
     } catch (error) {
@@ -245,7 +268,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
         <label className={mode === "automatic" ? "mode-option selected" : "mode-option"}>
           <input type="radio" name="configuration-mode" value="automatic" checked={mode === "automatic"}
             onChange={() => { setMode("automatic"); setShowValidation(false); setTransferNote(null); }} />
-          <span><strong>自动解析</strong><small>根据模型与硬件推算容量及链路参数</small></span>
+          <span><strong>自动解析</strong><small>根据模型与硬件推算容量，支持解析或经验计时</small></span>
         </label>
         <label className={mode === "manual" ? "mode-option selected" : "mode-option"}>
           <input type="radio" name="configuration-mode" value="manual" checked={mode === "manual"}
@@ -254,20 +277,15 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
         </label>
       </fieldset>}
       <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
-      {onReplay && mode === "manual" && <TracePanel disabled={disabled} onRun={(id, replayMode, rate, seed) => {
-        if (validateSimConfig(manualConfig).length > 0) {
-          setShowValidation(true);
-          return;
-        }
-        onReplay(id, manualConfig, replayMode, rate, seed);
-      }} />}
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
           <div>
             <p className="section-kicker">Workload</p>
             <h2 id="workload-heading">负载配置</h2>
           </div>
-          <p>{synthetic.arrival_mode === "open_loop" ? "泊松开环投放 · 完成的会话优先续写" : "闭环会话 · 完成后按思考时间续写"}</p>
+          <p>{workloadMode === "trace" ? "数据集请求计划 · 开环或依赖闭环投放"
+            : synthetic.arrival_mode === "open_loop" ? "泊松开环投放 · 完成的会话优先续写"
+              : "闭环会话 · 完成后按思考时间续写"}</p>
         </div>
 
         <div className="parameter-transfer" role="group" aria-label="参数导入导出">
@@ -305,8 +323,20 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
         <div className="form-grid">
           <div className="form-field">
             <label htmlFor="workload-mode">负载模式</label>
-            <input id="workload-mode" value="synthetic" readOnly />
+            <select id="workload-mode" value={workloadMode}
+              onChange={(event) => {
+                setWorkloadMode(event.currentTarget.value as "synthetic" | "trace");
+                setReplay(null);
+                setShowValidation(false);
+              }}>
+              <option value="synthetic">合成负载</option>
+              <option value="trace">数据集 Trace 回放</option>
+            </select>
           </div>
+        </div>
+        {workloadMode === "trace" ? <TracePanel key={traceKey} disabled={disabled}
+          onChange={setReplay} /> : <>
+        <div className="form-grid">
           <div className="form-field">
             <label htmlFor="arrival-mode">请求投放方式</label>
             <select id="arrival-mode" value={synthetic.arrival_mode}
@@ -468,6 +498,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
             }
           />
         </div>
+        </>}
       </section>
 
       {mode === "automatic" && <AutomaticConfig config={submissionConfig} model={model} hardware={hardware}
@@ -481,7 +512,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>每实例独占 KV · 根请求轮询 · 子请求严格继承父实例</p>
+          <p>{workloadMode === "trace" ? "每实例独占 KV · 同原会话的分支共享实例"
+            : "每实例独占 KV · 根请求轮询 · 子请求严格继承父实例"}</p>
         </div>
 
         <div className="form-grid">
@@ -754,10 +786,13 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, disabled = fa
       </fieldset>
 
       <div className="form-actions">
-        <button className="run-button" type="submit" disabled={disabled || automaticRunUnavailable}>
+        <button className="run-button" type="submit"
+          disabled={disabled || automaticRunUnavailable || (workloadMode === "trace" && !replay)}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
         {automaticRunUnavailable && <p>当前配置尚不可运行；请核对 TP/EP 与 GPU 数、计时模式及通信参数。仍可预览容量。</p>}
+        {workloadMode === "trace" && !replay &&
+          <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}
       </div>
     </form>
   );

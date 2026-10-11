@@ -71,6 +71,14 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(config)).toEqual([]);
   });
 
+  it("validates trace engine settings without requiring synthetic distributions", () => {
+    const config = createDefaultSimConfig();
+    config.workload = { mode: "trace" };
+    expect(validateSimConfig(config)).toEqual([]);
+    config.engine.page_size = 0;
+    expect(validateSimConfig(config).some(({ field }) => field === "engine.page_size")).toBe(true);
+  });
+
   it("validates the child increment length distribution", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 0 };
@@ -163,15 +171,12 @@ describe("validateSimConfig", () => {
     ]);
   });
 
-  it("rejects the unsupported trace mode", () => {
+  it("accepts trace mode independently of any synthetic payload", () => {
     const config: SimConfig = {
       ...createDefaultSimConfig(),
       workload: { mode: "trace", synthetic: null },
     };
-
-    expect(validateSimConfig(config)).toEqual([
-      { field: "workload.mode", message: "当前仅支持 synthetic 模式" },
-    ]);
+    expect(validateSimConfig(config)).toEqual([]);
   });
 
   it("requires a payload in synthetic mode", () => {

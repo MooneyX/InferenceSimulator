@@ -186,7 +186,8 @@ async function replayRequest(endpoint: string, init?: RequestInit): Promise<Resp
   if (!response.ok) {
     const detail = getErrorDetail(await readJson(response));
     throw new SimulationApiError(detail ?? `轨迹请求失败（HTTP ${response.status}）`, {
-      kind: response.status === 422 ? "validation" : "http", status: response.status,
+      kind: response.status === 422 ? "validation"
+        : response.status === 501 ? "not_implemented" : "http", status: response.status,
     });
   }
   return response;
@@ -225,4 +226,14 @@ export async function simulateReplayPlan(
     body: JSON.stringify({ config, mode, session_rate: sessionRate, seed }),
   });
   return response.json() as Promise<SimResult>;
+}
+
+export async function simulateReplayPlanAutomatic(
+  id: string, request: ResolvedRequest, mode: "open_loop" | "session", sessionRate: number, seed: number,
+): Promise<ResolvedRun> {
+  const response = await replayRequest(`/api/replay-plans/${id}/simulate/resolved`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request, mode, session_rate: sessionRate, seed }),
+  });
+  return response.json() as Promise<ResolvedRun>;
 }

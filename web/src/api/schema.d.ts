@@ -183,6 +183,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/replay-plans/{key}/simulate/resolved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Resolved Plan */
+        post: operations["run_resolved_plan_api_replay_plans__key__simulate_resolved_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -938,7 +955,6 @@ export interface components {
         };
         /** ReplayRun */
         ReplayRun: {
-            config: components["schemas"]["SimConfig"];
             /**
              * Mode
              * @enum {string}
@@ -951,6 +967,7 @@ export interface components {
              * @default 0
              */
             seed: number;
+            config: components["schemas"]["SimConfig"];
         };
         /**
          * RequestRecord
@@ -1064,6 +1081,22 @@ export interface components {
              * @default true
              */
             runnable: boolean;
+        };
+        /** ResolvedReplayRun */
+        ResolvedReplayRun: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "open_loop" | "session";
+            /** Session Rate */
+            session_rate: number;
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
+            request: components["schemas"]["ResolvedRequest"];
         };
         /**
          * ResolvedRequest
@@ -1410,7 +1443,7 @@ export interface components {
         };
         /**
          * WorkloadConfig
-         * @description 负载配置。``trace`` 分支仅预留字段，MVP 不实现。
+         * @description 合成负载参数或基于独立上传计划执行的 trace 负载。
          */
         WorkloadConfig: {
             /**
@@ -1729,6 +1762,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SimResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_resolved_plan_api_replay_plans__key__simulate_resolved_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolvedReplayRun"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedRun"];
                 };
             };
             /** @description Validation Error */

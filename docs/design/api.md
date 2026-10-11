@@ -95,7 +95,7 @@ warnings:          # 非致命告警；不代替请求级失败状态
 
 ## Trace 文件与计划接口
 
-原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划，最大 64 MiB；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID；`POST /api/replay-plans/{id}/simulate` 接受 `{ "config": SimConfig, "mode": "open_loop" | "session", "session_rate": 会话每秒, "seed": 非负整数 }`，同步返回 `SimResult`。此处 `config` 使用手动模式引擎和性能参数，synthetic 负载字段不参与计划运行；返回 `meta.config.workload.mode=trace`。
+原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划，最大 64 MiB；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID；`POST /api/replay-plans/{id}/simulate` 接受 `{ "config": SimConfig, "mode": "open_loop" | "session", "session_rate": 会话每秒, "seed": 非负整数 }`，同步返回 `SimResult`。此处 `config` 使用手动模式引擎和性能参数，synthetic 负载字段不参与计划运行；返回 `meta.config.workload.mode=trace`。`POST /api/replay-plans/{id}/simulate/resolved` 接受 `{ "request": ResolvedRequest, "mode": "open_loop" | "session", "session_rate": 会话每秒, "seed": 非负整数 }`，其中 `request.config.workload={"mode":"trace"}`；服务端先解析模型/硬件容量，再按解析后规格回放，返回 `ResolvedRun`，其 `resolution.config` 与 `result.meta.config` 一致。解析计时保留 TP/EP 通信和 `analysis`，经验计时返回 `analysis=null`，不可运行的解析规格继续返回 422 或 501。
 
 原始文件与计划暂存于服务进程的临时目录，闲置 24 小时后在后续访问时清理；服务进程退出后失效，当前版本不支持跨实例共享任务或断点续传。文件超限为 413，解析/校验失败为 422，处理中尝试导出为 409，未知或过期 ID 为 404。上传计划的块 ID 必须是会话局部一致的前缀身份；原始输入块参与运行时连续缓存匹配，不包含原始输出块身份。计划不能直接传入普通 `/api/simulate`。
 
@@ -104,7 +104,7 @@ warnings:          # 非致命告警；不代替请求级失败状态
 - `GET /api/presets` 返回 Qwen3-8B、Qwen3-235B-A22B 的参考结构以及 B300 单卡显存、互联带宽标称值；不提供已测有效算力或模型修订认证，目录条目不等于已验证部署。B300 的 1800 GB/s 是单卡双向标称值；页面以 600 GB/s 作为未经校准的单 rank 有效带宽试算值，非实测值。
 - `POST /api/resolve` 接受 `SimConfig` 加显式 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；仅支持全注意力 GQA/MQA 与 BF16/FP16。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅放 KV 的物理容量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；未建模辅助权重不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
 - `POST /api/simulate/resolved` **再次解析**物理输入后执行；支持 Dense TP 与平均负载 MoE/EP 的解析计时，缺通信参数返回 422，TP/EP>1 经验四系数模式返回 501。成功返回 `ResolvedRun`：`resolution` 回显逐 rank 容量和有效 `SimConfig`，`analysis` 分列 TP 同步、EP dispatch/combine 的时间与逻辑流量；这些费用已计入 `device_ms`，KV 恢复时间独立。自动接口的 422 `detail` 可为字段错误列表或业务错误字符串，OpenAPI 同时登记两种格式。前端不复用上次容量预览的 token 数作为运行配置；结构估算参数和权重占用未经部署核验，旧自动配置 JSON 中已移除的参数输入会被拒绝。
-- 手填 `/api/simulate` 与自动解析请求使用相同的负载模式；四系数仅在 `timing=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。
+- 合成负载使用手动 `/api/simulate` 或自动 `/api/simulate/resolved`；trace 负载使用对应的 `/api/replay-plans/{id}/simulate` 或 `/api/replay-plans/{id}/simulate/resolved`，不能只将 `mode=trace` 发给普通仿真入口。四系数仅在 `timing=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。
 
 ## 类型同步
 

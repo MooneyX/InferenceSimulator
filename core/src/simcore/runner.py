@@ -35,7 +35,7 @@ from simcore.schemas import (
 from simcore.trace_client import TraceClient
 from simcore.workload import build_plan
 
-__all__ = ["simulate", "simulate_plan"]
+__all__ = ["simulate", "simulate_plan", "simulate_plan_resolved"]
 
 
 def simulate_plan(
@@ -64,8 +64,27 @@ def simulate_analytical(
     return result, analysis
 
 
-def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:  # 解析后配置 → 仿真结果及可选解析成本
-    """自动模式使用解析后的 token 容量和 token/ms 链路带宽。"""
+def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, AnalyticalSummary | None]:
+    """自动模式使用解析后的容量、链路带宽与计时参数。"""
+    return _run_resolved(resolution)
+
+
+def simulate_plan_resolved(
+    resolution: ResolvedConfig, plan: TracePlan, *, mode: str, session_rate: float, seed: int
+) -> tuple[SimResult, AnalyticalSummary | None]:
+    """在解析后的模型、硬件配置上运行同一份 trace 请求计划。"""
+    client = TraceClient(
+        plan, resolution.config.engine, mode=mode, session_rate=session_rate, seed=seed
+    )
+    trace_config = resolution.config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
+    return _run_resolved(
+        resolution.model_copy(update={"config": trace_config}), trace_client=client
+    )
+
+
+def _run_resolved(
+    resolution: ResolvedConfig, trace_client: TraceClient | None = None
+) -> tuple[SimResult, AnalyticalSummary | None]:
     if not resolution.runnable:
         if resolution.timing == "analytical":
             raise ValueError("多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销")
@@ -79,6 +98,7 @@ def simulate_resolved(resolution: ResolvedConfig) -> tuple[SimResult, Analytical
         resolution.config,
         analytical,
         (resolution.capacity.l2_to_l1_tokens_per_ms, resolution.capacity.l3_to_l2_tokens_per_ms),
+        trace_client=trace_client,
     )
 
 

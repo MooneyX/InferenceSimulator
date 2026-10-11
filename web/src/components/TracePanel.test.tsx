@@ -12,10 +12,10 @@ vi.mock("../api/client", () => ({
 afterEach(() => vi.clearAllMocks());
 
 describe("TracePanel", () => {
-  it("uploads an exported plan and runs with the selected rate and seed", async () => {
+  it("uploads an exported plan and reports its selected rate and seed", async () => {
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
-    const onRun = vi.fn();
-    render(<TracePanel disabled={false} onRun={onRun} />);
+    const onChange = vi.fn();
+    render(<TracePanel disabled={false} onChange={onChange} />);
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["{}"], "plan.json", { type: "application/json" })] },
     });
@@ -23,14 +23,16 @@ describe("TracePanel", () => {
     fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("随机种子"), { target: { value: "11" } });
-    fireEvent.click(screen.getByRole("button", { name: "运行计划" }));
-    expect(onRun).toHaveBeenCalledWith("plan-1", "session", 2, 11);
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
+      id: "plan-1", mode: "session", rate: 2, seed: 11,
+    }));
+    expect(screen.queryByRole("button", { name: "运行计划" })).not.toBeInTheDocument();
     vi.mocked(uploadReplayPlan).mockRejectedValueOnce(new Error("文件无效"));
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["invalid"], "bad.json", { type: "application/json" })] },
     });
     await waitFor(() => expect(screen.getByText("文件无效")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "运行计划" })).toBeDisabled();
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
   });
 
   it("uploads raw trace and previews paginated sessions", async () => {
@@ -41,7 +43,7 @@ describe("TracePanel", () => {
       prefix_hit_rate: 0.25, inferred_dependencies: 1, timed_roots: 1,
       ambiguous_dependencies: 0,
     }] });
-    render(<TracePanel disabled={false} onRun={vi.fn()} />);
+    render(<TracePanel disabled={false} onChange={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("原始轨迹 JSONL"), {
       target: { files: [new File(["{}\n"], "sample.jsonl")] },
     });

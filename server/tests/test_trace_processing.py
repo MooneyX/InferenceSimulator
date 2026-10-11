@@ -88,6 +88,60 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert body["meta"]["config"]["workload"]["mode"] == "trace"
 
 
+def test_resolved_plan_uses_parsed_capacity_and_timing() -> None:
+    resolved = {
+        "config": {**config(), "workload": {"mode": "trace"}},
+        "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
+                  "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
+                  "ffn_intermediate_size": 32, "vocab_size": 16},
+        "hardware": {"name": "toy", "gpu_count": 1,
+                     "memory_bytes_per_gpu": 2_000_000,
+                     "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1},
+        "storage": {"l1_available_gb": 0.001},
+        "timing": "analytical",
+    }
+    with TestClient(create_app()) as client:
+        plan = compile_plan_from_sample(client)
+        url = f"/api/replay-plans/{plan}/simulate/resolved"
+        body = {"request": resolved, "mode": "open_loop", "session_rate": 1, "seed": 2}
+        preview = client.post("/api/resolve", json=resolved)
+        response = client.post(url, json=body)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["resolution"] == preview.json()
+        assert data["result"]["meta"]["config"] == data["resolution"]["config"]
+        assert data["result"]["meta"]["num_requests"] == 3
+        assert data["analysis"]["steps"] == data["result"]["meta"]["num_engine_steps"]
+        assert data["resolution"]["config"]["engine"]["max_total_tokens"] != 2048
+        resolved["timing"] = "empirical"
+        empirical = client.post(url, json=body)
+        assert empirical.status_code == 200, empirical.text
+        assert empirical.json()["analysis"] is None
+        resolved["hardware"].update({"gpu_count": 2,
+                                      "effective_interconnect_gb_s": 100,
+                                      "collective_latency_ms": 0.1})
+        body["request"]["tp_size"] = 2
+        resolved["timing"] = "analytical"
+        tp = client.post(url, json=body)
+        assert tp.status_code == 200, tp.text
+        assert tp.json()["analysis"]["communication_ms"] > 0
+        resolved["timing"] = "empirical"
+        refused = client.post(url, json=body)
+        assert refused.status_code == 501
+
+
+def compile_plan_from_sample(client: TestClient) -> str:
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as directory:
+        source = Path(directory) / "trace.jsonl"
+        source.write_bytes(sample())
+        plan = compile_plan(source, ["session-a"])
+    response = client.post("/api/replay-plans", content=plan.model_dump_json().encode())
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def test_ambiguous_time_match_stays_timed_root(tmp_path: Path) -> None:
     raw = json.loads(sample())
     raw["requests"] = [

@@ -1,12 +1,77 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { uploadReplayPlan } from "../api/client";
 import { createDefaultSimConfig } from "../config/simulation";
 import { SimulationForm } from "./SimulationForm";
 
-afterEach(() => vi.unstubAllGlobals());
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return { ...actual, uploadReplayPlan: vi.fn() };
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.mocked(uploadReplayPlan).mockReset();
+});
 
 describe("SimulationForm", () => {
+  it("runs one trace plan with either automatic resolution or manual configuration", async () => {
+    const onReplayAuto = vi.fn();
+    const onReplay = vi.fn();
+    const onSubmit = vi.fn();
+    const onSubmitAuto = vi.fn();
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
+    render(<SimulationForm onSubmit={onSubmit} onSubmitAuto={onSubmitAuto}
+      onReplay={onReplay} onReplayAuto={onReplayAuto} />);
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    expect(screen.getByLabelText("负载模式")).toHaveValue("trace");
+    expect(screen.queryByLabelText("请求数量")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "2" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onReplayAuto).toHaveBeenCalledWith("plan-1", expect.objectContaining({
+      config: expect.objectContaining({ workload: { mode: "trace" } }), timing: "analytical",
+    }), "session", 2, 0);
+    expect(onSubmitAuto).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
+    expect(screen.getByText(/计划已校验/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onReplay).toHaveBeenCalledWith("plan-1", expect.objectContaining({
+      workload: { mode: "trace" },
+    }), "session", 2, 0);
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "synthetic" } });
+    expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
+    expect(screen.queryByLabelText("已导出的计划 JSON")).not.toBeInTheDocument();
+  });
+
+  it("exports trace parameters without a plan and requires reupload after import", async () => {
+    const onReplay = vi.fn();
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
+    render(<SimulationForm onSubmit={vi.fn()} onReplay={onReplay} />);
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(exported).workload).toEqual({ mode: "trace" });
+    expect(exported).not.toContain("plan-1");
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    expect(onReplay).not.toHaveBeenCalled();
+    expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
+  });
+
   it("selects automatic resolution first when available", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);

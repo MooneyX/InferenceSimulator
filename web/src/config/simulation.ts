@@ -147,17 +147,13 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   const { workload, engine, perf_model: perfModel } = config;
   validatePositiveInteger(errors, "num_instances", config.num_instances);
 
-  if (workload.mode !== "synthetic") {
-    errors.push({ field: "workload.mode", message: "当前仅支持 synthetic 模式" });
-  }
-
   const synthetic = workload.synthetic;
   if (workload.mode === "synthetic" && (synthetic === undefined || synthetic === null)) {
     errors.push({
       field: "workload.synthetic",
       message: "synthetic 模式必须提供负载配置",
     });
-  } else if (synthetic !== undefined && synthetic !== null) {
+  } else if (workload.mode === "synthetic" && synthetic !== undefined && synthetic !== null) {
     validatePositiveInteger(
       errors,
       "workload.synthetic.num_requests",

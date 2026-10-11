@@ -167,7 +167,7 @@ class SyntheticWorkloadConfig(_Frozen):
 
 
 class WorkloadConfig(_Frozen):
-    """负载配置。``trace`` 分支仅预留字段，MVP 不实现。"""
+    """合成负载参数或基于独立上传计划执行的 trace 负载。"""
 
     mode: WorkloadMode = "synthetic"
     synthetic: SyntheticWorkloadConfig | None = None

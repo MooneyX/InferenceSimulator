@@ -22,6 +22,17 @@ describe("parameter JSON transfer", () => {
     expect(JSON.parse(json)).not.toHaveProperty("requests");
   });
 
+  it("round-trips trace parameters without serializing the temporary plan ID", () => {
+    const config = { ...createDefaultSimConfig(), workload: { mode: "trace" as const } };
+    expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
+    const resolved: ResolvedRequest = {
+      config, model: initialModel, hardware: initialHardware, storage: initialStorage,
+      timing: "analytical", tp_size: 1, ep_size: 1,
+    };
+    expect(parseResolvedRequestJson(serializeResolvedRequest(resolved))).toEqual(resolved);
+    expect(JSON.stringify(config)).not.toContain("plan_id");
+  });
+
   it("round-trips session mode without a request QPS", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic = {
@@ -46,7 +57,7 @@ describe("parameter JSON transfer", () => {
   it.each([
     [{}, "缺少参数：num_instances"],
     [{ ...createDefaultSimConfig(), metrics: {} }, "不支持的参数：metrics"],
-    [{ ...createDefaultSimConfig(), workload: { mode: "trace", synthetic: null } }, "仅支持 synthetic"],
+    [{ ...createDefaultSimConfig(), workload: { mode: "trace", synthetic: null } }, "不支持的参数：workload.synthetic"],
     [{ ...createDefaultSimConfig(), workload: { mode: "synthetic" } }, "缺少参数：workload.synthetic"],
     [{ ...createDefaultSimConfig(), engine: { ...createDefaultSimConfig().engine, capacity_pages: 10 } },
       "不支持的参数：engine.capacity_pages"],

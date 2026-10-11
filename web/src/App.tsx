@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 
-import { simulate, simulateAutomatic, simulateReplayPlan, SimulationApiError } from "./api/client";
+import { simulate, simulateAutomatic, simulateReplayPlan, simulateReplayPlanAutomatic, SimulationApiError } from "./api/client";
 import type { ResolvedRequest, ResolvedRun, SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
@@ -103,6 +103,25 @@ export default function App() {
     }
   }
 
+  async function handleReplayAuto(
+    id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number, seed: number,
+  ): Promise<void> {
+    setIsRunning(true);
+    setError(null);
+    setResult(null);
+    setSelectedInstanceId(null);
+    setAutomatic(null);
+    try {
+      const response = await simulateReplayPlanAutomatic(id, request, mode, rate, seed);
+      setAutomatic(response);
+      setResult(response.result);
+    } catch (cause) {
+      setError(presentError(cause));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
   return (
     <>
       <header className="topbar">
@@ -141,7 +160,7 @@ export default function App() {
         </header>
 
         <SimulationForm onSubmit={handleSubmit} onSubmitAuto={handleSubmitAuto}
-          onReplay={handleReplay} disabled={isRunning} />
+          onReplay={handleReplay} onReplayAuto={handleReplayAuto} disabled={isRunning} />
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">

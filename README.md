@@ -69,14 +69,14 @@ Remove-Item simulate-request.json
 
 ## Trace 数据集 replay
 
-页面切换到「手动配置」，在「轨迹回放」区域可上传原始 JSONL、等待后台扫描、预览并选择会话后下载请求计划，也可直接上传既有计划 JSON 运行。上传完整数据集需要服务端磁盘空间；更推荐先在数据所在机器本地执行：
+页面的「配置方式」（自动解析或手动配置）与「负载模式」（合成负载或数据集 Trace 回放）可独立选择。选择 Trace 后，可上传原始 JSONL、等待后台扫描、预览并选择会话后下载请求计划，也可直接上传既有计划 JSON；准备就绪后使用同一个「运行仿真」按钮执行。上传完整数据集需要服务端磁盘空间；更推荐先在数据所在机器本地执行：
 
 ```powershell
 uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --output trace-summary.json
 uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --sessions "002001296e8a8c38ad9d7cc436d691afc602" --output trace-plan.json
 ```
 
-本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式，并用当前手动引擎/性能参数仿真。原始模型字段不参与计算；本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
+本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式。手动配置使用填写的容量和四系数，自动解析根据模型/硬件计算容量，并支持解析或经验计时及已有的 TP/EP 约束。trace 原始模型字段不参与计算；参数 JSON 不含临时计划 ID，导入后需重新上传请求计划。本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
 
 ## 同步前端类型
 

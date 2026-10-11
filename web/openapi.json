@@ -409,6 +409,55 @@
           }
         }
       }
+    },
+    "/api/replay-plans/{key}/simulate/resolved": {
+      "post": {
+        "summary": "Run Resolved Plan",
+        "operationId": "run_resolved_plan_api_replay_plans__key__simulate_resolved_post",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolvedReplayRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedRun"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1775,9 +1824,6 @@
       },
       "ReplayRun": {
         "properties": {
-          "config": {
-            "$ref": "#/components/schemas/SimConfig"
-          },
           "mode": {
             "type": "string",
             "enum": [
@@ -1796,13 +1842,16 @@
             "minimum": 0.0,
             "title": "Seed",
             "default": 0
+          },
+          "config": {
+            "$ref": "#/components/schemas/SimConfig"
           }
         },
         "type": "object",
         "required": [
-          "config",
           "mode",
-          "session_rate"
+          "session_rate",
+          "config"
         ],
         "title": "ReplayRun"
       },
@@ -2001,6 +2050,39 @@
           "capacity"
         ],
         "title": "ResolvedConfig"
+      },
+      "ResolvedReplayRun": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "open_loop",
+              "session"
+            ],
+            "title": "Mode"
+          },
+          "session_rate": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Session Rate"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "default": 0
+          },
+          "request": {
+            "$ref": "#/components/schemas/ResolvedRequest"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "session_rate",
+          "request"
+        ],
+        "title": "ResolvedReplayRun"
       },
       "ResolvedRequest": {
         "properties": {
@@ -2859,7 +2941,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "WorkloadConfig",
-        "description": "负载配置。``trace`` 分支仅预留字段，MVP 不实现。"
+        "description": "合成负载参数或基于独立上传计划执行的 trace 负载。"
       }
     }
   }

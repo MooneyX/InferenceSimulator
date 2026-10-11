@@ -7,7 +7,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from simcore import SimConfig, SimResult, simulate_plan
-from simcore.schemas import TracePlan
+from simcore.capacity import resolve_config
+from simcore.runner import simulate_plan_resolved
+from simcore.schemas import ResolvedRequest, ResolvedRun, TracePlan
 from simserver.trace_processing import PlanTooLargeError
 from simserver.trace_store import MAX_PLAN_BYTES, MAX_TRACE_BYTES, TraceStore
 
@@ -52,11 +54,18 @@ class PlanReceipt(BaseModel):
     requests: int
 
 
-class ReplayRun(BaseModel):
-    config: SimConfig
+class ReplaySettings(BaseModel):
     mode: Literal["open_loop", "session"]
     session_rate: float = Field(gt=0, allow_inf_nan=False)
     seed: int = Field(default=0, ge=0)
+
+
+class ReplayRun(ReplaySettings):
+    config: SimConfig
+
+
+class ResolvedReplayRun(ReplaySettings):
+    request: ResolvedRequest
 
 
 def _store(request: Request) -> TraceStore:
@@ -159,3 +168,22 @@ def run_plan(key: str, run: ReplayRun, request: Request) -> Response:
     except (ValidationError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return Response(content=result.model_dump_json(), media_type="application/json")
+
+
+@router.post("/replay-plans/{key}/simulate/resolved", response_model=ResolvedRun)
+def run_resolved_plan(key: str, run: ResolvedReplayRun, request: Request) -> ResolvedRun:
+    try:
+        plan = _store(request).plan(key)
+        if run.request.config.workload.mode != "trace":
+            raise ValueError("请求计划回放须使用 workload.mode='trace'")
+        resolution = resolve_config(run.request)
+        result, analysis = simulate_plan_resolved(
+            resolution, plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed
+        )
+        return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc

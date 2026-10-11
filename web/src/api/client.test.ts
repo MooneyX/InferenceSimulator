@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveAutomatic, simulate, simulateAutomatic, SimulationApiError } from "./client";
+import { resolveAutomatic, simulate, simulateAutomatic, simulateReplayPlanAutomatic, SimulationApiError } from "./client";
 import type { ResolvedRequest, SimConfig, SimResult } from "./types";
 
 const config: SimConfig = {
@@ -251,6 +251,24 @@ describe("simulate", () => {
 
 describe("automatic resolution errors", () => {
   const request = { config } as ResolvedRequest;
+
+  it("posts the complete resolved trace request to the plan endpoint", async () => {
+    const body = { result, resolution: { config }, analysis: null };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, body));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(simulateReplayPlanAutomatic("plan-1", request, "session", 2, 7)).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith("/api/replay-plans/plan-1/simulate/resolved", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request, mode: "session", session_rate: 2, seed: 7 }),
+    });
+  });
+
+  it("reports unsupported multi-GPU empirical trace timing as not implemented", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 TP" })));
+    await expect(simulateReplayPlanAutomatic("plan-1", request, "session", 2, 7)).rejects.toMatchObject({
+      kind: "not_implemented", status: 501, message: "四系数不支持 TP",
+    });
+  });
 
   it("preserves field paths and business messages for both 422 formats", async () => {
     const detail = [{ loc: ["body", "model", "num_experts"], msg: "专家数错误", type: "value_error" }];

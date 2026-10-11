@@ -25,3 +25,6 @@ Thumbs.db
 
 # Env
 .env
+
+# Local replay datasets (not distributed with the repository)
+/refs/cc-traces/

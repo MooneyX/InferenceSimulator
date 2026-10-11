@@ -109,18 +109,30 @@ export function TracePanel({ disabled, onChange }: TracePanelProps) {
         <p>上传原始 JSONL 预览并选择会话，或直接上传本地处理器导出的计划。模型与性能由当前配置方式决定。</p>
       </div>
       <div className="trace-upload-grid">
-        <label>原始轨迹 JSONL <input type="file" accept=".jsonl" disabled={locked}
-          onChange={(event) => { const file = event.target.files?.[0]; if (file) void receiveTrace(file); }} /></label>
-        <label>已导出的计划 JSON <input type="file" accept=".json" disabled={locked}
-          onChange={(event) => { const file = event.target.files?.[0]; if (file) void receivePlan(file); }} /></label>
+        <div className="form-field trace-upload-field">
+          <label htmlFor="trace-file">原始轨迹 JSONL</label>
+          <input id="trace-file" type="file" accept=".jsonl" disabled={locked}
+            onChange={(event) => { const file = event.target.files?.[0]; if (file) void receiveTrace(file); }} />
+          <small>扫描会话摘要后，可选择需要回放的会话。</small>
+        </div>
+        <div className="form-field trace-upload-field">
+          <label htmlFor="trace-plan-file">已导出的计划 JSON</label>
+          <input id="trace-plan-file" type="file" accept=".json" disabled={locked}
+            onChange={(event) => { const file = event.target.files?.[0]; if (file) void receivePlan(file); }} />
+          <small>已有计划可直接上传，不必再次上传原始轨迹。</small>
+        </div>
       </div>
-      {job && <p role="status">扫描状态：{job.status} · 会话 {job.session_count}
+      {job && <p className="trace-notice" role="status">扫描状态：{job.status} · 会话 {job.session_count}
         {job.error ? ` · ${job.error}` : ""}</p>}
-      {job?.status === "ready" && <>
-        <p>已选 {selected.size} / {total} 个会话 · 命中率为原始轨迹前缀上界，不是仿真后的实际命中。</p>
+      {job?.status === "ready" && <div className="trace-sessions">
+        <div className="trace-sessions-heading">
+          <div><p className="section-kicker">Session selection</p><h4>会话摘要</h4></div>
+          <span>已选 {selected.size} / {total} 个会话</span>
+        </div>
+        <p className="trace-hint">命中率为原始轨迹前缀上界，不是仿真后的实际命中。</p>
         <div className="trace-table-wrap"><table className="trace-table">
-          <thead><tr><th>选择</th><th>会话 ID</th><th>请求</th><th>输入 / 输出 token</th>
-            <th>开环 QPS</th><th>前缀命中</th><th>依赖 / 定时根</th></tr></thead>
+          <thead><tr><th scope="col">选择</th><th scope="col">会话 ID</th><th scope="col">请求</th><th scope="col">输入 / 输出 token</th>
+            <th scope="col">开环 QPS</th><th scope="col">前缀命中</th><th scope="col">依赖 / 定时根</th></tr></thead>
           <tbody>{sessions.map((item) => <tr key={item.id}>
             <td><input type="checkbox" aria-label={`选择会话 ${item.id}`} checked={selected.has(item.id)}
               disabled={locked} onChange={(event) => {
@@ -137,29 +149,39 @@ export function TracePanel({ disabled, onChange }: TracePanelProps) {
           </tr>)}</tbody>
         </table></div>
         <div className="trace-actions">
-          <button type="button" disabled={locked || offset === 0}
-            onClick={() => setOffset(Math.max(0, offset - 50))}>上一页</button>
-          <span>{offset + 1}–{Math.min(offset + 50, total)} / {total}</span>
-          <button type="button" disabled={locked || offset + 50 >= total}
-            onClick={() => setOffset(offset + 50)}>下一页</button>
-          <button type="button" disabled={locked || selected.size === 0}
+          <div className="trace-pagination">
+            <button className="trace-button trace-button-secondary" type="button" disabled={locked || offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - 50))}>上一页</button>
+            <span>{offset + 1}–{Math.min(offset + 50, total)} / {total}</span>
+            <button className="trace-button trace-button-secondary" type="button" disabled={locked || offset + 50 >= total}
+              onClick={() => setOffset(offset + 50)}>下一页</button>
+          </div>
+          <button className="trace-button trace-button-primary" type="button" disabled={locked || selected.size === 0}
             onClick={() => void exportSelected()}>导出并载入选中会话计划</button>
         </div>
-      </>}
-      <div className="trace-actions trace-settings">
-        <label>投放模式 <select value={mode} disabled={locked}
-          onChange={(event) => setMode(event.target.value as typeof mode)}>
-          <option value="open_loop">开环 · 原轨迹相对时间</option>
-          <option value="session">闭环 · 父完成后投放</option>
-        </select></label>
-        <label>会话/秒 <input type="number" min="0.000001" step="any" value={rate} disabled={locked}
-          onChange={(event) => setRate(event.target.valueAsNumber)} /></label>
-        <label>随机种子 <input type="number" min="0" step="1" value={seed} disabled={locked}
-          onChange={(event) => setSeed(event.target.valueAsNumber)} /></label>
-        {planId && !busy && <span role="status">计划已就绪，请使用下方「运行仿真」按钮。</span>}
+      </div>}
+      <div className="trace-settings">
+        <div className="trace-sessions-heading">
+          <div><p className="section-kicker">Arrival settings</p><h4>回放参数</h4></div>
+        </div>
+        <div className="form-grid">
+          <div className="form-field"><label htmlFor="trace-arrival-mode">投放模式</label>
+            <select id="trace-arrival-mode" value={mode} disabled={locked}
+              onChange={(event) => setMode(event.target.value as typeof mode)}>
+              <option value="open_loop">开环 · 原轨迹相对时间</option>
+              <option value="session">闭环 · 父完成后投放</option>
+            </select></div>
+          <div className="form-field"><label htmlFor="trace-session-rate">会话/秒</label>
+            <input id="trace-session-rate" type="number" min="0.000001" step="any" value={rate} disabled={locked}
+              onChange={(event) => setRate(event.target.valueAsNumber)} /></div>
+          <div className="form-field"><label htmlFor="trace-seed">随机种子</label>
+            <input id="trace-seed" type="number" min="0" step="1" value={seed} disabled={locked}
+              onChange={(event) => setSeed(event.target.valueAsNumber)} /></div>
+        </div>
+        {planId && !busy && <p className="trace-notice" role="status">计划已就绪，请使用下方「运行仿真」按钮。</p>}
       </div>
-      {message && <p role="status">{message}</p>}
-      {problem && <p role="alert" className="field-error">{problem}</p>}
+      {message && <p className="trace-notice" role="status">{message}</p>}
+      {problem && <p role="alert" className="trace-notice trace-notice-error field-error">{problem}</p>}
     </section>
   );
 }

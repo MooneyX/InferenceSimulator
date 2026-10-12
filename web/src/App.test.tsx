@@ -383,8 +383,6 @@ describe("App", () => {
   it("renders API validation errors without displaying stale results", async () => {
     simulateMock.mockRejectedValue(
       new SimulationApiError("仿真配置校验失败", {
-        kind: "validation",
-        status: 422,
         validationErrors: [
           {
             loc: ["body", "engine", "max_running_requests"],

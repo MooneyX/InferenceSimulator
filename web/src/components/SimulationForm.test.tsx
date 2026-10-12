@@ -10,6 +10,12 @@ vi.mock("../api/client", async (importOriginal) => {
   return { ...actual, uploadReplayPlan: vi.fn() };
 });
 
+const callbacks = {
+  onSubmitAuto: vi.fn(),
+  onReplay: vi.fn(),
+  onReplayAuto: vi.fn(),
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(uploadReplayPlan).mockReset();
@@ -22,7 +28,7 @@ describe("SimulationForm", () => {
     const onSubmit = vi.fn();
     const onSubmitAuto = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
-    render(<SimulationForm onSubmit={onSubmit} onSubmitAuto={onSubmitAuto}
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} onSubmitAuto={onSubmitAuto}
       onReplay={onReplay} onReplayAuto={onReplayAuto} />);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     expect(screen.getByLabelText("负载模式")).toHaveValue("trace");
@@ -56,7 +62,8 @@ describe("SimulationForm", () => {
   it("passes optional open-loop target QPS through the single run button", async () => {
     const onReplay = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 3 });
-    render(<SimulationForm onSubmit={vi.fn()} onReplay={onReplay} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onReplay={onReplay} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["{}"], "plan.json")] },
@@ -73,7 +80,8 @@ describe("SimulationForm", () => {
   it("exports trace parameters without a plan and requires reupload after import", async () => {
     const onReplay = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
-    render(<SimulationForm onSubmit={vi.fn()} onReplay={onReplay} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onReplay={onReplay} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["{}"], "plan.json")] },
@@ -89,9 +97,9 @@ describe("SimulationForm", () => {
     expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
   });
 
-  it("selects automatic resolution first when available", () => {
+  it("selects automatic resolution first", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
 
     const modes = screen.getAllByRole("radio", { name: /自动解析|手动配置/ });
     expect(modes).toHaveLength(2);
@@ -115,7 +123,8 @@ describe("SimulationForm", () => {
   });
 
   it("renders every synthetic configuration group with defaults", () => {
-    render(<SimulationForm onSubmit={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "引擎配置" })).toBeInTheDocument();
@@ -145,7 +154,7 @@ describe("SimulationForm", () => {
 
   it("uses the selected session workload in automatic resolution too", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({
@@ -158,7 +167,8 @@ describe("SimulationForm", () => {
 
   it("submits session mode using only session count, rate and think interval", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒，泊松到达）")).not.toBeInTheDocument();
     const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
@@ -184,7 +194,8 @@ describe("SimulationForm", () => {
 
   it("blocks invalid closed-loop fields before submission", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "1001" } });
     fireEvent.change(screen.getByLabelText("新会话投放频率（会话/秒，泊松到达）"),
@@ -201,7 +212,8 @@ describe("SimulationForm", () => {
 
   it("submits the complete default config", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
 
@@ -248,7 +260,8 @@ describe("SimulationForm", () => {
 
   it("updates scalar and distribution fields before submission", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.change(screen.getByLabelText("请求数量"), {
       target: { value: "25" },
@@ -282,7 +295,8 @@ describe("SimulationForm", () => {
 
   it("submits edited open-loop distribution, whole-page capacity and fused mode", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
@@ -316,7 +330,8 @@ describe("SimulationForm", () => {
 
   it("exposes L2/L3 links only when enabled and submits valid transfer settings", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("L2 KV 容量（token，0 为关闭）"), { target: { value: "128" } });
     expect(screen.getByLabelText("KV 每 token 字节数")).toBeInTheDocument();
     expect(screen.queryByLabelText("L3 → L2 带宽（字节/ms）")).not.toBeInTheDocument();
@@ -354,7 +369,8 @@ describe("SimulationForm", () => {
     ["每请求生成上限（token）", "0", "必须是大于或等于 1 的整数"],
   ])("blocks invalid %s with an accessible field error", (label, value, message) => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     const input = screen.getByLabelText(label);
     fireEvent.change(input, { target: { value } });
@@ -369,7 +385,8 @@ describe("SimulationForm", () => {
 
   it("blocks invalid submissions and associates errors with their fields", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     const requestCount = screen.getByLabelText("请求数量");
     fireEvent.change(requestCount, { target: { value: "0" } });
@@ -385,7 +402,8 @@ describe("SimulationForm", () => {
   it("exports edited parameters to the JSON box and copies them", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
-    render(<SimulationForm onSubmit={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
 
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
@@ -401,7 +419,8 @@ describe("SimulationForm", () => {
 
   it("keeps exported JSON available when clipboard copying is unavailable", () => {
     vi.stubGlobal("navigator", {});
-    render(<SimulationForm onSubmit={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     expect((screen.getByLabelText("参数 JSON") as HTMLInputElement).value).toContain('"workload"');
     expect(screen.getByRole("status")).toHaveTextContent("可手动复制");
@@ -409,7 +428,8 @@ describe("SimulationForm", () => {
 
   it("imports a valid JSON config into all form groups without running a simulation", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 20;
     config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 35 };
@@ -456,7 +476,7 @@ describe("SimulationForm", () => {
 
   it("exports and imports the complete automatic configuration from the top transfer controls", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
@@ -498,7 +518,7 @@ describe("SimulationForm", () => {
   it("keeps a complete, independent set of parameters for each panel", () => {
     const onSubmit = vi.fn();
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByRole("group", { name: "手动配置参数" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
@@ -534,7 +554,7 @@ describe("SimulationForm", () => {
   });
 
   it("imports a manual config from the automatic panel without losing the automatic draft", () => {
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
     const manual = createDefaultSimConfig();
@@ -549,7 +569,7 @@ describe("SimulationForm", () => {
 
   it("shows empirical coefficients only when automatic timing uses them", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
@@ -582,7 +602,7 @@ describe("SimulationForm", () => {
 
   it("round-trips EP topology and runs MoE analytical timing only", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("专家数"), { target: { value: "4" } });
@@ -623,7 +643,7 @@ describe("SimulationForm", () => {
 
   it("round-trips TP topology and runs analytical multi-GPU only", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "4" },
@@ -658,7 +678,7 @@ describe("SimulationForm", () => {
   });
 
   it("accepts legacy config JSON and rejects incomplete physical specs without changing the form", () => {
-    render(<SimulationForm onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 12;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
@@ -678,7 +698,8 @@ describe("SimulationForm", () => {
 
   it("preserves the current form when JSON is invalid or incomplete", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm onSubmit={onSubmit} />);
+    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: '{"workload":{}}' } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
@@ -689,7 +710,8 @@ describe("SimulationForm", () => {
   });
 
   it("rejects exporting invalid drafts without replacing the JSON box", () => {
-    render(<SimulationForm onSubmit={vi.fn()} />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: "previous" } });
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
@@ -698,7 +720,7 @@ describe("SimulationForm", () => {
   });
 
   it("disables submission and parameter transfer while a simulation is running", () => {
-    render(<SimulationForm onSubmit={vi.fn()} disabled />);
+    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} disabled />);
 
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "导入参数" })).toBeDisabled();

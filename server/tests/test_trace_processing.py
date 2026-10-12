@@ -43,6 +43,34 @@ def config() -> dict:
     }
 
 
+@pytest.mark.parametrize("field", ["t", "api_time", "think_time"])
+@pytest.mark.parametrize("invalid", [-1, float("inf"), float("nan")])
+def test_invalid_original_request_times_are_rejected(
+    tmp_path: Path, field: str, invalid: object,
+) -> None:
+    raw = json.loads(sample())
+    raw["requests"][1][field] = invalid
+    source = tmp_path / "trace.jsonl"
+    source.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="原始时间或思考时间无效"):
+        scan_trace(source)
+    with pytest.raises(ValueError, match="原始时间或思考时间无效"):
+        compile_plan(source, ["session-a"])
+
+
+def test_missing_api_time_is_rejected_before_topology(tmp_path: Path) -> None:
+    raw = json.loads(sample())
+    del raw["requests"][0]["api_time"]
+    source = tmp_path / "trace.jsonl"
+    source.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="原始时间或思考时间无效"):
+        scan_trace(source)
+    with pytest.raises(ValueError, match="原始时间或思考时间无效"):
+        compile_plan(source, ["session-a"])
+
+
 def test_local_summary_parent_and_export(tmp_path: Path) -> None:
     source = tmp_path / "trace.jsonl"
     source.write_bytes(sample())

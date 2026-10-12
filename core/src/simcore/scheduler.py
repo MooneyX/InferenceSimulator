@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from simcore.kv_cache import CacheCapacityError, L1KVCache, TieredKVCache
+from simcore.kv_cache import CacheCapacityError, TieredKVCache
 from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
@@ -69,7 +69,7 @@ class AdmissionBatch:
 class F001Scheduler:
     """按当前 KV 状态逐队头准入；预算只估算未来页，不预分配。"""
 
-    def __init__(self, engine: EngineConfig, cache: L1KVCache | TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值
+    def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:
             raise ValueError("L1 页配置与引擎配置不一致")
         if (
@@ -85,10 +85,6 @@ class F001Scheduler:
         self._queued: set[int] = set()
         self._last_arrival = float("-inf")
         self._ratio = 0.7
-
-    @property
-    def ratio(self) -> float:  # 当前调度预算 → 未来输出预留比例
-        return self._ratio
 
     @property
     def num_waiting(self) -> int:  # FCFS 等待队列 → 等待请求数

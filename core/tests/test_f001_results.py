@@ -178,25 +178,30 @@ def test_no_success_metrics_are_undefined_but_physical_pages_remain_counted() ->
 
 
 def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
+    """组件故障注入：重算后以外部占用触发失败，验证结果汇总不丢重算成本。"""
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
     engine = Engine(cfg, perf, output_targets={0: 3})
     req = InferenceRequest(0, 0, None, 3, 3, (), 0)
     engine.submit(req, 0)
-    engine.step(0, 0)
-    engine.step(3, 1)
+    assert engine.start_step(0, 0) == (3, ())
+    assert engine.finish_step(3) == ()
+    assert engine.start_step(3, 1) == (0, ())
+    assert engine.finish_step(3) == ()
     assert engine._prefix_cache.state(0).k == 4 and engine._running[0] == 2
     engine._prefix_cache.withdraw(0)
     del engine._running[0]
     engine._retry_counts[0] = 1
     engine._prefix_scheduler.requeue(req, 3, generated_tokens=2)
-    assert engine.step(3, 2) == (4, ())
+    assert engine.start_step(3, 2) == (4, ())
+    assert engine.finish_step(7) == ()
     assert engine._replayed_tokens[0] == 4
     holder = InferenceRequest(99, 0, None, 8, 1, (), 0)
     engine._prefix_cache.pin(holder, 0)
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)
-    assert engine.step(7, 3) == (0, ())
+    assert engine.start_step(7, 3) == (0, ())
+    assert engine.finish_step(7) == ()
     engine._prefix_cache.withdraw(99)
     run = engine.finalize()
     assert run.records == () and run.aborted_requests[0].retry_count == 1

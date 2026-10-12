@@ -65,13 +65,16 @@ class TestImmediateEngine:
         engine = Engine(config, SIMPLE, output_targets={7: plan.turns[7].output_len})
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
+        assert not hasattr(engine, "step")
         engine.submit(request, 3.0)
         assert engine.has_work
         with pytest.raises(ValueError, match="重复"):
             engine.submit(request, 3.0)
-        duration, finished = engine.step(3.0, 0)
-        assert (duration, finished) == (5.0, (7,))
+        started = engine.start_step(3.0, 0)
+        assert started == (5.0, (7,))
         assert not engine.has_work
+        assert engine._prefix_cache.page("chunk:7:0") is None
+        assert engine.finish_step(8.0) == (7,)
         completion = engine.complete(8.0, 7)
         assert completion.request_id == request.request_id
         assert completion.finish_time_ms == 8.0
@@ -269,8 +272,9 @@ class TestInvariants:
         arrival_times = {r.arrival for r in result.records}
         step_list = steps(result)
         for prev, cur in itertools.pairwise(step_list):
-            assert cur.time >= prev.end
-            if cur.time > prev.end:
+            previous_end = prev.time + prev.duration
+            assert cur.time >= previous_end
+            if cur.time > previous_end:
                 assert cur.time in arrival_times
 
     def test_trace_time_monotonic(self, result: EngineRun) -> None:

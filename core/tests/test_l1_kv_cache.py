@@ -2,7 +2,7 @@
 
 import pytest
 
-from simcore.kv_cache import CacheCapacityError, CacheEntry, L1KVCache, TieredKVCache
+from simcore.kv_cache import CacheCapacityError, CacheEntry, TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.schemas import InferenceRequest
 
@@ -36,7 +36,7 @@ def run_prefill(cache: TieredKVCache, req: InferenceRequest) -> None:
 
 @pytest.mark.parametrize("prompt_len", [63, 64, 65])
 def test_prompt_last_token_is_not_reused(prompt_len: int) -> None:
-    cache = L1KVCache(256, 64)
+    cache = TieredKVCache(256, 64)
     parent = request(0, 128)
     run_prefill(cache, parent)
     cache.finish(0)
@@ -49,7 +49,7 @@ def test_prompt_last_token_is_not_reused(prompt_len: int) -> None:
 
 
 def test_page_size_one_still_requires_last_input_token() -> None:
-    cache = L1KVCache(8, 1)
+    cache = TieredKVCache(8, 1)
     run_prefill(cache, request(0, 4))
     cache.finish(0)
     assert cache.probe(request(1, 3, tuple(encode(0, i) for i in range(2))), 3) == (
@@ -65,7 +65,7 @@ def test_page_size_one_still_requires_last_input_token() -> None:
 
 
 def test_private_tail_and_decode_full_page_only_published_at_completion() -> None:
-    cache = L1KVCache(256, 64)
+    cache = TieredKVCache(256, 64)
     req = request(0, 63)
     run_prefill(cache, req)
     assert cache.state(0).k == 63 and cache.state(0).f == 0
@@ -78,12 +78,12 @@ def test_private_tail_and_decode_full_page_only_published_at_completion() -> Non
     page = cache.page(encode(0, 0))
     assert page is not None and page.ref_count == 0 and page.tier == "L1"
     assert page.capacity_pages == 1
-    assert cache.private_pages == 0 and cache.evictable_pages == 1
+    assert cache._private_pages == 0 and cache.evictable_pages == 1
     assert_conserved(cache)
 
 
 def test_same_batch_private_pages_merge_only_after_publication() -> None:
-    cache = L1KVCache(256, 64)
+    cache = TieredKVCache(256, 64)
     shared = encode(0, 0)
     first = request(1, 65, (shared,))
     second = request(2, 65, (shared,))
@@ -92,10 +92,10 @@ def test_same_batch_private_pages_merge_only_after_publication() -> None:
         cache.pin(req, 0)
         cache.admit(req.request_id)
         cache.extend(req.request_id, 65)
-    assert cache.resident_pages == 4 and cache.private_pages == 4
+    assert cache.resident_pages == 4 and cache._private_pages == 4
     assert cache.page(shared) is None
     assert cache.publish_batch((2, 1)) == 1
-    assert cache.resident_pages == 3 and cache.private_pages == 2
+    assert cache.resident_pages == 3 and cache._private_pages == 2
     assert cache.state(1).f == cache.state(2).f == 64
     assert cache.page(shared) is not None and cache.page(shared).ref_count == 2  # type: ignore[union-attr]
     assert_conserved(cache)
@@ -108,7 +108,7 @@ def test_same_batch_private_pages_merge_only_after_publication() -> None:
 
 
 def test_failed_candidate_undoes_pin_without_refreshing_lru() -> None:
-    cache = L1KVCache(192, 64)
+    cache = TieredKVCache(192, 64)
     parent = request(0, 64)
     run_prefill(cache, parent)
     cache.finish(0)
@@ -133,7 +133,7 @@ def test_failed_candidate_undoes_pin_without_refreshing_lru() -> None:
 
 
 def test_multiple_candidates_pin_one_shared_page_once() -> None:
-    cache = L1KVCache(128, 64)
+    cache = TieredKVCache(128, 64)
     run_prefill(cache, request(0, 64))
     cache.finish(0)
     shared = encode(0, 0)
@@ -152,14 +152,14 @@ def test_multiple_candidates_pin_one_shared_page_once() -> None:
 
 
 def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
-    cache = L1KVCache(128, 64)
+    cache = TieredKVCache(128, 64)
     run_prefill(cache, request(0, 64))
     cache.finish(0)
     contender = request(1, 65, (encode(0, 0),))
     for _ in range(100):
         cache.pin(contender, 64)
         cache.cancel_pin(1)
-    assert len(cache._evictable_heap) == 1
+    assert len(cache._tiers["L1"].heap) == 1
     assert cache.ensure_free(1) == 0
     assert cache.evictable_pages == 1
     assert cache.ensure_free(2) == 1
@@ -168,7 +168,7 @@ def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
 
 
 def test_eviction_is_lru_and_never_evicts_active_pages() -> None:
-    cache = L1KVCache(128, 64)
+    cache = TieredKVCache(128, 64)
     run_prefill(cache, request(0, 64))
     cache.finish(0)
     run_prefill(cache, request(1, 64))
@@ -187,7 +187,7 @@ def test_eviction_is_lru_and_never_evicts_active_pages() -> None:
 
 
 def test_successful_reuse_refreshes_lru_and_skips_stale_heap_entry() -> None:
-    cache = L1KVCache(128, 64)
+    cache = TieredKVCache(128, 64)
     run_prefill(cache, request(0, 64))
     cache.finish(0)
     run_prefill(cache, request(1, 64))
@@ -203,13 +203,13 @@ def test_successful_reuse_refreshes_lru_and_skips_stale_heap_entry() -> None:
 
 
 def test_restore_reuses_complete_context_and_withdraw_discards_private_pages() -> None:
-    cache = L1KVCache(256, 64)
+    cache = TieredKVCache(256, 64)
     req = request(0, 65)
     run_prefill(cache, req)
     assert cache.extend(0, 128) == 0
     assert cache.page(encode(0, 1)) is None
     cache.withdraw(0)
-    assert cache.resident_pages == 1 and cache.private_pages == 0
+    assert cache.resident_pages == 1 and cache._private_pages == 0
     assert cache.probe(req, 65) == ((encode(0, 0), "L1"),)
     assert cache.probe(req, 128, restoring=True) == ((encode(0, 0), "L1"),)
     cache.pin(req, 64)
@@ -222,7 +222,7 @@ def test_restore_reuses_complete_context_and_withdraw_discards_private_pages() -
 
 
 def test_full_hit_restores_without_allocating_or_prefill() -> None:
-    cache = L1KVCache(128, 64)
+    cache = TieredKVCache(128, 64)
     req = request(0, 64)
     run_prefill(cache, req)
     cache.finish(0)
@@ -230,7 +230,7 @@ def test_full_hit_restores_without_allocating_or_prefill() -> None:
     cache.pin(req, 64)
     state = cache.admit(0)
     assert state.k == state.f == 64
-    assert cache.private_pages == 0 and cache.resident_pages == 1
+    assert cache._private_pages == 0 and cache.resident_pages == 1
     cache.withdraw(0)
     assert_conserved(cache)
 
@@ -243,10 +243,11 @@ def tier_page(cache: TieredKVCache, chunk_id: str) -> CacheEntry:
 
 def assert_tiers_conserved(cache: TieredKVCache) -> None:
     entries = cache._entries
-    assert sum(snapshot.resident_blocks for snapshot in cache.tier_snapshots().values()) == (
-        len(entries) + cache.private_pages + sum(state.reserved for state in cache._tiers.values())
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
+    assert sum(snapshot.resident_blocks for snapshot in snapshots.values()) == (
+        len(entries) + cache._private_pages + sum(state.reserved for state in cache._tiers.values())
     )
-    for tier, snapshot in cache.tier_snapshots().items():
+    for tier, snapshot in snapshots.items():
         assert snapshot.free_blocks + snapshot.resident_blocks == snapshot.capacity_blocks
         assert snapshot.active_blocks + snapshot.evictable_blocks == snapshot.resident_blocks
         assert snapshot.evictable_blocks == sum(
@@ -254,7 +255,7 @@ def assert_tiers_conserved(cache: TieredKVCache) -> None:
         )
         assert snapshot.resident_blocks == (
             sum(entry.tier == tier for entry in entries.values())
-            + (cache.private_pages if tier == "L1" else 0)
+            + (cache._private_pages if tier == "L1" else 0)
             + cache._tiers[tier].reserved
         )
 
@@ -290,10 +291,11 @@ def test_probe_returns_ordered_tiers_and_stops_at_first_missing_page() -> None:
 
 
 def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None:
-    cache = TieredKVCache(2, 1, 1)
+    cache = TieredKVCache(2, 1, 2)
     for request_id in range(3):
         run_prefill(cache, request(request_id, 1))
         cache.finish(request_id)
+    cache.ensure_free(1)
     shared = encode(0, 0)
     first = request(3, 2, (shared,))
     second = request(4, 2, (shared,))
@@ -304,7 +306,12 @@ def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None
     assert tier_page(cache, shared).ref_count == 2
     assert cache.plan((shared, shared), reserve_pages=1) == ((shared, "L2"),)
     assert tier_page(cache, shared).tier == "L2"
-    assert cache.prepare_batch((shared, shared), reserve_pages=1) == ((shared, "L2"),)
+    assert cache.reserve_transfer(shared, "L1") == "L2"
+    assert tier_page(cache, shared).tier == "L2"
+    assert tier_page(cache, shared).ref_count == 3
+    assert cache._tiers["L1"].reserved == 1
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(shared) == "L2"
     assert cache.promotions == 1
     assert tier_page(cache, shared).tier == "L1"
     assert sources == ((shared, "L2"),)  # 来源按查询时冻结，不随迁移改变
@@ -324,12 +331,12 @@ def test_tiered_plan_failure_and_cancel_pin_are_side_effect_free() -> None:
     contender = request(2, 2, (shared,))
     cache.pin(contender, 1)
     page = tier_page(cache, shared)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     counters = (cache.promotions, cache.demotions, cache.deletions)
     with pytest.raises(CacheCapacityError):
         cache.plan((shared,), reserve_pages=1)
     assert cache.page(shared) == page
-    assert cache.tier_snapshots() == snapshots
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert (cache.promotions, cache.demotions, cache.deletions) == counters
     cache.cancel_pin(contender.request_id)
     assert tier_page(cache, shared).last_access_seq == page.last_access_seq
@@ -345,19 +352,18 @@ def test_tiered_partial_cascade_failure_preserves_cache_and_lru() -> None:
     protected = request(4, 2, (encode(3, 0),))
     cache.pin(protected, 1)
     entries = dict(cache._entries)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
     queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
     counters = (cache._access_seq, cache.promotions, cache.demotions, cache.deletions)
     for operation in (
         lambda: cache.plan(reserve_pages=2),
-        lambda: cache.promote(reserve_pages=2),
         lambda: cache.ensure_free(2),
     ):
         with pytest.raises(CacheCapacityError):
             operation()
         assert cache._entries == entries
-        assert cache.tier_snapshots() == snapshots
+        assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
         assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
         assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
         assert (cache._access_seq, cache.promotions, cache.demotions, cache.deletions) == counters
@@ -386,7 +392,7 @@ def test_tiered_recomputed_low_id_keeps_new_l1_page_without_restore() -> None:
     assert_tiers_conserved(cache)
 
 
-def test_tiered_l3_promotion_uses_source_slot_for_two_level_cascade() -> None:
+def test_l3_plan_is_only_precheck_and_transfer_cannot_borrow_source_slot() -> None:
     cache = TieredKVCache(2, 1, 1, 1)
     for request_id in range(4):
         run_prefill(cache, request(request_id, 1))
@@ -395,15 +401,17 @@ def test_tiered_l3_promotion_uses_source_slot_for_two_level_cascade() -> None:
     assert tier_page(cache, shared).tier == "L3"
     contender = request(4, 2, (shared,))
     cache.pin(contender, 1)
-    promotions = cache.plan((shared,), reserve_pages=1)
-    assert promotions == ((shared, "L3"),)
-    assert tier_page(cache, shared).tier == "L3"
-    assert cache.promote((shared,), reserve_pages=1) == promotions
-    assert tier_page(cache, shared).tier == "L1"
-    assert cache.l3_promotions == 1
-    assert cache.free_pages == 1
-    cache.admit(contender.request_id)
-    cache.withdraw(contender.request_id)
+    entries = dict(cache._entries)
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
+    assert cache.plan((shared,), reserve_pages=1) == ((shared, "L3"),)
+    assert cache._entries == entries
+    with pytest.raises(CacheCapacityError):
+        cache.reserve_transfer(shared, "L2")
+    assert cache._entries == entries
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
+    assert not cache._transfers
+    assert cache.promotions == 0
+    cache.cancel_pin(contender.request_id)
     assert_tiers_conserved(cache)
 
 
@@ -414,7 +422,7 @@ def test_transfer_reserves_destination_without_exposing_page_or_refreshing_sourc
         cache.finish(request_id)
     source = encode(0, 0)
     cache.ensure_free(1)
-    before = cache.tier_snapshots()
+    before = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     page = tier_page(cache, source)
     assert page.tier == "L2" and page.ref_count == 0
     assert cache.reserve_transfer(source, "L1") == "L2"
@@ -425,9 +433,12 @@ def test_transfer_reserves_destination_without_exposing_page_or_refreshing_sourc
     assert cache.tier_snapshot("L2").evictable_blocks == before["L2"].evictable_blocks - 1
     with pytest.raises(ValueError, match="在途"):
         cache.reserve_transfer(source, "L1")
-    cache.cancel_transfer(source)
-    assert cache.page(source) == page
-    assert cache.tier_snapshots() == before
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(source) == "L2"
+    assert tier_page(cache, source).tier == "L1"
+    assert tier_page(cache, source).ref_count == 0
+    assert tier_page(cache, source).last_access_seq > page.last_access_seq
+    assert cache.tier_snapshot("L2").resident_blocks == before["L2"].resident_blocks - 1
     assert_tiers_conserved(cache)
 
 
@@ -458,13 +469,13 @@ def test_transfer_failed_reservation_preserves_all_cache_state() -> None:
         cache.finish(request_id)
     source = encode(0, 0)
     entries = dict(cache._entries)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
     queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
     with pytest.raises(CacheCapacityError):
         cache.reserve_transfer(source, "L1")
     assert cache._entries == entries
-    assert cache.tier_snapshots() == snapshots
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
     assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
     assert cache._transfers == {}
@@ -499,14 +510,14 @@ def test_full_transfer_cascade_failure_protects_source_and_is_atomic() -> None:
     source = encode(0, 0)
     assert tier_page(cache, source).tier == "L3"
     entries = dict(cache._entries)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     heaps = {tier: list(state.heap) for tier, state in cache._tiers.items()}
     queued = {tier: set(state.queued) for tier, state in cache._tiers.items()}
     counters = (cache._access_seq, cache.promotions, cache.demotions, cache.deletions)
     with pytest.raises(CacheCapacityError):
         cache.reserve_transfer(source, "L2")
     assert cache._entries == entries
-    assert cache.tier_snapshots() == snapshots
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert {tier: state.heap for tier, state in cache._tiers.items()} == heaps
     assert {tier: state.queued for tier, state in cache._tiers.items()} == queued
     assert (cache._access_seq, cache.promotions, cache.demotions, cache.deletions) == counters
@@ -524,7 +535,10 @@ def test_incremental_promotion_keeps_unaffected_entries_and_heaps() -> None:
     page = tier_page(cache, unrelated)
     heaps = {tier: state.heap for tier, state in cache._tiers.items()}
     cache.pin(request(8, 2, (source,)), 1)
-    assert cache.promote((source,)) == ((source, "L2"),)
+    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert tier_page(cache, source).tier == "L2"
+    assert_tiers_conserved(cache)
+    assert cache.complete_transfer(source) == "L2"
     assert cache.page(unrelated) is page
     assert all(state.heap is heaps[tier] for tier, state in cache._tiers.items())
     cache.cancel_pin(8)
@@ -541,10 +555,10 @@ def test_inflight_demotion_retains_source_until_completion_and_rejects_new_activ
     assert tier_page(cache, source).ref_count == 1
     assert cache.tier_snapshot("L2").resident_blocks == 1
     cache.pin(request(1, 2, (source,)), 1)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     with pytest.raises(CacheCapacityError, match="活动引用"):
         cache.complete_transfer(source)
-    assert cache.tier_snapshots() == snapshots
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     cache.cancel_pin(1)
     assert cache.complete_transfer(source) == "L1"
     assert tier_page(cache, source).tier == "L2"
@@ -583,11 +597,11 @@ def test_transfer_rejects_pinned_demotion_without_allocating_destination() -> No
     source = encode(0, 0)
     cache.pin(request(9, 2, (source,)), 1)
     page = tier_page(cache, source)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     with pytest.raises(CacheCapacityError, match="活动引用"):
         cache.reserve_transfer(source, "L2")
     assert cache.page(source) == page
-    assert cache.tier_snapshots() == snapshots
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert cache._transfers == {}
     cache.cancel_pin(9)
     assert_tiers_conserved(cache)
@@ -604,15 +618,20 @@ def test_parallel_transfer_reservations_are_counted_and_isolated() -> None:
     assert cache.reserve_transfer(second, "L1") == "L2"
     assert cache.tier_snapshot("L1").free_blocks == 0
     assert_tiers_conserved(cache)
-    snapshots = cache.tier_snapshots()
+    snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     with pytest.raises(CacheCapacityError):
         cache.plan(reserve_pages=2)
-    assert cache.tier_snapshots() == snapshots
-    cache.cancel_transfer(first)
-    assert cache.tier_snapshot("L1").free_blocks == 1
+    assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
+    assert cache.complete_transfer(first) == "L2"
+    assert cache.tier_snapshot("L1").free_blocks == 0
+    assert cache._tiers["L1"].reserved == 1
+    assert tier_page(cache, first).tier == "L1"
+    assert tier_page(cache, second).tier == "L2"
+    assert tier_page(cache, second).ref_count == 1
+    assert_tiers_conserved(cache)
     assert cache.complete_transfer(second) == "L2"
-    assert tier_page(cache, first).tier == "L2"
     assert tier_page(cache, second).tier == "L1"
+    assert cache._tiers["L1"].reserved == 0
     assert_tiers_conserved(cache)
 
 
@@ -624,7 +643,8 @@ def test_l3_to_l2_reload_is_promotion_and_preserves_new_request_refs() -> None:
     cache.ensure_free(1)
     make_room = encode(2, 0)
     cache.pin(request(9, 2, (make_room,)), 1)
-    cache.promote((make_room,))
+    assert cache.reserve_transfer(make_room, "L1") == "L2"
+    assert cache.complete_transfer(make_room) == "L2"
     cache.cancel_pin(9)
     source = encode(0, 0)
     assert tier_page(cache, source).tier == "L3"

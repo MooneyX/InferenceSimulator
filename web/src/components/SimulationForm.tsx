@@ -14,10 +14,10 @@ import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
-  onSubmitAuto?: (request: ResolvedRequest) => void;
-  onReplay?: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number,
+  onSubmitAuto: (request: ResolvedRequest) => void;
+  onReplay: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number,
     seed: number, targetQps?: number) => void;
-  onReplayAuto?: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number,
+  onReplayAuto: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number,
     seed: number, targetQps?: number) => void;
   disabled?: boolean;
 }
@@ -108,7 +108,7 @@ function NumberField({
 }
 
 export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto, disabled = false }: SimulationFormProps) {
-  const [mode, setMode] = useState<"manual" | "automatic">(onSubmitAuto ? "automatic" : "manual");
+  const [mode, setMode] = useState<"manual" | "automatic">("automatic");
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
@@ -144,11 +144,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
       hardware.collective_latency_ms == null)) ||
     (needsEpCommunication && hardware.ep_communication_latency_ms == null)
   );
-  const synthetic = config.workload.synthetic;
-
-  if (synthetic === undefined || synthetic === null) {
-    throw new Error("SimulationForm requires a synthetic workload configuration");
-  }
+  const synthetic = config.workload.synthetic!;
   function changeArrivalMode(arrivalMode: "open_loop" | "session"): void {
     const current = config.workload.synthetic!;
     const nextSynthetic = arrivalMode === "session"
@@ -157,7 +153,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           arrival_mode: "session" as const,
           session_rate: 1.28,
           prompt_len: current.prompt_len,
-          turn_increment_len: current.turn_increment_len ?? { dist: "poisson" as const, mean: 256 },
+          turn_increment_len: current.turn_increment_len,
           output_len: current.output_len,
           max_new_tokens: current.max_new_tokens,
           seed: current.seed,
@@ -169,7 +165,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           arrival_mode: "open_loop" as const,
           arrival_rate: 64,
           prompt_len: current.prompt_len,
-          turn_increment_len: current.turn_increment_len ?? { dist: "poisson" as const, mean: 256 },
+          turn_increment_len: current.turn_increment_len,
           output_len: current.output_len,
           max_new_tokens: current.max_new_tokens,
           seed: current.seed,
@@ -186,17 +182,17 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
     if (workloadMode === "trace") {
       if (!replay) return;
       if (mode === "automatic") {
-        onReplayAuto?.(replay.id, { config: submissionConfig, model, hardware, storage,
+        onReplayAuto(replay.id, { config: submissionConfig, model, hardware, storage,
           timing, tp_size: tpSize, ep_size: epSize }, replay.mode, replay.rate, replay.seed,
         replay.targetQps);
       } else {
-        onReplay?.(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed,
+        onReplay(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed,
           replay.targetQps);
       }
       return;
     }
     if (mode === "automatic") {
-      onSubmitAuto?.({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
+      onSubmitAuto({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
     } else {
       onSubmit(submissionConfig);
     }
@@ -235,7 +231,6 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
       const value: unknown = JSON.parse(paramsJson.trim());
       if (value !== null && typeof value === "object" && "config" in value) {
         const imported = parseResolvedRequestJson(paramsJson.trim());
-        if (!onSubmitAuto) throw new Error("当前页面不支持自动解析参数");
         setAutomaticConfig(imported.config.workload.mode === "trace"
           ? { ...imported.config, workload: automaticConfig.workload } : imported.config);
         setWorkloadMode(imported.config.workload.mode);
@@ -267,7 +262,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
 
   return (
     <form className="simulation-form" noValidate onSubmit={handleSubmit}>
-      {onSubmitAuto && <fieldset className="configuration-mode" disabled={disabled}>
+      <fieldset className="configuration-mode" disabled={disabled}>
         <legend>配置方式</legend>
         <label className={mode === "automatic" ? "mode-option selected" : "mode-option"}>
           <input type="radio" name="configuration-mode" value="automatic" checked={mode === "automatic"}
@@ -279,7 +274,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
             onChange={() => { setMode("manual"); setShowValidation(false); setTransferNote(null); }} />
           <span><strong>手动配置</strong><small>直接填写容量与经验计时参数</small></span>
         </label>
-      </fieldset>}
+      </fieldset>
       <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
@@ -471,7 +466,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           <LengthDistributionEditor
             name="turn_increment_len"
             label="子轮新增内容长度"
-            value={synthetic.turn_increment_len ?? { dist: "fixed", value: 256 }}
+            value={synthetic.turn_increment_len!}
             errors={{
               value: errorByField.get("workload.synthetic.turn_increment_len.value"),
               mean: errorByField.get("workload.synthetic.turn_increment_len.mean"),

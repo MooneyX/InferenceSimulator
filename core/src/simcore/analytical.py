@@ -33,8 +33,6 @@ def step_cost(
     ep_size: int = 1,
 ) -> StepCost:  # 单步负载、模型、硬件及 TP/EP 并行度 → 分项耗时与资源成本
     """按真实单步工作量计算各层依赖；MoE 替换 Dense FFN。"""
-    if not workload.prefill and not workload.decode:
-        return StepCost(0.0, 0.0, 0.0, 0.0, 0.0)
     if model.attention_groups is not None:
         return _group_step_cost(workload, model, hardware, tp_size, ep_size)
     if model.moe_layers:

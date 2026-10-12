@@ -2,7 +2,7 @@
 
 import pytest
 
-from simcore.kv_cache import L1KVCache, TieredKVCache
+from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
@@ -15,7 +15,7 @@ def make(
     max_running: int = 8,
     max_prefill: int = 16_384,
     exclusive: bool = True,
-) -> tuple[F001Scheduler, L1KVCache]:
+) -> tuple[F001Scheduler, TieredKVCache]:
     config = EngineConfig(
         max_running_requests=max_running,
         max_total_tokens=capacity,
@@ -23,7 +23,7 @@ def make(
         max_prefill_tokens=max_prefill,
         pd_mutually_exclusive=exclusive,
     )
-    cache = L1KVCache(config.max_total_tokens, config.page_size)
+    cache = TieredKVCache(config.max_total_tokens, config.page_size)
     return F001Scheduler(config, cache), cache
 
 
@@ -228,7 +228,7 @@ def test_restored_full_hit_requires_no_empty_prefill_step() -> None:
     batch = scheduler.select_prefill({})
     assert batch.admitted == () and [i.request.request_id for i in batch.restored] == [0]
     assert batch.current_offset == 0 and cache.state(0).k == cache.state(0).f == 64
-    assert cache.private_pages == 0 and cache.resident_pages == 1
+    assert cache.private_page_count(0) == 0 and cache.resident_pages == 1
 
 
 def test_ratio_decays_only_for_decode_reestimates_after_withdraw_and_resets_when_idle() -> None:
@@ -239,8 +239,8 @@ def test_ratio_decays_only_for_decode_reestimates_after_withdraw_and_resets_when
     assert scheduler.advance_ratio(state, decoded=True) == pytest.approx(0.7 - (0.7 - 0.098) / 600)
     assert scheduler.advance_ratio(state, decoded=True, withdrew=True) == pytest.approx(60 / 201)
     for _ in range(700):
-        scheduler.advance_ratio(state, decoded=True)
-    assert scheduler.ratio == 0.098
+        ratio = scheduler.advance_ratio(state, decoded=True)
+    assert ratio == 0.098
     assert scheduler.advance_ratio({0: RunningRequest(request(0), 1)}, withdrew=True) == 1.0
     assert scheduler.advance_ratio({}, idle=True) == 0.7
 
@@ -284,6 +284,21 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     assert pinned_page is not None and pinned_page.ref_count == 2 and pinned_page.tier == "L2"
     assert cache.plan(batch.promote_ids, 2) == ((shared, "L2"),)
     assert cache.promotions == 0
+    assert cache.reserve_transfer(shared, "L1") == "L2"
+    in_flight = cache.page(shared)
+    assert in_flight is not None and in_flight.tier == "L2" and in_flight.ref_count == 3
+    assert cache.complete_transfer(shared) == "L2"
+    cache.ensure_free(sum(item.required_pages for item in batch.admitted))
+    for item in batch.admitted:
+        key = item.waiting.request.request_id
+        cache.admit(key)
+        cache.extend(key, item.context_after)
+        cache.publish(key)
+    promoted_page = cache.page(shared)
+    assert promoted_page is not None and promoted_page.tier == "L1" and promoted_page.ref_count == 2
+    assert cache.promotions == 1
+    for key in (1, 2):
+        cache.finish(key)
 
 
 def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:

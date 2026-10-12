@@ -29,15 +29,19 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
     engine = Engine(config, PERF, output_targets={0: 2, 1: 1})
     engine.submit(request(0, 2, maximum=2), 0)
-    assert engine.step(0, 0) == (2, ())
+    assert engine.start_step(0, 0) == (2, ())
+    assert engine._prefix_cache.page(encode(0, 0)) is None
+    assert engine.finish_step(2) == ()
     assert engine._prefix_cache.page(encode(0, 1)) is None
-    assert engine.step(2, 1) == (0, (0,))
+    assert engine.start_step(2, 1) == (0, (0,))
+    assert engine.finish_step(2) == (0,)
     assert engine._prefix_cache.page(encode(0, 1)) is None
     engine.complete(2, 0)
     assert engine._prefix_cache.page(encode(0, 1)) is None  # K=P+O-1=3
     child = request(1, 5, inherited=(encode(0, 0),))
     engine.submit(child, 2)
-    assert engine.step(2, 2) == (3, (1,))
+    assert engine.start_step(2, 2) == (3, (1,))
+    assert engine.finish_step(5) == (1,)
     engine.complete(5, 1)
     assert engine.finalize().records[1].actual_hit_tokens == 2
 
@@ -48,14 +52,17 @@ def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> No
     identity = (encode(99, 0),)
     engine.submit(request(0, 3, inherited=identity), 0)
     engine.submit(request(1, 3, inherited=identity), 0)
-    assert engine.step(0, 0) == (6, (0, 1))
+    assert engine.start_step(0, 0) == (6, (0, 1))
+    assert engine._prefix_cache.page(identity[0]) is None
+    assert engine.finish_step(6) == (0, 1)
     page = engine._prefix_cache.page(identity[0])
     assert page is not None and page.ref_count == 2
     assert engine._prefix_cache.peak_resident_pages == 4
     engine.complete(6, 0)
     engine.complete(6, 1)
     engine.submit(request(2, 3, inherited=identity), 6)
-    assert engine.step(6, 1) == (1, (2,))
+    assert engine.start_step(6, 1) == (1, (2,))
+    assert engine.finish_step(7) == (2,)
     engine.complete(7, 2)
     assert [record.actual_hit_tokens for record in engine.finalize().records] == [0, 0, 2]
 
@@ -86,9 +93,12 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
     engine.submit(parent, 0)
     now = 0.0
     for produced in range(1, output + 1):
-        duration, finished = engine.step(now, produced - 1)
+        started = engine.start_step(now, produced - 1)
+        assert started is not None
+        duration, expected_finished = started
         now += duration
-        assert finished == ((7,) if produced == output else ())
+        assert engine.finish_step(now) == expected_finished
+        assert expected_finished == ((7,) if produced == output else ())
         k = prompt + produced - 1
         state = engine._prefix_cache.state(7)
         assert state.k == k
@@ -108,9 +118,11 @@ def test_distinct_roots_do_not_share_input_pages() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
     engine = Engine(config, PERF, output_targets={0: 1, 1: 1})
     engine.submit(request(0, 2), 0)
-    assert engine.step(0, 0) == (2, (0,))
+    assert engine.start_step(0, 0) == (2, (0,))
+    assert engine.finish_step(2) == (0,)
     engine.complete(2, 0)
     engine.submit(request(1, 2), 2)
-    assert engine.step(2, 1) == (2, (1,))
+    assert engine.start_step(2, 1) == (2, (1,))
+    assert engine.finish_step(4) == (1,)
     engine.complete(4, 1)
     assert engine.finalize().records[1].matched_cache_tokens == 0

@@ -534,7 +534,7 @@ describe("AutomaticConfig", () => {
 
   it("shows the exact field path for server validation errors during preview", async () => {
     vi.mocked(resolveAutomatic).mockRejectedValueOnce(new SimulationApiError("模型规格错误", {
-      kind: "validation", validationErrors: [{
+      validationErrors: [{
         loc: ["body", "model", "num_experts"], msg: "专家数必须为正", type: "value_error",
       }],
     }));

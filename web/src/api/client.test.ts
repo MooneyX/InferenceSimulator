@@ -156,7 +156,6 @@ describe("simulate", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
-      signal: undefined,
     });
   });
 
@@ -174,8 +173,6 @@ describe("simulate", () => {
 
     expect(error).toBeInstanceOf(SimulationApiError);
     expect(error).toMatchObject({
-      kind: "validation",
-      status: 422,
       validationErrors: detail,
     });
   });
@@ -187,8 +184,6 @@ describe("simulate", () => {
     );
 
     await expect(simulate(config)).rejects.toMatchObject({
-      kind: "validation",
-      status: 422,
       message: "请求输入超过 L1 容量",
       validationErrors: [],
     });
@@ -201,8 +196,6 @@ describe("simulate", () => {
     );
 
     await expect(simulate(config)).rejects.toMatchObject({
-      kind: "not_implemented",
-      status: 501,
       message: "trace workload 未实现",
     });
   });
@@ -215,8 +208,6 @@ describe("simulate", () => {
     } as unknown as Response));
 
     await expect(simulate(config)).rejects.toMatchObject({
-      kind: "http",
-      status: 503,
       message: "仿真请求失败（HTTP 503）",
     });
   });
@@ -229,8 +220,7 @@ describe("simulate", () => {
     } as unknown as Response));
 
     await expect(simulate(config)).rejects.toMatchObject({
-      kind: "invalid_response",
-      status: 200,
+      message: "仿真服务返回了无效的 JSON 响应",
     });
   });
 
@@ -242,7 +232,6 @@ describe("simulate", () => {
 
     expect(error).toBeInstanceOf(SimulationApiError);
     expect(error).toMatchObject({
-      kind: "network",
       message: "无法连接仿真服务",
       cause,
     });
@@ -288,7 +277,7 @@ describe("automatic resolution errors", () => {
   it("reports unsupported multi-GPU empirical trace timing as not implemented", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 TP" })));
     await expect(simulateReplayPlanAutomatic("plan-1", request, "session", 2, 7)).rejects.toMatchObject({
-      kind: "not_implemented", status: 501, message: "四系数不支持 TP",
+      message: "四系数不支持 TP",
     });
   });
 
@@ -297,17 +286,17 @@ describe("automatic resolution errors", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(422, { detail }))
       .mockResolvedValueOnce(jsonResponse(422, { detail: "TP 数必须等于 GPU 卡数" })));
     await expect(resolveAutomatic(request)).rejects.toMatchObject({
-      kind: "validation", status: 422, validationErrors: detail,
+      validationErrors: detail,
     });
     await expect(simulateAutomatic(request)).rejects.toMatchObject({
-      kind: "validation", status: 422, message: "TP 数必须等于 GPU 卡数", validationErrors: [],
+      message: "TP 数必须等于 GPU 卡数", validationErrors: [],
     });
   });
 
   it("recognizes unimplemented resolved run modes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 EP" })));
     await expect(simulateAutomatic(request)).rejects.toMatchObject({
-      kind: "not_implemented", status: 501, message: "四系数不支持 EP",
+      message: "四系数不支持 EP",
     });
   });
 });

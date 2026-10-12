@@ -5,13 +5,11 @@ export const GANTT_PHASES = ["queue", "prefill", "decode"] as const;
 export type GanttPhase = (typeof GANTT_PHASES)[number];
 
 export interface GanttSegment {
-  key: string;
   requestId: number;
   rowIndex: number;
   phase: GanttPhase;
   start: number;
   end: number;
-  duration: number;
 }
 
 export interface GanttRequestRow extends RequestRecord {
@@ -34,13 +32,11 @@ function createSegment(
   end: number,
 ): GanttSegment {
   return {
-    key: `${row.id}-${phase}`,
     requestId: row.id,
     rowIndex: row.rowIndex,
     phase,
     start,
     end,
-    duration: end - start,
   };
 }
 

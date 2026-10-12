@@ -1,14 +1,14 @@
 """F001 FCFS 准入接入：同批不可互见、队头不跳过和空池失败。"""
 
-from simcore.kv_cache import L1KVCache
+from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.scheduler import F001Scheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
-def setup(capacity: int = 80) -> tuple[F001Scheduler, L1KVCache]:
+def setup(capacity: int = 80) -> tuple[F001Scheduler, TieredKVCache]:
     engine = EngineConfig(max_running_requests=3, max_total_tokens=capacity, page_size=4)
-    cache = L1KVCache(engine.max_total_tokens, engine.page_size)
+    cache = TieredKVCache(engine.max_total_tokens, engine.page_size)
     return F001Scheduler(engine, cache), cache
 
 
@@ -31,7 +31,8 @@ def test_same_batch_new_pages_not_visible_until_publication() -> None:
     for item in batch.admitted:
         cache.admit(item.waiting.request.request_id)
         cache.extend(item.waiting.request.request_id, item.context_after)
-    assert cache.page(inherited[0]) is None and cache.private_pages == 4
+    assert cache.page(inherited[0]) is None
+    assert sum(cache.private_page_count(key) for key in (1, 2)) == 4
     assert cache.publish_batch((2, 1)) == 1
     assert cache.page(inherited[0]) is not None and cache.page(inherited[0]).ref_count == 2  # type: ignore[union-attr]
     cache.finish(1)

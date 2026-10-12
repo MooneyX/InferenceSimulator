@@ -13,7 +13,7 @@ from simcore.router import Router
 from simcore.schemas import ClientWakeup, InferenceRequest, RequestCompletion
 from simcore.trace_client import TraceClient
 
-__all__ = ["Coordinator", "SimulationCoordinator"]
+__all__ = ["Coordinator"]
 
 
 class Coordinator:
@@ -161,6 +161,3 @@ class Coordinator:
                 self._busy_until[instance_id] = end
                 heapq.heappush(self._heap, self._factory.step_done(end, instance_id))
         return tuple(engine.finalize() for engine in self.engines)
-
-
-SimulationCoordinator = Coordinator

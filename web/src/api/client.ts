@@ -17,36 +17,19 @@ export type { PlanReceipt, TraceJob, TraceSessionSummary } from "./types";
 
 const SIMULATE_ENDPOINT = "/api/simulate";
 
-export type SimulationApiErrorKind =
-  | "validation"
-  | "not_implemented"
-  | "http"
-  | "network"
-  | "invalid_response";
-
 interface SimulationApiErrorOptions {
-  kind: SimulationApiErrorKind;
-  status?: number;
   validationErrors?: ValidationError[];
   cause?: unknown;
 }
 
 export class SimulationApiError extends Error {
-  readonly kind: SimulationApiErrorKind;
-  readonly status?: number;
   readonly validationErrors: ValidationError[];
 
-  constructor(message: string, options: SimulationApiErrorOptions) {
+  constructor(message: string, options: SimulationApiErrorOptions = {}) {
     super(message, { cause: options.cause });
     this.name = "SimulationApiError";
-    this.kind = options.kind;
-    this.status = options.status;
     this.validationErrors = options.validationErrors ?? [];
   }
-}
-
-export interface SimulateOptions {
-  signal?: AbortSignal;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -70,10 +53,7 @@ function getErrorDetail(payload: unknown): string | undefined {
   return undefined;
 }
 
-export async function simulate(
-  config: SimConfig,
-  options: SimulateOptions = {},
-): Promise<SimResult> {
+export async function simulate(config: SimConfig): Promise<SimResult> {
   let response: Response;
 
   try {
@@ -83,23 +63,16 @@ export async function simulate(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(config),
-      signal: options.signal,
     });
   } catch (cause) {
-    throw new SimulationApiError("无法连接仿真服务", {
-      kind: "network",
-      cause,
-    });
+    throw new SimulationApiError("无法连接仿真服务", { cause });
   }
 
   const payload = await readJson(response);
 
   if (response.ok) {
     if (payload === undefined) {
-      throw new SimulationApiError("仿真服务返回了无效的 JSON 响应", {
-        kind: "invalid_response",
-        status: response.status,
-      });
+      throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
     }
 
     return payload as SimResult;
@@ -109,8 +82,6 @@ export async function simulate(
     const validationResponse = payload as HTTPValidationError | undefined;
     const detail = validationResponse?.detail;
     throw new SimulationApiError(getErrorDetail(payload) ?? "仿真配置校验失败", {
-      kind: "validation",
-      status: response.status,
       validationErrors: Array.isArray(detail) ? detail : [],
     });
   }
@@ -119,19 +90,11 @@ export async function simulate(
     const errorResponse = payload as ErrorResponse | undefined;
     throw new SimulationApiError(
       errorResponse?.detail ?? "服务端尚未实现此仿真模式",
-      {
-        kind: "not_implemented",
-        status: response.status,
-      },
     );
   }
 
   throw new SimulationApiError(
     getErrorDetail(payload) ?? `仿真请求失败（HTTP ${response.status}）`,
-    {
-      kind: "http",
-      status: response.status,
-    },
   );
 }
 
@@ -144,24 +107,20 @@ async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise
       body: JSON.stringify(body),
     } : undefined);
   } catch (cause) {
-    throw new SimulationApiError("无法连接仿真服务", { kind: "network", cause });
+    throw new SimulationApiError("无法连接仿真服务", { cause });
   }
   const payload = await readJson(response);
   if (response.ok && payload !== undefined) return payload as T;
   if (response.status === 422) {
     const detail = (payload as HTTPValidationError | undefined)?.detail;
     throw new SimulationApiError(getErrorDetail(payload) ?? "模型或硬件规格校验失败", {
-      kind: "validation", status: 422, validationErrors: Array.isArray(detail) ? detail : [],
+      validationErrors: Array.isArray(detail) ? detail : [],
     });
   }
   if (response.status === 501) {
-    throw new SimulationApiError(getErrorDetail(payload) ?? "此解析运行模式尚未实现", {
-      kind: "not_implemented", status: 501,
-    });
+    throw new SimulationApiError(getErrorDetail(payload) ?? "此解析运行模式尚未实现");
   }
-  throw new SimulationApiError(getErrorDetail(payload) ?? `请求失败（HTTP ${response.status}）`, {
-    kind: response.ok ? "invalid_response" : "http", status: response.status,
-  });
+  throw new SimulationApiError(getErrorDetail(payload) ?? `请求失败（HTTP ${response.status}）`);
 }
 
 export function getPresets(): Promise<PresetCatalog> {
@@ -181,14 +140,11 @@ async function replayRequest(endpoint: string, init?: RequestInit): Promise<Resp
   try {
     response = await fetch(endpoint, init);
   } catch (cause) {
-    throw new SimulationApiError("无法连接轨迹处理服务", { kind: "network", cause });
+    throw new SimulationApiError("无法连接轨迹处理服务", { cause });
   }
   if (!response.ok) {
     const detail = getErrorDetail(await readJson(response));
-    throw new SimulationApiError(detail ?? `轨迹请求失败（HTTP ${response.status}）`, {
-      kind: response.status === 422 ? "validation"
-        : response.status === 501 ? "not_implemented" : "http", status: response.status,
-    });
+    throw new SimulationApiError(detail ?? `轨迹请求失败（HTTP ${response.status}）`);
   }
   return response;
 }

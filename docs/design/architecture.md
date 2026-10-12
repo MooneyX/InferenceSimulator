@@ -20,10 +20,10 @@ prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部
 workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样；plan_from_arrivals 适配手写 Arrival（依赖 schemas、prefix_hash）
 client       ClientDriver：消费计划、保存已完成请求身份与实际 KV 长度、发送时按需推导继承页 ID（依赖 schemas、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
-kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU 与迁移；L1KVCache 兼容入口（依赖 schemas）
+kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU、传输占位与完成迁入（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
-engine       单个实例的已到达请求、EngineStep、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
-events       ClientSend / ClientCompletion / EngineStep / RequestDone 事件与引擎 trace 类型（依赖 schemas）
+engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
+events       客户端发送/回调、GPU 步完成、L3 查询与页传输完成、请求完成事件及引擎 trace 类型（依赖 schemas）
 router       根请求轮询、子请求严格继承父实例的路由策略（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
@@ -36,7 +36,7 @@ runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, Analy
 - `replay: TraceReplay | None`（仅关键字参数）：未提供时使用配置中的合成负载；提供时以原始请求计划和回放设置替代合成负载，并将结果有效配置规范化为 Trace，不修改输入对象。仅配置 `mode="trace"` 而未提供计划时拒绝运行。
 - 始终返回 `(result, analysis)`，经验计时的 `analysis` 为 `None`。服务层取出所需部分，现有 HTTP 路径及响应结构不变。
 
-合成开环、合成闭环和 Trace 仍使用各自的客户端，共用 `_simulate → Coordinator → Engine` 执行与指标汇总。
+合成开环、合成闭环和 Trace 仍使用各自的客户端；完整入口 `simulate` 和手写到达适配入口 `run_engine` 共用 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete` 生命周期，不提供公共 `Engine.step` 同步兼容路径。GPU 步完成与异步页传输分别通过事件推进，再统一汇总指标。
 
 规则：
 
@@ -60,7 +60,7 @@ runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, Analy
 | `ClientWakeup` | `schemas`（由 `client` 构造） | `coordinator` | 未来客户端发送事件，只含 session/turn 身份和发送时刻 |
 | `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine` | 发送时构造：输入长度、可见生成上限和继承完整页 ID；不携带实际输出目标或新页 ID 列表 |
 | `RequestCompletion` | `schemas`（由 `engine` 构造） | `coordinator`、`client` | 请求 ID、完成时刻和实际生成数；客户端据此确定可继承 KV 长度 |
-| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model` | 不可变的 Prefill/Decode/restore 工作量、阶段和实际申请页数；驱动单步经验成本 |
+| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model`、`analytical` | 不可变的 Prefill/Decode GPU 工作量、阶段、实际申请页数及 `restore_only` 请求 ID；不携带恢复页来源或页大小，传输另由事件计时 |
 | `AdmissionBatch` | `scheduler` | `engine` | FCFS 准入、恢复、失败、唯一提升与预算估算（值对象） |
 | `L1Snapshot` 与分层快照 | `kv_cache` | `engine`、`metrics` | 各层页容量、驻留及峰值的不可变汇总 |
 | `Event` / `EventKind` | `events` | `coordinator` | 全局事件队列载荷与同刻全序（值对象） |
@@ -71,9 +71,9 @@ runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, Analy
 
 协作者注入：
 
-- `TieredKVCache`：由 `engine` 构造并持有唯一所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 保护连续队头并预检分层预算；引擎提交提升与逐级腾位，在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`。完整页 ID 的唯一索引、各层 LRU 及迁移计数均由缓存维护；`L1KVCache` 仅是零低层容量的兼容入口。
+- `TieredKVCache`：由 `engine` 构造并持有唯一所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 保护连续队头，以 `plan` 预检包含提升需求的分层预算，但不提交同步提升。引擎通过 `reserve_transfer` 保护来源并占用目的容量，传输完成事件通过 `complete_transfer` 迁入；`ensure_free` 保留同步驱逐/降级腾位。在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`，完整页 ID 的唯一索引、各层 LRU 及迁移计数均由缓存维护。
 
-引擎可在内部记录 `ArrivalTrace`、`StepTrace`、`DoneTrace`；顶层 `simulate` 默认关闭逐步记录，HTTP API 不暴露 `EventLog`。如需未来的决策溯源，应另行定义对外 schema，不把当前内部事件流误认为已有公共响应。
+引擎可在内部记录 `ArrivalTrace`、`StepTrace`、`DoneTrace`；`EventLog` 保留迭代、`steps` 和 `for_request` 等诊断消费接口，顶层 `simulate` 默认关闭逐步记录，HTTP API 不暴露该流。如需未来的决策溯源，应另行定义对外 schema，不把当前内部事件流误认为已有公共响应。
 
 `coordinator` 只负责时间推进和事件路由，不参与块 ID 构造、调度或缓存决策。具体发送契约与同刻顺序分别见 [workload.md](workload.md) 和 [events.md](events.md)。
 

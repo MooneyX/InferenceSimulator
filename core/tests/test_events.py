@@ -15,7 +15,6 @@ from simcore.events import (
     StepTrace,
     TraceRecord,
 )
-from simcore.schemas import Arrival
 
 
 def step_trace(
@@ -23,6 +22,7 @@ def step_trace(
     step_index: int = 0,
     admitted: tuple[int, ...] = (),
     finished: tuple[int, ...] = (),
+    restored: tuple[int, ...] = (),
 ) -> StepTrace:
     return StepTrace(
         time=time,
@@ -35,6 +35,7 @@ def step_trace(
         kv_used=10,
         kv_overflow=0,
         finished=finished,
+        restored=restored,
     )
 
 
@@ -46,22 +47,28 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻先发布计算页，再结算完成、发布传输，最后处理到达。"""
+        """同刻先发布与回调，再传输、子轮发送、普通发送和开环时钟，最后步进。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
-        arrival = f.arrival(5.0, 1)
+        send = f.client_send(5.0, 1)
         done = f.request_done(5.0, 2)
         end = f.step_done(5.0, 0)
+        callback = f.client_completion(5.0, 2)
         lookup = f.l3_lookup_done(5.0, 1)
         l3_l2 = f.l3_l2_done(5.0, 3)
         l2_l1 = f.l2_l1_done(5.0, 4)
-        assert sorted([step, arrival, done, end, lookup, l3_l2, l2_l1]) == [
+        child = f.client_child_send(5.0, 5)
+        tick = f.open_loop_tick(5.0, 0)
+        assert sorted([step, send, done, end, callback, lookup, l3_l2, l2_l1, child, tick]) == [
             end,
             done,
+            callback,
             lookup,
             l3_l2,
             l2_l1,
-            arrival,
+            child,
+            send,
+            tick,
             step,
         ]
 
@@ -73,12 +80,11 @@ class TestOrdering:
         callback = f.client_completion(5.0, 2)
         done = f.request_done(5.0, 2)
         assert sorted((step, send, child, callback, done)) == [done, callback, child, send, step]
-        assert f.arrival(5.0, 3).kind == send.kind
 
     def test_same_time_same_kind_by_request_id_then_creation(self) -> None:
         f = EventFactory()
-        high_id = f.arrival(5.0, 9)
-        low_id = f.arrival(5.0, 3)
+        high_id = f.client_send(5.0, 9)
+        low_id = f.client_send(5.0, 3)
         assert low_id < high_id
         assert f.request_done(5.0, 1) < f.request_done(5.0, 2)
         first = f.client_send(5.0, 7)
@@ -90,10 +96,10 @@ class TestOrdering:
         f = EventFactory()
         events = [
             f.request_done(1.0, 0),
-            f.arrival(1.0, 1),
+            f.client_send(1.0, 1),
             f.engine_step(1.0, 0),
-            f.arrival(0.5, 2),
-            f.arrival(1.0, 3),
+            f.client_send(0.5, 2),
+            f.client_send(1.0, 3),
             f.engine_step(2.0, 1),
         ]
         expected = sorted(events)
@@ -110,7 +116,7 @@ class TestOrdering:
             EventKind.REQUEST_DONE
             < EventKind.CLIENT_COMPLETION
             < EventKind.CLIENT_CHILD_SEND
-            < EventKind.ARRIVAL
+            < EventKind.CLIENT_SEND
             < EventKind.ENGINE_STEP
         )
 
@@ -118,33 +124,24 @@ class TestOrdering:
 class TestEventFactory:
     def test_seq_monotonic_and_unique(self) -> None:
         f = EventFactory()
-        events = [f.arrival(0.0, 0), f.engine_step(0.0, 0), f.request_done(0.0, 0)]
+        events = [f.client_send(0.0, 0), f.engine_step(0.0, 0), f.request_done(0.0, 0)]
         assert [e.seq for e in events] == [0, 1, 2]
-        assert f.issued == 3
+        assert f.client_send(0.0, 0).seq == 3
 
     def test_kind_and_ref(self) -> None:
         f = EventFactory()
-        assert (f.arrival(1.0, 7).kind, f.arrival(1.0, 7).ref) == (EventKind.ARRIVAL, 7)
+        assert (f.client_send(1.0, 7).kind, f.client_send(1.0, 7).ref) == (EventKind.CLIENT_SEND, 7)
         assert f.engine_step(1.0, 4).kind is EventKind.ENGINE_STEP
         assert f.request_done(1.0, 2).kind is EventKind.REQUEST_DONE
         assert f.client_child_send(1.0, 3).kind is EventKind.CLIENT_CHILD_SEND
 
     def test_independent_factories(self) -> None:
-        assert EventFactory().arrival(0.0, 0).seq == EventFactory().arrival(0.0, 0).seq == 0
+        assert EventFactory().client_send(0.0, 0).seq == EventFactory().client_send(0.0, 0).seq == 0
 
     def test_event_is_immutable(self) -> None:
-        e = EventFactory().arrival(0.0, 0)
+        e = EventFactory().client_send(0.0, 0)
         with pytest.raises(AttributeError):
             e.time = 1.0  # type: ignore[misc]
-
-
-class TestTraceRecords:
-    def test_arrival_trace_from_arrival(self) -> None:
-        a = Arrival(request_id=3, sim_time=12.5, prompt_len=100, output_len=8)
-        assert ArrivalTrace.of(a) == ArrivalTrace(12.5, 3, 100, 8)
-
-    def test_step_trace_end(self) -> None:
-        assert step_trace(10.0).end == 15.0
 
 
 class TestEventLog:
@@ -202,3 +199,13 @@ class TestEventLog:
         ]
         assert len(log.for_request(1)) == 3
         assert log.for_request(99) == []
+
+    def test_diagnostic_queries_include_restore_steps(self) -> None:
+        log = EventLog()
+        restored_step = step_trace(5.0, restored=(7,))
+        log.record(ArrivalTrace(0.0, 7, 10, 2))
+        log.record(restored_step)
+        log.record(DoneTrace(10.0, 7, 12))
+        assert len(log) == 3
+        assert list(log.steps()) == [restored_step]
+        assert log.for_request(7) == list(log)

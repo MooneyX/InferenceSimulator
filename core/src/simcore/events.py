@@ -14,15 +14,13 @@
   将来才到达的闭环子轮与普通发送同级。
 - ``ref`` 在同类事件内排序（请求、实例、传输或时钟序号）；``seq`` 打破同引用的平局。
 
-依赖层级：仅依赖 ``schemas``。
+依赖层级：仅依赖标准库。
 """
 
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Literal
-
-from simcore.schemas import Arrival
 
 __all__ = [
     "ArrivalTrace",
@@ -47,7 +45,6 @@ class EventKind(IntEnum):
     L2_L1_DONE = 5
     CLIENT_CHILD_SEND = 6
     CLIENT_SEND = 7
-    ARRIVAL = 7  # 手写到达事件别名
     OPEN_LOOP_TICK = 8
     ENGINE_STEP = 9
 
@@ -84,10 +81,6 @@ class EventFactory:
         self._next_seq = seq + 1
         return Event(time, kind, ref, seq)
 
-    def arrival(self, time: float, request_id: int) -> Event:  # 到达时刻与请求 ID → 兼容的到达事件
-        """旧单轮到达事件；映射到客户端发送的同刻优先级。"""
-        return self._make(time, EventKind.ARRIVAL, request_id)
-
     def client_completion(self, time: float, request_id: int) -> Event:  # 完成时刻与请求 ID → 客户端回调事件
         return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
 
@@ -119,11 +112,6 @@ class EventFactory:
     def request_done(self, time: float, request_id: int) -> Event:  # 结算时刻与请求 ID → 完成事件
         return self._make(time, EventKind.REQUEST_DONE, request_id)
 
-    @property
-    def issued(self) -> int:  # 无显式输入 → 已分配的事件数
-        """已分配的事件数。"""
-        return self._next_seq
-
 
 # ---------------------------------------------------------------- 事件流记录
 
@@ -136,10 +124,6 @@ class ArrivalTrace:
     request_id: int
     prompt_len: int
     output_len: int
-
-    @classmethod
-    def of(cls, arrival: Arrival) -> "ArrivalTrace":  # 到达记录 → 对应的事件流到达条目
-        return cls(arrival.sim_time, arrival.request_id, arrival.prompt_len, arrival.output_len)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,22 +165,15 @@ class StepTrace:
     l1_evictable_after: int = 0
     l1_free_after: int = 0
     l1_internal_fragmentation_tokens: int = 0
-    phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"] | None = None
+    phase: Literal["PREFILL", "DECODE", "MIXED"] | None = None
     withdrawn: tuple[int, ...] = ()
     aborted: tuple[int, ...] = ()
     restored: tuple[int, ...] = ()
-    restore_sources: tuple[tuple[str, str], ...] = ()
-    restore_bytes: int = 0
-    restore_time_ms: float = 0.0
     l1_evictions: int = 0
     l2_evictions: int = 0
     l3_evictions: int = 0
     promotions: int = 0
     demotions: int = 0
-
-    @property
-    def end(self) -> float:  # 步起点与耗时 → 步结束时刻（ms）
-        return self.time + self.duration
 
 
 @dataclass(frozen=True, slots=True)

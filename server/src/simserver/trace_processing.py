@@ -55,7 +55,6 @@ def _topology(requests: list[tuple[dict[str, Any], str]]) -> tuple[list[int | No
                 predecessor
                 for predecessor in by_lane.get(lane, [])
                 if requests[predecessor][0]["t"] < child["t"]
-                and "api_time" in requests[predecessor][0]
                 and abs(
                     requests[predecessor][0]["t"]
                     + requests[predecessor][0]["api_time"]
@@ -99,17 +98,10 @@ def _inspect(
     seen: dict[int, tuple[int, int | None]] = {}
     set_hits = prefix_hits = inputs = outputs = 0
     for request, _ in requests:
-        timestamp = request["t"]
         prompt = request["in"]
         output = request["out"]
         hashes = request["hash_ids"]
-        if (
-            not math.isfinite(timestamp)
-            or timestamp < 0
-            or prompt < 1
-            or output < 0
-            or len(hashes) != prompt // 64
-        ):
+        if prompt < 1 or output < 0 or len(hashes) != prompt // 64:
             raise ValueError("请求的时间、长度或块 ID 数量无效")
         previous: int | None = None
         prefix_open = True

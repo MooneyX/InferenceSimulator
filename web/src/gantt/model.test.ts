@@ -57,31 +57,25 @@ describe("buildGanttModel", () => {
     });
     expect(model.segments).toEqual([
       {
-        key: "4-queue",
         requestId: 4,
         rowIndex: 0,
         phase: "queue",
         start: 2,
         end: 5,
-        duration: 3,
       },
       {
-        key: "4-prefill",
         requestId: 4,
         rowIndex: 0,
         phase: "prefill",
         start: 5,
         end: 11,
-        duration: 6,
       },
       {
-        key: "4-decode",
         requestId: 4,
         rowIndex: 0,
         phase: "decode",
         start: 11,
         end: 19,
-        duration: 8,
       },
     ]);
   });
@@ -89,8 +83,8 @@ describe("buildGanttModel", () => {
   it("keeps zero-duration lifecycle phases without producing negative intervals", () => {
     const model = buildGanttModel([request(0, 3, 3, 5, 5)]);
 
-    expect(model.segments.map(({ duration }) => duration)).toEqual([0, 2, 0]);
-    expect(model.segments.every(({ duration }) => duration >= 0)).toBe(true);
+    expect(model.segments.map(({ start, end }) => end - start)).toEqual([0, 2, 0]);
+    expect(model.segments.every(({ start, end }) => end - start >= 0)).toBe(true);
   });
 
   it("returns nullable time bounds for an empty result", () => {

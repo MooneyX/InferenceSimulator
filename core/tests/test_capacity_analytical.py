@@ -10,13 +10,9 @@ from simcore import simulate
 from simcore.analytical import step_cost
 from simcore.capacity import resolve_config
 from simcore.engine import Engine
-from simcore.perf_model import (
-    DecodeWork,
-    PrefillWork,
-    StepWorkload,
-    restore_time,
-    restore_time_tokens,
-)
+from simcore.events import EventKind
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.prefix_hash import encode
 from simcore.schemas import (
     AttentionGroup,
     AuxWeightDtype,
@@ -262,7 +258,7 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
 
 @pytest.mark.parametrize("tp_size", [1, 8])
 @pytest.mark.parametrize("hierarchical", [False, True])
-def test_hy4_kv_uses_group_budget_and_preserves_restore_cost(
+def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
     tp_size: int, hierarchical: bool,
 ) -> None:
     request = hy4_request()
@@ -296,17 +292,6 @@ def test_hy4_kv_uses_group_budget_and_preserves_restore_cost(
         assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == expected_pages
         assert resolved.config.engine.l2_capacity_tokens == capacity.l2_capacity_pages * 4
         assert resolved.config.engine.l3_capacity_tokens == capacity.l3_capacity_pages * 4
-        restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"), ("b", "L3")), 4, (0,))
-        expected_ms = 3 + 2 * group_kv * 4 / 1000 + 4 + group_kv * 4 / 2000
-        assert restore_time(restore, resolved.config.perf_model) == pytest.approx(expected_ms)
-        assert restore_time_tokens(
-            restore,
-            l2_tokens_per_ms=capacity.l2_to_l1_tokens_per_ms,
-            l3_tokens_per_ms=capacity.l3_to_l2_tokens_per_ms,
-            l2_latency_ms=storage.l2_latency_ms,
-            l3_latency_ms=storage.l3_latency_ms,
-        ) == pytest.approx(expected_ms)
-        assert restore_time(restore, grouped.config.perf_model) == pytest.approx(expected_ms)
     else:
         assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == 0
     assert request.model.attention_groups[0].full_indexer_layers == 21
@@ -486,7 +471,7 @@ def test_hy4_generic_cost_preserves_original_step_cost(
     assert step_cost(workload, custom, hardware, 8, 8) == cost
 
 
-def test_hy4_parameters_are_editable_and_empty_steps_are_free() -> None:
+def test_hy4_parameters_are_editable_and_empty_steps_are_rejected() -> None:
     request = hy4_request()
     payload = request.model.model_dump()
     with pytest.raises(ValidationError, match="必须提供注意力组"):
@@ -522,9 +507,8 @@ def test_hy4_parameters_are_editable_and_empty_steps_are_free() -> None:
             "attention_groups": [payload["attention_groups"][0] | {field: value}],
         })
         assert resolve_config(request.model_copy(update={"model": modified})).runnable
-    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
-    cost = step_cost(restore, request.model, request.hardware, 8, 8)
-    assert all(value == 0 for value in asdict(cost).values())
+    with pytest.raises(ValueError):
+        StepWorkload("DECODE", (), (), 0, 1, restore_only=(0,))
 
 
 def auxiliary_weight_request(tp_size: int) -> ResolvedRequest:
@@ -1206,16 +1190,8 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
             }
         )
     ).runnable
-    with pytest.raises(ValueError, match="vocab_size"):
-        resolve_config(
-            request.model_copy(
-                update={
-                    "tp_size": 4,
-                    "hardware": hardware,
-                    "model": valid_model.model_copy(update={"vocab_size": None}),
-                }
-            )
-        )
+    with pytest.raises(ValidationError, match="vocab_size"):
+        ModelSpec.model_validate(valid_model.model_dump() | {"vocab_size": None})
 
 
 def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
@@ -1369,9 +1345,16 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
     )
     assert slower_ep.tp_communication_ms == normal.tp_communication_ms
     assert slower_ep.duration_ms - normal.duration_ms == pytest.approx(2 * model.moe_layers)
-    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
-    assert step_cost(restore, model, hardware, tp_size=2, ep_size=2).duration_ms == 0
-    assert step_cost(restore, model, hardware, tp_size=2, ep_size=2).ep_exchanges == 0
+    for workload, expected in ((prefill, normal), (decode, low_latency), (mixed, combined)):
+        with_restore = StepWorkload(
+            workload.phase,
+            workload.prefill,
+            workload.decode,
+            workload.allocated_pages,
+            workload.batch_requests + 1,
+            restore_only=(3,),
+        )
+        assert step_cost(with_restore, model, hardware, tp_size=2, ep_size=2) == expected
 
 
 def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> None:
@@ -1461,12 +1444,16 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     request0 = InferenceRequest(0, 0, None, 4, 2, (), 0)
     request1 = InferenceRequest(1, 1, None, 4, 2, (), 0)
     engine.submit(request0, 0)
-    first_duration, first_finished = engine.step(0, 0)
-    assert first_finished == ()
+    first = engine.start_step(0, 0)
+    assert first is not None
+    first_duration, _ = first
+    assert engine.finish_step(first_duration) == ()
     engine.submit(request1, first_duration)
-    mixed_duration, mixed_finished = engine.step(first_duration, 1)
+    mixed = engine.start_step(first_duration, 1)
+    assert mixed is not None
+    mixed_duration, _ = mixed
     assert list(engine._log.steps())[-1].phase == "MIXED"
-    assert mixed_finished == (0,)
+    assert engine.finish_step(first_duration + mixed_duration) == (0,)
     expected = step_cost(
         StepWorkload("MIXED", (PrefillWork(1, 0, 4, 4),), (DecodeWork(0, 5),), 2, 2),
         model,
@@ -1477,8 +1464,10 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     assert mixed_duration == pytest.approx(expected.duration_ms)
     assert expected.ep_exchanges == 2 * model.moe_layers
     engine.complete(first_duration + mixed_duration, 0)
-    last_duration, last_finished = engine.step(first_duration + mixed_duration, 2)
-    assert last_finished == (1,)
+    last = engine.start_step(first_duration + mixed_duration, 2)
+    assert last is not None
+    last_duration, _ = last
+    assert engine.finish_step(first_duration + mixed_duration + last_duration) == (1,)
     engine.complete(first_duration + mixed_duration + last_duration, 1)
     run = engine.finalize()
     assert [item.phase for item in run.trace.steps()] == ["PREFILL", "MIXED", "DECODE"]
@@ -1490,28 +1479,87 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     assert len(run.records) == 2 and not run.aborted_requests and not run.skipped_requests
 
 
-def test_token_bandwidth_matches_physical_two_hop_transfer() -> None:
-    resolved = resolve_config(example_request())
-    workload = StepWorkload(
-        "RESTORE",
-        (),
-        (),
-        0,
-        1,
-        (("a", "L2"), ("b", "L3")),
-        4,
-        (0,),
-    )
-    expected = restore_time(workload, resolved.config.perf_model)
-    actual = restore_time_tokens(
-        workload,
-        l2_tokens_per_ms=resolved.capacity.l2_to_l1_tokens_per_ms,
-        l3_tokens_per_ms=resolved.capacity.l3_to_l2_tokens_per_ms,
-        l2_latency_ms=resolved.config.perf_model.l2_latency_ms,
-        l3_latency_ms=resolved.config.perf_model.l3_latency_ms,
-    )
-    assert actual == pytest.approx(expected)
-    assert actual == pytest.approx(3 + 8 * 64 / 1000 + 4 + 4 * 64 / 2000)
+@pytest.mark.parametrize("tp_size", [1, 2])
+def test_engine_transfer_component_token_bandwidth_matches_physical_two_hop_transfer(
+    tp_size: int,
+) -> None:
+    request = example_request()
+    model = request.model.model_copy(update={
+        "moe_layers": 1, "num_experts": 4, "experts_per_token": 2,
+        "expert_intermediate_size": 8,
+    })
+    hardware = request.hardware.model_copy(update={
+        "gpu_count": tp_size, "effective_interconnect_gb_s": 100,
+        "collective_latency_ms": 0.1, "ep_communication_latency_ms": 0.2,
+    })
+    storage = request.storage.model_copy(update={
+        "l2_available_gb": 0.001, "l3_available_gb": 0.001,
+    })
+    resolved = resolve_config(request.model_copy(update={
+        "model": model, "hardware": hardware, "storage": storage,
+        "tp_size": tp_size, "ep_size": tp_size,
+    }))
+    config = resolved.config.engine.model_copy(update={
+        "max_total_tokens": 12, "l2_capacity_tokens": 4, "l3_capacity_tokens": 4,
+    })
+    page_bytes = config.page_size * resolved.capacity.kv_bytes_per_token
+    l2_service = request.storage.l2_latency_ms + page_bytes / 1000
+    l3_service = request.storage.l3_latency_ms + page_bytes / 2000
+    expected_ms = 2 * l2_service + l3_service
+    results = []
+    for bandwidths in (
+        None,
+        (resolved.capacity.l2_to_l1_tokens_per_ms, resolved.capacity.l3_to_l2_tokens_per_ms),
+    ):
+        engine = Engine(
+            config, resolved.config.perf_model, output_targets={},
+            analytical=(model, hardware, tp_size, tp_size), token_bandwidths=bandwidths,
+        )
+        cache = engine._prefix_cache
+        for key in range(3):
+            parent = InferenceRequest(key, key, None, 4, 1, (), 0)
+            cache.pin(parent, 0)
+            cache.admit(key)
+            cache.extend(key, 4)
+            cache.publish(key)
+            cache.finish(key)
+        cache.ensure_free(2)
+        now = 10.0
+        elapsed = 0.0
+        for chunk_id, source, destination, kind, service in (
+            (encode(1, 0), "L2", "L1", EventKind.L2_L1_DONE, l2_service),
+            (encode(0, 0), "L3", "L2", EventKind.L3_L2_DONE, l3_service),
+            (encode(0, 0), "L2", "L1", EventKind.L2_L1_DONE, l2_service),
+        ):
+            page = cache.page(chunk_id)
+            assert page is not None and page.tier == source
+            transfer_id = engine._start_transfer(chunk_id, destination, now, 99)
+            [(end, event_kind, event_id)] = engine.drain_events()
+            assert (event_kind, event_id) == (kind, transfer_id)
+            assert end - now == pytest.approx(service)
+            page = cache.page(chunk_id)
+            assert page is not None and page.tier == source
+            assert engine._restore_time_ms == pytest.approx(elapsed)
+            engine.on_transfer_done(kind, transfer_id, end)
+            page = cache.page(chunk_id)
+            assert page is not None and page.tier == destination
+            elapsed += service
+            now = end
+        run = engine.finalize()
+        assert run.restore_time_ms == pytest.approx(expected_ms)
+        assert now == pytest.approx(10 + expected_ms)
+        assert run.restore_bytes == 3 * page_bytes
+        assert run.analysis is not None
+        assert run.analysis.restore_ms == pytest.approx(expected_ms)
+        assert all(
+            value == 0
+            for name, value in run.analysis.model_dump().items()
+            if name != "restore_ms"
+        )
+        assert run.num_engine_steps == 0 and list(run.trace.steps()) == []
+        assert not engine._transfers and not cache._transfers
+        results.append((run.restore_time_ms, run.restore_bytes))
+    assert results[0] == pytest.approx(results[1])
 
 
 def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
@@ -1539,8 +1587,8 @@ def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
     assert cost.compute_ms == pytest.approx(80)
     assert cost.memory_ms == pytest.approx(80)
     assert cost.duration_ms == pytest.approx(80.6)
-    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
-    assert step_cost(restore, model, hardware).duration_ms == 0
+    with_restore = StepWorkload("PREFILL", prefill.prefill, (), 1, 2, restore_only=(1,))
+    assert step_cost(with_restore, model, hardware) == cost
     decode = StepWorkload("DECODE", (), (DecodeWork(0, 12),), 0, 1)
     assert step_cost(decode, model, hardware).duration_ms > cost.duration_ms
 
@@ -1576,8 +1624,8 @@ def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
     assert cost.communication_bytes == 8
     assert cost.communication_ms == pytest.approx(2 * (0.3 + 4))
     assert cost.duration_ms == pytest.approx(48.8 + cost.communication_ms)
-    restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
-    assert step_cost(restore, model, hardware, tp_size=2).collectives == 0
+    with_restore = StepWorkload("PREFILL", prefill.prefill, (), 1, 2, restore_only=(1,))
+    assert step_cost(with_restore, model, hardware, tp_size=2) == cost
 
 
 def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> None:

@@ -15,9 +15,6 @@ from simcore.perf_model import (
     DecodeWork,
     PrefillWork,
     StepWorkload,
-    restore_bytes,
-    restore_time,
-    restore_time_tokens,
     workload_time,
 )
 from simcore.scheduler import AdmissionBatch, F001Scheduler, RunningRequest
@@ -467,7 +464,7 @@ class Engine:
                         self._pending_selection = None
                         return None
                 return None
-        return self.step(now_ms, step_index, selection=selection, defer_publication=True)
+        return self._execute_step(now_ms, step_index, selection)
 
     def finish_step(self, now_ms: float) -> tuple[int, ...]:  # GPU 步完成时刻 → 发布前缀并返回已完成请求 ID
         """仅在模拟的 GPU 步完成时公开本步产生的共享前缀。"""
@@ -478,15 +475,13 @@ class Engine:
         self._pending_finished = ()
         return finished
 
-    def step(
+    def _execute_step(
         self,
         now_ms: float,
         step_index: int,
-        *,
-        selection: AdmissionBatch | None = None,
-        defer_publication: bool = False,
-    ) -> tuple[float, tuple[int, ...]]:  # 步时刻/序号、可选选批和延迟发布标志 → 耗时及完成请求 ID
-        """计算本步工作量；事件驱动入口将页的公开延后至步末。"""
+        selection: AdmissionBatch,
+    ) -> tuple[float, tuple[int, ...]]:  # 步时刻、序号和已选批次 → 耗时及完成请求 ID
+        """执行已就绪批次；前缀公开与完成通知统一延后至步末。"""
         cache = self._prefix_cache
         running = {
             key: RunningRequest(self._requests[key], generated)
@@ -501,9 +496,6 @@ class Engine:
         aborts_before = len(self._recent_aborts)
         withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
-            # 先试 Prefill，成功则本步不 Decode。
-            if selection is None:
-                selection = self._prefix_scheduler.select_prefill(running)
             if not selection.admitted and not selection.restore_only and running:
                 running, withdrawn = self._prepare_decode(running, now_ms)
                 if withdrawn:
@@ -512,22 +504,15 @@ class Engine:
                 () if selection.admitted or selection.restore_only else tuple(sorted(running))
             )
         else:
-            running, withdrawn = self._prepare_decode(running, now_ms)  # 混合模式先为 Decode 腾页
+            running, withdrawn = self._prepare_decode(running, now_ms)
             if withdrawn:
                 self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
-            if selection is None:
-                selection = self._prefix_scheduler.select_prefill(running, decode_ids)
         for item in selection.aborted:
             self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
         for item in selection.restored:
             self._running[item.request.request_id] = item.generated_tokens
-        if (
-            defer_publication
-            and selection.restore_only
-            and not selection.admitted
-            and not decode_ids
-        ):
+        if selection.restore_only and not selection.admitted and not decode_ids:
             for item in selection.restore_only:
                 cache.admit(item.request.request_id)
                 self._running[item.request.request_id] = item.generated_tokens
@@ -558,45 +543,22 @@ class Engine:
             if selection.aborted or selection.restored or withdrawn or self._recent_aborts:
                 return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
-        phase: Literal["PREFILL", "DECODE", "MIXED", "RESTORE"] = (
-            "MIXED"
-            if prefill and decode
-            else "PREFILL"
-            if prefill
-            else "DECODE"
-            if decode
-            else "RESTORE"
+        phase: Literal["PREFILL", "DECODE", "MIXED"] = (
+            "MIXED" if prefill and decode else "PREFILL" if prefill else "DECODE"
         )
         decode_new_pages = sum(cache.state(key).k % cache.page_size == 0 for key in decode_ids)
         allocated_pages = decode_new_pages + sum(
             candidate.required_pages for candidate in selection.admitted
         )
-        if self._engine_config.l2_capacity_tokens and not defer_publication:
-            promoted = cache.promote(selection.promote_ids, allocated_pages)
-        else:
-            cache.ensure_free(allocated_pages)
-            promoted = ()
+        cache.ensure_free(allocated_pages)
         workload = StepWorkload(
             phase,
             prefill,
             decode,
             allocated_pages,
             len(prefill) + len(decode) + len(selection.restore_only),
-            tuple(sorted(promoted)),
-            cache.page_size if promoted else 0,
             tuple(item.request.request_id for item in selection.restore_only),
         )
-        if self._token_bandwidths is None:
-            transfer_time = restore_time(workload, self._perf)
-        else:
-            transfer_time = restore_time_tokens(
-                workload,
-                l2_tokens_per_ms=self._token_bandwidths[0],
-                l3_tokens_per_ms=self._token_bandwidths[1],
-                l2_latency_ms=self._perf.l2_latency_ms,
-                l3_latency_ms=self._perf.l3_latency_ms,
-            )
-        transferred_bytes = restore_bytes(workload, self._perf)
         if self._analytical is None:
             device_time = workload_time(workload, self._perf)
         else:
@@ -609,7 +571,6 @@ class Engine:
                 self._analysis.compute_ms += cost.compute_ms
                 self._analysis.memory_ms += cost.memory_ms
                 self._analysis.device_ms += device_time
-                self._analysis.restore_ms += transfer_time
                 self._analysis.communication_ms += cost.communication_ms
                 self._analysis.communication_bytes += cost.communication_bytes
                 self._analysis.collectives += cost.collectives
@@ -620,9 +581,7 @@ class Engine:
                 self._analysis.ep_dispatch_bytes += cost.ep_dispatch_bytes
                 self._analysis.ep_combine_bytes += cost.ep_combine_bytes
                 self._analysis.ep_exchanges += cost.ep_exchanges
-        duration = device_time + transfer_time
-        self._restore_time_ms += transfer_time
-        self._restore_bytes += transferred_bytes
+        duration = device_time
         end = now_ms + duration
         for candidate in selection.admitted:
             cache.admit(candidate.waiting.request.request_id)
@@ -674,14 +633,11 @@ class Engine:
                     * cache.page_size,
                 )
         # 新计算页尚未完成前只占私有容量，不向后来到达的请求发布。
-        publish_ids = tuple(item.waiting.request.request_id for item in selection.admitted)
-        if defer_publication:
-            self._pending_publish = publish_ids
-        else:
-            cache.publish_batch(publish_ids)
+        self._pending_publish = tuple(
+            item.waiting.request.request_id for item in selection.admitted
+        )
         finished.sort()
-        if defer_publication:
-            self._pending_finished = tuple(finished)
+        self._pending_finished = tuple(finished)
         if before is not None:
             cache_after = cache.snapshot()
             self._log.record(
@@ -721,9 +677,6 @@ class Engine:
                             for item in (*selection.restored, *selection.restore_only)
                         )
                     ),
-                    restore_sources=workload.restore_sources,
-                    restore_bytes=transferred_bytes,
-                    restore_time_ms=transfer_time,
                     l1_evictions=cache.evictions - evictions_before,
                     l2_evictions=cache.tier_snapshot("L2").evictions - l2_evictions_before,
                     l3_evictions=cache.tier_snapshot("L3").evictions - l3_evictions_before,

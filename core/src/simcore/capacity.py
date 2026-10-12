@@ -98,8 +98,6 @@ def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, 
     """按组件与存储精度直接累加权重，TP/EP 采用当前同构放置口径。"""
     h, layers, moe = model.hidden_size, model.num_layers, model.moe_layers
     dense_layers = layers - moe
-    if model.vocab_size is None:
-        raise ValueError("容量预览需要模型 vocab_size 与词嵌入共享规则")
     if model.vocab_size % tp_size:
         raise ValueError("词表大小必须能被 TP 数整除")
     if dense_layers and model.ffn_intermediate_size % tp_size:

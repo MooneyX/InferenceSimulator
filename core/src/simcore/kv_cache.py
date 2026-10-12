@@ -11,8 +11,6 @@ __all__ = [
     "CacheCapacityError",
     "CacheEntry",
     "KVRequestState",
-    "L1KVCache",
-    "L1Page",
     "L1Snapshot",
     "TierSnapshot",
     "TieredKVCache",
@@ -32,9 +30,6 @@ class CacheEntry:
     ref_count: int
     last_access_seq: int
     capacity_pages: int = 1
-
-
-L1Page = CacheEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,13 +101,10 @@ class TieredKVCache:
             "L3": _TierState(l3_capacity_tokens // page_size),
         }
         self._entries: dict[str, CacheEntry] = {}
-        self._pages = self._entries  # 兼容旧测试对完整页索引的只读检查
         self._requests: dict[int, InferenceRequest] = {}
         self._states: dict[int, KVRequestState] = {}
         self._pins: dict[int, tuple[InferenceRequest, int]] = {}
         self._transfers: dict[str, str] = {}
-        self._evictable_heap = self._tiers["L1"].heap
-        self._queued_evictions = self._tiers["L1"].queued
         self._private_pages = 0
         self._access_seq = 0
         self.promotions = 0
@@ -159,13 +151,6 @@ class TieredKVCache:
             state.evictions,
         )
 
-    def tier_snapshots(self) -> dict[str, TierSnapshot]:  # 各层计数 → 层名到容量快照的映射
-        return {tier: self.tier_snapshot(tier) for tier in self._tiers}
-
-    @property
-    def private_pages(self) -> int:  # 私有页计数 → 未发布页数
-        return self._private_pages
-
     @property
     def available_tokens(self) -> int:  # 空页与可淘汰页 → 可供新请求使用的 L1 token 数
         return (self.free_pages + self.evictable_pages) * self.page_size
@@ -182,9 +167,9 @@ class TieredKVCache:
             internal_fragmentation_tokens=self._private_pages * self.page_size - private_tokens,
         )
 
-    def page(self, chunk_id: str) -> L1Page | None:  # 完整页 ID → 驻留页或 None，不刷新 LRU
+    def page(self, chunk_id: str) -> CacheEntry | None:  # 完整页 ID → 驻留页或 None，不刷新 LRU
         """只读查找不刷新 LRU。"""
-        return self._pages.get(chunk_id)
+        return self._entries.get(chunk_id)
 
     def state(self, request_id: int) -> KVRequestState:  # 请求 ID → 已写入 K 与已发布前缀 F 状态
         return self._states[request_id]
@@ -222,7 +207,7 @@ class TieredKVCache:
         ids = tuple(
             self._chunk_id(request, index) for index in range(matched_tokens // self.page_size)
         )
-        if any(chunk_id not in self._pages for chunk_id in ids):
+        if any(chunk_id not in self._entries for chunk_id in ids):
             raise ValueError("命中前缀包含未发布页")
         for chunk_id in ids:
             self._add_ref(chunk_id, refresh=False)
@@ -456,16 +441,15 @@ class TieredKVCache:
         return actions, tuple(promoted)
 
     def _apply_move(
-        self, chunk_id: str, source: str, destination: str | None, *, detached: bool = False
-    ) -> None:  # 页 ID、源/目的层及预先移除标志 → 提交迁移计数和 LRU；无返回值
+        self, chunk_id: str, source: str, destination: str | None
+    ) -> None:  # 页 ID 与源/目的层 → 提交迁移计数和 LRU；无返回值
         """仅提交一页的索引、计数和 LRU 差量。"""
         page = self._entries[chunk_id]
         old = self._tiers[source]
-        if not detached:
-            old.ids.remove(chunk_id)
-            old.resident -= 1
-            if not page.ref_count:
-                old.evictable -= 1
+        old.ids.remove(chunk_id)
+        old.resident -= 1
+        if not page.ref_count:
+            old.evictable -= 1
         if destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(source):
             self.promotions += 1
             if source == "L2":
@@ -506,24 +490,6 @@ class TieredKVCache:
         """预检提升和新增私有页所需容量；失败无任何状态副作用。"""
         return self._migration_plan(promote_ids, reserve_pages)[1]
 
-    def promote(
-        self,
-        promote_ids: Iterable[str] = (),
-        reserve_pages: int = 0,
-    ) -> tuple[tuple[str, str], ...]:  # 待提升页及预留页数 → 执行迁移并返回页 ID/原层元组
-        """局部试算通过后增量提交批次迁移。"""
-        actions, promoted = self._migration_plan(promote_ids, reserve_pages)
-        detached = {chunk_id for chunk_id, _ in promoted}
-        for chunk_id, source in promoted:
-            origin = self._tiers[source]
-            origin.ids.remove(chunk_id)
-            origin.resident -= 1
-        for chunk_id, source, destination in actions:
-            self._apply_move(
-                chunk_id, source, destination, detached=chunk_id in detached and destination == "L1"
-            )
-        return promoted
-
     def reserve_transfer(self, chunk_id: str, destination: str) -> str:  # 页 ID 与目的层 → 锁定源页并预留容量，返回来源层
         """保护来源并占用目的容量；查询仍只观察来源页。"""
         page = self._entries.get(chunk_id)
@@ -555,7 +521,7 @@ class TieredKVCache:
         page = self._entries[chunk_id]
         source = page.tier
         if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count > 1:
-            raise CacheCapacityError("在途降级页获得活动引用，须先取消传输")
+            raise CacheCapacityError("在途降级页获得活动引用，须先释放活动引用")
         target = self._tiers[destination]
         target.reserved -= 1
         target.resident -= 1
@@ -564,22 +530,6 @@ class TieredKVCache:
         del self._transfers[chunk_id]
         return source
 
-    def cancel_transfer(self, chunk_id: str) -> None:  # 在途页 ID → 撤销目的占位与来源保护；无返回值
-        """撤销目的层占位和来源页保护，不刷新来源 LRU。"""
-        destination = self._transfers.pop(chunk_id)
-        target = self._tiers[destination]
-        target.reserved -= 1
-        target.resident -= 1
-        self._drop_ref(chunk_id)
-
-    def prepare_batch(
-        self,
-        promote_ids: Iterable[str] = (),
-        reserve_pages: int = 0,
-    ) -> tuple[tuple[str, str], ...]:  # 提升页 ID 与所需新页数 → 已迁入页的 ID/原层元组
-        """与 promote 等价，供引擎原子提交本批容量及恢复页。"""
-        return self.promote(promote_ids, reserve_pages)
-
     def ensure_free(self, count: int) -> int:  # 需要的 L1 空页数 → 原子腾页后的驱逐次数
         """原子腾出 L1 实际页；容量不足不执行逐级迁移。"""
         if count < 0:
@@ -587,7 +537,9 @@ class TieredKVCache:
         if count <= self.free_pages:
             return 0
         evictions_before = self.evictions
-        self.promote(reserve_pages=count)
+        actions, _ = self._migration_plan((), count)
+        for chunk_id, source, destination in actions:
+            self._apply_move(chunk_id, source, destination)
         return self.evictions - evictions_before
 
     @staticmethod
@@ -595,10 +547,3 @@ class TieredKVCache:
         if request.is_trace and index < len(request.trace_hash_ids):
             return f"trace:{request.session_id}:{request.trace_hash_ids[index]}"
         return logical_chunk_id(request.request_id, index, request.inherited_prefix_ids)
-
-
-class L1KVCache(TieredKVCache):
-    """零低层容量兼容入口；不维护独立缓存状态。"""
-
-    def __init__(self, max_total_tokens: int, page_size: int) -> None:  # L1 token 容量与页大小 → 初始化仅有 L1 的页池；无返回值
-        super().__init__(max_total_tokens, page_size)

@@ -26,13 +26,13 @@
     },
     "/api/resolve": {
       "post": {
-        "summary": "解析单实例容量与计时规格",
+        "summary": "预览物理推理配置的单实例容量与运行可行性",
         "operationId": "resolve_endpoint_api_resolve_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResolvedRequest"
+                "$ref": "#/components/schemas/SimConfig"
               }
             }
           },
@@ -44,7 +44,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResolvedConfig"
+                  "$ref": "#/components/schemas/ResolutionReport"
                 }
               }
             }
@@ -63,62 +63,6 @@
                     }
                   ],
                   "title": "Response 422 Resolve Endpoint Api Resolve Post"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/simulate/resolved": {
-      "post": {
-        "summary": "按单实例解析规格运行多实例仿真",
-        "operationId": "simulate_resolved_endpoint_api_simulate_resolved_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResolvedRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResolvedRun"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/FieldValidationResponse"
-                    }
-                  ],
-                  "title": "Response 422 Simulate Resolved Endpoint Api Simulate Resolved Post"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "此部署/计时模式尚未实现",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -152,8 +96,8 @@
               }
             }
           },
-          "501": {
-            "description": "workload.mode=trace（预留接缝，MVP 未实现）",
+          "404": {
+            "description": "Trace 请求计划不存在或已过期",
             "content": {
               "application/json": {
                 "schema": {
@@ -163,11 +107,29 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FieldValidationResponse"
+                    }
+                  ],
+                  "title": "Response 422 Simulate Endpoint Api Simulate Post"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "此部署/计时模式尚未实现",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -360,104 +322,6 @@
           }
         }
       }
-    },
-    "/api/replay-plans/{key}/simulate": {
-      "post": {
-        "summary": "Run Plan",
-        "operationId": "run_plan_api_replay_plans__key__simulate_post",
-        "parameters": [
-          {
-            "name": "key",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReplayRun"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimResult"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/replay-plans/{key}/simulate/resolved": {
-      "post": {
-        "summary": "Run Resolved Plan",
-        "operationId": "run_resolved_plan_api_replay_plans__key__simulate_resolved_post",
-        "parameters": [
-          {
-            "name": "key",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResolvedReplayRun"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResolvedRun"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -610,6 +474,20 @@
         "additionalProperties": false,
         "type": "object",
         "title": "AnalyticalSummary"
+      },
+      "AnalyticalTimingConfig": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "analytical",
+            "title": "Mode",
+            "default": "analytical"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AnalyticalTimingConfig",
+        "description": "复用物理推理规格的解析 GPU 计时。"
       },
       "AttentionGroup": {
         "properties": {
@@ -947,70 +825,45 @@
         ],
         "title": "CapacityReport"
       },
-      "EngineConfig": {
+      "EmpiricalTimingConfig": {
         "properties": {
-          "max_running_requests": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Running Requests",
-            "description": "同时驻留的运行请求数上限"
+          "mode": {
+            "type": "string",
+            "const": "empirical",
+            "title": "Mode",
+            "default": "empirical"
           },
-          "max_total_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Total Tokens",
-            "description": "KV 池的实际 token 容量"
-          },
-          "max_prefill_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Prefill Tokens",
-            "description": "单次 Prefill 的新计算额度",
-            "default": 16384
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Page Size",
-            "description": "每个 KV 页的 token 数",
-            "default": 64
-          },
-          "l2_capacity_tokens": {
-            "type": "integer",
+          "prefill_c1": {
+            "type": "number",
             "minimum": 0.0,
-            "title": "L2 Capacity Tokens",
-            "description": "L2 KV 的 token 容量；0 表示关闭",
-            "default": 0
+            "title": "Prefill C1"
           },
-          "l3_capacity_tokens": {
-            "type": "integer",
+          "prefill_c2": {
+            "type": "number",
             "minimum": 0.0,
-            "title": "L3 Capacity Tokens",
-            "description": "L3 KV 的 token 容量；0 表示关闭",
-            "default": 0
+            "title": "Prefill C2",
+            "default": 0.0
           },
-          "l3_prefetch_min_tokens": {
-            "type": "integer",
+          "decode_d1": {
+            "type": "number",
             "minimum": 0.0,
-            "title": "L3 Prefetch Min Tokens",
-            "description": "触发 L3 异步预取的最小可复用 token 数",
-            "default": 256
+            "title": "Decode D1"
           },
-          "pd_mutually_exclusive": {
-            "type": "boolean",
-            "title": "Pd Mutually Exclusive",
-            "description": "Prefill 与 Decode 分步执行",
-            "default": true
+          "decode_d2": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Decode D2"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "max_running_requests",
-          "max_total_tokens"
+          "prefill_c1",
+          "decode_d1",
+          "decode_d2"
         ],
-        "title": "EngineConfig",
-        "description": "单实例 KV 池配置；页数仅由 token 容量和页大小推导。"
+        "title": "EmpiricalTimingConfig",
+        "description": "经验 GPU 计时的四系数，不包含 KV 链路参数。"
       },
       "ErrorResponse": {
         "properties": {
@@ -1311,6 +1164,118 @@
         ],
         "title": "LognormalLength",
         "description": "对数正态分布长度，用于表达长尾负载。"
+      },
+      "ManualInferenceConfig": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "manual",
+            "title": "Mode",
+            "default": "manual"
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page Size",
+            "default": 64
+          },
+          "kv": {
+            "$ref": "#/components/schemas/ManualKVConfig"
+          },
+          "timing": {
+            "$ref": "#/components/schemas/EmpiricalTimingConfig"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kv",
+          "timing"
+        ],
+        "title": "ManualInferenceConfig",
+        "description": "抽象实例：直接填写容量、链路和经验计时。"
+      },
+      "ManualKVConfig": {
+        "properties": {
+          "max_total_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Total Tokens"
+          },
+          "l2_capacity_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L2 Capacity Tokens",
+            "default": 0
+          },
+          "l3_capacity_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Capacity Tokens",
+            "default": 0
+          },
+          "kv_bytes_per_token": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kv Bytes Per Token"
+          },
+          "l2_to_l1_bandwidth_bytes_per_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 To L1 Bandwidth Bytes Per Ms"
+          },
+          "l3_to_l2_bandwidth_bytes_per_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L3 To L2 Bandwidth Bytes Per Ms"
+          },
+          "l2_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L2 Latency Ms",
+            "default": 0.0
+          },
+          "l3_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Latency Ms",
+            "default": 0.0
+          },
+          "l3_lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "L3 Lookup Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "max_total_tokens"
+        ],
+        "title": "ManualKVConfig",
+        "description": "手动指定 KV 容量和每条上行链路的参数。"
       },
       "Metrics": {
         "properties": {
@@ -1950,93 +1915,69 @@
         "title": "NormSpec",
         "description": "Block 与最终归一化的容量规格；dtype 为 null 时跟随主权重。"
       },
-      "PerfModelConfig": {
+      "PhysicalInferenceConfig": {
         "properties": {
-          "prefill_c1": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Prefill C1"
+          "mode": {
+            "type": "string",
+            "const": "physical",
+            "title": "Mode",
+            "default": "physical"
           },
-          "prefill_c2": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Prefill C2",
-            "default": 0.0
+          "page_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page Size",
+            "default": 64
           },
-          "decode_d1": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Decode D1"
+          "model": {
+            "$ref": "#/components/schemas/ModelSpec"
           },
-          "decode_d2": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Decode D2"
+          "hardware": {
+            "$ref": "#/components/schemas/HardwareSpec"
           },
-          "kv_bytes_per_token": {
-            "anyOf": [
+          "storage": {
+            "$ref": "#/components/schemas/StorageSpec"
+          },
+          "timing": {
+            "oneOf": [
               {
-                "type": "integer",
-                "exclusiveMinimum": 0.0
+                "$ref": "#/components/schemas/EmpiricalTimingConfig"
               },
               {
-                "type": "null"
+                "$ref": "#/components/schemas/AnalyticalTimingConfig"
               }
             ],
-            "title": "Kv Bytes Per Token"
-          },
-          "l2_to_l1_bandwidth_bytes_per_ms": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
+            "title": "Timing",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "analytical": "#/components/schemas/AnalyticalTimingConfig",
+                "empirical": "#/components/schemas/EmpiricalTimingConfig"
               }
-            ],
-            "title": "L2 To L1 Bandwidth Bytes Per Ms"
+            }
           },
-          "l3_to_l2_bandwidth_bytes_per_ms": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "L3 To L2 Bandwidth Bytes Per Ms"
+          "tp_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Tp Size",
+            "default": 1
           },
-          "l2_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L2 Latency Ms",
-            "default": 0.0
-          },
-          "l3_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Latency Ms",
-            "default": 0.0
-          },
-          "l3_lookup_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Lookup Latency Ms",
-            "default": 0.0
+          "ep_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ep Size",
+            "default": 1
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "prefill_c1",
-          "decode_d1",
-          "decode_d2"
+          "model",
+          "hardware",
+          "storage"
         ],
-        "title": "PerfModelConfig",
-        "description": "性能模型系数，单位 ms。\n\n- prefill 耗时 = ``prefill_c1 * P + prefill_c2 * P**2``（P = prompt_tokens）\n- decode 单步耗时 = ``decode_d1 + decode_d2 * batch_total_tokens``"
+        "title": "PhysicalInferenceConfig",
+        "description": "物理实例：共用模型和硬件解析容量及 GPU 计时规格。"
       },
       "PlanReceipt": {
         "properties": {
@@ -2176,51 +2117,6 @@
           "l1_capacity_pages"
         ],
         "title": "RankCapacityReport"
-      },
-      "ReplayRun": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "enum": [
-              "open_loop",
-              "session"
-            ],
-            "title": "Mode"
-          },
-          "session_rate": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "title": "Session Rate"
-          },
-          "seed": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Seed",
-            "default": 0
-          },
-          "target_qps": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Qps"
-          },
-          "config": {
-            "$ref": "#/components/schemas/SimConfig"
-          }
-        },
-        "type": "object",
-        "required": [
-          "mode",
-          "session_rate",
-          "config"
-        ],
-        "title": "ReplayRun"
       },
       "RequestRecord": {
         "properties": {
@@ -2365,177 +2261,50 @@
         "title": "RequestRecord",
         "description": "单请求的生命周期区间记录，供甘特图与指标汇总消费。\n\n不变式：``arrival <= prefill_start <= prefill_end <= finish``；\n``prefill_end`` 同时是 decode 阶段起点。"
       },
-      "ResolvedConfig": {
+      "ResolutionReport": {
         "properties": {
-          "config": {
-            "$ref": "#/components/schemas/SimConfig"
-          },
-          "model": {
-            "$ref": "#/components/schemas/ModelSpec"
-          },
-          "hardware": {
-            "$ref": "#/components/schemas/HardwareSpec"
-          },
-          "storage": {
-            "$ref": "#/components/schemas/StorageSpec"
-          },
-          "timing": {
-            "type": "string",
-            "enum": [
-              "empirical",
-              "analytical"
-            ],
-            "title": "Timing"
-          },
           "capacity": {
             "$ref": "#/components/schemas/CapacityReport"
           },
-          "tp_size": {
+          "max_total_tokens": {
             "type": "integer",
-            "title": "Tp Size",
-            "default": 1
+            "title": "Max Total Tokens"
           },
-          "ep_size": {
+          "l2_capacity_tokens": {
             "type": "integer",
-            "title": "Ep Size",
-            "default": 1
+            "title": "L2 Capacity Tokens"
+          },
+          "l3_capacity_tokens": {
+            "type": "integer",
+            "title": "L3 Capacity Tokens"
           },
           "runnable": {
             "type": "boolean",
-            "title": "Runnable",
-            "default": true
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "config",
-          "model",
-          "hardware",
-          "storage",
-          "timing",
-          "capacity"
-        ],
-        "title": "ResolvedConfig"
-      },
-      "ResolvedReplayRun": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "enum": [
-              "open_loop",
-              "session"
-            ],
-            "title": "Mode"
+            "title": "Runnable"
           },
-          "session_rate": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "title": "Session Rate"
-          },
-          "seed": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Seed",
-            "default": 0
-          },
-          "target_qps": {
+          "reason": {
             "anyOf": [
               {
-                "type": "number",
-                "exclusiveMinimum": 0.0
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Target Qps"
-          },
-          "request": {
-            "$ref": "#/components/schemas/ResolvedRequest"
-          }
-        },
-        "type": "object",
-        "required": [
-          "mode",
-          "session_rate",
-          "request"
-        ],
-        "title": "ResolvedReplayRun"
-      },
-      "ResolvedRequest": {
-        "properties": {
-          "config": {
-            "$ref": "#/components/schemas/SimConfig"
-          },
-          "model": {
-            "$ref": "#/components/schemas/ModelSpec"
-          },
-          "hardware": {
-            "$ref": "#/components/schemas/HardwareSpec"
-          },
-          "storage": {
-            "$ref": "#/components/schemas/StorageSpec"
-          },
-          "timing": {
-            "type": "string",
-            "enum": [
-              "empirical",
-              "analytical"
-            ],
-            "title": "Timing",
-            "default": "analytical"
-          },
-          "tp_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Tp Size",
-            "default": 1
-          },
-          "ep_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Ep Size",
-            "default": 1
+            "title": "Reason"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "config",
-          "model",
-          "hardware",
-          "storage"
+          "capacity",
+          "max_total_tokens",
+          "l2_capacity_tokens",
+          "l3_capacity_tokens",
+          "runnable"
         ],
-        "title": "ResolvedRequest",
-        "description": "物理规格与现有负载/调度输入；engine 容量在解析时被替换。"
-      },
-      "ResolvedRun": {
-        "properties": {
-          "result": {
-            "$ref": "#/components/schemas/SimResult"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/ResolvedConfig"
-          },
-          "analysis": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AnalyticalSummary"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "result",
-          "resolution"
-        ],
-        "title": "ResolvedRun"
+        "title": "ResolutionReport",
+        "description": "容量与可运行性报告，不作为另一种仿真输入。"
       },
       "RouterSpec": {
         "properties": {
@@ -2608,6 +2377,39 @@
           "stage"
         ],
         "title": "ScenarioCatalogEntry"
+      },
+      "SchedulerConfig": {
+        "properties": {
+          "max_running_requests": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Running Requests"
+          },
+          "max_prefill_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Prefill Tokens",
+            "default": 16384
+          },
+          "pd_mutually_exclusive": {
+            "type": "boolean",
+            "title": "Pd Mutually Exclusive",
+            "default": true
+          },
+          "l3_prefetch_min_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "L3 Prefetch Min Tokens",
+            "default": 256
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "max_running_requests"
+        ],
+        "title": "SchedulerConfig",
+        "description": "所有推理实例共用的调度规则，不包含容量与性能参数。"
       },
       "SessionConfig": {
         "properties": {
@@ -2748,11 +2550,26 @@
           "workload": {
             "$ref": "#/components/schemas/WorkloadConfig"
           },
-          "engine": {
-            "$ref": "#/components/schemas/EngineConfig"
+          "scheduler": {
+            "$ref": "#/components/schemas/SchedulerConfig"
           },
-          "perf_model": {
-            "$ref": "#/components/schemas/PerfModelConfig"
+          "inference": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ManualInferenceConfig"
+              },
+              {
+                "$ref": "#/components/schemas/PhysicalInferenceConfig"
+              }
+            ],
+            "title": "Inference",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "manual": "#/components/schemas/ManualInferenceConfig",
+                "physical": "#/components/schemas/PhysicalInferenceConfig"
+              }
+            }
           },
           "num_instances": {
             "type": "integer",
@@ -2765,12 +2582,12 @@
         "type": "object",
         "required": [
           "workload",
-          "engine",
-          "perf_model",
+          "scheduler",
+          "inference",
           "num_instances"
         ],
         "title": "SimConfig",
-        "description": "一场仿真的完整输入。"
+        "description": "唯一仿真输入；负载、调度和推理规格各自只有一个来源。"
       },
       "SimMeta": {
         "properties": {
@@ -2881,6 +2698,26 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalyticalSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -3294,6 +3131,61 @@
         ],
         "title": "TraceTurn"
       },
+      "TraceWorkloadConfig": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "open_loop",
+              "session"
+            ],
+            "title": "Mode"
+          },
+          "session_rate": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Session Rate"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "default": 0
+          },
+          "target_qps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Qps"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mode",
+          "session_rate"
+        ],
+        "title": "TraceWorkloadConfig",
+        "description": "计划资源引用与回放设置；计划内容由调用方独立提供。"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -3354,12 +3246,22 @@
                 "type": "null"
               }
             ]
+          },
+          "trace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceWorkloadConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "WorkloadConfig",
-        "description": "合成负载参数或基于独立上传计划执行的 trace 负载。"
+        "description": "互斥的合成负载或 Trace 回放配置。"
       }
     }
   }

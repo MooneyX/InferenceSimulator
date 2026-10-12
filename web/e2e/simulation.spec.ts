@@ -1,5 +1,41 @@
 import { expect, test } from "@playwright/test";
 
+test("runs 10 requests through the unified simulation endpoint", async ({ page }) => {
+  const browserErrors: string[] = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.goto("/");
+  await page.getByLabel("请求数量").fill("10");
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().endsWith("/api/simulate") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "运行仿真" }).click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  const config = response.request().postDataJSON();
+  expect(config.workload.synthetic.num_requests).toBe(10);
+  expect(config.inference.mode).toBe("physical");
+  expect(config.inference.timing).toEqual({ mode: "analytical" });
+  expect(config).toHaveProperty("scheduler.max_running_requests");
+  expect(config).not.toHaveProperty("engine");
+  expect(config).not.toHaveProperty("perf_model");
+  const result = await response.json();
+  expect(result.meta.config).toMatchObject(config);
+  expect(result.meta.num_requests).toBe(10);
+  expect(result.meta.num_completed + result.meta.num_aborted + result.meta.num_skipped).toBe(10);
+  expect(result.resolution).not.toBeNull();
+  expect(result.resolution).not.toHaveProperty("config");
+  expect(result.resolution).not.toHaveProperty("model");
+  await expect(page.getByRole("heading", { name: "仿真指标" })).toBeVisible();
+  await expect(page.getByLabel("解析配置与成本")).toContainText("自动解析");
+  await expect(page.getByLabel("请求结果状态")).toContainText(`已完成 ${result.meta.num_completed}`);
+  if (result.meta.num_completed > 0) {
+    await expect(page.getByRole("img", {
+      name: `${result.meta.num_completed} 个请求的排队、Prefill 和 Decode 生命周期甘特图`,
+    })).toBeVisible();
+  }
+  expect(browserErrors).toEqual([]);
+});
+
 test("runs and renders a 1,000-request simulation", async ({ page }) => {
   test.setTimeout(360_000);
   const browserErrors: string[] = [];
@@ -22,9 +58,16 @@ test("runs and renders a 1,000-request simulation", async ({ page }) => {
 
   const response = await responsePromise;
   expect(response.status()).toBe(200);
-  const submittedSession = response.request().postDataJSON().workload.synthetic.session;
+  const submittedConfig = response.request().postDataJSON();
+  expect(submittedConfig.inference.mode).toBe("physical");
+  expect(submittedConfig).toHaveProperty("scheduler.pd_mutually_exclusive");
+  expect(submittedConfig).not.toHaveProperty("engine");
+  expect(submittedConfig).not.toHaveProperty("perf_model");
+  const submittedSession = submittedConfig.workload.synthetic.session ?? {};
   const result = await response.json();
-  const returnedSession = result.meta.config.workload.synthetic.session;
+  expect(result.meta.config).toMatchObject(submittedConfig);
+  expect(result.resolution).not.toBeNull();
+  const returnedSession = result.meta.config.workload.synthetic.session ?? {};
   expect(result.meta.num_completed + result.meta.num_aborted + result.meta.num_skipped).toBe(1000);
   await expect(page.getByLabel("请求结果状态")).toContainText(`已完成 ${result.meta.num_completed}`);
   expect(submittedSession).not.toHaveProperty("allow_cross_session_shared_prefix");
@@ -95,7 +138,10 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   await page.getByRole("button", { name: "预览解析容量" }).click();
   const response = await responsePromise;
   expect(response.status()).toBe(200);
-  const submitted = response.request().postDataJSON().model;
+  const submittedConfig = response.request().postDataJSON();
+  expect(submittedConfig.inference.mode).toBe("physical");
+  expect(submittedConfig).not.toHaveProperty("config");
+  const submitted = submittedConfig.inference.model;
   expect(submitted.hidden_size).toBe(4096);
   expect(submitted.attention_groups[0].topk).toBe(1024);
   expect(submitted.attention_layout).toBe("grouped");

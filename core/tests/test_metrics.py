@@ -4,15 +4,7 @@ import pytest
 
 from simcore.kv_cache import TierSnapshot
 from simcore.metrics import compute_metrics, percentile
-from simcore.schemas import (
-    EngineConfig,
-    FixedLength,
-    PerfModelConfig,
-    RequestRecord,
-    SimConfig,
-    SyntheticWorkloadConfig,
-    WorkloadConfig,
-)
+from simcore.schemas import RequestRecord
 
 
 def rec(
@@ -156,22 +148,7 @@ class TestPrefixMetrics:
             actual_prefill_tokens=1,
             l1_hit_tokens=4,
         )
-        config = SimConfig(
-            num_instances=1,
-            workload=WorkloadConfig(
-                synthetic=SyntheticWorkloadConfig(
-                    num_requests=2,
-                    session_rate=1,
-                    prompt_len=FixedLength(value=5),
-                    turn_increment_len=FixedLength(value=1),
-                    output_len=FixedLength(value=2),
-                    seed=0,
-                )
-            ),
-            engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=2),
-            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
-        )
-        result = compute_metrics([first, second], config=config)
+        result = compute_metrics([first, second], page_size=2, workload_mode="synthetic")
         assert result.total_input_tokens == 15
         assert result.ideal_hit_tokens == 4
         assert result.actual_prefix_hit_rate == pytest.approx(4 / 15)

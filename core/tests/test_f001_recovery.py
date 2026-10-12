@@ -9,6 +9,7 @@ from simcore.kv_cache import TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import encode
 from simcore.scheduler import F001Scheduler
+from test_schemas import manual_config, runtime_config
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -16,7 +17,6 @@ from simcore.schemas import (
     InferenceRequest,
     PerfModelConfig,
     SessionConfig,
-    SimConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
@@ -38,7 +38,7 @@ def occupy(cache: TieredKVCache, key: int, length: int) -> None:
 
 def test_decode_evicts_cached_pages_before_considering_withdrawal() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=12, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 2})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 2})
     item = request(0, maximum=2)
     engine.submit(item, 0)
     assert engine.start_step(0, 0) == (4, ())
@@ -68,7 +68,7 @@ def test_decode_withdraws_when_lower_tier_is_protected_by_inflight_load() -> Non
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
     )
-    engine = Engine(cfg, perf, output_targets={0: 2})
+    engine = Engine(runtime_config(cfg, perf), output_targets={0: 2})
     engine.submit(request(0, maximum=2), 0)
     assert engine.start_step(0, 0) == (4, ())
     assert engine.finish_step(4) == ()
@@ -89,7 +89,7 @@ def test_decode_withdraws_when_lower_tier_is_protected_by_inflight_load() -> Non
 
 def test_withdraws_deterministically_then_replays_without_sampling_again() -> None:
     cfg = EngineConfig(max_running_requests=3, max_total_tokens=32, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 3, 1: 3})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 3, 1: 3})
     engine.submit(request(0, prompt=4), 0)
     engine.submit(request(1, prompt=8), 0)
     assert engine.start_step(0, 0) == (12, ())
@@ -126,7 +126,7 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
 
 def test_evictable_pages_are_removed_before_withdrawing_active_requests() -> None:
     cfg = EngineConfig(max_running_requests=3, max_total_tokens=24, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 3, 1: 3})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 3, 1: 3})
     engine.submit(request(0), 0)
     engine.submit(request(1), 0)
     assert engine.start_step(0, 0) == (8, ())
@@ -145,7 +145,7 @@ def test_evictable_pages_are_removed_before_withdrawing_active_requests() -> Non
 
 def test_withdrawal_tie_breaks_by_smaller_request_id() -> None:
     cfg = EngineConfig(max_running_requests=3, max_total_tokens=24, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 3, 1: 3})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 3, 1: 3})
     engine.submit(request(0), 0)
     engine.submit(request(1), 0)
     assert engine.start_step(0, 0) == (8, ())
@@ -165,7 +165,7 @@ def test_fused_mode_fixes_decode_set_before_prefill_admission() -> None:
         page_size=4,
         pd_mutually_exclusive=False,
     )
-    engine = Engine(cfg, PERF, output_targets={0: 3, 1: 3, 2: 1})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 3, 1: 3, 2: 1})
     engine.submit(request(0, prompt=4), 0)
     engine.submit(request(1, prompt=8), 0)
     assert engine.start_step(0, 0) == (12, ())
@@ -185,7 +185,7 @@ def test_fused_mode_fixes_decode_set_before_prefill_admission() -> None:
 
 def test_restore_with_two_sampled_tokens_recomputes_only_p_plus_one() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 3})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 3})
     item = request(0, maximum=10)
     engine.submit(item, 0)
     assert engine.start_step(0, 0) == (4, ())
@@ -214,7 +214,7 @@ def test_restore_with_two_sampled_tokens_recomputes_only_p_plus_one() -> None:
 
 def test_full_hit_restores_at_boundary_without_empty_engine_step() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 2})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 2})
     item = request(0, prompt=8, maximum=2)
     engine.submit(item, 0)
     assert engine.start_step(0, 0) == (8, ())
@@ -237,7 +237,7 @@ def test_full_hit_restores_at_boundary_without_empty_engine_step() -> None:
 
 def test_single_request_that_cannot_decode_is_aborted_instead_of_looping() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
-    engine = Engine(cfg, PERF, output_targets={0: 2})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 2})
     engine.submit(request(0, maximum=2), 0)
     assert engine.start_step(0, 0) == (4, ())
     assert engine.finish_step(4) == ()
@@ -288,7 +288,7 @@ def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> 
 
 def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64)
-    engine = Engine(cfg, PERF, output_targets={0: 1, 1: 1})
+    engine = Engine(runtime_config(cfg, PERF), output_targets={0: 1, 1: 1})
     engine.submit(request(0, prompt=128, maximum=1), 0)
     engine.submit(request(1, prompt=1, maximum=1), 0)
     assert engine.start_step(0, 0) == (1, (1,))
@@ -301,7 +301,7 @@ def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> Non
 
 
 def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -317,7 +317,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
         engine=EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=64),
         perf_model=PERF,
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     assert (result.meta.num_requests, result.meta.num_completed) == (3, 0)
     assert (result.meta.num_aborted, result.meta.num_skipped, result.meta.num_engine_steps) == (
         1,
@@ -330,7 +330,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
     assert result.metrics.ttft_mean is None and result.metrics.throughput is None
     assert result.metrics.makespan == 0
     exclude = {"meta": {"wall_clock_ms"}}
-    repeated, _ = simulate(config)
+    repeated = simulate(config)
     assert result.model_dump_json(exclude=exclude) == repeated.model_dump_json(exclude=exclude)
 
 

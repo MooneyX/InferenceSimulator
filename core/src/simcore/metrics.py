@@ -13,7 +13,7 @@ import math
 from collections.abc import Sequence
 
 from simcore.kv_cache import L1Snapshot, TierSnapshot
-from simcore.schemas import Metrics, RequestRecord, SimConfig, WorkloadPlan
+from simcore.schemas import Metrics, RequestRecord, WorkloadMode, WorkloadPlan
 
 __all__ = ["compute_metrics", "percentile"]
 
@@ -50,7 +50,8 @@ def compute_metrics(
     records: Sequence[RequestRecord],
     *,
     plan: WorkloadPlan | None = None,
-    config: SimConfig | None = None,
+    page_size: int = 1,
+    workload_mode: WorkloadMode = "synthetic",
     cache_snapshot: L1Snapshot | None = None,
     l2_snapshot: TierSnapshot | None = None,
     l3_snapshot: TierSnapshot | None = None,
@@ -70,7 +71,7 @@ def compute_metrics(
     num_sessions = len(plan.root_request_ids) if plan else 0
     root_count = (
         sum(turn.parent_request_id is None for turn in plan.turns.values())
-        if plan and config and config.workload.mode == "trace"
+        if plan and workload_mode == "trace"
         else num_sessions
     )
     root_ratio = root_count / len(plan.turns) if plan and plan.turns else 0.0
@@ -154,7 +155,7 @@ def compute_metrics(
         else record.prompt_len - record.actual_hit_tokens
         for record in records
     )
-    block_size = config.engine.page_size if config else 1
+    block_size = page_size
     fully_cached = sum(
         0 < (record.prompt_len // block_size) * block_size == record.matched_cache_tokens
         for record in records

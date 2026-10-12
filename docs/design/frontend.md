@@ -10,15 +10,15 @@
 
 表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：页面可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、根输入长度、子轮新增内容长度、输出长度、生成上限和种子。子轮输入均为父轮输入 + 父轮已生成输出 + 新增内容，理想命中率由完整页继承自然产生。开环填写 `arrival_rate`（期望请求 QPS），无就绪子轮时新建会话；闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值），沿用父轮完成后续写的客户端行为。跨 session 不共享公共前缀；`mode` 固定 synthetic，trace 不在前端暴露。
-- **引擎（engine）**：编辑 `max_running_requests`、`max_total_tokens`、`max_prefill_tokens`（默认 16384）、`page_size`（默认 64）和 `pd_mutually_exclusive`（默认 `true`，Prefill/Decode 分步；关闭后可在同一步融合）；`l2_capacity_tokens`、`l3_capacity_tokens` 默认 0，按实际启用层配置；由容量和页大小派生各层页数。完整页 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
-- **性能模型（perf_model）**：`prefill_c1` / `prefill_c2`、`decode_d1` / `decode_d2`；启用 L2 后配置 `kv_bytes_per_token`、`l2_to_l1_bandwidth_bytes_per_ms`、`l2_latency_ms`，启用 L3 后还配置 `l3_to_l2_bandwidth_bytes_per_ms`、`l3_latency_ms`。
+- **负载（workload）**：`mode=synthetic` 时编辑 `workload.synthetic`，可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、根输入长度、子轮新增内容长度、输出长度、生成上限和种子。子轮输入均为父轮输入 + 父轮已生成输出 + 新增内容，理想命中率由完整页继承自然产生。开环填写 `arrival_rate`（期望请求 QPS），无就绪子轮时新建会话；闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值）。跨 session 不共享公共前缀。`mode=trace` 时编辑 `workload.trace` 的开环/闭环、会话速率、种子与可选目标 QPS，通过上传/扫描/下载计划或直接上传计划获得临时 `plan_id`。
+- **调度（scheduler）**：编辑 `max_running_requests`、`max_prefill_tokens`（默认 16384）和 `pd_mutually_exclusive`（默认 `true`，Prefill/Decode 分步；关闭后可在同一步融合）。调度参数独立于推理配置方式。
+- **推理（inference）**：`mode=manual` 时编辑 `page_size`（默认 64）、`kv` 中的 L1/L2/L3 token 容量与 KV 上行链路参数，以及 `timing.mode=empirical` 的四系数；`mode=physical` 时编辑同一个 `page_size`、`model`、`hardware`、`storage`、`tp_size`、`ep_size` 与 `timing`（解析或经验）。容量由服务端推导；完整页 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 
 规则：
 
 - 所有字段给出默认值，提交前校验范围与必填项；L1 至少一页，L2/L3 均须为 `page_size` 的非负整数倍，启用 L3 要求启用 L2；启用低层时对应 KV 字节/token 和链路带宽须为正，延迟非负。未启用的链路可保持空值，配置非法时表单提示，服务端同样返回 422。不提供 chunked prefill 选项。
 - 手填表单值序列化为 config JSON，作为 `POST /api/simulate` 的请求体；字段类型来自 `openapi-typescript` 生成的 TS 类型，禁止手写。
-- **自动配置区（Dense TP／平均负载 MoE EP）**：编辑模型结构、权重/KV 精度、单卡显存、有效算力与带宽，以及三级物理容量；不输入可由结构估算的总参数、激活参数、专家参数或实际驻留字节，服务端在预览中只读展示估算值。TP 必须等于本实例 GPU 数；MoE 还须 EP=TP、填写专家规格。`/api/resolve` 按逐 rank 权重（含全部驻留专家）和 KV 展示容量；缺通信参数时仍可预览，但统一运行按钮禁用。解析计时在通信参数齐备时运行 Dense TP 或 MoE EP，经验四系数不支持多卡 TP/EP。B300 的 1800 GB/s 是单卡双向标称值，不代入有效带宽；界面默认 600 GB/s 单 rank 有效互联、0.01 ms/次 TP 同步和 0.02 ms/次 EP dispatch/combine，均是可修改的未经校准试算值。TP、EP 与 GPU 卡数仍分别输入。自动运行由 `/api/simulate/resolved` 重新解析；导入导出校验完整物理规格，运行期间表单不可修改。旧手填参数独立；前端不计算容量和性能公式。
+- **自动配置区（Dense TP／平均负载 MoE EP）**：编辑模型结构、权重/KV 精度、单卡显存、有效算力与带宽，以及三级物理容量；不输入可由结构估算的总参数、激活参数、专家参数或实际驻留字节，服务端在预览中只读展示估算值。TP 必须等于本实例 GPU 数；MoE 还须 EP=TP、填写专家规格。`/api/resolve` 按逐 rank 权重（含全部驻留专家）和 KV 展示容量；缺通信参数时仍可预览，但统一运行按钮禁用。解析计时在通信参数齐备时运行 Dense TP 或 MoE EP，经验四系数不支持多卡 TP/EP。B300 的 1800 GB/s 是单卡双向标称值，不代入有效带宽；界面默认 600 GB/s 单 rank 有效互联、0.01 ms/次 TP 同步和 0.02 ms/次 EP dispatch/combine，均是可修改的未经校准试算值。TP、EP 与 GPU 卡数仍分别输入。物理与手动运行均提交同一 `SimConfig` 到 `/api/simulate`；`/api/resolve` 仅接收同一配置并预览 `ResolutionReport`，运行不复用预览中的 token 容量。导入导出只接受统一 `SimConfig` JSON，保留完整物理规格；Trace 导出将临时 `plan_id` 清为 `null` 并保留回放设置，导入后提示重新上传独立计划资源。运行期间表单不可修改；前端不计算容量和性能公式。
 
 ## 输出：指标与告警
 
@@ -43,7 +43,7 @@ MVP 只有一个解释性视图——请求生命周期甘特图。
 
 - 甘特图采用 canvas 渲染，区间交由 ECharts 管理，缩放平移由 dataZoom 承载。
 - 技术栈：React + TypeScript + Vite + ECharts。
-- 前端不自行计算任何指标，手动模式消费 `POST /api/simulate`，自动模式消费 `POST /api/simulate/resolved` 的 `result` 与 `resolution`（见 [api.md](api.md)）。
+- 前端不自行计算任何指标，所有推理配置与负载模式均消费 `POST /api/simulate` 返回的单个 `SimResult`，从其可空 `resolution`、`analysis` 读取容量与解析明细（见 [api.md](api.md)）。
 - ECharts 仅注册甘特图使用的模块；甘特图在仿真结果返回后异步加载，不阻塞配置页首屏。
 
 ## 运行状态与验收

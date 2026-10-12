@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LengthDistribution, SimConfig } from "../api/types";
-import { createDefaultSimConfig, validateSimConfig } from "./simulation";
+import { createDefaultSimConfig, createDefaultPhysicalSimConfig, createDefaultEmpiricalTiming, validateSimConfig } from "./simulation";
 
 describe("createDefaultSimConfig", () => {
   it("creates a complete synthetic configuration", () => {
@@ -20,27 +20,14 @@ describe("createDefaultSimConfig", () => {
           seed: 42,
         },
       },
-      engine: {
-        max_running_requests: 32,
-        max_total_tokens: 65_536,
-        l2_capacity_tokens: 0,
-        l3_capacity_tokens: 0,
-        l3_prefetch_min_tokens: 256,
-        max_prefill_tokens: 16_384,
-        page_size: 64,
-        pd_mutually_exclusive: true,
-      },
-      perf_model: {
-        prefill_c1: 0.05,
-        prefill_c2: 0.000_01,
-        decode_d1: 8,
-        decode_d2: 0.002,
-        kv_bytes_per_token: null,
-        l2_to_l1_bandwidth_bytes_per_ms: null,
-        l3_to_l2_bandwidth_bytes_per_ms: null,
-        l2_latency_ms: 0,
-        l3_latency_ms: 0,
-        l3_lookup_latency_ms: 0,
+      scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
+        l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
+      inference: { mode: "manual", page_size: 64,
+        kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+          kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
+          l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0,
+          l3_lookup_latency_ms: 0 },
+        timing: { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 },
       },
     });
     expect(createDefaultSimConfig().workload.synthetic).not.toHaveProperty("session");
@@ -56,11 +43,29 @@ describe("createDefaultSimConfig", () => {
       second.workload.synthetic?.prompt_len,
     );
     expect(first.workload.synthetic?.turn_increment_len).not.toBe(second.workload.synthetic?.turn_increment_len);
-    expect(first.engine).not.toBe(second.engine);
+    expect(first.scheduler).not.toBe(second.scheduler);
+    expect(first.inference.kv).not.toBe(second.inference.kv);
   });
 });
 
 describe("validateSimConfig", () => {
+  it("uses physical specifications without manual capacity or analytical coefficient placeholders", () => {
+    const config = createDefaultPhysicalSimConfig();
+    expect(config.inference).not.toHaveProperty("kv");
+    expect(config.inference.timing).toEqual({ mode: "analytical" });
+    expect(validateSimConfig(config)).toEqual([]);
+    config.inference.timing = { ...createDefaultEmpiricalTiming(), prefill_c1: NaN };
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["inference.timing.prefill_c1"]);
+  });
+
+  it("validates trace replay settings even when the plan must be reuploaded", () => {
+    const config = createDefaultSimConfig();
+    config.workload = { mode: "trace", trace: { mode: "open_loop", session_rate: 0, seed: -1, target_qps: 0, plan_id: null } };
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "workload.trace.session_rate", "workload.trace.seed", "workload.trace.target_qps",
+    ]);
+  });
+
   it("accepts the default configuration", () => {
     expect(validateSimConfig(createDefaultSimConfig())).toEqual([]);
   });
@@ -73,10 +78,10 @@ describe("validateSimConfig", () => {
 
   it("validates trace engine settings without requiring synthetic distributions", () => {
     const config = createDefaultSimConfig();
-    config.workload = { mode: "trace" };
+    config.workload = { mode: "trace", trace: { mode: "open_loop", session_rate: 1, seed: 0 } };
     expect(validateSimConfig(config)).toEqual([]);
-    config.engine.page_size = 0;
-    expect(validateSimConfig(config).some(({ field }) => field === "engine.page_size")).toBe(true);
+    config.inference.page_size = 0;
+    expect(validateSimConfig(config).some(({ field }) => field === "inference.page_size")).toBe(true);
   });
 
   it("validates the child increment length distribution", () => {
@@ -106,75 +111,75 @@ describe("validateSimConfig", () => {
 
   it("rejects non-page capacity rather than rounding it down", () => {
     const config = createDefaultSimConfig();
-    config.engine.max_total_tokens = 128;
+    config.inference.kv.max_total_tokens = 128;
     expect(validateSimConfig(config)).toEqual([]);
-    config.engine.max_total_tokens = 130;
+    config.inference.kv.max_total_tokens = 130;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.max_total_tokens",
+      "inference.kv.max_total_tokens",
     ]);
-    config.engine.max_total_tokens = 63;
+    config.inference.kv.max_total_tokens = 63;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.max_total_tokens",
+      "inference.kv.max_total_tokens",
     ]);
-    config.engine.max_total_tokens = 128;
-    config.engine.page_size = 1;
-    config.engine.pd_mutually_exclusive = false;
+    config.inference.kv.max_total_tokens = 128;
+    config.inference.page_size = 1;
+    config.scheduler.pd_mutually_exclusive = false;
     expect(validateSimConfig(config)).toEqual([]);
   });
 
   it("requires whole-page L2/L3 capacities and L2 before L3", () => {
     const config = createDefaultSimConfig();
-    config.engine.l2_capacity_tokens = 65;
-    config.engine.l3_capacity_tokens = 130;
+    config.inference.kv.l2_capacity_tokens = 65;
+    config.inference.kv.l3_capacity_tokens = 130;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.l2_capacity_tokens",
-      "engine.l3_capacity_tokens",
-      "perf_model.kv_bytes_per_token",
-      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
-      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+      "inference.kv.l2_capacity_tokens",
+      "inference.kv.l3_capacity_tokens",
+      "inference.kv.kv_bytes_per_token",
+      "inference.kv.l2_to_l1_bandwidth_bytes_per_ms",
+      "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
-    config.engine.l2_capacity_tokens = 0;
-    config.engine.l3_capacity_tokens = 128;
+    config.inference.kv.l2_capacity_tokens = 0;
+    config.inference.kv.l3_capacity_tokens = 128;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "engine.l3_capacity_tokens",
-      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+      "inference.kv.l3_capacity_tokens",
+      "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
   });
 
   it("validates only enabled tier links as required and accepts a complete three-tier config", () => {
     const config = createDefaultSimConfig();
-    config.engine.l2_capacity_tokens = 128;
+    config.inference.kv.l2_capacity_tokens = 128;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "perf_model.kv_bytes_per_token",
-      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
+      "inference.kv.kv_bytes_per_token",
+      "inference.kv.l2_to_l1_bandwidth_bytes_per_ms",
     ]);
-    config.perf_model.kv_bytes_per_token = 4096;
-    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 1024;
+    config.inference.kv.kv_bytes_per_token = 4096;
+    config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 1024;
     expect(validateSimConfig(config)).toEqual([]);
-    config.engine.l3_capacity_tokens = 64;
+    config.inference.kv.l3_capacity_tokens = 64;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "perf_model.l3_to_l2_bandwidth_bytes_per_ms",
+      "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
-    config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 128;
-    config.perf_model.l2_latency_ms = 0.5;
-    config.perf_model.l3_latency_ms = 1;
-    config.perf_model.l3_lookup_latency_ms = 2.5;
-    config.engine.l3_prefetch_min_tokens = 0;
+    config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms = 128;
+    config.inference.kv.l2_latency_ms = 0.5;
+    config.inference.kv.l3_latency_ms = 1;
+    config.inference.kv.l3_lookup_latency_ms = 2.5;
+    config.scheduler.l3_prefetch_min_tokens = 0;
     expect(validateSimConfig(config)).toEqual([]);
-    config.perf_model.kv_bytes_per_token = 1.5;
-    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 0;
-    config.perf_model.l3_latency_ms = -1;
+    config.inference.kv.kv_bytes_per_token = 1.5;
+    config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 0;
+    config.inference.kv.l3_latency_ms = -1;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "perf_model.kv_bytes_per_token",
-      "perf_model.l2_to_l1_bandwidth_bytes_per_ms",
-      "perf_model.l3_latency_ms",
+      "inference.kv.kv_bytes_per_token",
+      "inference.kv.l2_to_l1_bandwidth_bytes_per_ms",
+      "inference.kv.l3_latency_ms",
     ]);
   });
 
   it("accepts trace mode independently of any synthetic payload", () => {
     const config: SimConfig = {
       ...createDefaultSimConfig(),
-      workload: { mode: "trace", synthetic: null },
+      workload: { mode: "trace", trace: { mode: "session", session_rate: 2, seed: 42 } },
     };
     expect(validateSimConfig(config)).toEqual([]);
   });
@@ -200,34 +205,34 @@ describe("validateSimConfig", () => {
     synthetic.arrival_rate = Number.NaN;
     synthetic.seed = -1;
     synthetic.max_new_tokens = 0;
-    config.engine.max_running_requests = 0;
-    config.engine.max_total_tokens = 2.5;
-    config.engine.max_prefill_tokens = 0;
-    config.engine.l3_prefetch_min_tokens = -1;
-    config.engine.page_size = 0;
-    config.engine.pd_mutually_exclusive = null as unknown as boolean;
-    config.perf_model.prefill_c1 = -0.1;
-    config.perf_model.prefill_c2 = Number.POSITIVE_INFINITY;
-    config.perf_model.decode_d1 = -1;
-    config.perf_model.decode_d2 = Number.NaN;
-    config.perf_model.l3_lookup_latency_ms = -1;
+    config.scheduler.max_running_requests = 0;
+    config.inference.kv.max_total_tokens = 2.5;
+    config.scheduler.max_prefill_tokens = 0;
+    config.scheduler.l3_prefetch_min_tokens = -1;
+    config.inference.page_size = 0;
+    config.scheduler.pd_mutually_exclusive = null as unknown as boolean;
+    config.inference.timing.prefill_c1 = -0.1;
+    config.inference.timing.prefill_c2 = Number.POSITIVE_INFINITY;
+    config.inference.timing.decode_d1 = -1;
+    config.inference.timing.decode_d2 = Number.NaN;
+    config.inference.kv.l3_lookup_latency_ms = -1;
 
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "workload.synthetic.num_requests",
       "workload.synthetic.arrival_rate",
       "workload.synthetic.max_new_tokens",
       "workload.synthetic.seed",
-      "engine.max_running_requests",
-      "engine.max_total_tokens",
-      "engine.max_prefill_tokens",
-      "engine.l3_prefetch_min_tokens",
-      "engine.page_size",
-      "engine.pd_mutually_exclusive",
-      "perf_model.prefill_c1",
-      "perf_model.prefill_c2",
-      "perf_model.decode_d1",
-      "perf_model.decode_d2",
-      "perf_model.l3_lookup_latency_ms",
+      "scheduler.max_running_requests",
+      "scheduler.max_prefill_tokens",
+      "scheduler.l3_prefetch_min_tokens",
+      "inference.page_size",
+      "scheduler.pd_mutually_exclusive",
+      "inference.timing.prefill_c1",
+      "inference.timing.prefill_c2",
+      "inference.timing.decode_d1",
+      "inference.timing.decode_d2",
+      "inference.kv.max_total_tokens",
+      "inference.kv.l3_lookup_latency_ms",
     ]);
   });
 

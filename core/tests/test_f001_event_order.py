@@ -11,6 +11,7 @@ from simcore.events import ArrivalTrace, DoneTrace, EventKind, StepTrace
 from simcore.kv_cache import CacheCapacityError, CacheEntry
 from simcore.prefix_hash import encode
 from simcore.router import Router
+from test_schemas import runtime_config
 from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig, TurnPlan, WorkloadPlan
 
 
@@ -33,7 +34,7 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
         decode_d2=0,
     )
     engine = Engine(
-        config, perf, output_targets={key: item.output_len for key, item in plan.turns.items()}
+        runtime_config(config, perf), output_targets={key: item.output_len for key, item in plan.turns.items()}
     )
     return Coordinator((engine,), ClientDriver(plan, config), Router(1)), engine
 
@@ -115,7 +116,7 @@ def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> Non
         root_request_ids=(0, 2, 3),
         children={0: (1,)},
     )
-    engine = Engine(config, perf, output_targets={key: 1 for key in plan.turns})
+    engine = Engine(runtime_config(config, perf), output_targets={key: 1 for key in plan.turns})
     if load_fails:
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
@@ -163,7 +164,7 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         root_request_ids=(0, 2, 3, 4),
         children={0: (1,)},
     )
-    engine = Engine(config, perf, output_targets={key: 1 for key in plan.turns})
+    engine = Engine(runtime_config(config, perf), output_targets={key: 1 for key in plan.turns})
     if prefetch_fails:
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
@@ -190,7 +191,7 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(config, perf, output_targets={0: 2})
+    engine = Engine(runtime_config(config, perf), output_targets={0: 2})
     item = InferenceRequest(0, 0, None, 4, 2, (), 0)
     engine.submit(item, 0)
     engine._prefix_scheduler.select_prefill({})
@@ -230,7 +231,7 @@ def test_partial_load_failure_waits_for_inflight_page_then_recomputes() -> None:
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
     )
-    engine = Engine(config, perf, output_targets={1: 1})
+    engine = Engine(runtime_config(config, perf), output_targets={1: 1})
     cache = engine._prefix_cache
     parent = InferenceRequest(0, 0, None, 8, 1, (), 0)
     cache.pin(parent, 0)
@@ -292,7 +293,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
         root_request_ids=(0, 1),
         children={},
     )
-    engine = ObservingEngine(config, perf, output_targets={0: 1, 1: 1})
+    engine = ObservingEngine(runtime_config(config, perf), output_targets={0: 1, 1: 1})
     run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
     assert engine._prefix_cache.page("chunk:0:0") is not None
@@ -313,7 +314,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     config = EngineConfig(max_running_requests=5, max_total_tokens=128, page_size=4)
     zero = PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0)
     engine = Engine(
-        config, zero, output_targets={key: item.output_len for key, item in plan.turns.items()}
+        runtime_config(config, zero), output_targets={key: item.output_len for key, item in plan.turns.items()}
     )
     coordinator = CheckedCoordinator((engine,), ClientDriver(plan, config), Router(1))
     run = coordinator.run()[0]
@@ -325,7 +326,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     assert run.records[4].arrival == run.records[1].finish == 0
     assert list(run.trace) == list(
         CheckedCoordinator(
-            (Engine(config, zero, output_targets={}),),
+            (Engine(runtime_config(config, zero), output_targets={}),),
             ClientDriver(plan, config),
             Router(1),
         )

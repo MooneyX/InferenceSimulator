@@ -2,9 +2,7 @@ import type {
   ErrorResponse,
   HTTPValidationError,
   PresetCatalog,
-  ResolvedConfig,
-  ResolvedRequest,
-  ResolvedRun,
+  ResolutionReport,
   SimConfig,
   SimResult,
   ValidationError,
@@ -53,6 +51,12 @@ function getErrorDetail(payload: unknown): string | undefined {
   return undefined;
 }
 
+function validationErrors(detail: unknown): ValidationError[] {
+  return Array.isArray(detail) ? detail.filter((item): item is ValidationError =>
+    typeof item === "object" && item !== null && Array.isArray(item.loc) &&
+    typeof item.msg === "string" && typeof item.type === "string") : [];
+}
+
 export async function simulate(config: SimConfig): Promise<SimResult> {
   let response: Response;
 
@@ -82,7 +86,7 @@ export async function simulate(config: SimConfig): Promise<SimResult> {
     const validationResponse = payload as HTTPValidationError | undefined;
     const detail = validationResponse?.detail;
     throw new SimulationApiError(getErrorDetail(payload) ?? "仿真配置校验失败", {
-      validationErrors: Array.isArray(detail) ? detail : [],
+      validationErrors: validationErrors(detail),
     });
   }
 
@@ -98,7 +102,7 @@ export async function simulate(config: SimConfig): Promise<SimResult> {
   );
 }
 
-async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise<T> {
+async function requestConfig<T>(endpoint: string, body?: SimConfig): Promise<T> {
   let response: Response;
   try {
     response = await fetch(endpoint, body ? {
@@ -110,11 +114,14 @@ async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise
     throw new SimulationApiError("无法连接仿真服务", { cause });
   }
   const payload = await readJson(response);
-  if (response.ok && payload !== undefined) return payload as T;
+  if (response.ok) {
+    if (payload === undefined) throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
+    return payload as T;
+  }
   if (response.status === 422) {
     const detail = (payload as HTTPValidationError | undefined)?.detail;
     throw new SimulationApiError(getErrorDetail(payload) ?? "模型或硬件规格校验失败", {
-      validationErrors: Array.isArray(detail) ? detail : [],
+      validationErrors: validationErrors(detail),
     });
   }
   if (response.status === 501) {
@@ -124,15 +131,11 @@ async function requestAuto<T>(endpoint: string, body?: ResolvedRequest): Promise
 }
 
 export function getPresets(): Promise<PresetCatalog> {
-  return requestAuto<PresetCatalog>("/api/presets");
+  return requestConfig<PresetCatalog>("/api/presets");
 }
 
-export function resolveAutomatic(request: ResolvedRequest): Promise<ResolvedConfig> {
-  return requestAuto<ResolvedConfig>("/api/resolve", request);
-}
-
-export function simulateAutomatic(request: ResolvedRequest): Promise<ResolvedRun> {
-  return requestAuto<ResolvedRun>("/api/simulate/resolved", request);
+export function resolveConfig(config: SimConfig): Promise<ResolutionReport> {
+  return requestConfig<ResolutionReport>("/api/resolve", config);
 }
 
 async function replayRequest(endpoint: string, init?: RequestInit): Promise<Response> {
@@ -172,28 +175,4 @@ export async function downloadTracePlan(id: string, sessions: string[]): Promise
 
 export async function uploadReplayPlan(file: Blob): Promise<PlanReceipt> {
   return (await replayRequest("/api/replay-plans", { method: "POST", body: file })).json() as Promise<PlanReceipt>;
-}
-
-export async function simulateReplayPlan(
-  id: string, config: SimConfig, mode: "open_loop" | "session", sessionRate: number, seed: number,
-  targetQps?: number,
-): Promise<SimResult> {
-  const response = await replayRequest(`/api/replay-plans/${id}/simulate`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config, mode, session_rate: sessionRate, seed,
-      ...(targetQps === undefined ? {} : { target_qps: targetQps }) }),
-  });
-  return response.json() as Promise<SimResult>;
-}
-
-export async function simulateReplayPlanAutomatic(
-  id: string, request: ResolvedRequest, mode: "open_loop" | "session", sessionRate: number, seed: number,
-  targetQps?: number,
-): Promise<ResolvedRun> {
-  const response = await replayRequest(`/api/replay-plans/${id}/simulate/resolved`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ request, mode, session_rate: sessionRate, seed,
-      ...(targetQps === undefined ? {} : { target_qps: targetQps }) }),
-  });
-  return response.json() as Promise<ResolvedRun>;
 }

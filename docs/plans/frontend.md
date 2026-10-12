@@ -4,7 +4,7 @@
 
 | 前置模块 | 前端工作 | 验收 |
 |---|---|---|
-| [F004 第一阶段](expert-parallelism.md)、[F002 性能模型](perf-model.md) | 新增自定义模型/单卡硬件参数输入、预置版本、容量手填/解析与经验/Roofline 计时切换；展示服务端返回的显存账单、有效 token 容量、规格来源和单步成本分项 | 前端不计算容量或 Roofline；缺参数/不支持的布局禁止自动运行；旧 JSON 和手填配置仍可用，未经校准值不标为实测 |
+| [F004 第一阶段](expert-parallelism.md)、[F002 性能模型](perf-model.md) | 新增自定义模型/单卡硬件参数输入、预置版本、容量手填/解析与经验/Roofline 计时切换；展示服务端返回的显存账单、有效 token 容量、规格来源和单步成本分项 | 前端不计算容量或 Roofline；缺参数/不支持的布局禁止自动运行；JSON 只接受统一 `SimConfig`，手填配置使用 `inference.mode=manual`；Trace 导出清空临时 `plan_id`，导入需重新上传计划，未经校准值不标为实测 |
 | [F004 第二、三阶段](expert-parallelism.md) | 随后补充 TP/EP 逐 rank 容量、通信和最慢 rank 展示 | 只显示已实现阶段及有数据的明细，不提前开放 DPA 或未经验证的模型组合 |
 
 请求/响应类型继续从 OpenAPI 生成；每阶段同步配置默认值、错误处理和组件测试。`F002` 与 `F004` 的实施依赖由 [功能总览](feature-roadmap.md) 管理。

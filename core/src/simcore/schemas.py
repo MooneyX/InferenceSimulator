@@ -11,7 +11,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -38,9 +38,14 @@ __all__ = [
     "RankCapacityReport",
     "RequestCompletion",
     "RequestRecord",
-    "ResolvedConfig",
-    "ResolvedRequest",
-    "ResolvedRun",
+    "AnalyticalTimingConfig",
+    "EmpiricalTimingConfig",
+    "ManualInferenceConfig",
+    "ManualKVConfig",
+    "PhysicalInferenceConfig",
+    "ResolutionReport",
+    "SchedulerConfig",
+    "TraceWorkloadConfig",
     "RouterSpec",
     "SessionConfig",
     "SimConfig",
@@ -170,16 +175,41 @@ class SyntheticWorkloadConfig(_Frozen):
         return self
 
 
+class TraceWorkloadConfig(_Frozen):
+    """计划资源引用与回放设置；计划内容由调用方独立提供。"""
+
+    mode: Literal["open_loop", "session"]
+    session_rate: float = Field(gt=0, allow_inf_nan=False)
+    seed: int = Field(default=0, ge=0)
+    target_qps: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    plan_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _check_target_qps(self) -> Self:
+        if self.mode != "open_loop" and self.target_qps is not None:
+            raise ValueError("目标 QPS 仅适用于开环 trace 回放")
+        return self
+
+
 class WorkloadConfig(_Frozen):
-    """合成负载参数或基于独立上传计划执行的 trace 负载。"""
+    """互斥的合成负载或 Trace 回放配置。"""
 
     mode: WorkloadMode = "synthetic"
     synthetic: SyntheticWorkloadConfig | None = None
+    trace: TraceWorkloadConfig | None = None
 
     @model_validator(mode="after")
-    def _check_mode_payload(self) -> Self:  # 当前负载模式与配置 → 校验合成负载必填项，返回自身
-        if self.mode == "synthetic" and self.synthetic is None:
-            raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
+    def _check_mode_payload(self) -> Self:
+        if self.mode == "synthetic":
+            if self.synthetic is None:
+                raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
+            if self.trace is not None:
+                raise ValueError("合成负载不能同时配置 workload.trace")
+        else:
+            if self.trace is None:
+                raise ValueError("workload.mode='trace' 时必须提供 workload.trace")
+            if self.synthetic is not None:
+                raise ValueError("Trace 负载不能同时配置 workload.synthetic")
         return self
 
 
@@ -244,17 +274,72 @@ def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:  # 
         raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
 
 
-class SimConfig(_Frozen):
-    """一场仿真的完整输入。"""
+class SchedulerConfig(_Frozen):
+    """所有推理实例共用的调度规则，不包含容量与性能参数。"""
 
-    workload: WorkloadConfig
-    engine: EngineConfig
-    perf_model: PerfModelConfig
-    num_instances: int = Field(ge=1, description="独占相同单实例配置的推理副本数量")
+    max_running_requests: int = Field(ge=1)
+    max_prefill_tokens: int = Field(default=16_384, ge=1)
+    pd_mutually_exclusive: bool = True
+    l3_prefetch_min_tokens: int = Field(default=256, ge=0)
+
+
+class EmpiricalTimingConfig(_Frozen):
+    """经验 GPU 计时的四系数，不包含 KV 链路参数。"""
+
+    mode: Literal["empirical"] = "empirical"
+    prefill_c1: float = Field(ge=0, allow_inf_nan=False)
+    prefill_c2: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    decode_d1: float = Field(ge=0, allow_inf_nan=False)
+    decode_d2: float = Field(ge=0, allow_inf_nan=False)
+
+
+class AnalyticalTimingConfig(_Frozen):
+    """复用物理推理规格的解析 GPU 计时。"""
+
+    mode: Literal["analytical"] = "analytical"
+
+
+class ManualKVConfig(_Frozen):
+    """手动指定 KV 容量和每条上行链路的参数。"""
+
+    max_total_tokens: int = Field(ge=1)
+    l2_capacity_tokens: int = Field(default=0, ge=0)
+    l3_capacity_tokens: int = Field(default=0, ge=0)
+    kv_bytes_per_token: int | None = Field(default=None, gt=0)
+    l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class ManualInferenceConfig(_Frozen):
+    """抽象实例：直接填写容量、链路和经验计时。"""
+
+    mode: Literal["manual"] = "manual"
+    page_size: int = Field(default=64, ge=1)
+    kv: ManualKVConfig
+    timing: EmpiricalTimingConfig
 
     @model_validator(mode="after")
-    def _check_tiered_config(self) -> Self:  # 当前仿真配置 → 校验 KV 与性能模型匹配，返回自身
-        validate_kv_config(self.engine, self.perf_model)
+    def _check_kv(self) -> Self:
+        kv = self.kv
+        if kv.max_total_tokens < self.page_size or kv.max_total_tokens % self.page_size:
+            raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
+        for tier in ("l2", "l3"):
+            if getattr(kv, f"{tier}_capacity_tokens") % self.page_size:
+                raise ValueError(f"{tier}_capacity_tokens 必须是 page_size 的整数倍")
+        if kv.l3_capacity_tokens and not kv.l2_capacity_tokens:
+            raise ValueError("l3_capacity_tokens > 0 要求 l2_capacity_tokens > 0")
+        if kv.l2_capacity_tokens and (
+            kv.kv_bytes_per_token is None or kv.l2_to_l1_bandwidth_bytes_per_ms is None
+        ):
+            raise ValueError(
+                "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 "
+                "l2_to_l1_bandwidth_bytes_per_ms 为正"
+            )
+        if kv.l3_capacity_tokens and kv.l3_to_l2_bandwidth_bytes_per_ms is None:
+            raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
         return self
 
 
@@ -328,9 +413,9 @@ class AttentionGroup(_Frozen):
               or any(v is None for v in mla)):
             raise ValueError("MLA 须配置 Q/KV 低秩、位置/非位置及 V 维度")
         if self.kind == "mla_dsa":
-            if any(v is None for v in index) or self.full_indexer_layers > self.layers:
+            if any(v is None for v in index) or cast(int, self.full_indexer_layers) > self.layers:
                 raise ValueError("DSA 须配置索引头/维度、top-k 及有效的重算层数")
-            if self.index_dim % 128:
+            if cast(int, self.index_dim) % 128:
                 raise ValueError("DSA 的 FP8 index-K 维度须为 128 的整数倍")
         elif any(v is not None for v in index):
             raise ValueError("仅 MLA+DSA 可以配置索引器")
@@ -427,16 +512,30 @@ class StorageSpec(_Frozen):
     l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
-class ResolvedRequest(_Frozen):
-    """物理规格与现有负载/调度输入；engine 容量在解析时被替换。"""
+class PhysicalInferenceConfig(_Frozen):
+    """物理实例：共用模型和硬件解析容量及 GPU 计时规格。"""
 
-    config: SimConfig
+    mode: Literal["physical"] = "physical"
+    page_size: int = Field(default=64, ge=1)
     model: ModelSpec
     hardware: HardwareSpec
     storage: StorageSpec
-    timing: Literal["empirical", "analytical"] = "analytical"
+    timing: Annotated[
+        EmpiricalTimingConfig | AnalyticalTimingConfig, Field(discriminator="mode")
+    ] = Field(default_factory=AnalyticalTimingConfig)
     tp_size: int = Field(default=1, ge=1)
     ep_size: int = Field(default=1, ge=1)
+
+
+class SimConfig(_Frozen):
+    """唯一仿真输入；负载、调度和推理规格各自只有一个来源。"""
+
+    workload: WorkloadConfig
+    scheduler: SchedulerConfig
+    inference: Annotated[
+        ManualInferenceConfig | PhysicalInferenceConfig, Field(discriminator="mode")
+    ]
+    num_instances: int = Field(ge=1, description="独占相同单实例配置的推理副本数量")
 
 
 class RankCapacityReport(_Record):
@@ -468,16 +567,15 @@ class CapacityReport(_Record):
     rank_reports: list[RankCapacityReport] = Field(default_factory=list)
 
 
-class ResolvedConfig(_Record):
-    config: SimConfig
-    model: ModelSpec
-    hardware: HardwareSpec
-    storage: StorageSpec
-    timing: Literal["empirical", "analytical"]
+class ResolutionReport(_Record):
+    """容量与可运行性报告，不作为另一种仿真输入。"""
+
     capacity: CapacityReport
-    tp_size: int = 1
-    ep_size: int = 1
-    runnable: bool = True
+    max_total_tokens: int
+    l2_capacity_tokens: int
+    l3_capacity_tokens: int
+    runnable: bool
+    reason: str | None = None
 
 
 class AnalyticalSummary(_Record):
@@ -498,12 +596,6 @@ class AnalyticalSummary(_Record):
     ep_dispatch_bytes: float = 0.0
     ep_combine_bytes: float = 0.0
     ep_exchanges: int = 0
-
-
-class ResolvedRun(_Record):
-    result: "SimResult"
-    resolution: ResolvedConfig
-    analysis: AnalyticalSummary | None = None
 
 
 # ---------------------------------------------------------------- 外部 trace 请求计划
@@ -864,6 +956,8 @@ class SimResult(_Record):
     aborted_requests: list[AbortedRequest] = Field(default_factory=list)
     skipped_requests: list[SkippedRequest] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    resolution: ResolutionReport | None = None
+    analysis: AnalyticalSummary | None = None
 
     @model_validator(mode="after")
     def _check_result_counts(self) -> Self:  # 当前完整结果 → 校验实例计数、互斥状态和指标定义，返回自身

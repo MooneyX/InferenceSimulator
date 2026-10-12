@@ -27,14 +27,18 @@ events       客户端发送/回调、GPU 步完成、L3 查询与页传输完�
 router       根请求轮询、子请求严格继承父实例的路由策略（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
-runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, AnalyticalSummary | None)（依赖 workload、client、trace_client、coordinator、engine、metrics）
+runtime      RuntimeConfig、AnalyticalSpec、具名 TransferLinks 的不可变值对象
+capacity     prepare_runtime：从 SimConfig 一次性准备容量、计时规格与链路（依赖 runtime、schemas）
+runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult（依赖 runtime、workload、client、trace_client、coordinator、engine、metrics）
 ```
 
-`runner.simulate` 是统一的完整仿真入口，包顶层导出 `simulate` 与不可变的 `TraceReplay` 参数对象：
+`runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
 
-- `spec: SimConfig | ResolvedConfig`：手动配置使用经验计时；已解析规格使用其有效容量、链路带宽及经验/解析计时，执行前检查 `runnable`。容量解析仍由 `capacity.resolve_config` 独立完成。
-- `replay: TraceReplay | None`（仅关键字参数）：未提供时使用配置中的合成负载；提供时以原始请求计划和回放设置替代合成负载，并将结果有效配置规范化为 Trace，不修改输入对象。仅配置 `mode="trace"` 而未提供计划时拒绝运行。
-- 始终返回 `(result, analysis)`，经验计时的 `analysis` 为 `None`。服务层取出所需部分，现有 HTTP 路径及响应结构不变。
+- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference` 组成。`inference.mode=manual` 使用显式 KV 容量与经验计时；`physical` 使用模型/硬件/存储推导容量，并选择经验或解析计时。
+- `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload.trace`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
+- 始终返回单个 `SimResult`，其中 `resolution`、`analysis` 可为空；经验计时的 `analysis` 为 `None`。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
+- 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime, ...)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页字节数、传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
+- `EngineConfig` / `PerfModelConfig` 只保留为内部组件及手写 `run_engine` 到达适配输入，经 `runtime_from_components` 准备运行规格，不构成第二套外部仿真配置。运行墙钟不包含配置解析；结果回显包含模型默认字段的原规范化 `SimConfig`。
 
 合成开环、合成闭环和 Trace 仍使用各自的客户端；完整入口 `simulate` 和手写到达适配入口 `run_engine` 共用 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete` 生命周期，不提供公共 `Engine.step` 同步兼容路径。GPU 步完成与异步页传输分别通过事件推进，再统一汇总指标。
 
@@ -48,7 +52,7 @@ runner       顶层仿真入口 simulate(spec, replay=None) -> (SimResult, Analy
 
 分两层边界：
 
-- **对外边界（`core` ↔ `server`）**：可序列化的配置、计划和结果通过 `schemas` 中的 Pydantic 类型交换，`schemas` 是 HTTP 数据契约的单一事实源。服务层在调用统一入口时另构造 `runner.TraceReplay` 不可变参数对象；它不加入 HTTP schema。
+- **对外边界（`core` ↔ `server`）**：可序列化的配置、计划和结果通过 `schemas` 中的 Pydantic 类型交换，`schemas` 是 HTTP 数据契约的单一事实源。服务层将请求中的 `SimConfig` 原样传给统一入口，仅根据 `workload.trace.plan_id` 另行注入不可变 `TracePlan` 资源；不存在第二套外部运行配置。
 - **内核内部模块间**：只交换不可变值对象（`frozen` dataclass 或 `schemas` 类型）。内部计划与客户端/引擎消息在 `schemas` 中定义，其余值对象由提供方模块定义，只允许依赖图中的下游模块引用。
 - **禁止跨模块共享可变状态**。唯一例外是依赖图中明确列出的协作者注入，须写明所有权（见下文）。
 

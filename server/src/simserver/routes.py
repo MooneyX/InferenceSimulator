@@ -6,12 +6,12 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult, simulate
 from simcore.capacity import resolve_config
-from simcore.schemas import ModelSpec, ResolvedConfig, ResolvedRequest, ResolvedRun
+from simcore.schemas import ModelSpec, ResolutionReport
 from simserver.presets import HARDWARE, MODELS
 
 __all__ = ["ErrorResponse", "router"]
@@ -32,7 +32,11 @@ class FieldValidationResponse(BaseModel):
     detail: list[dict[str, Any]]
 
 
-_RESOLVED_ERRORS = {
+_SIMULATION_ERRORS = {
+    status.HTTP_404_NOT_FOUND: {
+        "model": ErrorResponse,
+        "description": "Trace 请求计划不存在或已过期",
+    },
     status.HTTP_422_UNPROCESSABLE_CONTENT: {
         "model": ErrorResponse | FieldValidationResponse,
         "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
@@ -96,34 +100,17 @@ def presets_endpoint() -> PresetCatalog:
 
 @router.post(
     "/resolve",
-    response_model=ResolvedConfig,
-    summary="解析单实例容量与计时规格",
+    response_model=ResolutionReport,
+    summary="预览物理推理配置的单实例容量与运行可行性",
     responses={
-        status.HTTP_422_UNPROCESSABLE_CONTENT: _RESOLVED_ERRORS[
+        status.HTTP_422_UNPROCESSABLE_CONTENT: _SIMULATION_ERRORS[
             status.HTTP_422_UNPROCESSABLE_CONTENT
         ]
     },
 )
-def resolve_endpoint(request: ResolvedRequest) -> ResolvedConfig:
+def resolve_endpoint(config: SimConfig) -> ResolutionReport:
     try:
-        return resolve_config(request)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-
-
-@router.post(
-    "/simulate/resolved",
-    response_model=ResolvedRun,
-    summary="按单实例解析规格运行多实例仿真",
-    responses=_RESOLVED_ERRORS,
-)
-def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
-    try:
-        resolution = resolve_config(request)
-        result, analysis = simulate(resolution)
-        return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
-    except NotImplementedError as exc:
-        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+        return resolve_config(config)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -132,14 +119,9 @@ def simulate_resolved_endpoint(request: ResolvedRequest) -> ResolvedRun:
     "/simulate",
     response_model=SimResult,
     summary="同步执行一场仿真",
-    responses={
-        status.HTTP_501_NOT_IMPLEMENTED: {
-            "model": ErrorResponse,
-            "description": "workload.mode=trace（预留接缝，MVP 未实现）",
-        },
-    },
+    responses=_SIMULATION_ERRORS,
 )
-def simulate_endpoint(config: SimConfig) -> Response:
+def simulate_endpoint(config: SimConfig, request: Request) -> Response:
     """执行整场仿真并返回区间记录、指标与告警。
 
     - 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，
@@ -149,7 +131,15 @@ def simulate_endpoint(config: SimConfig) -> Response:
       响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。
     """
     try:
-        result, _ = simulate(config)
+        trace_plan = None
+        if config.workload.mode == "trace":
+            trace = config.workload.trace
+            if not trace.plan_id:
+                raise ValueError("Trace 仿真须提供 workload.trace.plan_id")
+            trace_plan = request.app.state.trace_store.plan(trace.plan_id)
+        result = simulate(config, trace_plan=trace_plan)
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NotImplementedError as exc:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ValueError as exc:

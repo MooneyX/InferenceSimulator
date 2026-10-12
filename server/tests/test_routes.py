@@ -27,12 +27,18 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
                 "seed": seed,
             },
         },
-        "engine": {"max_running_requests": 16, "max_total_tokens": budget, "page_size": 1},
-        "perf_model": {
-            "prefill_c1": 0.05,
-            "prefill_c2": 1e-5,
-            "decode_d1": 8.0,
-            "decode_d2": 0.002,
+        "scheduler": {"max_running_requests": 16},
+        "inference": {
+            "mode": "manual",
+            "page_size": 1,
+            "kv": {"max_total_tokens": budget},
+            "timing": {
+                "mode": "empirical",
+                "prefill_c1": 0.05,
+                "prefill_c2": 1e-5,
+                "decode_d1": 8.0,
+                "decode_d2": 0.002,
+            },
         },
     }
 
@@ -55,32 +61,31 @@ class TestSuccess:
         assert body["meta"]["config"]["workload"]["synthetic"]["session_rate"] == 2
         assert body["metrics"]["arrival_qps"] > 0
 
-    def test_new_engine_fields_echo_and_counts(self, client: TestClient) -> None:
+    def test_manual_fields_echo_and_counts(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 16}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
-        payload["engine"] = {"max_running_requests": 1, "max_total_tokens": 192}
+        payload["scheduler"] = {"max_running_requests": 1}
+        payload["inference"]["kv"] = {"max_total_tokens": 192}
+        del payload["inference"]["page_size"]
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         body = response.json()
-        assert body["meta"]["config"]["engine"]["page_size"] == 64
+        assert body["meta"]["config"]["inference"]["page_size"] == 64
         assert body["meta"]["num_completed"] == 1
         assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
         assert body["aborted_requests"] == body["skipped_requests"] == []
+        assert body["resolution"] is body["analysis"] is None
 
     def test_enabled_tiers_use_existing_route_and_echo_metrics(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 3}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
         payload["workload"]["synthetic"]["max_new_tokens"] = 1
-        payload["engine"].update(
-            max_running_requests=1,
-            max_total_tokens=12,
-            page_size=4,
-            l2_capacity_tokens=4,
-            l3_capacity_tokens=8,
-        )
-        payload["perf_model"].update(
+        payload["scheduler"]["max_running_requests"] = 1
+        payload["inference"]["page_size"] = 4
+        payload["inference"]["kv"].update(
+            max_total_tokens=12, l2_capacity_tokens=4, l3_capacity_tokens=8,
             kv_bytes_per_token=16,
             l2_to_l1_bandwidth_bytes_per_ms=64,
             l3_to_l2_bandwidth_bytes_per_ms=32,
@@ -89,8 +94,8 @@ class TestSuccess:
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
         assert result.meta.num_completed == 1
-        assert result.meta.config.engine.l2_capacity_tokens == 4
-        assert result.meta.config.engine.l3_capacity_tokens == 8
+        assert result.meta.config.inference.kv.l2_capacity_tokens == 4
+        assert result.meta.config.inference.kv.l3_capacity_tokens == 8
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
@@ -127,6 +132,8 @@ class TestSuccess:
             "aborted_requests",
             "skipped_requests",
             "warnings",
+            "resolution",
+            "analysis",
         }
         assert (
             "allow_cross_session_shared_prefix"
@@ -159,8 +166,8 @@ class TestSuccess:
     def test_matches_kernel_serialization(self, client: TestClient) -> None:
         """响应字节即本次内核 ``SimResult`` 的 JSON 序列化。"""
         payload = make_payload(seed=3)
-        expected, _ = simulate(SimConfig.model_validate(payload))
-        with patch("simserver.routes.simulate", return_value=(expected, None)):
+        expected = simulate(SimConfig.model_validate(payload))
+        with patch("simserver.routes.simulate", return_value=expected):
             response = client.post(URL, json=payload)
         assert response.text == expected.model_dump_json()
 
@@ -181,7 +188,7 @@ class TestSuccess:
                 "turn_increment_len": {"dist": "fixed", "value": 1},
             }
         )
-        payload["engine"]["page_size"] = 2
+        payload["inference"]["page_size"] = 2
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         body = response.json()
@@ -199,7 +206,7 @@ class TestSuccess:
         payload = make_payload(num_requests=2, budget=192)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 128}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
-        payload["engine"]["page_size"] = 64
+        payload["inference"]["page_size"] = 64
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
@@ -224,7 +231,8 @@ class TestErrors:
     @pytest.mark.parametrize("capacity", [63, 130])
     def test_invalid_page_capacity_returns_422(self, client: TestClient, capacity: int) -> None:
         payload = make_payload(num_requests=1)
-        payload["engine"] = {"max_running_requests": 1, "max_total_tokens": capacity}
+        payload["inference"]["page_size"] = 64
+        payload["inference"]["kv"]["max_total_tokens"] = capacity
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert "max_total_tokens" in response.text
@@ -255,8 +263,9 @@ class TestErrors:
         message: str,
     ) -> None:
         payload = make_payload(num_requests=1)
-        payload["engine"].update(engine_updates)
-        payload["perf_model"].update(perf_updates)
+        payload["inference"]["page_size"] = 2
+        payload["inference"]["kv"].update(engine_updates)
+        payload["inference"]["kv"].update(perf_updates)
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert message in response.text
@@ -264,7 +273,7 @@ class TestErrors:
     @pytest.mark.parametrize("legacy", ["max_batch_size", "kv_token_budget", "prefix_cache"])
     def test_legacy_engine_inputs_are_rejected(self, client: TestClient, legacy: str) -> None:
         payload = make_payload(num_requests=1)
-        payload["engine"][legacy] = 1
+        payload["scheduler"][legacy] = 1
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert legacy in response.text
@@ -276,11 +285,12 @@ class TestErrors:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 5}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 2}
-        payload["engine"].update({"page_size": 4, "pd_mutually_exclusive": exclusive})
+        payload["inference"]["page_size"] = 4
+        payload["scheduler"]["pd_mutually_exclusive"] = exclusive
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
-        assert result.meta.config.engine.pd_mutually_exclusive is exclusive
+        assert result.meta.config.scheduler.pd_mutually_exclusive is exclusive
         assert result.meta.num_completed == 1 and result.meta.num_engine_steps == 2
 
     def test_removed_hit_target_is_rejected(self, client: TestClient) -> None:
@@ -318,20 +328,37 @@ class TestErrors:
             for error in response.json()["detail"]
         )
 
-    def test_trace_mode_not_implemented(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("plan_id", [None, "missing"])
+    def test_trace_plan_id_is_required_and_must_exist(
+        self, client: TestClient, plan_id: str | None,
+    ) -> None:
         payload = make_payload()
-        payload["workload"] = {"mode": "trace"}
+        payload["workload"] = {"mode": "trace", "trace": {
+            "mode": "open_loop", "session_rate": 1, "seed": 0, "plan_id": plan_id,
+        }}
         response = client.post(URL, json=payload)
-        assert response.status_code == 501
-        assert "trace" in response.json()["detail"]
+        assert response.status_code == (422 if plan_id is None else 404)
+        assert response.json()["detail"]
+
+    def test_manual_preview_is_rejected(self, client: TestClient) -> None:
+        response = client.post("/api/resolve", json=make_payload())
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize("field", ["engine", "perf_model", "config"])
+    def test_removed_top_level_inputs_rejected(self, client: TestClient, field: str) -> None:
+        payload = make_payload()
+        payload[field] = {}
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert any(error["loc"] == ["body", field] for error in response.json()["detail"])
 
     @pytest.mark.parametrize(
         ("path", "value"),
         [
-            (("engine", "max_running_requests"), 0),
+            (("scheduler", "max_running_requests"), 0),
             (("workload", "synthetic", "session_rate"), -1.0),
             (("workload", "synthetic", "prompt_len"), {"dist": "uniform", "value": 3}),
-            (("engine", "unknown_field"), 1),
+            (("scheduler", "unknown_field"), 1),
         ],
         ids=["out-of-range", "negative-rate", "bad-discriminator", "extra-field"],
     )
@@ -346,6 +373,26 @@ class TestErrors:
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "path,value,expected",
+        [
+            (("scheduler", "max_running_requests"), 0, ["body", "scheduler", "max_running_requests"]),
+            (("inference", "timing", "decode_d1"), -1, ["body", "inference", "manual", "timing", "decode_d1"]),
+            (("inference", "kv", "unknown_field"), 1, ["body", "inference", "manual", "kv", "unknown_field"]),
+        ],
+    )
+    def test_field_validation_paths_follow_unified_config(
+        self, client: TestClient, path: tuple[str, ...], value: object, expected: list[str],
+    ) -> None:
+        payload = make_payload()
+        node = payload
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert any(error["loc"] == expected for error in response.json()["detail"])
 
     def test_synthetic_mode_without_payload_rejected(self, client: TestClient) -> None:
         payload = make_payload()
@@ -373,6 +420,6 @@ class TestOpenAPI:
         assert schema == {"$ref": "#/components/schemas/SimResult"}
 
     def test_error_responses_documented(self, operation: dict[str, Any]) -> None:
-        assert {"422", "501"} <= set(operation["responses"])
+        assert {"404", "422", "501"} <= set(operation["responses"])
         schema = operation["responses"]["501"]["content"]["application/json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/ErrorResponse"}

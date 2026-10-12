@@ -58,14 +58,14 @@ npm run dev
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"num_instances":1,"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"arrival_mode":"open_loop","prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128},"seed":0}},"engine":{"max_running_requests":32,"max_total_tokens":65536,"page_size":64,"pd_mutually_exclusive":true},"perf_model":{"prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}'
+$body = '{"num_instances":1,"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"arrival_mode":"open_loop","prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128},"seed":0}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"mode":"manual","page_size":64,"kv":{"max_total_tokens":65536},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
 Remove-Item simulate-request.json
 ```
 
-响应包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests` 和 `warnings`；各请求含 `instance_id`。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回；普通接口直接传 `workload.mode=trace` 返回 `501`，请求计划回放须使用独立接口。
+响应是单个 `SimResult`，包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings` 及可为空的 `resolution`、`analysis`；各请求含 `instance_id`。`meta.config` 完整回显规范化后的输入 `SimConfig`（包括模型字段默认值），不以推导容量改写输入。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回。手动/物理配置、合成/Trace 负载均使用同一 `POST /api/simulate`；Trace 通过 `workload.trace.plan_id` 引用已上传的计划。
 
 ## Trace 数据集 replay
 
@@ -76,7 +76,7 @@ uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --output
 uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --sessions "002001296e8a8c38ad9d7cc436d691afc602" --output trace-plan.json
 ```
 
-本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式；开环还可勾选「按目标 QPS 等比例缩放到达间隔」，填写目标请求/秒。缩放保留原始突发与空闲比例，并不保证均匀投放或完成吞吐。手动配置使用填写的容量和四系数，自动解析根据模型/硬件计算容量，并支持解析或经验计时及已有的 TP/EP 约束。trace 原始模型字段不参与计算；参数 JSON 不含临时计划 ID，导入后需重新上传请求计划。本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
+本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式；开环还可勾选「按目标 QPS 等比例缩放到达间隔」，填写目标请求/秒。缩放保留原始突发与空闲比例，并不保证均匀投放或完成吞吐。手动配置使用填写的容量和四系数，自动解析根据模型/硬件计算容量，并支持解析或经验计时及已有的 TP/EP 约束。trace 原始模型字段不参与计算；参数 JSON 与 API 使用同一 `SimConfig` 结构，Trace 设置位于 `workload.trace`（`mode`、`session_rate`、`seed`、可选 `target_qps` 与 `plan_id`）。`plan_id` 是服务进程临时资源引用；参数导出将其清为 `null`，保留回放设置。导入后需重新上传独立请求计划资源并更新 ID，不能复用旧临时引用。本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
 
 ## 同步前端类型
 
@@ -94,7 +94,7 @@ npm run gen:api
 ```python
 from simcore import SimConfig, simulate
 
-result, analysis = simulate(
+result = simulate(
     SimConfig.model_validate(
         {
             "num_instances": 1,
@@ -110,12 +110,22 @@ result, analysis = simulate(
                     "output_len": {"dist": "poisson", "mean": 128},
                 },
             },
-            "engine": {"max_running_requests": 32, "max_total_tokens": 65536, "page_size": 64},
-            "perf_model": {
-                "prefill_c1": 0.05,
-                "prefill_c2": 1e-5,
-                "decode_d1": 8.0,
-                "decode_d2": 0.002,
+            "scheduler": {
+                "max_running_requests": 32,
+                "max_prefill_tokens": 16384,
+                "pd_mutually_exclusive": True,
+            },
+            "inference": {
+                "mode": "manual",
+                "page_size": 64,
+                "kv": {"max_total_tokens": 65536},
+                "timing": {
+                    "mode": "empirical",
+                    "prefill_c1": 0.05,
+                    "prefill_c2": 1e-5,
+                    "decode_d1": 8.0,
+                    "decode_d2": 0.002,
+                },
             },
         }
     )
@@ -123,6 +133,6 @@ result, analysis = simulate(
 print(result.metrics)
 ```
 
-`simulate` 始终返回 `(SimResult, AnalyticalSummary | None)`；手动 `SimConfig` 使用经验计时，`analysis` 为 `None`。自动模式先调用 `simcore.capacity.resolve_config(request)`，再将返回的 `ResolvedConfig` 传给同一个 `simulate`，使用解析后的容量、带宽及计时规格。
+`simulate` 始终返回单个 `SimResult`；经验计时的 `result.analysis` 为 `None`。物理模式直接在同一个 `SimConfig.inference` 中传入 `mode="physical"`、`page_size`、完整 `model` / `hardware` / `storage`、`tp_size`、`ep_size` 和 `timing`；解析计时为 `{"mode":"analytical"}`，经验计时为带四系数的 `{"mode":"empirical", ...}`。可先用同一个配置调用 `POST /api/resolve` 预览 `ResolutionReport`，但运行不接收或复用预览报告，仍只提交原始 `SimConfig`。
 
-Trace 回放使用 `from simcore import TraceReplay`，调用 `simulate(config_or_resolution, replay=TraceReplay(plan, mode="open_loop", session_rate=1, seed=0))`；可选 `target_qps` 仅适用于开环。未提供 `replay` 时使用合成负载，Trace 请求长度、块身份和依赖语义不变。
+Trace 回放将负载设为 `{"mode":"trace","trace":{"mode":"open_loop","session_rate":1,"seed":0}}`，再调用 `simulate(config, trace_plan=plan)`，其中 `plan` 是 `TracePlan`。可选 `target_qps` 仅适用于开环；回放设置属于配置，`trace_plan` 仅是资源注入。内核不读取文件或服务端 `plan_id`；服务层根据 `workload.trace.plan_id` 获取计划后调用同一入口。Trace 请求长度、块身份和依赖语义不变。

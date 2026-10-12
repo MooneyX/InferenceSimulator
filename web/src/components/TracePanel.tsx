@@ -16,21 +16,22 @@ export interface ReplaySelection {
 
 interface TracePanelProps {
   disabled: boolean;
+  initialReplay?: Omit<ReplaySelection, "id">;
   onChange: (selection: ReplaySelection | null) => void;
 }
 
-export function TracePanel({ disabled, onChange }: TracePanelProps) {
+export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProps) {
   const [job, setJob] = useState<TraceJob | null>(null);
   const [sessions, setSessions] = useState<TraceSessionSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [planId, setPlanId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"open_loop" | "session">("open_loop");
-  const [rate, setRate] = useState(1);
-  const [scaleToTarget, setScaleToTarget] = useState(false);
-  const [targetQps, setTargetQps] = useState(64);
-  const [seed, setSeed] = useState(0);
+  const [mode, setMode] = useState<"open_loop" | "session">(initialReplay?.mode ?? "open_loop");
+  const [rate, setRate] = useState(initialReplay?.rate ?? 1);
+  const [scaleToTarget, setScaleToTarget] = useState(initialReplay?.targetQps !== undefined);
+  const [targetQps, setTargetQps] = useState(initialReplay?.targetQps ?? 64);
+  const [seed, setSeed] = useState(initialReplay?.seed ?? 0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [problem, setProblem] = useState("");

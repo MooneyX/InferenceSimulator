@@ -10,12 +10,6 @@ vi.mock("../api/client", async (importOriginal) => {
   return { ...actual, uploadReplayPlan: vi.fn() };
 });
 
-const callbacks = {
-  onSubmitAuto: vi.fn(),
-  onReplay: vi.fn(),
-  onReplayAuto: vi.fn(),
-};
-
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(uploadReplayPlan).mockReset();
@@ -23,13 +17,9 @@ afterEach(() => {
 
 describe("SimulationForm", () => {
   it("runs one trace plan with either automatic resolution or manual configuration", async () => {
-    const onReplayAuto = vi.fn();
-    const onReplay = vi.fn();
     const onSubmit = vi.fn();
-    const onSubmitAuto = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} onSubmitAuto={onSubmitAuto}
-      onReplay={onReplay} onReplayAuto={onReplayAuto} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     expect(screen.getByLabelText("负载模式")).toHaveValue("trace");
     expect(screen.queryByLabelText("请求数量")).not.toBeInTheDocument();
@@ -43,17 +33,18 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "2" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onReplayAuto).toHaveBeenCalledWith("plan-1", expect.objectContaining({
-      config: expect.objectContaining({ workload: { mode: "trace" } }), timing: "analytical",
-    }), "session", 2, 0, undefined);
-    expect(onSubmitAuto).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "session", session_rate: 2, seed: 0 } },
+      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
+    }));
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByText(/计划已校验/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onReplay).toHaveBeenCalledWith("plan-1", expect.objectContaining({
-      workload: { mode: "trace" },
-    }), "session", 2, 0, undefined);
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "session", session_rate: 2, seed: 0 } },
+      inference: expect.objectContaining({ mode: "manual" }),
+    }));
+    expect(onSubmit).toHaveBeenCalledTimes(2);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "synthetic" } });
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
     expect(screen.queryByLabelText("已导出的计划 JSON")).not.toBeInTheDocument();
@@ -62,7 +53,7 @@ describe("SimulationForm", () => {
   it("passes optional open-loop target QPS through the single run button", async () => {
     const onReplay = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 3 });
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onReplay={onReplay} />);
+    render(<SimulationForm onSubmit={onReplay} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
@@ -74,32 +65,40 @@ describe("SimulationForm", () => {
       target: { value: "7.5" },
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onReplay).toHaveBeenCalledWith("plan-1", expect.anything(), "open_loop", 1, 0, 7.5);
+    expect(onReplay).toHaveBeenCalledWith(expect.objectContaining({ workload: { mode: "trace",
+      trace: { plan_id: "plan-1", mode: "open_loop", session_rate: 1, seed: 0, target_qps: 7.5 } } }));
   });
 
   it("exports trace parameters without a plan and requires reupload after import", async () => {
     const onReplay = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onReplay={onReplay} />);
+    render(<SimulationForm onSubmit={onReplay} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["{}"], "plan.json")] },
     });
     await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
-    expect(JSON.parse(exported).workload).toEqual({ mode: "trace" });
+    expect(JSON.parse(exported).workload).toEqual({ mode: "trace", trace: {
+      mode: "session", session_rate: 3, seed: 0, plan_id: null,
+    } });
     expect(exported).not.toContain("plan-1");
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
     expect(onReplay).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("投放模式")).toHaveValue("session");
+    expect(screen.getByLabelText("会话/秒")).toHaveValue(3);
+    expect(screen.getByRole("status")).toHaveTextContent("请重新上传请求计划");
     expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
   });
 
   it("selects automatic resolution first", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
 
     const modes = screen.getAllByRole("radio", { name: /自动解析|手动配置/ });
     expect(modes).toHaveLength(2);
@@ -113,17 +112,16 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      config: expect.objectContaining({ workload: expect.objectContaining({
-        synthetic: expect.objectContaining({ arrival_mode: "open_loop",
-          turn_increment_len: { dist: "poisson", mean: 256 } }),
-      }) }),
-      storage: expect.objectContaining({ l2_available_gb: 2048, l3_available_gb: 40_000,
-        l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }),
+      workload: expect.objectContaining({ synthetic: expect.objectContaining({ arrival_mode: "open_loop",
+        turn_increment_len: { dist: "poisson", mean: 256 } }) }),
+      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" },
+        storage: expect.objectContaining({ l2_available_gb: 2048, l3_available_gb: 40_000,
+          l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
     }));
   });
 
   it("renders every synthetic configuration group with defaults", () => {
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
@@ -154,20 +152,21 @@ describe("SimulationForm", () => {
 
   it("uses the selected session workload in automatic resolution too", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({
+    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ synthetic: expect.objectContaining({
         arrival_mode: "session", session_rate: 1.28,
         session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
       }) }),
-    }) }));
+      inference: expect.objectContaining({ mode: "physical" }),
+    }));
   });
 
   it("submits session mode using only session count, rate and think interval", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒，泊松到达）")).not.toBeInTheDocument();
@@ -194,7 +193,7 @@ describe("SimulationForm", () => {
 
   it("blocks invalid closed-loop fields before submission", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "1001" } });
@@ -212,7 +211,7 @@ describe("SimulationForm", () => {
 
   it("submits the complete default config", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
@@ -232,27 +231,13 @@ describe("SimulationForm", () => {
           seed: 42,
         },
       },
-      engine: {
-        max_running_requests: 32,
-        max_total_tokens: 65_536,
-        l2_capacity_tokens: 0,
-        l3_capacity_tokens: 0,
-        l3_prefetch_min_tokens: 256,
-        max_prefill_tokens: 16_384,
-        page_size: 64,
-        pd_mutually_exclusive: true,
-      },
-      perf_model: {
-        prefill_c1: 0.05,
-        prefill_c2: 0.000_01,
-        decode_d1: 8,
-        decode_d2: 0.002,
-        kv_bytes_per_token: null,
-        l2_to_l1_bandwidth_bytes_per_ms: null,
-        l3_to_l2_bandwidth_bytes_per_ms: null,
-        l2_latency_ms: 0,
-        l3_latency_ms: 0,
-        l3_lookup_latency_ms: 0,
+      scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
+        l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
+      inference: { mode: "manual", page_size: 64,
+        kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+          kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
+          l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0 },
+        timing: { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 },
       },
     });
     expect(onSubmit.mock.calls[0][0].workload.synthetic).not.toHaveProperty("session");
@@ -260,7 +245,7 @@ describe("SimulationForm", () => {
 
   it("updates scalar and distribution fields before submission", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.change(screen.getByLabelText("请求数量"), {
@@ -295,7 +280,7 @@ describe("SimulationForm", () => {
 
   it("submits edited open-loop distribution, whole-page capacity and fused mode", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
@@ -324,13 +309,14 @@ describe("SimulationForm", () => {
           turn_increment_len: { dist: "fixed", value: 20 },
         },
       },
-      engine: { max_total_tokens: 128, page_size: 4, pd_mutually_exclusive: false },
+      scheduler: { pd_mutually_exclusive: false },
+      inference: { mode: "manual", page_size: 4, kv: { max_total_tokens: 128 } },
     });
   });
 
   it("exposes L2/L3 links only when enabled and submits valid transfer settings", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("L2 KV 容量（token，0 为关闭）"), { target: { value: "128" } });
     expect(screen.getByLabelText("KV 每 token 字节数")).toBeInTheDocument();
@@ -347,15 +333,12 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      engine: expect.objectContaining({ l2_capacity_tokens: 128, l3_capacity_tokens: 64,
-        l3_prefetch_min_tokens: 0 }),
-      perf_model: expect.objectContaining({
-        kv_bytes_per_token: 4096,
-        l2_to_l1_bandwidth_bytes_per_ms: 1024,
-        l3_to_l2_bandwidth_bytes_per_ms: 512,
-        l3_latency_ms: 1.5,
-        l3_lookup_latency_ms: 0.75,
-      }),
+      scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 0 }),
+      inference: expect.objectContaining({ mode: "manual", kv: expect.objectContaining({
+        l2_capacity_tokens: 128, l3_capacity_tokens: 64, kv_bytes_per_token: 4096,
+        l2_to_l1_bandwidth_bytes_per_ms: 1024, l3_to_l2_bandwidth_bytes_per_ms: 512,
+        l3_latency_ms: 1.5, l3_lookup_latency_ms: 0.75,
+      }) }),
     }));
   });
 
@@ -369,7 +352,7 @@ describe("SimulationForm", () => {
     ["每请求生成上限（token）", "0", "必须是大于或等于 1 的整数"],
   ])("blocks invalid %s with an accessible field error", (label, value, message) => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     const input = screen.getByLabelText(label);
@@ -385,7 +368,7 @@ describe("SimulationForm", () => {
 
   it("blocks invalid submissions and associates errors with their fields", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
 
     const requestCount = screen.getByLabelText("请求数量");
@@ -402,7 +385,7 @@ describe("SimulationForm", () => {
   it("exports edited parameters to the JSON box and copies them", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
 
@@ -419,7 +402,7 @@ describe("SimulationForm", () => {
 
   it("keeps exported JSON available when clipboard copying is unavailable", () => {
     vi.stubGlobal("navigator", {});
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     expect((screen.getByLabelText("参数 JSON") as HTMLInputElement).value).toContain('"workload"');
@@ -428,24 +411,24 @@ describe("SimulationForm", () => {
 
   it("imports a valid JSON config into all form groups without running a simulation", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 20;
     config.workload.synthetic!.turn_increment_len = { dist: "fixed", value: 35 };
     config.workload.synthetic!.prompt_len = { dist: "fixed", value: 256 };
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
-    config.engine.page_size = 128;
-    config.engine.l2_capacity_tokens = 256;
-    config.engine.l3_capacity_tokens = 128;
-    config.engine.l3_prefetch_min_tokens = 512;
-    config.perf_model.kv_bytes_per_token = 2048;
-    config.perf_model.l2_to_l1_bandwidth_bytes_per_ms = 1024;
-    config.perf_model.l3_to_l2_bandwidth_bytes_per_ms = 512;
-    config.perf_model.l2_latency_ms = 1;
-    config.perf_model.l3_latency_ms = 2;
-    config.perf_model.l3_lookup_latency_ms = 3;
-    config.perf_model.prefill_c1 = 0.1;
+    config.inference.page_size = 128;
+    config.inference.kv.l2_capacity_tokens = 256;
+    config.inference.kv.l3_capacity_tokens = 128;
+    config.scheduler.l3_prefetch_min_tokens = 512;
+    config.inference.kv.kv_bytes_per_token = 2048;
+    config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 1024;
+    config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms = 512;
+    config.inference.kv.l2_latency_ms = 1;
+    config.inference.kv.l3_latency_ms = 2;
+    config.inference.kv.l3_lookup_latency_ms = 3;
+    config.inference.timing.prefill_c1 = 0.1;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
 
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
@@ -476,7 +459,7 @@ describe("SimulationForm", () => {
 
   it("exports and imports the complete automatic configuration from the top transfer controls", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
@@ -489,10 +472,9 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
-      timing: "empirical", model: { hidden_size: 2048 },
-      hardware: { memory_bytes_per_gpu: 300_000_000_000 },
-      storage: { l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 },
-      config: { workload: { synthetic: { num_requests: 20 } }, engine: { l3_prefetch_min_tokens: 1024 } },
+      workload: { synthetic: { num_requests: 20 } }, scheduler: { l3_prefetch_min_tokens: 1024 },
+      inference: { mode: "physical", timing: { mode: "empirical" }, model: { hidden_size: 2048 },
+        hardware: { memory_bytes_per_gpu: 300_000_000_000 }, storage: { l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 } },
     });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
@@ -508,17 +490,17 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      timing: "empirical", model: expect.objectContaining({ hidden_size: 2048 }),
-      hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
-      storage: expect.objectContaining({ l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 }),
-      config: expect.objectContaining({ engine: expect.objectContaining({ l3_prefetch_min_tokens: 1024 }) }),
+      scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 1024 }),
+      inference: expect.objectContaining({ timing: expect.objectContaining({ mode: "empirical" }),
+        model: expect.objectContaining({ hidden_size: 2048 }),
+        hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
+        storage: expect.objectContaining({ l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 }) }),
     }));
   });
 
   it("keeps a complete, independent set of parameters for each panel", () => {
     const onSubmit = vi.fn();
-    const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByRole("group", { name: "手动配置参数" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "25" } });
@@ -534,14 +516,12 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("最多同时运行请求"), { target: { value: "8" } });
     fireEvent.change(screen.getByLabelText("每页 token 数"), { target: { value: "100" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      timing: "analytical", config: expect.objectContaining({
-        workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 40 }) }),
-        engine: expect.objectContaining({ max_running_requests: 8, page_size: 100,
-          max_total_tokens: 100, l2_capacity_tokens: 0, l3_capacity_tokens: 0 }),
-      }),
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+      workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 40 }) }),
+      scheduler: expect.objectContaining({ max_running_requests: 8 }),
+      inference: expect.objectContaining({ mode: "physical", page_size: 100, timing: { mode: "analytical" } }),
     }));
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit.mock.lastCall![0].inference).not.toHaveProperty("kv");
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByLabelText("请求数量")).toHaveValue(25);
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(12);
@@ -549,12 +529,13 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 25 }) }),
-      engine: expect.objectContaining({ max_running_requests: 12, max_total_tokens: 128 }),
+      scheduler: expect.objectContaining({ max_running_requests: 12 }),
+      inference: expect.objectContaining({ mode: "manual", kv: expect.objectContaining({ max_total_tokens: 128 }) }),
     }));
   });
 
   it("imports a manual config from the automatic panel without losing the automatic draft", () => {
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+    render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
     const manual = createDefaultSimConfig();
@@ -569,24 +550,20 @@ describe("SimulationForm", () => {
 
   it("shows empirical coefficients only when automatic timing uses them", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("Prefill C1"), { target: { value: "0.2" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      timing: "empirical", config: expect.objectContaining({
-        perf_model: expect.objectContaining({ prefill_c1: 0.2 }),
-      }),
+      inference: expect.objectContaining({ timing: expect.objectContaining({ mode: "empirical", prefill_c1: 0.2 }) }),
     }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledTimes(2);
     expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      timing: "analytical", config: expect.objectContaining({
-        perf_model: expect.objectContaining({ prefill_c1: 0.2 }),
-      }),
+      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
     }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.2);
@@ -594,15 +571,17 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      timing: "analytical", config: expect.objectContaining({
-        perf_model: expect.objectContaining({ prefill_c1: 0.05 }),
-      }),
+      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
     }));
+    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
+    expect(screen.getByLabelText("Prefill C1")).toHaveValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmitAuto).toHaveBeenCalledTimes(3);
   });
 
   it("round-trips EP topology and runs MoE analytical timing only", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("专家数"), { target: { value: "4" } });
@@ -616,11 +595,11 @@ describe("SimulationForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
-    expect(JSON.parse(exported)).toMatchObject({
+    expect(JSON.parse(exported)).toMatchObject({ inference: {
       tp_size: 4, ep_size: 4,
       hardware: { ep_communication_latency_ms: 0.2, collective_latency_ms: 0.01,
         effective_interconnect_gb_s: 600 },
-    });
+    } });
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
       target: { value: "" },
@@ -632,7 +611,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      tp_size: 4, ep_size: 4, timing: "analytical",
+      inference: expect.objectContaining({ tp_size: 4, ep_size: 4, timing: { mode: "analytical" } }),
     }));
     fireEvent.change(screen.getByLabelText("EP 数（MoE 须等于 TP）"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
@@ -643,7 +622,7 @@ describe("SimulationForm", () => {
 
   it("round-trips TP topology and runs analytical multi-GPU only", () => {
     const onSubmitAuto = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={onSubmitAuto} />);
+    render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "4" },
@@ -657,9 +636,9 @@ describe("SimulationForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
-    expect(JSON.parse(exported)).toMatchObject({
+    expect(JSON.parse(exported)).toMatchObject({ inference: {
       tp_size: 4, ep_size: 1, hardware: { gpu_count: 4, collective_latency_ms: 0.1 },
-    });
+    } });
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
       target: { value: "1" },
     });
@@ -669,7 +648,8 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      tp_size: 4, timing: "analytical", hardware: expect.objectContaining({ gpu_count: 4 }),
+      inference: expect.objectContaining({ tp_size: 4, timing: { mode: "analytical" },
+        hardware: expect.objectContaining({ gpu_count: 4 }) }),
     }));
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
@@ -677,8 +657,8 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
   });
 
-  it("accepts legacy config JSON and rejects incomplete physical specs without changing the form", () => {
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} onSubmitAuto={vi.fn()} />);
+  it("accepts new manual config JSON and rejects legacy wrappers without changing the form", () => {
+    render(<SimulationForm onSubmit={vi.fn()} />);
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 12;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
@@ -698,7 +678,7 @@ describe("SimulationForm", () => {
 
   it("preserves the current form when JSON is invalid or incomplete", () => {
     const onSubmit = vi.fn();
-    render(<SimulationForm {...callbacks} onSubmit={onSubmit} />);
+    render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: '{"workload":{}}' } });
@@ -710,7 +690,7 @@ describe("SimulationForm", () => {
   });
 
   it("rejects exporting invalid drafts without replacing the JSON box", () => {
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} />);
+    render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: "previous" } });
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "0" } });
@@ -720,7 +700,7 @@ describe("SimulationForm", () => {
   });
 
   it("disables submission and parameter transfer while a simulation is running", () => {
-    render(<SimulationForm {...callbacks} onSubmit={vi.fn()} disabled />);
+    render(<SimulationForm onSubmit={vi.fn()} disabled />);
 
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "导入参数" })).toBeDisabled();

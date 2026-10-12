@@ -1,24 +1,23 @@
 import { useRef, useState, type FormEvent } from "react";
 
-import type { ResolvedRequest, SimConfig } from "../api/types";
-import { parseResolvedRequestJson, parseSimConfigJson, serializeResolvedRequest, serializeSimConfig } from "../config/parameterTransfer";
+import type { ManualInferenceConfig, SimConfig } from "../api/types";
+import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
+  createDefaultPhysicalSimConfig,
+  createDefaultEmpiricalTiming,
   validateSimConfig,
+  type ManualSimConfig,
+  type PhysicalSimConfig,
   type ConfigField,
 } from "../config/simulation";
-import { AutomaticConfig, initialHardware, initialModel, initialStorage } from "./AutomaticConfig";
+import { AutomaticConfig } from "./AutomaticConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
 import { TracePanel, type ReplaySelection } from "./TracePanel";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig) => void;
-  onSubmitAuto: (request: ResolvedRequest) => void;
-  onReplay: (id: string, config: SimConfig, mode: "open_loop" | "session", rate: number,
-    seed: number, targetQps?: number) => void;
-  onReplayAuto: (id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number,
-    seed: number, targetQps?: number) => void;
   disabled?: boolean;
 }
 
@@ -36,38 +35,6 @@ interface NumberFieldProps {
 
 function inputValue(value: number): number | "" {
   return Number.isNaN(value) ? "" : value;
-}
-
-const defaultConfig = createDefaultSimConfig();
-
-function configForAutomaticResolution(config: SimConfig, timing: ResolvedRequest["timing"]): SimConfig {
-  const perfModel = {
-    ...config.perf_model,
-    kv_bytes_per_token: null,
-    l2_to_l1_bandwidth_bytes_per_ms: null,
-    l3_to_l2_bandwidth_bytes_per_ms: null,
-    l2_latency_ms: 0,
-    l3_latency_ms: 0,
-    l3_lookup_latency_ms: 0,
-  };
-  if (timing === "analytical") {
-    for (const field of ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"] as const) {
-      if (!Number.isFinite(perfModel[field]) || perfModel[field] < 0) {
-        perfModel[field] = defaultConfig.perf_model[field];
-      }
-    }
-  }
-  const pageSize = config.engine.page_size;
-  return {
-    ...config,
-    engine: {
-      ...config.engine,
-      max_total_tokens: Number.isInteger(pageSize) && pageSize > 0 ? pageSize : defaultConfig.engine.max_total_tokens,
-      l2_capacity_tokens: 0,
-      l3_capacity_tokens: 0,
-    },
-    perf_model: perfModel,
-  };
 }
 
 function NumberField({
@@ -107,29 +74,47 @@ function NumberField({
   );
 }
 
-export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto, disabled = false }: SimulationFormProps) {
+export function SimulationForm({ onSubmit, disabled = false }: SimulationFormProps) {
   const [mode, setMode] = useState<"manual" | "automatic">("automatic");
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
-  const [manualConfig, setManualConfig] = useState<SimConfig>(createDefaultSimConfig);
-  const [automaticConfig, setAutomaticConfig] = useState<SimConfig>(createDefaultSimConfig);
-  const config = mode === "automatic" ? automaticConfig : manualConfig;
-  const setConfig = mode === "automatic" ? setAutomaticConfig : setManualConfig;
-  const [model, setModel] = useState<ResolvedRequest["model"]>(initialModel);
-  const [hardware, setHardware] = useState<ResolvedRequest["hardware"]>(initialHardware);
-  const [storage, setStorage] = useState<ResolvedRequest["storage"]>(initialStorage);
-  const [timing, setTiming] = useState<ResolvedRequest["timing"]>("analytical");
-  const [tpSize, setTpSize] = useState(1);
-  const [epSize, setEpSize] = useState(1);
+  const [traceDraft, setTraceDraft] = useState({ mode: "open_loop" as "open_loop" | "session", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
+  const [manualConfig, setManualConfig] = useState<ManualSimConfig>(createDefaultSimConfig);
+  const [automaticConfig, setAutomaticConfig] = useState<PhysicalSimConfig>(createDefaultPhysicalSimConfig);
+  const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
+  const config: ManualSimConfig | PhysicalSimConfig = mode === "automatic" ? automaticConfig : manualConfig;
+  function setConfig(next: SimConfig) {
+    if (next.inference.mode === "manual") setManualConfig({ ...next, inference: next.inference });
+    else setAutomaticConfig({ ...next, inference: { ...next.inference, timing: next.inference.timing ?? { mode: "analytical" } } });
+  }
+  const { model, hardware, tp_size: tpSize, ep_size: epSize } = automaticConfig.inference;
+  const timing = config.inference.timing.mode;
+  const empiricalTiming = config.inference.timing.mode === "empirical" ? config.inference.timing : null;
+  function updatePhysical(patch: Partial<PhysicalSimConfig["inference"]>) {
+    setAutomaticConfig((current) => ({ ...current, inference: { ...current.inference, ...patch } }));
+  }
+  function setTiming(value: PhysicalSimConfig["inference"]["timing"]["mode"]) {
+    if (automaticConfig.inference.timing.mode === "empirical") setEmpiricalDraft(automaticConfig.inference.timing);
+    updatePhysical({ timing: value === "analytical" ? { mode: "analytical" } : empiricalDraft });
+  }
+  function updateKv(patch: Partial<ManualInferenceConfig["kv"]>) {
+    setManualConfig((current) => ({ ...current, inference: { ...current.inference, kv: { ...current.inference.kv, ...patch } } }));
+  }
+  function updateTiming(patch: Partial<ManualInferenceConfig["timing"]>) {
+    if (config.inference.timing.mode !== "empirical") return;
+    setConfig({ ...config, inference: { ...config.inference, timing: { ...config.inference.timing, ...patch } } });
+  }
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
   const paramsInputRef = useRef<HTMLInputElement>(null);
-  const draftConfig = mode === "automatic" ? configForAutomaticResolution(config, timing) : config;
   const submissionConfig: SimConfig = workloadMode === "trace"
-    ? { ...draftConfig, workload: { mode: "trace" } }
-    : draftConfig;
+    ? { ...config, workload: { mode: "trace", trace: replay ? {
+      mode: replay.mode, session_rate: replay.rate, seed: replay.seed, plan_id: replay.id,
+      ...(replay.targetQps === undefined ? {} : { target_qps: replay.targetQps }),
+    } : { ...traceDraft, plan_id: null } } }
+    : config;
   const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
   const errorByField = new Map(
     validationErrors.map(({ field, message }) => [field, message]),
@@ -179,40 +164,23 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
     setShowValidation(true);
 
     if (validateSimConfig(submissionConfig).length > 0 || automaticRunUnavailable) return;
-    if (workloadMode === "trace") {
-      if (!replay) return;
-      if (mode === "automatic") {
-        onReplayAuto(replay.id, { config: submissionConfig, model, hardware, storage,
-          timing, tp_size: tpSize, ep_size: epSize }, replay.mode, replay.rate, replay.seed,
-        replay.targetQps);
-      } else {
-        onReplay(replay.id, submissionConfig, replay.mode, replay.rate, replay.seed,
-          replay.targetQps);
-      }
-      return;
-    }
-    if (mode === "automatic") {
-      onSubmitAuto({ config: submissionConfig, model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize });
-    } else {
-      onSubmit(submissionConfig);
-    }
+    if (workloadMode === "trace" && !replay) return;
+    onSubmit(submissionConfig);
   }
 
   function handleExport(): void {
     try {
-      const json = mode === "automatic"
-        ? serializeResolvedRequest({ config: submissionConfig, model, hardware, storage,
-          timing, tp_size: tpSize, ep_size: epSize })
-        : serializeSimConfig(submissionConfig);
+      const json = serializeSimConfig(submissionConfig);
       setParamsJson(json);
-      setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
+      const exportMessage = workloadMode === "trace" ? "已生成参数 JSON，可手动复制；再次使用时请重新上传请求计划" : "已生成参数 JSON，可手动复制";
+      setTransferNote({ message: exportMessage, error: false });
       paramsInputRef.current?.focus();
       paramsInputRef.current?.select();
       if (navigator.clipboard?.writeText) {
         try {
           void navigator.clipboard.writeText(json).then(() => {
-            setTransferNote((note) => note?.message === "已生成参数 JSON，可手动复制"
-              ? { message: "已生成并复制参数 JSON", error: false } : note);
+            setTransferNote((note) => note?.message === exportMessage
+              ? { message: workloadMode === "trace" ? "已生成并复制参数 JSON；再次使用时请重新上传请求计划" : "已生成并复制参数 JSON", error: false } : note);
           }).catch(() => {});
         } catch {
           setTransferNote({ message: "已生成参数 JSON，可手动复制", error: false });
@@ -228,30 +196,28 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
 
   function handleImport(): void {
     try {
-      const value: unknown = JSON.parse(paramsJson.trim());
-      if (value !== null && typeof value === "object" && "config" in value) {
-        const imported = parseResolvedRequestJson(paramsJson.trim());
-        setAutomaticConfig(imported.config.workload.mode === "trace"
-          ? { ...imported.config, workload: automaticConfig.workload } : imported.config);
-        setWorkloadMode(imported.config.workload.mode);
-        setModel(imported.model);
-        setHardware(imported.hardware);
-        setStorage(imported.storage);
-        setTiming(imported.timing);
-        setTpSize(imported.tp_size);
-        setEpSize(imported.ep_size);
+      const imported = parseSimConfigJson(paramsJson.trim());
+      if (imported.inference.mode === "physical") {
+        const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
+        setAutomaticConfig({ ...imported, inference,
+          workload: imported.workload.mode === "trace" ? automaticConfig.workload : imported.workload });
+        if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
         setMode("automatic");
       } else {
-        const imported = parseSimConfigJson(paramsJson.trim());
-        setManualConfig(imported.workload.mode === "trace"
-          ? { ...imported, workload: manualConfig.workload } : imported);
-        setWorkloadMode(imported.workload.mode);
+        setManualConfig({ ...imported, inference: imported.inference,
+          workload: imported.workload.mode === "trace" ? manualConfig.workload : imported.workload });
         setMode("manual");
+      }
+      setWorkloadMode(imported.workload.mode);
+      if (imported.workload.mode === "trace" && imported.workload.trace) {
+        const trace = imported.workload.trace;
+        setTraceDraft({ mode: trace.mode, session_rate: trace.session_rate, seed: trace.seed, target_qps: trace.target_qps ?? undefined });
       }
       setReplay(null);
       setTraceKey((key) => key + 1);
       setShowValidation(false);
-      setTransferNote({ message: "参数已导入，可检查后运行仿真", error: false });
+      setTransferNote({ message: imported.workload.mode === "trace"
+        ? "参数已导入，回放设置已保留；请重新上传请求计划" : "参数已导入，可检查后运行仿真", error: false });
     } catch (error) {
       setTransferNote({
         message: `参数导入失败：${error instanceof Error ? error.message : "未知错误"}`,
@@ -334,6 +300,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           </div>
         </div>
         {workloadMode === "trace" ? <TracePanel key={traceKey} disabled={disabled}
+          initialReplay={{ mode: traceDraft.mode,
+            rate: traceDraft.session_rate, seed: traceDraft.seed, targetQps: traceDraft.target_qps }}
           onChange={setReplay} /> : <>
         <div className="form-grid">
           <div className="form-field">
@@ -500,10 +468,8 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
         </>}
       </section>
 
-      {mode === "automatic" && <AutomaticConfig config={submissionConfig} model={model} hardware={hardware}
-        storage={storage} timing={timing} tpSize={tpSize} epSize={epSize}
-        onTpSizeChange={setTpSize} onEpSizeChange={setEpSize} disabled={disabled}
-        onModelChange={setModel} onHardwareChange={setHardware} onStorageChange={setStorage} />}
+      {mode === "automatic" && <AutomaticConfig config={{ ...automaticConfig, workload: submissionConfig.workload }}
+        onInferenceChange={(inference) => setAutomaticConfig((current) => ({ ...current, inference }))} disabled={disabled} />}
 
       <section className="form-section" aria-labelledby="engine-heading">
         <div className="section-heading">
@@ -528,85 +494,57 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           />
           <NumberField
             id="max-running-requests"
-            name="engine.max_running_requests"
+            name="scheduler.max_running_requests"
             label="最多同时运行请求"
-            value={config.engine.max_running_requests}
+            value={config.scheduler.max_running_requests}
             integer
             min={1}
-            error={errorByField.get("engine.max_running_requests")}
+            error={errorByField.get("scheduler.max_running_requests")}
             onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, max_running_requests: value },
+              ...config, scheduler: { ...config.scheduler, max_running_requests: value },
             })}
           />
-          {mode === "manual" && <>
-          <NumberField
-            id="max-total-tokens"
-            name="engine.max_total_tokens"
-            label="L1 KV 总容量（token）"
-            value={config.engine.max_total_tokens}
-            integer
-            min={1}
-            error={errorByField.get("engine.max_total_tokens")}
-            onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, max_total_tokens: value },
-            })}
-          />
-          <NumberField
-            id="l2-capacity-tokens"
-            name="engine.l2_capacity_tokens"
-            label="L2 KV 容量（token，0 为关闭）"
-            value={config.engine.l2_capacity_tokens}
-            integer
-            error={errorByField.get("engine.l2_capacity_tokens")}
-            onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, l2_capacity_tokens: value },
-            })}
-          />
-          <NumberField
-            id="l3-capacity-tokens"
-            name="engine.l3_capacity_tokens"
-            label="L3 KV 容量（token，0 为关闭）"
-            value={config.engine.l3_capacity_tokens}
-            integer
-            error={errorByField.get("engine.l3_capacity_tokens")}
-            onChange={(value) => setConfig({
-              ...config,                 engine: { ...config.engine, l3_capacity_tokens: value },
-            })}
-          />
-          </>}
+          {config.inference.mode === "manual" && ([
+            ["max_total_tokens", "L1 KV 总容量（token）"],
+            ["l2_capacity_tokens", "L2 KV 容量（token，0 为关闭）"],
+            ["l3_capacity_tokens", "L3 KV 容量（token，0 为关闭）"],
+          ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
+            name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field]}
+            integer min={field === "max_total_tokens" ? 1 : 0}
+            error={errorByField.get(`inference.kv.${field}`)} onChange={(value) => updateKv({ [field]: value })} />)}
           <NumberField
             id="max-prefill-tokens"
-            name="engine.max_prefill_tokens"
+            name="scheduler.max_prefill_tokens"
             label="单次 Prefill 额度（token）"
-            value={config.engine.max_prefill_tokens}
+            value={config.scheduler.max_prefill_tokens}
             integer
             min={1}
-            error={errorByField.get("engine.max_prefill_tokens")}
+            error={errorByField.get("scheduler.max_prefill_tokens")}
             onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, max_prefill_tokens: value },
+              ...config, scheduler: { ...config.scheduler, max_prefill_tokens: value },
             })}
           />
           <NumberField
             id="l3-prefetch-min-tokens"
-            name="engine.l3_prefetch_min_tokens"
+            name="scheduler.l3_prefetch_min_tokens"
             label="L3 异步预取最小长度（token，0 为不设阈值）"
-            value={config.engine.l3_prefetch_min_tokens}
+            value={config.scheduler.l3_prefetch_min_tokens}
             integer
-            error={errorByField.get("engine.l3_prefetch_min_tokens")}
+            error={errorByField.get("scheduler.l3_prefetch_min_tokens")}
             onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, l3_prefetch_min_tokens: value },
+              ...config, scheduler: { ...config.scheduler, l3_prefetch_min_tokens: value },
             })}
           />
           <NumberField
             id="page-size"
-            name="engine.page_size"
+            name="inference.page_size"
             label="每页 token 数"
-            value={config.engine.page_size}
+            value={config.inference.page_size}
             integer
             min={1}
-            error={errorByField.get("engine.page_size")}
+            error={errorByField.get("inference.page_size")}
             onChange={(value) => setConfig({
-              ...config, engine: { ...config.engine, page_size: value },
+              ...config, inference: { ...config.inference, page_size: value },
             })}
           />
         </div>
@@ -614,23 +552,23 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
           <label htmlFor="pd-mutually-exclusive">
             <input
               id="pd-mutually-exclusive"
-              name="engine.pd_mutually_exclusive"
+              name="scheduler.pd_mutually_exclusive"
               type="checkbox"
-              checked={config.engine.pd_mutually_exclusive}
+              checked={config.scheduler.pd_mutually_exclusive}
               onChange={(event) => setConfig({
                 ...config,
-                engine: { ...config.engine, pd_mutually_exclusive: event.currentTarget.checked },
+                scheduler: { ...config.scheduler, pd_mutually_exclusive: event.currentTarget.checked },
               })}
             />
             Prefill / Decode 分步执行（关闭后允许融合步）
           </label>
         </div>
-        {mode === "manual" && <p>
-          L1 容量：{Number.isInteger(config.engine.max_total_tokens) &&
-          Number.isInteger(config.engine.page_size) && config.engine.page_size > 0 &&
-          config.engine.max_total_tokens >= config.engine.page_size &&
-          config.engine.max_total_tokens % config.engine.page_size === 0
-            ? `${config.engine.max_total_tokens / config.engine.page_size} 页`
+        {config.inference.mode === "manual" && <p>
+          L1 容量：{Number.isInteger(config.inference.kv.max_total_tokens) &&
+          Number.isInteger(config.inference.page_size) && config.inference.page_size > 0 &&
+          config.inference.kv.max_total_tokens >= config.inference.page_size &&
+          config.inference.kv.max_total_tokens % config.inference.page_size === 0
+            ? `${config.inference.kv.max_total_tokens / config.inference.page_size} 页`
             : "请填写至少一页且为整页倍数的容量"}
         </p>}
       </section>
@@ -646,7 +584,7 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
         {mode === "automatic" && <div className="form-grid" style={{ marginBottom: 14 }}>
           <div className="form-field"><label htmlFor="auto-timing">计时模式</label>
             <select id="auto-timing" value={timing} onChange={(event) =>
-              setTiming(event.target.value as ResolvedRequest["timing"])}>
+              setTiming(event.target.value as PhysicalSimConfig["inference"]["timing"]["mode"])}>
               <option value="analytical">逐步 Roofline 估计</option>
               <option value="empirical">原四系数经验模型</option>
             </select></div>
@@ -654,132 +592,32 @@ export function SimulationForm({ onSubmit, onSubmitAuto, onReplay, onReplayAuto,
         {mode === "automatic" && timing === "analytical" &&
           <p>使用模型与硬件规格估算计时；KV 容量和链路参数由自动解析生成。</p>}
 
-        {mode === "manual" && config.engine.l2_capacity_tokens > 0 ? (
+        {config.inference.mode === "manual" && config.inference.kv.l2_capacity_tokens > 0 && (
           <div className="form-grid" style={{ marginBottom: 14 }}>
-            <NumberField
-              id="kv-bytes-per-token"
-              name="perf_model.kv_bytes_per_token"
-              label="KV 每 token 字节数"
-              value={config.perf_model.kv_bytes_per_token ?? NaN}
-              integer
-              min={1}
-              error={errorByField.get("perf_model.kv_bytes_per_token")}
-              onChange={(value) => setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, kv_bytes_per_token: Number.isNaN(value) ? null : value },
-              })}
-            />
-            <NumberField
-              id="l2-to-l1-bandwidth"
-              name="perf_model.l2_to_l1_bandwidth_bytes_per_ms"
-              label="L2 → L1 带宽（字节/ms）"
-              value={config.perf_model.l2_to_l1_bandwidth_bytes_per_ms ?? NaN}
-              error={errorByField.get("perf_model.l2_to_l1_bandwidth_bytes_per_ms")}
-              onChange={(value) => setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, l2_to_l1_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value },
-              })}
-            />
-            <NumberField
-              id="l2-latency-ms"
-              name="perf_model.l2_latency_ms"
-              label="L2 链路固定延迟（ms）"
-              value={config.perf_model.l2_latency_ms}
-              error={errorByField.get("perf_model.l2_latency_ms")}
-              onChange={(value) => setConfig({
-                ...config, perf_model: { ...config.perf_model, l2_latency_ms: value },
-              })}
-            />
-            {config.engine.l3_capacity_tokens > 0 ? (
-              <>
-                <NumberField
-                  id="l3-to-l2-bandwidth"
-                  name="perf_model.l3_to_l2_bandwidth_bytes_per_ms"
-                  label="L3 → L2 带宽（字节/ms）"
-                  value={config.perf_model.l3_to_l2_bandwidth_bytes_per_ms ?? NaN}
-                  error={errorByField.get("perf_model.l3_to_l2_bandwidth_bytes_per_ms")}
-                  onChange={(value) => setConfig({
-                    ...config,
-                    perf_model: { ...config.perf_model, l3_to_l2_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value },
-                  })}
-                />
-                <NumberField
-                  id="l3-latency-ms"
-                  name="perf_model.l3_latency_ms"
-                  label="L3 链路固定延迟（ms）"
-                  value={config.perf_model.l3_latency_ms}
-                  error={errorByField.get("perf_model.l3_latency_ms")}
-                  onChange={(value) => setConfig({
-                    ...config, perf_model: { ...config.perf_model, l3_latency_ms: value },
-                  })}
-                />
-                <NumberField
-                  id="l3-lookup-latency-ms"
-                  name="perf_model.l3_lookup_latency_ms"
-                  label="L3 查找延迟（ms）"
-                  value={config.perf_model.l3_lookup_latency_ms}
-                  error={errorByField.get("perf_model.l3_lookup_latency_ms")}
-                  onChange={(value) => setConfig({
-                    ...config, perf_model: { ...config.perf_model, l3_lookup_latency_ms: value },
-                  })}
-                />
-              </>
-            ) : null}
+            {([
+              ["kv_bytes_per_token", "KV 每 token 字节数"],
+              ["l2_to_l1_bandwidth_bytes_per_ms", "L2 → L1 带宽（字节/ms）"],
+              ["l2_latency_ms", "L2 链路固定延迟（ms）"],
+              ...(config.inference.kv.l3_capacity_tokens > 0 ? [
+                ["l3_to_l2_bandwidth_bytes_per_ms", "L3 → L2 带宽（字节/ms）"],
+                ["l3_latency_ms", "L3 链路固定延迟（ms）"],
+                ["l3_lookup_latency_ms", "L3 查找延迟（ms）"],
+              ] as const : []),
+            ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
+              name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field] ?? NaN}
+              integer={field === "kv_bytes_per_token"} min={field === "kv_bytes_per_token" ? 1 : 0}
+              error={errorByField.get(`inference.kv.${field}`)} onChange={(value) => updateKv({
+                [field]: field === "kv_bytes_per_token" || field.endsWith("bandwidth_bytes_per_ms")
+                  ? Number.isNaN(value) ? null : value : value,
+              })} />)}
           </div>
-        ) : null}
-        {(mode === "manual" || timing === "empirical") && <div className="form-grid">
-          <NumberField
-            id="prefill-c1"
-            name="perf_model.prefill_c1"
-            label="Prefill C1"
-            value={config.perf_model.prefill_c1}
-            error={errorByField.get("perf_model.prefill_c1")}
-            onChange={(prefillC1) =>
-              setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, prefill_c1: prefillC1 },
-              })
-            }
-          />
-          <NumberField
-            id="prefill-c2"
-            name="perf_model.prefill_c2"
-            label="Prefill C2"
-            value={config.perf_model.prefill_c2}
-            error={errorByField.get("perf_model.prefill_c2")}
-            onChange={(prefillC2) =>
-              setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, prefill_c2: prefillC2 },
-              })
-            }
-          />
-          <NumberField
-            id="decode-d1"
-            name="perf_model.decode_d1"
-            label="Decode D1"
-            value={config.perf_model.decode_d1}
-            error={errorByField.get("perf_model.decode_d1")}
-            onChange={(decodeD1) =>
-              setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, decode_d1: decodeD1 },
-              })
-            }
-          />
-          <NumberField
-            id="decode-d2"
-            name="perf_model.decode_d2"
-            label="Decode D2"
-            value={config.perf_model.decode_d2}
-            error={errorByField.get("perf_model.decode_d2")}
-            onChange={(decodeD2) =>
-              setConfig({
-                ...config,
-                perf_model: { ...config.perf_model, decode_d2: decodeD2 },
-              })
-            }
-          />
+        )}
+        {empiricalTiming && <div className="form-grid">
+          {([ ["prefill_c1", "Prefill C1"], ["prefill_c2", "Prefill C2"],
+            ["decode_d1", "Decode D1"], ["decode_d2", "Decode D2"] ] as const).map(([field, label]) =>
+            <NumberField key={field} id={field.replaceAll("_", "-")} name={`inference.timing.${field}`}
+              label={label} value={empiricalTiming[field]}
+              error={errorByField.get(`inference.timing.${field}`)} onChange={(value) => updateTiming({ [field]: value })} />)}
         </div>}
       </section>
       </fieldset>

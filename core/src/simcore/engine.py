@@ -17,15 +17,14 @@ from simcore.perf_model import (
     StepWorkload,
     workload_time,
 )
+from simcore.runtime import RuntimeConfig, runtime_from_components
 from simcore.scheduler import AdmissionBatch, F001Scheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
     Arrival,
     EngineConfig,
-    HardwareSpec,
     InferenceRequest,
-    ModelSpec,
     PerfModelConfig,
     RequestCompletion,
     RequestRecord,
@@ -118,7 +117,7 @@ def run_engine(
     from simcore.router import Router
 
     return Coordinator(
-        (Engine(engine, perf, output_targets={}, record_trace=record_trace),),
+        (Engine(runtime_from_components(engine, perf), output_targets={}, record_trace=record_trace),),
         client,
         Router(1),
     ).run()[0]
@@ -129,18 +128,15 @@ class Engine:
 
     def __init__(
         self,
-        engine: EngineConfig,
-        perf: PerfModelConfig,
+        runtime: RuntimeConfig,
         *,
         output_targets: Mapping[int, int],
         record_trace: bool = True,
-        analytical: tuple[ModelSpec, HardwareSpec, int, int] | None = None,
-        token_bandwidths: tuple[float | None, float | None] | None = None,
-    ) -> None:  # 引擎/计时配置、输出目标、轨迹开关与可选解析规格/链路带宽 → 初始化状态；无返回值
-        validate_kv_config(engine, perf)
-        self._token_bandwidths = token_bandwidths
-        self._analytical = analytical
-        self._analysis = AnalyticalSummary() if analytical else None
+    ) -> None:
+        engine, perf = runtime.engine, runtime.perf_model
+        self._links = runtime.links
+        self._analytical = runtime.analytical
+        self._analysis = AnalyticalSummary() if runtime.analytical is not None else None
         self._output_targets = dict(output_targets)
         self._engine_config = engine
         self._perf = perf
@@ -220,26 +216,10 @@ class Engine:
             self._transfers[existing].waiting_requests.add(request_id)
             return existing
         source = self._prefix_cache.reserve_transfer(chunk_id, destination)
-        page_tokens = self._prefix_cache.page_size
-        rate = (
-            self._token_bandwidths[1 if destination == "L2" else 0]
-            if self._token_bandwidths is not None
-            else None
-        )
-        if rate is None:
-            bytes_per_ms = (
-                self._perf.l3_to_l2_bandwidth_bytes_per_ms
-                if destination == "L2"
-                else self._perf.l2_to_l1_bandwidth_bytes_per_ms
-            )
-            kv_bytes = self._perf.kv_bytes_per_token
-            if bytes_per_ms is None or kv_bytes is None:
-                raise ValueError("传输链路须配置有效带宽和 KV 字节数")
-            transfer_ms = page_tokens * kv_bytes / bytes_per_ms
-        else:
-            transfer_ms = page_tokens / rate
-        latency = self._perf.l3_latency_ms if destination == "L2" else self._perf.l2_latency_ms
-        service_ms = latency + transfer_ms
+        link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
+        if link is None:
+            raise ValueError("传输链路须配置有效带宽和 KV 字节数")
+        service_ms = link.latency_ms + link.transfer_ms
         start = max(now_ms, self._link_free[destination])
         end = start + service_ms
         self._link_free[destination] = end
@@ -562,7 +542,13 @@ class Engine:
         if self._analytical is None:
             device_time = workload_time(workload, self._perf)
         else:
-            cost = step_cost(workload, *self._analytical)
+            cost = step_cost(
+                workload,
+                self._analytical.model,
+                self._analytical.hardware,
+                self._analytical.tp_size,
+                self._analytical.ep_size,
+            )
             device_time = cost.duration_ms
             if self._analysis is not None:
                 self._analysis.steps += 1

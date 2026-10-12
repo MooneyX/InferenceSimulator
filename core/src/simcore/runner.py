@@ -4,10 +4,11 @@
 事件流不经 API 暴露，默认关闭记录；手写 Arrival 由 ``engine.run_engine`` 适配。
 """
 
-from dataclasses import dataclass, fields
+from dataclasses import fields
 from time import perf_counter
 from typing import cast
 
+from simcore.capacity import prepare_runtime
 from simcore.client import ClientDriver, OpenLoopClient
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
@@ -17,106 +18,53 @@ from simcore.router import Router
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
-    HardwareSpec,
     InstanceResult,
     Metrics,
-    ModelSpec,
     RequestRecord,
-    ResolvedConfig,
     SimConfig,
     SimMeta,
     SimResult,
     SkippedRequest,
     SyntheticWorkloadConfig,
     TracePlan,
-    WorkloadConfig,
+    TraceWorkloadConfig,
     WorkloadPlan,
 )
 from simcore.trace_client import TraceClient
 from simcore.workload import build_plan
 
-__all__ = ["TraceReplay", "simulate"]
+__all__ = ["simulate"]
 
 
-@dataclass(frozen=True)
-class TraceReplay:
-    """Trace 负载来源及投放设置；长度、块身份和依赖保留在请求计划中。"""
-
-    plan: TracePlan
-    mode: str
-    session_rate: float
-    seed: int = 0
-    target_qps: float | None = None
-
-
-def simulate(
-    spec: SimConfig | ResolvedConfig, *, replay: TraceReplay | None = None,
-) -> tuple[SimResult, AnalyticalSummary | None]:
-    """统一运行合成负载或 Trace；经验计时的解析成本为 None。
-
-    SimConfig 使用手动容量与经验计时；ResolvedConfig 使用已解析的容量、
-    链路带宽和计时规格。提供 replay 时以 Trace 计划替代合成负载。
-    """
-    analytical: tuple[ModelSpec, HardwareSpec, int, int] | None = None
-    token_bandwidths: tuple[float | None, float | None] | None = None
-    if isinstance(spec, ResolvedConfig):
-        if not spec.runnable:
-            if spec.timing == "analytical":
-                raise ValueError(
-                    "多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销"
-                )
-            raise NotImplementedError("TP/EP>1 仅支持解析计时；四系数无法表达逐卡计算与通信")
-        config = spec.config
-        if spec.timing == "analytical":
-            analytical = (spec.model, spec.hardware, spec.tp_size, spec.ep_size)
-        token_bandwidths = (
-            spec.capacity.l2_to_l1_tokens_per_ms, spec.capacity.l3_to_l2_tokens_per_ms,
-        )
-    else:
-        config = spec
-    trace_client = None
-    if replay is not None:
-        trace_client = TraceClient(
-            replay.plan, config.engine, mode=replay.mode, session_rate=replay.session_rate,
-            seed=replay.seed, target_qps=replay.target_qps,
-        )
-        config = config.model_copy(update={"workload": WorkloadConfig(mode="trace")})
-    return _simulate(config, analytical, token_bandwidths, trace_client=trace_client)
-
-
-def _simulate(
-    config: SimConfig,
-    analytical: tuple[ModelSpec, HardwareSpec, int, int] | None,
-    token_bandwidths: tuple[float | None, float | None] | None = None,
-    *,
-    trace_client: TraceClient | None = None,
-) -> tuple[SimResult, AnalyticalSummary | None]:  # 配置、可选解析规格和链路带宽 → 全场结果/可选成本
-    if config.workload.mode == "trace" and trace_client is None:
-        raise NotImplementedError("trace replay 须向 simulate 提供 TraceReplay 请求计划")
+def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimResult:
+    """按唯一配置运行仿真；Trace 计划内容通过独立资源参数提供。"""
+    if config.workload.mode == "trace" and trace_plan is None:
+        raise ValueError("Trace 仿真须提供 trace_plan 请求计划")
+    if config.workload.mode != "trace" and trace_plan is not None:
+        raise ValueError("合成仿真不能提供 trace_plan 请求计划")
+    runtime = prepare_runtime(config)
+    engine_config = runtime.engine
     started_at = perf_counter()
     client: ClientDriver | OpenLoopClient | TraceClient
-    if trace_client is not None:
-        client = trace_client
+    if trace_plan is not None:
+        replay = cast(TraceWorkloadConfig, config.workload.trace)
+        client = TraceClient(
+            trace_plan, engine_config, mode=replay.mode, session_rate=replay.session_rate,
+            seed=replay.seed, target_qps=replay.target_qps,
+        )
     else:
         synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
         if synthetic.arrival_mode == "open_loop":
-            client = OpenLoopClient(synthetic, config.engine)
+            client = OpenLoopClient(synthetic, engine_config)
         else:
-            client = ClientDriver(build_plan(synthetic, config.engine), config.engine)
+            client = ClientDriver(build_plan(synthetic, engine_config), engine_config)
     runs = Coordinator(
         tuple(
-            Engine(
-                config.engine,
-                config.perf_model,
-                output_targets={},
-                record_trace=False,
-                analytical=analytical,
-                token_bandwidths=token_bandwidths,
-            )
+            Engine(runtime, output_targets={}, record_trace=False)
             for _ in range(config.num_instances)
         ),
         client,
-        Router(config.num_instances, session_affinity=trace_client is not None),
+        Router(config.num_instances, session_affinity=trace_plan is not None),
     ).run()
     plan = client.plan
     instances: list[InstanceResult] = []
@@ -136,7 +84,7 @@ def _simulate(
             root_request_ids=tuple(key for key in plan.root_request_ids if key in turns),
             children={},
             constructed_ideal_prefix_hit_rate=(
-                config.engine.page_size
+                engine_config.page_size
                 * sum(turn.ideal_reuse_blocks for turn in turns.values())
                 / input_tokens
                 if input_tokens
@@ -197,7 +145,9 @@ def _simulate(
         if analyses
         else None
     )
-    return result, analysis
+    result.resolution = runtime.resolution
+    result.analysis = analysis
+    return result
 
 
 def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfig) -> Metrics:  # 实例结果、负载计划与配置 → 合并后的指标
@@ -224,7 +174,8 @@ def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfi
     return compute_metrics(
         records,
         plan=plan,
-        config=config,
+        page_size=config.inference.page_size,
+        workload_mode=config.workload.mode,
         cache_snapshot=l1,
         l2_snapshot=tiers[0],
         l3_snapshot=tiers[1],

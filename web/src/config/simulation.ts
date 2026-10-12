@@ -1,4 +1,9 @@
-import type { LengthDistribution, SimConfig } from "../api/types";
+import type { LengthDistribution, ManualInferenceConfig, PhysicalInferenceConfig, SimConfig } from "../api/types";
+
+export type ManualSimConfig = SimConfig & { inference: ManualInferenceConfig };
+export type PhysicalSimConfig = SimConfig & { inference: PhysicalInferenceConfig & {
+  timing: NonNullable<PhysicalInferenceConfig["timing"]>;
+} };
 
 export type ConfigField =
   | "num_instances"
@@ -20,31 +25,35 @@ export type ConfigField =
   | "workload.synthetic.output_len.sigma"
   | "workload.synthetic.seed"
   | "workload.synthetic.max_new_tokens"
-  | "engine.max_running_requests"
-  | "engine.max_total_tokens"
-  | "engine.l2_capacity_tokens"
-  | "engine.l3_capacity_tokens"
-  | "engine.l3_prefetch_min_tokens"
-  | "engine.max_prefill_tokens"
-  | "engine.page_size"
-  | "engine.pd_mutually_exclusive"
-  | "perf_model.kv_bytes_per_token"
-  | "perf_model.l2_to_l1_bandwidth_bytes_per_ms"
-  | "perf_model.l3_to_l2_bandwidth_bytes_per_ms"
-  | "perf_model.l2_latency_ms"
-  | "perf_model.l3_latency_ms"
-  | "perf_model.l3_lookup_latency_ms"
-  | "perf_model.prefill_c1"
-  | "perf_model.prefill_c2"
-  | "perf_model.decode_d1"
-  | "perf_model.decode_d2";
+  | "workload.trace"
+  | "workload.trace.session_rate"
+  | "workload.trace.seed"
+  | "workload.trace.target_qps"
+  | "scheduler.max_running_requests"
+  | "scheduler.max_prefill_tokens"
+  | "scheduler.l3_prefetch_min_tokens"
+  | "scheduler.pd_mutually_exclusive"
+  | "inference.page_size"
+  | "inference.kv.max_total_tokens"
+  | "inference.kv.l2_capacity_tokens"
+  | "inference.kv.l3_capacity_tokens"
+  | "inference.kv.kv_bytes_per_token"
+  | "inference.kv.l2_to_l1_bandwidth_bytes_per_ms"
+  | "inference.kv.l3_to_l2_bandwidth_bytes_per_ms"
+  | "inference.kv.l2_latency_ms"
+  | "inference.kv.l3_latency_ms"
+  | "inference.kv.l3_lookup_latency_ms"
+  | "inference.timing.prefill_c1"
+  | "inference.timing.prefill_c2"
+  | "inference.timing.decode_d1"
+  | "inference.timing.decode_d2";
 
 export interface ConfigValidationError {
   field: ConfigField;
   message: string;
 }
 
-export function createDefaultSimConfig(): SimConfig {
+export function createDefaultSimConfig(): ManualSimConfig {
   return {
     num_instances: 1,
     workload: {
@@ -69,30 +78,67 @@ export function createDefaultSimConfig(): SimConfig {
         max_new_tokens: 1024,
       },
     },
-    engine: {
+    scheduler: {
       max_running_requests: 32,
-      max_total_tokens: 65_536,
-      l2_capacity_tokens: 0,
-      l3_capacity_tokens: 0,
       l3_prefetch_min_tokens: 256,
       max_prefill_tokens: 16_384,
-      page_size: 64,
       pd_mutually_exclusive: true,
     },
-    perf_model: {
-      prefill_c1: 0.05,
-      prefill_c2: 0.000_01,
-      decode_d1: 8,
-      decode_d2: 0.002,
-      kv_bytes_per_token: null,
-      l2_to_l1_bandwidth_bytes_per_ms: null,
-      l3_to_l2_bandwidth_bytes_per_ms: null,
-      l2_latency_ms: 0,
-      l3_latency_ms: 0,
-      l3_lookup_latency_ms: 0,
+    inference: {
+      mode: "manual",
+      page_size: 64,
+      kv: {
+        max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+        kv_bytes_per_token: null,
+        l2_to_l1_bandwidth_bytes_per_ms: null,
+        l3_to_l2_bandwidth_bytes_per_ms: null,
+        l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
+      },
+      timing: createDefaultEmpiricalTiming(),
     },
   };
 }
+
+export function createDefaultEmpiricalTiming(): ManualInferenceConfig["timing"] {
+  return { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 };
+}
+
+export function createDefaultPhysicalSimConfig(): PhysicalSimConfig {
+  const manual = createDefaultSimConfig();
+  return { num_instances: manual.num_instances, workload: manual.workload, scheduler: manual.scheduler,
+    inference: { mode: "physical", page_size: manual.inference.page_size,
+      model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
+      tp_size: 1, ep_size: 1, timing: { mode: "analytical" } } };
+}
+
+export const initialModel: PhysicalInferenceConfig["model"] = {
+  name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
+  num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+  ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
+  weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
+  num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
+  num_shared_experts: 0, shared_expert_intermediate_size: null,
+  attention_layout: "grouped", attention_groups: [{
+    kind: "gqa", layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+    q_rank: null, kv_rank: null, rope_dim: null, nope_dim: null, value_dim: null,
+    index_heads: null, index_dim: null, topk: null, full_indexer_layers: null,
+    output_gate: false, qk_norm: true, norm_dtype: null,
+    index_norm: "layer", index_norm_dtype: null, sink_dtype: null,
+  }],
+  norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
+  router: { dtype: null, correction_bias: false, correction_dtype: "fp32" }, ihc: null,
+};
+export const initialHardware: PhysicalInferenceConfig["hardware"] = {
+  name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
+  effective_fp16_tflops: 100, effective_fp8_tflops: null,
+  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
+  collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0,
+};
+export const initialStorage: PhysicalInferenceConfig["storage"] = {
+  l1_available_gb: 200, l2_available_gb: 2048, l3_available_gb: 40_000,
+  runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
+  l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
+};
 
 function validateFiniteNumber(
   errors: ConfigValidationError[],
@@ -144,7 +190,7 @@ function validateLengthDistribution(
 
 export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
-  const { workload, engine, perf_model: perfModel } = config;
+  const { workload, scheduler, inference } = config;
   validatePositiveInteger(errors, "num_instances", config.num_instances);
 
   const synthetic = workload.synthetic;
@@ -195,65 +241,62 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
     }
   }
 
-  validatePositiveInteger(errors, "engine.max_running_requests", engine.max_running_requests);
-  validatePositiveInteger(errors, "engine.max_total_tokens", engine.max_total_tokens);
-  validatePositiveInteger(errors, "engine.max_prefill_tokens", engine.max_prefill_tokens);
-  if (!Number.isInteger(engine.l3_prefetch_min_tokens) || engine.l3_prefetch_min_tokens < 0) {
-    errors.push({ field: "engine.l3_prefetch_min_tokens", message: "必须是大于或等于 0 的整数" });
+  if (workload.mode === "trace") {
+    const trace = workload.trace;
+    if (!trace) errors.push({ field: "workload.trace", message: "trace 模式必须提供回放配置" });
+    else {
+      validateFiniteNumber(errors, "workload.trace.session_rate", trace.session_rate, 0, true);
+      if (!Number.isInteger(trace.seed) || trace.seed < 0) errors.push({ field: "workload.trace.seed", message: "必须是大于或等于 0 的整数" });
+      if (trace.target_qps != null) validateFiniteNumber(errors, "workload.trace.target_qps", trace.target_qps, 0, true);
+    }
   }
-  validatePositiveInteger(errors, "engine.page_size", engine.page_size);
-  if (typeof engine.pd_mutually_exclusive !== "boolean") {
-    errors.push({ field: "engine.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
+  validatePositiveInteger(errors, "scheduler.max_running_requests", scheduler.max_running_requests);
+  validatePositiveInteger(errors, "scheduler.max_prefill_tokens", scheduler.max_prefill_tokens);
+  if (!Number.isInteger(scheduler.l3_prefetch_min_tokens) || scheduler.l3_prefetch_min_tokens < 0) {
+    errors.push({ field: "scheduler.l3_prefetch_min_tokens", message: "必须是大于或等于 0 的整数" });
   }
-  if (Number.isInteger(engine.max_total_tokens) && engine.max_total_tokens > 0 &&
-      Number.isInteger(engine.page_size) && engine.page_size > 0 &&
-      (engine.max_total_tokens < engine.page_size ||
-       engine.max_total_tokens % engine.page_size !== 0)) {
-    errors.push({
-      field: "engine.max_total_tokens",
-      message: "KV token 容量须至少为一页，且必须是页大小的整数倍",
-    });
+  validatePositiveInteger(errors, "inference.page_size", inference.page_size);
+  if (typeof scheduler.pd_mutually_exclusive !== "boolean") {
+    errors.push({ field: "scheduler.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
+  }
+  const timing = inference.timing ?? { mode: "analytical" as const };
+  if (timing.mode === "empirical") {
+    for (const field of ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"] as const) {
+      validateFiniteNumber(errors, `inference.timing.${field}`, timing[field], 0);
+    }
+  }
+  if (inference.mode === "physical") return errors;
+  const { kv, page_size: pageSize } = inference;
+  validatePositiveInteger(errors, "inference.kv.max_total_tokens", kv.max_total_tokens);
+  if (Number.isInteger(kv.max_total_tokens) && kv.max_total_tokens > 0 &&
+      Number.isInteger(pageSize) && pageSize > 0 &&
+      (kv.max_total_tokens < pageSize || kv.max_total_tokens % pageSize !== 0)) {
+    errors.push({ field: "inference.kv.max_total_tokens", message: "KV token 容量须至少为一页，且必须是页大小的整数倍" });
   }
   for (const tier of ["l2", "l3"] as const) {
-    const field = `engine.${tier}_capacity_tokens` as const;
-    const capacity = engine[`${tier}_capacity_tokens`];
+    const capacity = kv[`${tier}_capacity_tokens`];
     if (!Number.isInteger(capacity) || capacity < 0 ||
-        (Number.isInteger(engine.page_size) && engine.page_size > 0 &&
-         capacity % engine.page_size !== 0)) {
-      errors.push({ field, message: "容量必须是页大小的非负整数倍；0 表示关闭该层" });
+        (Number.isInteger(pageSize) && pageSize > 0 && capacity % pageSize !== 0)) {
+      errors.push({ field: `inference.kv.${tier}_capacity_tokens`, message: "容量必须是页大小的非负整数倍；0 表示关闭该层" });
     }
   }
-  const l2Enabled = engine.l2_capacity_tokens > 0;
-  const l3Enabled = engine.l3_capacity_tokens > 0;
-  if (l3Enabled && !l2Enabled) {
-    errors.push({ field: "engine.l3_capacity_tokens", message: "启用 L3 前必须先启用 L2" });
-  }
-
-  validateFiniteNumber(errors, "perf_model.prefill_c1", perfModel.prefill_c1, 0);
-  validateFiniteNumber(errors, "perf_model.prefill_c2", perfModel.prefill_c2, 0);
-  validateFiniteNumber(errors, "perf_model.decode_d1", perfModel.decode_d1, 0);
-  validateFiniteNumber(errors, "perf_model.decode_d2", perfModel.decode_d2, 0);
-
-  if (perfModel.kv_bytes_per_token == null) {
-    if (l2Enabled) {
-      errors.push({ field: "perf_model.kv_bytes_per_token", message: "启用 L2 时必须填写正整数" });
-    }
-  } else {
-    validatePositiveInteger(errors, "perf_model.kv_bytes_per_token", perfModel.kv_bytes_per_token);
-  }
+  const l2Enabled = kv.l2_capacity_tokens > 0;
+  const l3Enabled = kv.l3_capacity_tokens > 0;
+  if (l3Enabled && !l2Enabled) errors.push({ field: "inference.kv.l3_capacity_tokens", message: "启用 L3 前必须先启用 L2" });
+  if (kv.kv_bytes_per_token == null) {
+    if (l2Enabled) errors.push({ field: "inference.kv.kv_bytes_per_token", message: "启用 L2 时必须填写正整数" });
+  } else validatePositiveInteger(errors, "inference.kv.kv_bytes_per_token", kv.kv_bytes_per_token);
   for (const [field, value, required] of [
-    ["perf_model.l2_to_l1_bandwidth_bytes_per_ms", perfModel.l2_to_l1_bandwidth_bytes_per_ms, l2Enabled],
-    ["perf_model.l3_to_l2_bandwidth_bytes_per_ms", perfModel.l3_to_l2_bandwidth_bytes_per_ms, l3Enabled],
+    ["inference.kv.l2_to_l1_bandwidth_bytes_per_ms", kv.l2_to_l1_bandwidth_bytes_per_ms, l2Enabled],
+    ["inference.kv.l3_to_l2_bandwidth_bytes_per_ms", kv.l3_to_l2_bandwidth_bytes_per_ms, l3Enabled],
   ] as const) {
     if (value == null) {
       if (required) errors.push({ field, message: "启用该层时必须填写大于 0 的带宽" });
-    } else {
-      validateFiniteNumber(errors, field, value, 0, true);
-    }
+    } else validateFiniteNumber(errors, field, value, 0, true);
   }
-  validateFiniteNumber(errors, "perf_model.l2_latency_ms", perfModel.l2_latency_ms, 0);
-  validateFiniteNumber(errors, "perf_model.l3_latency_ms", perfModel.l3_latency_ms, 0);
-  validateFiniteNumber(errors, "perf_model.l3_lookup_latency_ms", perfModel.l3_lookup_latency_ms, 0);
+  for (const field of ["l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"] as const) {
+    validateFiniteNumber(errors, `inference.kv.${field}`, kv[field], 0);
+  }
 
   return errors;
 }

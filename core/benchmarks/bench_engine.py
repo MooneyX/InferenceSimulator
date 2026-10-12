@@ -23,9 +23,7 @@ from dataclasses import dataclass
 import pytest
 
 from simcore import (
-    EngineConfig,
     LognormalLength,
-    PerfModelConfig,
     PoissonLength,
     SimConfig,
     SimResult,
@@ -33,7 +31,9 @@ from simcore import (
     WorkloadConfig,
     simulate,
 )
-from simcore.schemas import AnalyticalSummary
+from simcore.schemas import (
+    EmpiricalTimingConfig, ManualInferenceConfig, ManualKVConfig, SchedulerConfig,
+)
 
 BENCHMARK_SIZES = (100, 1_000, 10_000)
 REPEATS = 3
@@ -59,14 +59,13 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
                 seed=seed,
             )
         ),
-        engine=EngineConfig(
-            max_running_requests=32,
-            max_total_tokens=65_536,
+        scheduler=SchedulerConfig(max_running_requests=32, pd_mutually_exclusive=exclusive),
+        inference=ManualInferenceConfig(
             page_size=64,
-            pd_mutually_exclusive=exclusive,
-        ),
-        perf_model=PerfModelConfig(
-            prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002
+            kv=ManualKVConfig(max_total_tokens=65_536),
+            timing=EmpiricalTimingConfig(
+                prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002,
+            ),
         ),
     )
 
@@ -91,14 +90,14 @@ class Timing:
 
 
 def measure(
-    fn: Callable[[], tuple[SimResult, AnalyticalSummary | None]], repeats: int = REPEATS
+    fn: Callable[[], SimResult], repeats: int = REPEATS
 ) -> tuple[SimResult, list[float]]:
     """运行 ``repeats`` 次，返回最后一次结果与每次耗时（秒）。"""
     durations: list[float] = []
     result: SimResult | None = None
     for _ in range(repeats):
         start = time.perf_counter()
-        result, _ = fn()
+        result = fn()
         durations.append(time.perf_counter() - start)
     assert result is not None
     return result, durations
@@ -136,8 +135,8 @@ def test_scale_report(num_requests: int, exclusive: bool) -> None:
 def test_acceptance_same_seed_byte_identical(exclusive: bool) -> None:
     cfg = bench_config(100, seed=42, exclusive=exclusive)
     exclude = {"meta": {"wall_clock_ms"}}
-    first, _ = simulate(cfg)
-    second, _ = simulate(cfg)
+    first = simulate(cfg)
+    second = simulate(cfg)
     assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
 
 

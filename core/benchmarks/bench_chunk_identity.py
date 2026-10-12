@@ -17,14 +17,15 @@ from pathlib import Path
 
 import simcore
 from simcore import (
-    EngineConfig,
     FixedLength,
-    PerfModelConfig,
     SessionConfig,
     SimConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
     simulate,
+)
+from simcore.schemas import (
+    EmpiricalTimingConfig, ManualInferenceConfig, ManualKVConfig, SchedulerConfig,
 )
 
 
@@ -45,12 +46,12 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
                 ),
             )
         ),
-        engine=EngineConfig(
-            max_running_requests=8,
-            max_total_tokens=4096,
+        scheduler=SchedulerConfig(max_running_requests=8),
+        inference=ManualInferenceConfig(
             page_size=block_size,
+            kv=ManualKVConfig(max_total_tokens=4096),
+            timing=EmpiricalTimingConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
         ),
-        perf_model=PerfModelConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
     )
 
 
@@ -71,15 +72,16 @@ def main() -> None:
     if args.sessions > args.requests:
         parser.error("sessions cannot exceed requests")
     config = bench_config(args.requests, args.sessions, args.block_size)
-    result, _ = simulate(config)
-    warmup = result.model_dump_json()
+    result = simulate(config)
+    exclude = {"meta": {"wall_clock_ms"}}
+    warmup = result.model_dump_json(exclude=exclude)
     durations: list[float] = []
     for _ in range(args.repeats):
         gc.collect()
         start = time.perf_counter()
-        result, _ = simulate(config)
+        result = simulate(config)
         durations.append(time.perf_counter() - start)
-    if warmup != result.model_dump_json():
+    if warmup != result.model_dump_json(exclude=exclude):
         raise RuntimeError("same seed produced different simulation results")
     del warmup
     del result
@@ -87,7 +89,7 @@ def main() -> None:
 
     tracemalloc.start()
     try:
-        result, _ = simulate(config)
+        result = simulate(config)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

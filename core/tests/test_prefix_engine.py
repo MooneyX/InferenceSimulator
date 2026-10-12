@@ -7,6 +7,7 @@ import pytest
 from simcore.client import ClientDriver
 from simcore.engine import Engine
 from simcore.prefix_hash import encode
+from test_schemas import runtime_config
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -27,7 +28,7 @@ def request(
 
 def test_parent_output_full_page_reused_only_after_completion() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
-    engine = Engine(config, PERF, output_targets={0: 2, 1: 1})
+    engine = Engine(runtime_config(config, PERF), output_targets={0: 2, 1: 1})
     engine.submit(request(0, 2, maximum=2), 0)
     assert engine.start_step(0, 0) == (2, ())
     assert engine._prefix_cache.page(encode(0, 0)) is None
@@ -48,7 +49,7 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
 
 def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> None:
     config = EngineConfig(max_running_requests=3, max_total_tokens=32, page_size=2)
-    engine = Engine(config, PERF, output_targets={0: 1, 1: 1, 2: 1})
+    engine = Engine(runtime_config(config, PERF), output_targets={0: 1, 1: 1, 2: 1})
     identity = (encode(99, 0),)
     engine.submit(request(0, 3, inherited=identity), 0)
     engine.submit(request(1, 3, inherited=identity), 0)
@@ -87,7 +88,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
     )
     plan = WorkloadPlan({7: root_plan.turns[7], 8: child}, (7,), {7: (8,)})
     client = ClientDriver(plan, config)
-    engine = Engine(config, PERF, output_targets={7: output, 8: 1})
+    engine = Engine(runtime_config(config, PERF), output_targets={7: output, 8: 1})
     parent = client.on_wakeup(client.initial_wakeups()[0])
     assert parent.inherited_prefix_ids == ()
     engine.submit(parent, 0)
@@ -116,7 +117,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
 
 def test_distinct_roots_do_not_share_input_pages() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
-    engine = Engine(config, PERF, output_targets={0: 1, 1: 1})
+    engine = Engine(runtime_config(config, PERF), output_targets={0: 1, 1: 1})
     engine.submit(request(0, 2), 0)
     assert engine.start_step(0, 0) == (2, (0,))
     assert engine.finish_step(2) == (0,)

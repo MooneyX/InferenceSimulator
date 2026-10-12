@@ -11,6 +11,7 @@ from simcore import simulate
 from simcore.engine import Engine, run_engine
 from simcore.events import DoneTrace, EventKind
 from simcore.prefix_hash import encode
+from test_schemas import manual_config, runtime_config
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -18,7 +19,6 @@ from simcore.schemas import (
     InferenceRequest,
     PerfModelConfig,
     SessionConfig,
-    SimConfig,
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
@@ -35,7 +35,7 @@ def make_engine(
         page_size=page_size,
         pd_mutually_exclusive=exclusive,
     )
-    return Engine(config, PERF, output_targets=targets)
+    return Engine(runtime_config(config, PERF), output_targets=targets)
 
 
 def request(
@@ -180,7 +180,7 @@ def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> Non
 def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64)
     perf = PerfModelConfig(prefill_c1=0, prefill_c2=1, decode_d1=0, decode_d2=0)
-    engine = Engine(cfg, perf, output_targets={0: 1, 1: 1})
+    engine = Engine(runtime_config(cfg, perf), output_targets={0: 1, 1: 1})
     engine.submit(request(0, prompt=64, maximum=1), 0)
     assert engine.start_step(0, 0) == (4096, (0,))
     assert engine.finish_step(4096) == (0,)
@@ -209,7 +209,7 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
 
 
 def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -225,8 +225,8 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
         engine=EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64),
         perf_model=PERF,
     )
-    first, _ = simulate(config)
-    second, _ = simulate(config)
+    first = simulate(config)
+    second = simulate(config)
     exclude = {"meta": {"wall_clock_ms"}}
     assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert first.meta.num_completed == first.meta.num_requests == 3
@@ -258,7 +258,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(config, perf, output_targets={1: 1, 2: 1})
+    engine = Engine(runtime_config(config, perf), output_targets={1: 1, 2: 1})
     cache = engine._prefix_cache
     parent = request(0, prompt=4)
     cache.pin(parent, 0)
@@ -317,7 +317,7 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(config, perf, output_targets={0: 2})
+    engine = Engine(runtime_config(config, perf), output_targets={0: 2})
     item = request(0, prompt=4, maximum=2)
     engine.submit(item, 0)
     assert engine.start_step(0, 0) == (4, ())
@@ -370,7 +370,7 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(config, perf, output_targets={0: 2, 1: 2})
+    engine = Engine(runtime_config(config, perf), output_targets={0: 2, 1: 2})
     item = request(0, prompt=4, maximum=2)
     active = request(1, prompt=4, maximum=2)
     engine.submit(item, 0)
@@ -432,7 +432,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
         l2_latency_ms=3,
         l3_latency_ms=5,
     )
-    engine = Engine(config, perf, output_targets={1: 1})
+    engine = Engine(runtime_config(config, perf), output_targets={1: 1})
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 16), (98, 4)):
         seed = request(key, prompt=size)
@@ -489,7 +489,7 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
     )
-    engine = Engine(config, perf, output_targets={1: 1, 2: 1})
+    engine = Engine(runtime_config(config, perf), output_targets={1: 1, 2: 1})
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 36)):
         seed = request(key, prompt=size)

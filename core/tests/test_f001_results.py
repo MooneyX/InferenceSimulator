@@ -9,6 +9,7 @@ from simcore import simulate
 from simcore.engine import Engine, run_engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
+from test_schemas import manual_config, runtime_config
 from simcore.schemas import (
     AbortedRequest,
     EngineConfig,
@@ -31,7 +32,7 @@ from simcore.schemas import (
 
 
 def config() -> SimConfig:
-    return SimConfig(
+    return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -55,7 +56,7 @@ def test_direct_engine_and_run_engine_reject_missing_transfer_config() -> None:
     )
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
     with pytest.raises(ValueError, match="kv_bytes_per_token"):
-        Engine(engine, perf, output_targets={})
+        Engine(runtime_config(engine, perf), output_targets={})
     with pytest.raises(ValueError, match="kv_bytes_per_token"):
         run_engine(engine, perf, [])
 
@@ -78,8 +79,8 @@ def mixed_plan() -> WorkloadPlan:
 def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     settings = config()
     with patch("simcore.runner.build_plan", return_value=mixed_plan()):
-        result, _ = simulate(settings)
-        second, _ = simulate(settings)
+        result = simulate(settings)
+        second = simulate(settings)
     exclude = {"meta": {"wall_clock_ms"}}
     assert result.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     assert (result.meta.num_requests, result.meta.num_completed) == (4, 2)
@@ -124,7 +125,7 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
 
 
 def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
-    settings = SimConfig(
+    settings = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -139,7 +140,7 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
         engine=EngineConfig(max_running_requests=1, max_total_tokens=16, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     )
-    result, _ = simulate(settings)
+    result = simulate(settings)
     assert (result.meta.num_completed, result.meta.num_engine_steps) == (1, 2)
     assert result.metrics.makespan == 0 and result.metrics.throughput is None
     assert result.metrics.tpot_mean == 0
@@ -181,7 +182,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     """组件故障注入：重算后以外部占用触发失败，验证结果汇总不丢重算成本。"""
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
-    engine = Engine(cfg, perf, output_targets={0: 3})
+    engine = Engine(runtime_config(cfg, perf), output_targets={0: 3})
     req = InferenceRequest(0, 0, None, 3, 3, (), 0)
     engine.submit(req, 0)
     assert engine.start_step(0, 0) == (3, ())

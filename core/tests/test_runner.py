@@ -9,6 +9,8 @@ import simcore
 from simcore import SimConfig, SimResult, simulate
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import stable_derive
+from simcore.capacity import prepare_runtime
+from test_schemas import manual_config
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -23,7 +25,7 @@ from simcore.workload import build_plan
 
 
 def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) -> SimConfig:
-    return SimConfig(
+    return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -44,8 +46,9 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
 
 @pytest.fixture(scope="module")
 def result() -> SimResult:
-    result, analysis = simulate(make_config())
-    assert analysis is None
+    result = simulate(make_config())
+    assert result.analysis is None
+    assert result.resolution is None
     return result
 
 
@@ -60,7 +63,7 @@ def expected_open_loop_arrivals(seed: int, qps: float, count: int) -> list[float
 
 
 def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -76,7 +79,7 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     assert result.meta.num_completed == 5
     assert result.meta.num_skipped == 0
     arrivals = expected_open_loop_arrivals(42, 10, 5)
@@ -89,12 +92,12 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
     assert result.metrics.num_sessions == 1
     assert result.metrics.child_ideal_prefix_hit_rate == pytest.approx(144 / (39 + 46 + 53 + 60))
     assert result.metrics.mean_prompt_tokens == pytest.approx(46)
-    repeated, _ = simulate(config)
+    repeated = simulate(config)
     assert repeated.requests == result.requests
 
 
 def test_open_loop_completion_at_tick_is_ready() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -111,7 +114,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
         perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
     with patch("simcore.coordinator.random.Random.expovariate", side_effect=[7.0, 32.0]):
-        result, _ = simulate(config)
+        result = simulate(config)
     assert [record.arrival for record in result.requests] == [7.0, 39.0]
     assert result.requests[0].finish == 39.0
     assert result.requests[1].parent_request_id == 0
@@ -119,7 +122,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
 
 
 def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -135,7 +138,7 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     assert result.meta.num_completed + result.meta.num_aborted == 4
     arrivals = expected_open_loop_arrivals(42, 10, 4)
     assert [record.arrival for record in result.requests] == pytest.approx(arrivals)
@@ -146,7 +149,7 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
 
 
 def test_open_loop_capacity_failure_still_consumes_tick() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -162,7 +165,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     assert result.meta.num_completed == 2
     assert result.meta.num_aborted == 1
     assert result.meta.num_skipped == 0
@@ -176,7 +179,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
 
 
 def test_open_loop_single_arrival_has_no_observed_qps() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -192,13 +195,13 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     assert result.requests[0].arrival == pytest.approx(expected_open_loop_arrivals(1, 10, 1)[0])
     assert result.metrics.arrival_qps is None
 
 
 def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
-    config = SimConfig(
+    config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -214,7 +217,7 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    result, _ = simulate(config)
+    result = simulate(config)
     arrivals = expected_open_loop_arrivals(1, 10, 2)
     assert result.meta.num_completed == 0
     assert [request.arrival for request in result.aborted_requests] == pytest.approx(arrivals)
@@ -227,6 +230,8 @@ class TestEndToEnd:
         assert simcore.simulate is simulate
         assert not hasattr(simcore, "simulate_resolved")
         assert not hasattr(simcore, "simulate_analytical")
+        for removed in ("TraceReplay", "ResolvedRequest", "ResolvedConfig", "ResolvedRun"):
+            assert not hasattr(simcore, removed)
 
     def test_all_requests_recorded(self, result: SimResult) -> None:
         assert [r.id for r in result.requests] == list(range(200))
@@ -241,18 +246,22 @@ class TestEndToEnd:
 
     def test_wall_clock_measures_kernel_run(self) -> None:
         with patch("simcore.runner.perf_counter", side_effect=[10.0, 10.125]) as clock:
-            result, _ = simulate(make_config(num_requests=1))
+            result = simulate(make_config(num_requests=1))
         assert clock.call_count == 2
         assert result.meta.wall_clock_ms == pytest.approx(125.0)
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_metrics_consistent_with_records(self, result: SimResult) -> None:
-        baseline = compute_metrics(result.requests)
+        baseline = compute_metrics(
+            result.requests,
+            page_size=result.meta.config.inference.page_size,
+            workload_mode=result.meta.config.workload.mode,
+        )
         for name in ("ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "throughput", "makespan"):
             assert getattr(result.metrics, name) == getattr(baseline, name)
         assert result.metrics.total_input_tokens == sum(r.prompt_len for r in result.requests)
         assert result.metrics.actual_hit_tokens == sum(r.actual_hit_tokens for r in result.requests)
-        assert result.metrics.l1_capacity_blocks == result.meta.config.engine.capacity_pages
+        assert result.metrics.l1_capacity_blocks == prepare_runtime(result.meta.config).engine.capacity_pages
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_ttft_percentiles_ordered(self, result: SimResult) -> None:
@@ -263,7 +272,7 @@ class TestEndToEnd:
         assert m.throughput is not None and m.throughput > 0
 
     def test_prefix_metrics_are_weighted_and_capacity_conserved(self) -> None:
-        config = SimConfig(
+        config = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -283,7 +292,7 @@ class TestEndToEnd:
             ),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
-        result, _ = simulate(config)
+        result = simulate(config)
         m = result.metrics
         assert m.total_input_tokens == 41
         assert m.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
@@ -301,7 +310,7 @@ class TestEndToEnd:
         assert result.requests[1].actual_prefill_tokens == 3
 
     def test_constructed_ideal_hit_rate_is_plan_result(self) -> None:
-        config = SimConfig(
+        config = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -319,15 +328,17 @@ class TestEndToEnd:
         )
         synthetic = config.workload.synthetic
         assert synthetic is not None
-        plan = build_plan(synthetic, config.engine)
-        result, _ = simulate(config)
+        plan = build_plan(synthetic, prepare_runtime(config).engine)
+        result = simulate(config)
         metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
-        empty = compute_metrics([], plan=plan, config=config)
+        empty = compute_metrics(
+            [], plan=plan, page_size=config.inference.page_size, workload_mode="synthetic",
+        )
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
-        cfg = SimConfig(
+        cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -342,14 +353,14 @@ class TestEndToEnd:
             engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
         )
-        result, _ = simulate(cfg)
+        result = simulate(cfg)
         assert (result.meta.num_requests, result.meta.num_aborted) == (2, 2)
         assert result.requests == []
         assert all(item.reason == "input_exceeds_kv_capacity" for item in result.aborted_requests)
         assert result.metrics.ttft_mean is None
 
     def test_enabled_tiers_propagate_capacity_and_zero_transfer(self) -> None:
-        cfg = SimConfig(
+        cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -378,7 +389,7 @@ class TestEndToEnd:
                 l3_to_l2_bandwidth_bytes_per_ms=32,
             ),
         )
-        result, _ = simulate(cfg)
+        result = simulate(cfg)
         assert result.meta.num_completed == 1
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
@@ -387,7 +398,7 @@ class TestEndToEnd:
         assert SimResult.model_validate_json(result.model_dump_json()) == result
 
     def test_closed_loop_skipped_turns_do_not_count_toward_request_qps(self) -> None:
-        cfg = SimConfig(
+        cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -403,7 +414,7 @@ class TestEndToEnd:
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
             perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
         )
-        result, _ = simulate(cfg)
+        result = simulate(cfg)
         assert (result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped) == (
             0,
             1,
@@ -417,9 +428,12 @@ class TestEndToEnd:
 
 
 class TestTraceSeam:
-    def test_trace_mode_not_implemented(self) -> None:
-        cfg = make_config().model_copy(update={"workload": WorkloadConfig(mode="trace")})
-        with pytest.raises(NotImplementedError, match="trace"):
+    def test_trace_workload_requires_explicit_plan(self) -> None:
+        workload = WorkloadConfig.model_validate({
+            "mode": "trace", "trace": {"mode": "open_loop", "session_rate": 1},
+        })
+        cfg = make_config().model_copy(update={"workload": workload})
+        with pytest.raises(ValueError, match="plan|计划"):
             simulate(cfg)
 
 
@@ -427,19 +441,19 @@ class TestReproducibility:
     def test_same_seed_json_bit_identical(self, result: SimResult) -> None:
         """同种子仿真结果（除运行耗时）逐字节一致。"""
         exclude = {"meta": {"wall_clock_ms"}}
-        repeated, _ = simulate(make_config())
+        repeated = simulate(make_config())
         assert result.model_dump_json(exclude=exclude) == repeated.model_dump_json(exclude=exclude)
 
     def test_different_seed_differs(self) -> None:
-        first, _ = simulate(make_config(seed=1))
-        second, _ = simulate(make_config(seed=2))
+        first = simulate(make_config(seed=1))
+        second = simulate(make_config(seed=2))
         assert first.requests != second.requests
 
 
 class TestSmallCases:
     @pytest.mark.parametrize("think_time_ms", [0.0, 30.0])
     def test_followup_arrives_only_after_parent_completion(self, think_time_ms: float) -> None:
-        cfg = SimConfig(
+        cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -455,10 +469,10 @@ class TestSmallCases:
             engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
-        result, _ = simulate(cfg)
+        result = simulate(cfg)
         synthetic = cfg.workload.synthetic
         assert synthetic is not None
-        plan = build_plan(synthetic, cfg.engine)
+        plan = build_plan(synthetic, prepare_runtime(cfg).engine)
         assert len(result.requests) == 3
         assert result.metrics.arrival_qps == pytest.approx(
             2000 / (result.requests[-1].arrival - result.requests[0].arrival)
@@ -474,7 +488,7 @@ class TestSmallCases:
         assert result.meta.num_engine_steps == 6
 
     def test_single_request_fixed_lengths(self) -> None:
-        cfg = SimConfig(
+        cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
                 synthetic=SyntheticWorkloadConfig(
@@ -489,7 +503,7 @@ class TestSmallCases:
             engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
         )
-        r, _ = simulate(cfg)
+        r = simulate(cfg)
         record = r.requests[0]
         assert record.prefill_end - record.arrival == pytest.approx(5.0)
         assert record.finish - record.prefill_end == pytest.approx(20.0)

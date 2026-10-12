@@ -11,6 +11,7 @@ from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun, run_engine
 from simcore.events import StepTrace
+from test_schemas import runtime_config
 from simcore.schemas import (
     Arrival,
     EngineConfig,
@@ -62,7 +63,7 @@ class TestImmediateEngine:
         plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config)
         client = ClientDriver(plan, config)
         request = client.on_wakeup(client.initial_wakeups()[0])
-        engine = Engine(config, SIMPLE, output_targets={7: plan.turns[7].output_len})
+        engine = Engine(runtime_config(config, SIMPLE), output_targets={7: plan.turns[7].output_len})
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
         assert not hasattr(engine, "step")
@@ -232,7 +233,7 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
     from simcore.router import Router
 
     return Coordinator(
-        (Engine(cfg, perf, output_targets={}, record_trace=record_trace),),
+        (Engine(runtime_config(cfg, perf), output_targets={}, record_trace=record_trace),),
         client,
         Router(1),
     ).run()[0]

@@ -12,6 +12,34 @@ vi.mock("../api/client", () => ({
 afterEach(() => vi.clearAllMocks());
 
 describe("TracePanel", () => {
+  it("restores imported replay settings but requires a newly uploaded plan", async () => {
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "fresh-plan", sessions: 1, requests: 2 });
+    const onChange = vi.fn();
+    render(<TracePanel disabled={false} onChange={onChange}
+      initialReplay={{ mode: "open_loop", rate: 2.5, seed: 17, targetQps: 12 }} />);
+    expect(screen.getByLabelText("投放模式")).toHaveValue("open_loop");
+    expect(screen.getByLabelText("会话/秒")).toHaveValue(2.5);
+    expect(screen.getByLabelText("随机种子")).toHaveValue(17);
+    expect(screen.getByLabelText("按目标 QPS 等比例缩放到达间隔")).toBeChecked();
+    expect(screen.getByLabelText("目标发送 QPS（请求/秒）")).toHaveValue(12);
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
+      target: { files: [new File(["{}"], "plan.json")] },
+    });
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
+      id: "fresh-plan", mode: "open_loop", rate: 2.5, seed: 17, targetQps: 12,
+    }));
+  });
+
+  it("restores imported session replay without an open-loop target", () => {
+    render(<TracePanel disabled={false} onChange={vi.fn()}
+      initialReplay={{ mode: "session", rate: 3, seed: 11 }} />);
+    expect(screen.getByLabelText("投放模式")).toHaveValue("session");
+    expect(screen.getByLabelText("会话/秒")).toHaveValue(3);
+    expect(screen.getByLabelText("随机种子")).toHaveValue(11);
+    expect(screen.queryByLabelText("目标发送 QPS（请求/秒）")).not.toBeInTheDocument();
+  });
+
   it("uploads an exported plan and reports its selected rate and seed", async () => {
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
     const onChange = vi.fn();

@@ -1,14 +1,12 @@
-"""原始轨迹上传、后台摘要、计划导出与直接计划回放接口。"""
+"""原始轨迹上传、后台摘要与请求计划资源接口。"""
 
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError
 
-from simcore import SimConfig, SimResult, TraceReplay, simulate
-from simcore.capacity import resolve_config
-from simcore.schemas import ResolvedRequest, ResolvedRun, TracePlan
+from simcore.schemas import TracePlan
 from simserver.trace_processing import PlanTooLargeError
 from simserver.trace_store import MAX_PLAN_BYTES, MAX_TRACE_BYTES, TraceStore
 
@@ -51,27 +49,6 @@ class PlanReceipt(BaseModel):
     id: str
     sessions: int
     requests: int
-
-
-class ReplaySettings(BaseModel):
-    mode: Literal["open_loop", "session"]
-    session_rate: float = Field(gt=0, allow_inf_nan=False)
-    seed: int = Field(default=0, ge=0)
-    target_qps: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def _check_target_qps(self) -> Self:
-        if self.mode != "open_loop" and self.target_qps is not None:
-            raise ValueError("目标 QPS 仅适用于开环 trace 回放")
-        return self
-
-
-class ReplayRun(ReplaySettings):
-    config: SimConfig
-
-
-class ResolvedReplayRun(ReplaySettings):
-    request: ResolvedRequest
 
 
 def _store(request: Request) -> TraceStore:
@@ -160,44 +137,3 @@ async def upload_plan(request: Request) -> PlanReceipt:
         path.unlink(missing_ok=True)
         raise HTTPException(422, str(exc)) from exc
     return PlanReceipt(id=key, sessions=len(plan.sessions), requests=len(plan.requests))
-
-
-@router.post("/replay-plans/{key}/simulate", response_model=SimResult)
-def run_plan(key: str, run: ReplayRun, request: Request) -> Response:
-    try:
-        plan = _store(request).plan(key)
-        result, _ = simulate(
-            run.config,
-            replay=TraceReplay(
-                plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
-                target_qps=run.target_qps,
-            ),
-        )
-    except KeyError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except (ValidationError, ValueError) as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return Response(content=result.model_dump_json(), media_type="application/json")
-
-
-@router.post("/replay-plans/{key}/simulate/resolved", response_model=ResolvedRun)
-def run_resolved_plan(key: str, run: ResolvedReplayRun, request: Request) -> ResolvedRun:
-    try:
-        plan = _store(request).plan(key)
-        if run.request.config.workload.mode != "trace":
-            raise ValueError("请求计划回放须使用 workload.mode='trace'")
-        resolution = resolve_config(run.request)
-        result, analysis = simulate(
-            resolution,
-            replay=TraceReplay(
-                plan, mode=run.mode, session_rate=run.session_rate, seed=run.seed,
-                target_qps=run.target_qps,
-            ),
-        )
-        return ResolvedRun(result=result, resolution=resolution, analysis=analysis)
-    except KeyError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except NotImplementedError as exc:
-        raise HTTPException(501, str(exc)) from exc
-    except (ValidationError, ValueError) as exc:
-        raise HTTPException(422, str(exc)) from exc

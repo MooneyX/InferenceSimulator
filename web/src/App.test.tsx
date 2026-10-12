@@ -1,15 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { simulate, simulateAutomatic, simulateReplayPlanAutomatic, uploadReplayPlan, SimulationApiError } from "./api/client";
-import type { ResolvedRun, SimResult } from "./api/types";
-import { createDefaultSimConfig } from "./config/simulation";
+import { simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
+import type { PhysicalInferenceConfig, SimResult } from "./api/types";
+import { createDefaultPhysicalSimConfig, createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
-  return { ...actual, simulate: vi.fn(), simulateAutomatic: vi.fn(),
-    simulateReplayPlanAutomatic: vi.fn(), uploadReplayPlan: vi.fn() };
+  return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -19,6 +18,8 @@ vi.mock("./components/RequestGantt", () => ({
 }));
 
 const result: SimResult = {
+  resolution: null,
+  analysis: null,
   meta: {
     config: createDefaultSimConfig(),
     num_requests: 1,
@@ -112,15 +113,33 @@ const result: SimResult = {
 result.instances.push({ instance_id: 0, num_completed: 1, num_aborted: 0, num_skipped: 0,
   num_engine_steps: 8, metrics: result.metrics });
 
+function physicalResult(overrides: Partial<PhysicalInferenceConfig> = {}): SimResult {
+  const config = createDefaultPhysicalSimConfig();
+  config.inference = { ...config.inference, ...overrides };
+  return {
+    ...result,
+    meta: { ...result.meta, config },
+    resolution: {
+      max_total_tokens: 4096, l2_capacity_tokens: 8192, l3_capacity_tokens: 16384,
+      runnable: true,
+      capacity: {
+        weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456,
+        kv_bytes_per_page: 9_437_184, estimated_total_parameters: 8_200_000_000,
+        estimated_active_parameters: 8_200_000_000, estimated_expert_parameters: 0,
+        l1_budget_bytes: 200_000_000_000, l1_kv_budget_bytes: 183_600_000_000,
+        l2_budget_bytes: 2_048_000_000_000, l3_budget_bytes: 40_000_000_000_000,
+        l1_capacity_pages: 64, l2_capacity_pages: 128, l3_capacity_pages: 256,
+        rank_reports: [],
+      },
+    },
+  };
+}
+
 const simulateMock = vi.mocked(simulate);
-const simulateAutomaticMock = vi.mocked(simulateAutomatic);
-const simulateReplayAutoMock = vi.mocked(simulateReplayPlanAutomatic);
 const uploadReplayPlanMock = vi.mocked(uploadReplayPlan);
 
 beforeEach(() => {
   simulateMock.mockReset();
-  simulateAutomaticMock.mockReset();
-  simulateReplayAutoMock.mockReset();
   uploadReplayPlanMock.mockReset();
 });
 
@@ -195,17 +214,12 @@ describe("App", () => {
   });
 
   it("shows resolved capacity and cost after running an automatic trace plan", async () => {
-    const traceConfig = { ...result.meta.config, workload: { mode: "trace" as const } };
+    const traceResult = physicalResult();
+    traceResult.meta.config.workload = { mode: "trace", trace: {
+      plan_id: "plan-1", mode: "open_loop", session_rate: 1, seed: 0, target_qps: 9,
+    } };
     uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
-    simulateReplayAutoMock.mockResolvedValue({
-      result: { ...result, meta: { ...result.meta, config: traceConfig } },
-      resolution: {
-        config: traceConfig, timing: "analytical", tp_size: 1, ep_size: 1,
-        model: { name: "Qwen/Qwen3-8B" }, hardware: { name: "NVIDIA B300" },
-        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
-      },
-      analysis: null,
-    } as ResolvedRun);
+    simulateMock.mockResolvedValue(traceResult);
     render(<App />);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
@@ -218,95 +232,80 @@ describe("App", () => {
       target: { value: "9" },
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(simulateReplayAutoMock).toHaveBeenCalledWith("plan-1", expect.objectContaining({
-      config: expect.objectContaining({ workload: { mode: "trace" } }),
-      timing: "analytical",
-    }), "open_loop", 1, 0, 9);
-    expect(simulateAutomaticMock).not.toHaveBeenCalled();
+    expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
+      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "open_loop",
+        session_rate: 1, seed: 0, target_qps: 9 } },
+      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
+    }));
     expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(screen.getByText("目标发送 QPS").closest(".metric-card")).toHaveTextContent("9 请求/秒");
   });
 
-  it("routes the single run button to the resolved API in automatic mode", async () => {
-    simulateAutomaticMock.mockResolvedValue({
-      result,
-      resolution: {
-        timing: "analytical",
-        tp_size: 1,
-        model: { name: "Qwen/Qwen3-8B" },
-        hardware: { name: "NVIDIA B300" },
-        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
-        config: result.meta.config,
-      },
-      analysis: null,
-    } as ResolvedRun);
+  it("routes the single run button to the same API in automatic mode", async () => {
+    simulateMock.mockResolvedValue(physicalResult());
     render(<App />);
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({
-      timing: "analytical", tp_size: 1,
-      config: expect.objectContaining({ workload: expect.objectContaining({ mode: "synthetic" }) }),
-    }));
-    expect(simulateMock).not.toHaveBeenCalled();
+    expect(simulateMock).toHaveBeenCalledWith(createDefaultPhysicalSimConfig());
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
-    expect(screen.getByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
+    const summary = screen.getByLabelText("解析配置与成本");
+    expect(summary).toHaveTextContent("自动解析");
+    expect(summary).toHaveTextContent("模型 Qwen/Qwen3-8B");
+    expect(summary).toHaveTextContent("L1 4,096 token · L2 8,192 token · L3 16,384 token");
   });
 
   it("shows TP communication inside the existing resolved result card", async () => {
-    simulateAutomaticMock.mockResolvedValue({
-      result,
-      resolution: {
-        timing: "analytical", tp_size: 4,
-        model: { name: "Qwen/Qwen3-8B" }, hardware: { name: "NVIDIA B300" },
-        capacity: { weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456 },
-        config: result.meta.config,
-      },
-      analysis: {
-        steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
-        memory_ms: 0.2, device_ms: 5, restore_ms: 0,
-        communication_ms: 1.25, communication_bytes: 500_000_000, collectives: 144,
-      },
-    } as ResolvedRun);
+    const resolved = physicalResult({ tp_size: 4,
+      hardware: { ...createDefaultPhysicalSimConfig().inference.hardware, gpu_count: 4 } });
+    resolved.analysis = {
+      steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
+      memory_ms: 0.2, device_ms: 5, restore_ms: 0,
+      communication_ms: 1.25, communication_bytes: 500_000_000, collectives: 144,
+      tp_communication_ms: 1.25, tp_communication_bytes: 500_000_000,
+      ep_dispatch_ms: 0, ep_combine_ms: 0,
+      ep_dispatch_bytes: 0, ep_combine_bytes: 0, ep_exchanges: 0,
+    };
+    simulateMock.mockResolvedValue(resolved);
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）"), {
       target: { value: "0.1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(simulateAutomaticMock).toHaveBeenCalledWith(expect.objectContaining({ tp_size: 4 }));
+    expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
+      inference: expect.objectContaining({ mode: "physical", tp_size: 4 }),
+    }));
     const summary = await screen.findByLabelText("解析配置与成本");
     expect(summary).toHaveTextContent("TP4");
+    expect(summary).toHaveTextContent("总计 4 GPU");
     expect(summary).toHaveTextContent("TP 同步 1.25 ms");
     expect(summary).toHaveTextContent("144 次");
   });
 
   it("shows TP and EP timing separately without adding communication to GPU time twice", async () => {
-    simulateAutomaticMock.mockResolvedValue({
-      result,
-      resolution: {
-        timing: "analytical", tp_size: 4, ep_size: 4,
-        model: { name: "toy-moe", moe_layers: 2 }, hardware: { name: "B300" },
-        capacity: { weights_resident_bytes: 1_000_000, kv_bytes_per_token: 128,
-          rank_reports: [{ rank: 0, sharded_weights_bytes: 200_000,
-            replicated_weights_bytes: 50_000, expert_weights_bytes: 100_000,
-            kv_bytes_per_token: 32, l1_kv_budget_bytes: 300_000, l1_capacity_pages: 25 }] },
-        config: result.meta.config,
-      },
-      analysis: {
-        steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
-        memory_ms: 0.2, device_ms: 5, restore_ms: 1,
-        communication_ms: 2, communication_bytes: 4000, collectives: 4,
-        tp_communication_ms: 1, tp_communication_bytes: 2000,
-        ep_dispatch_ms: 0.4, ep_combine_ms: 0.6,
-        ep_dispatch_bytes: 900, ep_combine_bytes: 1100, ep_exchanges: 8,
-      },
-    } as ResolvedRun);
+    const initial = createDefaultPhysicalSimConfig().inference;
+    const resolved = physicalResult({ tp_size: 4, ep_size: 4,
+      model: { ...initial.model, name: "toy-moe", moe_layers: 2 },
+      hardware: { ...initial.hardware, name: "B300", gpu_count: 4 } });
+    resolved.resolution!.capacity = { ...resolved.resolution!.capacity,
+      weights_resident_bytes: 1_000_000, kv_bytes_per_token: 128,
+      rank_reports: [{ rank: 0, sharded_weights_bytes: 200_000,
+        replicated_weights_bytes: 50_000, expert_weights_bytes: 100_000,
+        kv_bytes_per_token: 32, l1_kv_budget_bytes: 300_000, l1_capacity_pages: 25 }] };
+    resolved.analysis = {
+      steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
+      memory_ms: 0.2, device_ms: 5, restore_ms: 1,
+      communication_ms: 2, communication_bytes: 4000, collectives: 4,
+      tp_communication_ms: 1, tp_communication_bytes: 2000,
+      ep_dispatch_ms: 0.4, ep_combine_ms: 0.6,
+      ep_dispatch_bytes: 900, ep_combine_bytes: 1100, ep_exchanges: 8,
+    };
+    simulateMock.mockResolvedValue(resolved);
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     const summary = await screen.findByLabelText("解析配置与成本");
     expect(summary).toHaveTextContent("TP4 + EP4");
@@ -385,7 +384,7 @@ describe("App", () => {
       new SimulationApiError("仿真配置校验失败", {
         validationErrors: [
           {
-            loc: ["body", "engine", "max_running_requests"],
+            loc: ["body", "scheduler", "max_running_requests"],
             msg: "Input should be greater than 0",
             type: "greater_than",
           },
@@ -400,7 +399,7 @@ describe("App", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("仿真配置校验失败");
     expect(alert).toHaveTextContent(
-      "body → engine → max_running_requests：Input should be greater than 0",
+      "body → scheduler → max_running_requests：Input should be greater than 0",
     );
     expect(screen.queryByRole("heading", { name: "仿真指标" })).not.toBeInTheDocument();
   });

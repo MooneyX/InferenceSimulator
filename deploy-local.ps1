@@ -119,8 +119,12 @@ try {
             turn_increment_len = @{ dist = 'fixed'; value = 4 }
             output_len = @{ dist = 'poisson'; mean = 4 }
         } }
-        engine = @{ max_running_requests = 32; max_total_tokens = 65536; page_size = 64; pd_mutually_exclusive = $true }
-        perf_model = @{ prefill_c1 = 0.05; prefill_c2 = 0.00001; decode_d1 = 8.0; decode_d2 = 0.002 }
+        scheduler = @{ max_running_requests = 32; pd_mutually_exclusive = $true }
+        inference = @{
+            mode = 'manual'; page_size = 64
+            kv = @{ max_total_tokens = 65536 }
+            timing = @{ mode = 'empirical'; prefill_c1 = 0.05; prefill_c2 = 0.00001; decode_d1 = 8.0; decode_d2 = 0.002 }
+        }
     } | ConvertTo-Json -Depth 10 -Compress
     $response = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/api/simulate' -Method Post -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 20
     if ($response.StatusCode -ne 200) { throw '仿真接口验证失败。' }

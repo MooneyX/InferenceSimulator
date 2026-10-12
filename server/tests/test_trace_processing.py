@@ -37,9 +37,13 @@ def config() -> dict:
             "turn_increment_len": {"dist": "fixed", "value": 1},
             "output_len": {"dist": "fixed", "value": 1},
         }},
-        "engine": {"max_running_requests": 4, "max_total_tokens": 2048},
-        "perf_model": {"prefill_c1": 0.01, "prefill_c2": 0,
+        "scheduler": {"max_running_requests": 4},
+        "inference": {
+            "mode": "manual", "page_size": 64,
+            "kv": {"max_total_tokens": 2048},
+            "timing": {"mode": "empirical", "prefill_c1": 0.01, "prefill_c2": 0,
                        "decode_d1": 0.01, "decode_d2": 0},
+        },
     }
 
 
@@ -105,34 +109,30 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         uploaded = client.post("/api/replay-plans", content=exported.content)
         assert uploaded.status_code == 201
         plan_id = uploaded.json()["id"]
-        result = client.post(
-            f"/api/replay-plans/{plan_id}/simulate",
-            json={"config": config(), "mode": "session", "session_rate": 1, "seed": 1},
-        )
+        request = config()
+        request["workload"] = {"mode": "trace", "trace": {
+            "plan_id": plan_id, "mode": "session", "session_rate": 1, "seed": 1,
+        }}
+        result = client.post("/api/simulate", json=request)
         assert result.status_code == 200, result.text
         body = result.json()
         assert body["meta"]["num_completed"] == 2
         assert body["aborted_requests"][0]["reason"] == "invalid_trace_output"
         assert body["meta"]["config"]["workload"]["mode"] == "trace"
-        scaled = client.post(
-            f"/api/replay-plans/{plan_id}/simulate",
-            json={"config": config(), "mode": "open_loop", "session_rate": 1,
-                  "seed": 1, "target_qps": 4},
-        )
+        request["workload"]["trace"].update(mode="open_loop", target_qps=4)
+        scaled = client.post("/api/simulate", json=request)
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["meta"]["num_requests"] == 3
-        invalid = client.post(
-            f"/api/replay-plans/{plan_id}/simulate",
-            json={"config": config(), "mode": "session", "session_rate": 1,
-                  "target_qps": 4},
-        )
+        request["workload"]["trace"]["mode"] = "session"
+        invalid = client.post("/api/simulate", json=request)
         assert invalid.status_code == 422
 
 
-def test_resolved_plan_uses_parsed_capacity_and_timing() -> None:
-    resolved = {
-        "config": {**config(), "workload": {"mode": "trace"}},
+def test_physical_plan_uses_parsed_capacity_and_timing() -> None:
+    resolved = config()
+    resolved["inference"] = {
+        "mode": "physical", "page_size": 64, "tp_size": 1, "ep_size": 1,
         "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
                   "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
                   "ffn_intermediate_size": 32, "vocab_size": 16},
@@ -140,41 +140,43 @@ def test_resolved_plan_uses_parsed_capacity_and_timing() -> None:
                      "memory_bytes_per_gpu": 2_000_000,
                      "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1},
         "storage": {"l1_available_gb": 0.001},
-        "timing": "analytical",
+        "timing": {"mode": "analytical"},
     }
     with TestClient(create_app()) as client:
         plan = compile_plan_from_sample(client)
-        url = f"/api/replay-plans/{plan}/simulate/resolved"
-        body = {"request": resolved, "mode": "open_loop", "session_rate": 1, "seed": 2}
+        resolved["workload"] = {"mode": "trace", "trace": {
+            "plan_id": plan, "mode": "open_loop", "session_rate": 1, "seed": 2,
+        }}
         preview = client.post("/api/resolve", json=resolved)
-        response = client.post(url, json=body)
+        response = client.post("/api/simulate", json=resolved)
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["resolution"] == preview.json()
-        assert data["result"]["meta"]["config"] == data["resolution"]["config"]
-        assert data["result"]["meta"]["num_requests"] == 3
-        assert data["analysis"]["steps"] == data["result"]["meta"]["num_engine_steps"]
-        assert data["resolution"]["config"]["engine"]["max_total_tokens"] != 2048
-        body["target_qps"] = 4
-        scaled = client.post(url, json=body)
+        assert data["meta"]["config"]["inference"]["mode"] == "physical"
+        assert data["meta"]["num_requests"] == 3
+        assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
+        assert data["resolution"]["max_total_tokens"] != 2048
+        resolved["workload"]["trace"]["target_qps"] = 4
+        scaled = client.post("/api/simulate", json=resolved)
         assert scaled.status_code == 200, scaled.text
-        assert scaled.json()["result"]["metrics"]["arrival_qps"] == pytest.approx(4)
+        assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["analysis"] is not None
-        body.pop("target_qps")
-        resolved["timing"] = "empirical"
-        empirical = client.post(url, json=body)
+        resolved["workload"]["trace"].pop("target_qps")
+        empirical_timing = config()["inference"]["timing"]
+        resolved["inference"]["timing"] = empirical_timing
+        empirical = client.post("/api/simulate", json=resolved)
         assert empirical.status_code == 200, empirical.text
         assert empirical.json()["analysis"] is None
-        resolved["hardware"].update({"gpu_count": 2,
-                                      "effective_interconnect_gb_s": 100,
-                                      "collective_latency_ms": 0.1})
-        body["request"]["tp_size"] = 2
-        resolved["timing"] = "analytical"
-        tp = client.post(url, json=body)
+        resolved["inference"]["hardware"].update({
+            "gpu_count": 2, "effective_interconnect_gb_s": 100, "collective_latency_ms": 0.1,
+        })
+        resolved["inference"]["tp_size"] = 2
+        resolved["inference"]["timing"] = {"mode": "analytical"}
+        tp = client.post("/api/simulate", json=resolved)
         assert tp.status_code == 200, tp.text
         assert tp.json()["analysis"]["communication_ms"] > 0
-        resolved["timing"] = "empirical"
-        refused = client.post(url, json=body)
+        resolved["inference"]["timing"] = empirical_timing
+        refused = client.post("/api/simulate", json=resolved)
         assert refused.status_code == 501
 
 

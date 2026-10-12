@@ -9,6 +9,8 @@ from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import ArrivalTrace, DoneTrace, StepTrace
+from simcore.capacity import prepare_runtime
+from test_schemas import manual_config
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -22,7 +24,7 @@ from simcore.workload import build_plan
 
 
 def config(think: float = 0) -> SimConfig:
-    return SimConfig(
+    return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
             synthetic=SyntheticWorkloadConfig(
@@ -42,14 +44,14 @@ def config(think: float = 0) -> SimConfig:
 
 def test_single_session_children_arrive_only_after_completion() -> None:
     cfg = config(think=12)
-    first, _ = simulate(cfg)
-    second, _ = simulate(cfg)
+    first = simulate(cfg)
+    second = simulate(cfg)
     exclude = {"meta": {"wall_clock_ms"}}
     assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
     records = first.requests
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_plan(workload, cfg.engine)
+    plan = build_plan(workload, prepare_runtime(cfg).engine)
     assert len(records) == 3
     for parent, child in pairwise(records):
         delay = plan.turns[child.id].think_time_ms
@@ -62,12 +64,12 @@ def test_zero_think_done_callback_send_step_order() -> None:
     cfg = config()
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_plan(workload, cfg.engine)
-    client = ClientDriver(plan, cfg.engine)
+    plan = build_plan(workload, prepare_runtime(cfg).engine)
+    client = ClientDriver(plan, prepare_runtime(cfg).engine)
     from simcore.router import Router
 
     run = Coordinator(
-        (Engine(cfg.engine, cfg.perf_model, output_targets={}),),
+        (Engine(prepare_runtime(cfg), output_targets={}),),
         client,
         Router(1),
     ).run()[0]

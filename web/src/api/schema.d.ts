@@ -30,25 +30,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 解析单实例容量与计时规格 */
+        /** 预览物理推理配置的单实例容量与运行可行性 */
         post: operations["resolve_endpoint_api_resolve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/simulate/resolved": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 按单实例解析规格运行多实例仿真 */
-        post: operations["simulate_resolved_endpoint_api_simulate_resolved_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -160,40 +143,6 @@ export interface paths {
         put?: never;
         /** Upload Plan */
         post: operations["upload_plan_api_replay_plans_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/replay-plans/{key}/simulate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Run Plan */
-        post: operations["run_plan_api_replay_plans__key__simulate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/replay-plans/{key}/simulate/resolved": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Run Resolved Plan */
-        post: operations["run_resolved_plan_api_replay_plans__key__simulate_resolved_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -319,6 +268,17 @@ export interface components {
             ep_exchanges: number;
         };
         /**
+         * AnalyticalTimingConfig
+         * @description 复用物理推理规格的解析 GPU 计时。
+         */
+        AnalyticalTimingConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            mode: "analytical";
+        };
+        /**
          * AttentionGroup
          * @description 相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。
          */
@@ -414,56 +374,26 @@ export interface components {
             rank_reports?: components["schemas"]["RankCapacityReport"][];
         };
         /**
-         * EngineConfig
-         * @description 单实例 KV 池配置；页数仅由 token 容量和页大小推导。
+         * EmpiricalTimingConfig
+         * @description 经验 GPU 计时的四系数，不包含 KV 链路参数。
          */
-        EngineConfig: {
+        EmpiricalTimingConfig: {
             /**
-             * Max Running Requests
-             * @description 同时驻留的运行请求数上限
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
              */
-            max_running_requests: number;
+            mode: "empirical";
+            /** Prefill C1 */
+            prefill_c1: number;
             /**
-             * Max Total Tokens
-             * @description KV 池的实际 token 容量
-             */
-            max_total_tokens: number;
-            /**
-             * Max Prefill Tokens
-             * @description 单次 Prefill 的新计算额度
-             * @default 16384
-             */
-            max_prefill_tokens: number;
-            /**
-             * Page Size
-             * @description 每个 KV 页的 token 数
-             * @default 64
-             */
-            page_size: number;
-            /**
-             * L2 Capacity Tokens
-             * @description L2 KV 的 token 容量；0 表示关闭
+             * Prefill C2
              * @default 0
              */
-            l2_capacity_tokens: number;
-            /**
-             * L3 Capacity Tokens
-             * @description L3 KV 的 token 容量；0 表示关闭
-             * @default 0
-             */
-            l3_capacity_tokens: number;
-            /**
-             * L3 Prefetch Min Tokens
-             * @description 触发 L3 异步预取的最小可复用 token 数
-             * @default 256
-             */
-            l3_prefetch_min_tokens: number;
-            /**
-             * Pd Mutually Exclusive
-             * @description Prefill 与 Decode 分步执行
-             * @default true
-             */
-            pd_mutually_exclusive: boolean;
+            prefill_c2: number;
+            /** Decode D1 */
+            decode_d1: number;
+            /** Decode D2 */
+            decode_d2: number;
         };
         /**
          * ErrorResponse
@@ -604,6 +534,63 @@ export interface components {
              * @description 形状参数，越大尾越长
              */
             sigma: number;
+        };
+        /**
+         * ManualInferenceConfig
+         * @description 抽象实例：直接填写容量、链路和经验计时。
+         */
+        ManualInferenceConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            mode: "manual";
+            /**
+             * Page Size
+             * @default 64
+             */
+            page_size: number;
+            kv: components["schemas"]["ManualKVConfig"];
+            timing: components["schemas"]["EmpiricalTimingConfig"];
+        };
+        /**
+         * ManualKVConfig
+         * @description 手动指定 KV 容量和每条上行链路的参数。
+         */
+        ManualKVConfig: {
+            /** Max Total Tokens */
+            max_total_tokens: number;
+            /**
+             * L2 Capacity Tokens
+             * @default 0
+             */
+            l2_capacity_tokens: number;
+            /**
+             * L3 Capacity Tokens
+             * @default 0
+             */
+            l3_capacity_tokens: number;
+            /** Kv Bytes Per Token */
+            kv_bytes_per_token?: number | null;
+            /** L2 To L1 Bandwidth Bytes Per Ms */
+            l2_to_l1_bandwidth_bytes_per_ms?: number | null;
+            /** L3 To L2 Bandwidth Bytes Per Ms */
+            l3_to_l2_bandwidth_bytes_per_ms?: number | null;
+            /**
+             * L2 Latency Ms
+             * @default 0
+             */
+            l2_latency_ms: number;
+            /**
+             * L3 Latency Ms
+             * @default 0
+             */
+            l3_latency_ms: number;
+            /**
+             * L3 Lookup Latency Ms
+             * @default 0
+             */
+            l3_lookup_latency_ms: number;
         };
         /**
          * Metrics
@@ -965,45 +952,35 @@ export interface components {
             dtype?: ("bf16" | "fp16" | "fp32") | null;
         };
         /**
-         * PerfModelConfig
-         * @description 性能模型系数，单位 ms。
-         *
-         *     - prefill 耗时 = ``prefill_c1 * P + prefill_c2 * P**2``（P = prompt_tokens）
-         *     - decode 单步耗时 = ``decode_d1 + decode_d2 * batch_total_tokens``
+         * PhysicalInferenceConfig
+         * @description 物理实例：共用模型和硬件解析容量及 GPU 计时规格。
          */
-        PerfModelConfig: {
-            /** Prefill C1 */
-            prefill_c1: number;
+        PhysicalInferenceConfig: {
             /**
-             * Prefill C2
-             * @default 0
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
              */
-            prefill_c2: number;
-            /** Decode D1 */
-            decode_d1: number;
-            /** Decode D2 */
-            decode_d2: number;
-            /** Kv Bytes Per Token */
-            kv_bytes_per_token?: number | null;
-            /** L2 To L1 Bandwidth Bytes Per Ms */
-            l2_to_l1_bandwidth_bytes_per_ms?: number | null;
-            /** L3 To L2 Bandwidth Bytes Per Ms */
-            l3_to_l2_bandwidth_bytes_per_ms?: number | null;
+            mode: "physical";
             /**
-             * L2 Latency Ms
-             * @default 0
+             * Page Size
+             * @default 64
              */
-            l2_latency_ms: number;
+            page_size: number;
+            model: components["schemas"]["ModelSpec"];
+            hardware: components["schemas"]["HardwareSpec"];
+            storage: components["schemas"]["StorageSpec"];
+            /** Timing */
+            timing?: components["schemas"]["EmpiricalTimingConfig"] | components["schemas"]["AnalyticalTimingConfig"];
             /**
-             * L3 Latency Ms
-             * @default 0
+             * Tp Size
+             * @default 1
              */
-            l3_latency_ms: number;
+            tp_size: number;
             /**
-             * L3 Lookup Latency Ms
-             * @default 0
+             * Ep Size
+             * @default 1
              */
-            l3_lookup_latency_ms: number;
+            ep_size: number;
         };
         /** PlanReceipt */
         PlanReceipt: {
@@ -1063,24 +1040,6 @@ export interface components {
              * @default 0
              */
             expert_weights_bytes: number;
-        };
-        /** ReplayRun */
-        ReplayRun: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "open_loop" | "session";
-            /** Session Rate */
-            session_rate: number;
-            /**
-             * Seed
-             * @default 0
-             */
-            seed: number;
-            /** Target Qps */
-            target_qps?: number | null;
-            config: components["schemas"]["SimConfig"];
         };
         /**
          * RequestRecord
@@ -1167,83 +1126,22 @@ export interface components {
              */
             l3_hit_tokens: number;
         };
-        /** ResolvedConfig */
-        ResolvedConfig: {
-            config: components["schemas"]["SimConfig"];
-            model: components["schemas"]["ModelSpec"];
-            hardware: components["schemas"]["HardwareSpec"];
-            storage: components["schemas"]["StorageSpec"];
-            /**
-             * Timing
-             * @enum {string}
-             */
-            timing: "empirical" | "analytical";
-            capacity: components["schemas"]["CapacityReport"];
-            /**
-             * Tp Size
-             * @default 1
-             */
-            tp_size: number;
-            /**
-             * Ep Size
-             * @default 1
-             */
-            ep_size: number;
-            /**
-             * Runnable
-             * @default true
-             */
-            runnable: boolean;
-        };
-        /** ResolvedReplayRun */
-        ResolvedReplayRun: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "open_loop" | "session";
-            /** Session Rate */
-            session_rate: number;
-            /**
-             * Seed
-             * @default 0
-             */
-            seed: number;
-            /** Target Qps */
-            target_qps?: number | null;
-            request: components["schemas"]["ResolvedRequest"];
-        };
         /**
-         * ResolvedRequest
-         * @description 物理规格与现有负载/调度输入；engine 容量在解析时被替换。
+         * ResolutionReport
+         * @description 容量与可运行性报告，不作为另一种仿真输入。
          */
-        ResolvedRequest: {
-            config: components["schemas"]["SimConfig"];
-            model: components["schemas"]["ModelSpec"];
-            hardware: components["schemas"]["HardwareSpec"];
-            storage: components["schemas"]["StorageSpec"];
-            /**
-             * Timing
-             * @default analytical
-             * @enum {string}
-             */
-            timing: "empirical" | "analytical";
-            /**
-             * Tp Size
-             * @default 1
-             */
-            tp_size: number;
-            /**
-             * Ep Size
-             * @default 1
-             */
-            ep_size: number;
-        };
-        /** ResolvedRun */
-        ResolvedRun: {
-            result: components["schemas"]["SimResult"];
-            resolution: components["schemas"]["ResolvedConfig"];
-            analysis?: components["schemas"]["AnalyticalSummary"] | null;
+        ResolutionReport: {
+            capacity: components["schemas"]["CapacityReport"];
+            /** Max Total Tokens */
+            max_total_tokens: number;
+            /** L2 Capacity Tokens */
+            l2_capacity_tokens: number;
+            /** L3 Capacity Tokens */
+            l3_capacity_tokens: number;
+            /** Runnable */
+            runnable: boolean;
+            /** Reason */
+            reason?: string | null;
         };
         /**
          * RouterSpec
@@ -1276,6 +1174,29 @@ export interface components {
             gpu_count: number;
             /** Stage */
             stage: string;
+        };
+        /**
+         * SchedulerConfig
+         * @description 所有推理实例共用的调度规则，不包含容量与性能参数。
+         */
+        SchedulerConfig: {
+            /** Max Running Requests */
+            max_running_requests: number;
+            /**
+             * Max Prefill Tokens
+             * @default 16384
+             */
+            max_prefill_tokens: number;
+            /**
+             * Pd Mutually Exclusive
+             * @default true
+             */
+            pd_mutually_exclusive: boolean;
+            /**
+             * L3 Prefetch Min Tokens
+             * @default 256
+             */
+            l3_prefetch_min_tokens: number;
         };
         /**
          * SessionConfig
@@ -1335,12 +1256,13 @@ export interface components {
         };
         /**
          * SimConfig
-         * @description 一场仿真的完整输入。
+         * @description 唯一仿真输入；负载、调度和推理规格各自只有一个来源。
          */
         SimConfig: {
             workload: components["schemas"]["WorkloadConfig"];
-            engine: components["schemas"]["EngineConfig"];
-            perf_model: components["schemas"]["PerfModelConfig"];
+            scheduler: components["schemas"]["SchedulerConfig"];
+            /** Inference */
+            inference: components["schemas"]["ManualInferenceConfig"] | components["schemas"]["PhysicalInferenceConfig"];
             /**
              * Num Instances
              * @description 独占相同单实例配置的推理副本数量
@@ -1402,6 +1324,8 @@ export interface components {
             skipped_requests?: components["schemas"]["SkippedRequest"][];
             /** Warnings */
             warnings?: string[];
+            resolution?: components["schemas"]["ResolutionReport"] | null;
+            analysis?: components["schemas"]["AnalyticalSummary"] | null;
         };
         /**
          * SkippedRequest
@@ -1562,6 +1486,28 @@ export interface components {
             /** Hash Ids */
             hash_ids: number[];
         };
+        /**
+         * TraceWorkloadConfig
+         * @description 计划资源引用与回放设置；计划内容由调用方独立提供。
+         */
+        TraceWorkloadConfig: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "open_loop" | "session";
+            /** Session Rate */
+            session_rate: number;
+            /**
+             * Seed
+             * @default 0
+             */
+            seed: number;
+            /** Target Qps */
+            target_qps?: number | null;
+            /** Plan Id */
+            plan_id?: string | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1577,7 +1523,7 @@ export interface components {
         };
         /**
          * WorkloadConfig
-         * @description 合成负载参数或基于独立上传计划执行的 trace 负载。
+         * @description 互斥的合成负载或 Trace 回放配置。
          */
         WorkloadConfig: {
             /**
@@ -1587,6 +1533,7 @@ export interface components {
              */
             mode: "synthetic" | "trace";
             synthetic?: components["schemas"]["SyntheticWorkloadConfig"] | null;
+            trace?: components["schemas"]["TraceWorkloadConfig"] | null;
         };
     };
     responses: never;
@@ -1626,7 +1573,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ResolvedRequest"];
+                "application/json": components["schemas"]["SimConfig"];
             };
         };
         responses: {
@@ -1636,7 +1583,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResolvedConfig"];
+                    "application/json": components["schemas"]["ResolutionReport"];
                 };
             };
             /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
@@ -1646,48 +1593,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
-                };
-            };
-        };
-    };
-    simulate_resolved_endpoint_api_simulate_resolved_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResolvedRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResolvedRun"];
-                };
-            };
-            /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
-                };
-            };
-            /** @description 此部署/计时模式尚未实现 */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -1714,16 +1619,25 @@ export interface operations {
                     "application/json": components["schemas"]["SimResult"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Trace 请求计划不存在或已过期 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
                 };
             };
-            /** @description workload.mode=trace（预留接缝，MVP 未实现） */
+            /** @description 此部署/计时模式尚未实现 */
             501: {
                 headers: {
                     [name: string]: unknown;
@@ -1870,76 +1784,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanReceipt"];
-                };
-            };
-        };
-    };
-    run_plan_api_replay_plans__key__simulate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReplayRun"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SimResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    run_resolved_plan_api_replay_plans__key__simulate_resolved_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResolvedReplayRun"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResolvedRun"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -4,7 +4,7 @@
 
 ## 容量与状态
 
-`engine.page_size=B` 同时规定完整页身份与物理分配粒度；`max_total_tokens` 必须是 `B` 的正整数倍，L1 容量为 `max_total_tokens/B` 页。`l2_capacity_tokens`、`l3_capacity_tokens` 默认零，均须为 `B` 的非负整数倍，启用 L3 必须先启用 L2。全局索引对每个已发布 ID 只保存一条含 `tier/ref_count/last_access_seq` 的 `CacheEntry` 记录；各层仅维护驻留 ID、容量、计数和稳定 LRU，不复制页对象。请求仅保存已建立 KV 长度 `K` 和已发布且被引用的连续前沿 `F`；`F` 是 `B` 的整数倍，`0≤F≤K`，`[F,K)` 是只占 L1 的私有 KV，页数为 `ceil(K/B)-F/B`。每层 `free+resident=capacity`；L1 驻留包含已发布页、私有页及在途目的占位，L2/L3 驻留包含已发布页及在途目的占位。传输期间索引仍指向受保护的来源页，目的占位尚不可命中，完成后才迁入并释放来源容量。未来生成估算只进入调度预算，`reserved_future_blocks` 为零，与实际传输占位不同。
+`inference.page_size=B` 同时规定完整页身份与物理分配粒度；`max_total_tokens` 必须是 `B` 的正整数倍，L1 容量为 `max_total_tokens/B` 页。`l2_capacity_tokens`、`l3_capacity_tokens` 默认零，均须为 `B` 的非负整数倍，启用 L3 必须先启用 L2。全局索引对每个已发布 ID 只保存一条含 `tier/ref_count/last_access_seq` 的 `CacheEntry` 记录；各层仅维护驻留 ID、容量、计数和稳定 LRU，不复制页对象。请求仅保存已建立 KV 长度 `K` 和已发布且被引用的连续前沿 `F`；`F` 是 `B` 的整数倍，`0≤F≤K`，`[F,K)` 是只占 L1 的私有 KV，页数为 `ceil(K/B)-F/B`。每层 `free+resident=capacity`；L1 驻留包含已发布页、私有页及在途目的占位，L2/L3 驻留包含已发布页及在途目的占位。传输期间索引仍指向受保护的来源页，目的占位尚不可命中，完成后才迁入并释放来源容量。未来生成估算只进入调度预算，`reserved_future_blocks` 为零，与实际传输占位不同。
 
 ## 连续命中与引用
 

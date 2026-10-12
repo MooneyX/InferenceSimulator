@@ -12,8 +12,8 @@
 
 - 模型规格：层数、hidden/KV heads、head dimension、FFN、权重/activation/KV 精度、最大上下文，推导参数量和算子 shape。
 - 设备规格：HBM 容量/带宽、各精度有效 FLOPS、单机互联的带宽/延迟；区分理论峰值和校准后的有效值。
-- 运行时与部署：读取 F001 唯一的 `engine.page_size`（不另设 paged KV block size）、memory utilization、runtime/workspace/activation reserve、allocator 碎片、CUDA Graph 和固定开销；TP 时记录每 rank 权重、KV、算子 placement。连续批处理请求/token/chunk 上限仍归 F001。
-- 模型选择：`empirical`（四系数经验）、`analytical`（解析）、`calibrated`（解析+指定版本 profile）。预设由服务层展开为完整 resolved config；`core` 只接收显式参数，保持零 IO；结果记录预设、模型与校准版本。
+- 运行时与部署：读取 F001 唯一的 `inference.page_size`（不另设 paged KV block size）、memory utilization、runtime/workspace/activation reserve、allocator 碎片、CUDA Graph 和固定开销；TP 时记录每 rank 权重、KV、算子 placement。连续批处理请求/token/chunk 上限仍归 F001。
+- 计时选择：当前 `inference.timing` 支持 `empirical`（四系数经验）及物理分支的 `analytical`（仅模式字段）；`calibrated`（解析+指定版本 profile）仍待实现。预设展开为统一 `SimConfig.inference` 的完整显式规格；`core` 一次性准备只读运行规格，保持零 IO；`meta.config` 保留原规范化输入，未来校准须记录 profile 版本。
 - `StepCostBreakdown`：逐 rank FLOPs、HBM/互联 bytes、compute/memory/communication/overhead、重叠量、critical path、瓶颈与适用范围告警。引擎只使用 critical path 时间推进时钟，其他明细用于指标及界面。
 
 ## 成本与容量算法
@@ -27,7 +27,7 @@ kv_available = HBM * utilization - weights - runtime - workspace - activation_pe
 token_budget_per_rank = floor(kv_available / kv_bytes_per_token_per_rank)
 ```
 
-容量推导须考虑每 rank 的分片/复制规则、allocator 元数据与碎片。F001 的显式 `max_total_tokens` 输入必须是 `page_size` 的正整数倍，不自动取整；未来解析模式仅在生成配置前将硬件推导值向下对齐到完整页（不足一页时报错）。若同时给出已校验的用户上限和已对齐的硬件容量，取二者较小值作为唯一的 resolved `max_total_tokens`；进入 `EngineConfig` 时该值仍必须为整页且不得另设有效容量字段。计算与访存初期采用 Roofline：
+容量推导须考虑每 rank 的分片/复制规则、allocator 元数据与碎片。F001 的显式 `max_total_tokens` 输入必须是 `page_size` 的正整数倍，不自动取整；未来解析模式仅在生成配置前将硬件推导值向下对齐到完整页（不足一页时报错）。若同时给出已校验的用户上限和已对齐的硬件容量，取二者较小值作为唯一的 resolved `max_total_tokens`；进入内部 `RuntimeConfig.engine` 时该值仍必须为整页，不改写原始 `SimConfig`；未来用户上限须显式设计，不作为当前物理分支已支持的输入。计算与访存初期采用 Roofline：
 
 ```text
 t_compute = step_FLOPs / effective_FLOPS(shape)

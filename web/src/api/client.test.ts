@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveAutomatic, simulate, simulateAutomatic, simulateReplayPlan, simulateReplayPlanAutomatic, SimulationApiError } from "./client";
-import type { ResolvedRequest, SimConfig, SimResult } from "./types";
+import { resolveConfig, simulate, SimulationApiError } from "./client";
+import type { ResolutionReport, SimConfig, SimResult } from "./types";
+import { createDefaultPhysicalSimConfig } from "../config/simulation";
 
 const config: SimConfig = {
   num_instances: 1,
@@ -18,31 +19,39 @@ const config: SimConfig = {
       seed: 42,
     },
   },
-  engine: {
+  scheduler: {
     max_running_requests: 4,
-    max_total_tokens: 4096,
-    l2_capacity_tokens: 0,
-    l3_capacity_tokens: 0,
     l3_prefetch_min_tokens: 256,
     max_prefill_tokens: 16_384,
-    page_size: 64,
     pd_mutually_exclusive: true,
   },
-  perf_model: {
-    prefill_c1: 0.1,
-    prefill_c2: 0,
-    decode_d1: 0.2,
-    decode_d2: 0.001,
-    kv_bytes_per_token: null,
-    l2_to_l1_bandwidth_bytes_per_ms: null,
-    l3_to_l2_bandwidth_bytes_per_ms: null,
-    l2_latency_ms: 0,
-    l3_latency_ms: 0,
-    l3_lookup_latency_ms: 0,
+  inference: {
+    mode: "manual",
+    page_size: 64,
+    kv: {
+      max_total_tokens: 4096,
+      l2_capacity_tokens: 0,
+      l3_capacity_tokens: 0,
+      kv_bytes_per_token: null,
+      l2_to_l1_bandwidth_bytes_per_ms: null,
+      l3_to_l2_bandwidth_bytes_per_ms: null,
+      l2_latency_ms: 0,
+      l3_latency_ms: 0,
+      l3_lookup_latency_ms: 0,
+    },
+    timing: {
+      mode: "empirical",
+      prefill_c1: 0.1,
+      prefill_c2: 0,
+      decode_d1: 0.2,
+      decode_d2: 0.001,
+    },
   },
 };
 
 const result: SimResult = {
+  resolution: null,
+  analysis: null,
   instances: [],
   meta: {
     config,
@@ -162,7 +171,7 @@ describe("simulate", () => {
   it("maps a 422 response to validation details", async () => {
     const detail = [
       {
-        loc: ["body", "engine", "max_running_requests"],
+        loc: ["body", "scheduler", "max_running_requests"],
         msg: "Input should be greater than 0",
         type: "greater_than",
       },
@@ -175,6 +184,15 @@ describe("simulate", () => {
     expect(error).toMatchObject({
       validationErrors: detail,
     });
+  });
+
+  it("ignores malformed entries in the generic validation detail array", async () => {
+    const valid = { loc: ["body", "scheduler", "max_running_requests"],
+      msg: "Input should be greater than 0", type: "greater_than" };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(422, {
+      detail: [null, { msg: "missing location" }, valid],
+    })));
+    await expect(simulate(config)).rejects.toMatchObject({ validationErrors: [valid] });
   });
 
   it("shows L1 capacity failures as an actionable 422 message", async () => {
@@ -239,64 +257,66 @@ describe("simulate", () => {
 });
 
 describe("trace replay requests", () => {
-  it("sends target QPS to the manual replay endpoint only when enabled", async () => {
+  it("posts trace settings and the plan ID through the single simulation endpoint", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, result));
     vi.stubGlobal("fetch", fetchMock);
-    await simulateReplayPlan("plan-1", config, "open_loop", 2, 7, 12);
-    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate", {
+    const traceConfig: SimConfig = { ...config, workload: { mode: "trace", trace: {
+      plan_id: "plan-1", mode: "open_loop", session_rate: 2, seed: 7, target_qps: 12,
+    } } };
+    await simulate(traceConfig);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/simulate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config, mode: "open_loop", session_rate: 2, seed: 7, target_qps: 12 }),
+      body: JSON.stringify(traceConfig),
     });
-    await simulateReplayPlan("plan-1", config, "session", 2, 7);
-    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate", {
+    const sessionConfig: SimConfig = { ...traceConfig, workload: { mode: "trace", trace: {
+      plan_id: "plan-1", mode: "session", session_rate: 2, seed: 7,
+    } } };
+    await simulate(sessionConfig);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/simulate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config, mode: "session", session_rate: 2, seed: 7 }),
+      body: JSON.stringify(sessionConfig),
     });
   });
 });
 
-describe("automatic resolution errors", () => {
-  const request = { config } as ResolvedRequest;
-
-  it("posts the complete resolved trace request to the plan endpoint", async () => {
-    const body = { result, resolution: { config }, analysis: null };
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, body));
+describe("resolveConfig", () => {
+  it("posts the same configuration without wrapping it in a separate request", async () => {
+    const physicalConfig = createDefaultPhysicalSimConfig();
+    const report: ResolutionReport = {
+      max_total_tokens: 4096, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+      runnable: true,
+      capacity: {
+        weights_resident_bytes: 16_400_000_000, kv_bytes_per_token: 147456,
+        kv_bytes_per_page: 9_437_184, estimated_total_parameters: 8_200_000_000,
+        estimated_active_parameters: 8_200_000_000, estimated_expert_parameters: 0,
+        l1_budget_bytes: 200_000_000_000, l1_kv_budget_bytes: 183_600_000_000,
+        l2_budget_bytes: 0, l3_budget_bytes: 0,
+        l1_capacity_pages: 64, l2_capacity_pages: 0, l3_capacity_pages: 0,
+        rank_reports: [],
+      },
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, report));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(simulateReplayPlanAutomatic("plan-1", request, "session", 2, 7)).resolves.toEqual(body);
-    expect(fetchMock).toHaveBeenCalledWith("/api/replay-plans/plan-1/simulate/resolved", {
+    await expect(resolveConfig(physicalConfig)).resolves.toEqual(report);
+    expect(fetchMock).toHaveBeenCalledWith("/api/resolve", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request, mode: "session", session_rate: 2, seed: 7 }),
-    });
-    await simulateReplayPlanAutomatic("plan-1", request, "open_loop", 2, 7, 8);
-    expect(fetchMock).toHaveBeenLastCalledWith("/api/replay-plans/plan-1/simulate/resolved", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request, mode: "open_loop", session_rate: 2, seed: 7, target_qps: 8 }),
+      body: JSON.stringify(physicalConfig),
     });
   });
 
-  it("reports unsupported multi-GPU empirical trace timing as not implemented", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 TP" })));
-    await expect(simulateReplayPlanAutomatic("plan-1", request, "session", 2, 7)).rejects.toMatchObject({
-      message: "四系数不支持 TP",
-    });
-  });
-
-  it("preserves field paths and business messages for both 422 formats", async () => {
-    const detail = [{ loc: ["body", "model", "num_experts"], msg: "专家数错误", type: "value_error" }];
+  it("preserves nested field paths and business messages for both 422 formats", async () => {
+    const detail = [{ loc: ["body", "inference", "physical", "model", "num_experts"],
+      msg: "专家数错误", type: "value_error" }];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(422, { detail }))
       .mockResolvedValueOnce(jsonResponse(422, { detail: "TP 数必须等于 GPU 卡数" })));
-    await expect(resolveAutomatic(request)).rejects.toMatchObject({
-      validationErrors: detail,
-    });
-    await expect(simulateAutomatic(request)).rejects.toMatchObject({
+    await expect(resolveConfig(createDefaultPhysicalSimConfig())).rejects.toMatchObject({ validationErrors: detail });
+    await expect(simulate(config)).rejects.toMatchObject({
       message: "TP 数必须等于 GPU 卡数", validationErrors: [],
     });
   });
 
-  it("recognizes unimplemented resolved run modes", async () => {
+  it("recognizes unimplemented physical run modes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 EP" })));
-    await expect(simulateAutomatic(request)).rejects.toMatchObject({
-      message: "四系数不支持 EP",
-    });
+    await expect(simulate(config)).rejects.toMatchObject({ message: "四系数不支持 EP" });
   });
 });

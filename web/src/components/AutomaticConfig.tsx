@@ -1,60 +1,23 @@
 import { useEffect, useState } from "react";
 
-import { getPresets, resolveAutomatic, SimulationApiError } from "../api/client";
-import type { PresetCatalog, ResolvedConfig, ResolvedRequest, SimConfig } from "../api/types";
+import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
+import type { PhysicalInferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
+import type { PhysicalSimConfig } from "../config/simulation";
+export { initialModel, initialHardware, initialStorage } from "../config/simulation";
 
-export type Model = ResolvedRequest["model"];
+export type Model = PhysicalInferenceConfig["model"];
 type AttentionGroup = NonNullable<Model["attention_groups"]>[number];
-export type Hardware = ResolvedRequest["hardware"];
-export type Storage = ResolvedRequest["storage"];
+export type Hardware = PhysicalInferenceConfig["hardware"];
+export type Storage = PhysicalInferenceConfig["storage"];
 type AuxiliaryDtype = "bf16" | "fp16" | "fp32";
 const defaultNorms = { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null };
 const defaultRouter = { dtype: null, correction_bias: false, correction_dtype: "fp32" as const };
 
 interface Props {
-  config: SimConfig;
-  model: Model;
-  hardware: Hardware;
-  storage: Storage;
-  timing: ResolvedRequest["timing"];
-  tpSize: number;
-  epSize: number;
-  onTpSizeChange: (value: number) => void;
-  onEpSizeChange: (value: number) => void;
-  onModelChange: (value: Model) => void;
-  onHardwareChange: (value: Hardware) => void;
-  onStorageChange: (value: Storage) => void;
+  config: PhysicalSimConfig;
+  onInferenceChange: (inference: PhysicalSimConfig["inference"]) => void;
   disabled: boolean;
 }
-
-export const initialModel: Model = {
-  name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
-  num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
-  ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
-  weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
-  num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
-  num_shared_experts: 0, shared_expert_intermediate_size: null,
-  attention_layout: "grouped", attention_groups: [{
-    kind: "gqa", layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
-    q_rank: null, kv_rank: null, rope_dim: null, nope_dim: null, value_dim: null,
-    index_heads: null, index_dim: null, topk: null, full_indexer_layers: null,
-    output_gate: false, qk_norm: true, norm_dtype: null,
-    index_norm: "layer", index_norm_dtype: null, sink_dtype: null,
-  }],
-  norms: defaultNorms, router: defaultRouter, ihc: null,
-};
-export const initialHardware: Hardware = {
-  name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
-  effective_fp16_tflops: 100, effective_fp8_tflops: null,
-  effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
-  collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02,
-  kernel_overhead_ms: 0,
-};
-export const initialStorage: Storage = {
-  l1_available_gb: 200, l2_available_gb: 2048, l3_available_gb: 40_000,
-  runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
-  l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
-};
 
 function sameConfig(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -94,10 +57,18 @@ function Input({ label, value, onChange, optional = false, disabled = false }: {
   </label></div>;
 }
 
-export function AutomaticConfig({ config, model, hardware, storage, timing, tpSize, epSize,
-  onTpSizeChange, onEpSizeChange, onModelChange, onHardwareChange, onStorageChange, disabled }: Props) {
+export function AutomaticConfig({ config, onInferenceChange, disabled }: Props) {
+  const { model, hardware, storage, tp_size: tpSize, ep_size: epSize } = config.inference;
+  const timing = config.inference.timing.mode;
+  function updateInference(patch: Partial<PhysicalSimConfig["inference"]>) {
+    onInferenceChange({ ...config.inference, ...patch });
+  }
+  const onModelChange = (model: Model) => updateInference({ model });
+  const onHardwareChange = (hardware: Hardware) => updateInference({ hardware });
+  const onStorageChange = (storage: Storage) => updateInference({ storage });
+  const onEpSizeChange = (ep_size: number) => updateInference({ ep_size });
   const [catalog, setCatalog] = useState<PresetCatalog | null>(null);
-  const [preview, setPreview] = useState<ResolvedConfig | null>(null);
+  const [preview, setPreview] = useState<ResolutionReport | null>(null);
   const [previewKey, setPreviewKey] = useState("");
   const [error, setError] = useState("");
 
@@ -109,8 +80,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     return () => { active = false; };
   }, []);
 
-  const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize, config };
-  const key = JSON.stringify(request);
+  const key = JSON.stringify(config);
   const selectedModel = catalog?.models.find((entry) => entry.name === model.name &&
     Object.entries(entry).every(([field, value]) => sameConfig(model[field as keyof Model], value)));
   const selectedHardware = catalog?.hardware.find((entry) => entry.name === hardware.name &&
@@ -151,7 +121,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
   async function inspect() {
     setError("");
     try {
-      const response = await resolveAutomatic(request);
+      const response = await resolveConfig(config);
       setPreview(response);
       setPreviewKey(key);
     } catch (cause) {
@@ -173,16 +143,14 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         <select id="auto-model-preset" value={selectedModel?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
-            onModelChange(selected ?? { ...model, name: "自定义模型", revision: null,
-              attention_layout: model.attention_groups ? "grouped" : "full_gqa" });
-            if (selected?.name === "tencent/Hy4-preview") {
-              onTpSizeChange(8);
-              onEpSizeChange(8);
-              onHardwareChange({ ...hardware, gpu_count: 8 });
-              if (storage.l1_available_gb === 200 && hardware.memory_bytes_per_gpu >= 260e9) {
-                onStorageChange({ ...storage, l1_available_gb: 260 });
-              }
-            } else if (selected) onEpSizeChange(selected.moe_layers ? tpSize : 1);
+            updateInference({ model: selected ?? { ...model, name: "自定义模型", revision: null,
+              attention_layout: model.attention_groups ? "grouped" : "full_gqa" },
+              ...(selected?.name === "tencent/Hy4-preview" ? {
+                tp_size: 8, ep_size: 8, hardware: { ...hardware, gpu_count: 8 },
+                ...(storage.l1_available_gb === 200 && hardware.memory_bytes_per_gpu >= 260e9
+                  ? { storage: { ...storage, l1_available_gb: 260 } } : {}),
+              } : selected ? { ep_size: selected.moe_layers ? tpSize : 1 } : {}),
+            });
           }}>{catalog?.models.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
@@ -364,8 +332,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       </div></div>
     <div className="form-grid">
       <Input label="TP 数（必须等于 GPU 卡数）" value={tpSize} onChange={(value) => {
-        onTpSizeChange(value ?? NaN);
-        if (model.moe_layers) onEpSizeChange(value ?? NaN);
+        updateInference({ tp_size: value ?? NaN, ...(model.moe_layers ? { ep_size: value ?? NaN } : {}) });
       }} />
       <Input label="EP 数（MoE 须等于 TP）" value={epSize} onChange={(value) =>
         onEpSizeChange(value ?? NaN)} />
@@ -424,26 +391,27 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端单实例解析：</strong>共 {config.num_instances} 个实例，总 GPU {config.num_instances * hardware.gpu_count} 张；KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
-      {preview.tp_size > 1 ? "整组结构估算驻留权重" : "结构估算驻留权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
+      {tpSize > 1 ? "整组结构估算驻留权重" : "结构估算驻留权重"} { (preview.capacity.weights_resident_bytes / 1e9).toFixed(2) } GB；
       结构估算总参数 {(preview.capacity.estimated_total_parameters / 1e9).toFixed(3)} B；
       结构估算每 token 激活参数 {(preview.capacity.estimated_active_parameters / 1e9).toFixed(3)} B；
       全部专家参数 {(preview.capacity.estimated_expert_parameters / 1e9).toFixed(3)} B；
-      L1 {preview.capacity.l1_capacity_pages.toLocaleString()} 页 / {preview.config.engine.max_total_tokens.toLocaleString()} token；
-      L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页；
-      L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页。
+      L1 {preview.capacity.l1_capacity_pages.toLocaleString()} 页 / {preview.max_total_tokens.toLocaleString()} token；
+      L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页 / {preview.l2_capacity_tokens.toLocaleString()} token；
+      L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页 / {preview.l3_capacity_tokens.toLocaleString()} token。
+      {preview.reason && <p>{preview.reason}</p>}
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
-        <p>TP{preview.tp_size}{preview.model.moe_layers ? ` + EP${preview.ep_size}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
+        <p>TP{tpSize}{model.moe_layers ? ` + EP${epSize}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
           {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；权重按分片与逐卡复制的结构分别计入。</p>
         {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
           GPU {rank.rank}：分片权重 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB；
           逐卡复制权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
-          {preview.model.moe_layers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
+          {model.moe_layers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
           KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token；
           L1 {rank.l1_capacity_pages.toLocaleString()} 页。
         </p>)}
       </>}
-      {!preview.runnable && timing === "analytical" && preview.tp_size > 1 &&
-        (preview.model.moe_layers
+      {!preview.runnable && timing === "analytical" && tpSize > 1 &&
+        (model.moe_layers
           ? " 若要运行 TP/EP>1，请填写互联带宽、TP 集合通信延迟与 EP 单次通信开销。"
           : " 多卡容量可预览；填写互联带宽和 TP 集合通信延迟后才能运行。")}
       {preview.runnable && timing === "analytical" && " 时延为未经校准的平均负载/Roofline 估计。"}

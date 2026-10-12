@@ -3,13 +3,26 @@
 from decimal import ROUND_FLOOR, Decimal
 from typing import cast
 
+from simcore.runtime import (
+    AnalyticalSpec,
+    RuntimeConfig,
+    TransferLink,
+    TransferLinks,
+    runtime_from_components,
+)
+
 from simcore.schemas import (
     AttentionGroup,
     CapacityReport,
+    EmpiricalTimingConfig,
+    EngineConfig,
+    ManualInferenceConfig,
     ModelSpec,
+    PerfModelConfig,
+    PhysicalInferenceConfig,
     RankCapacityReport,
-    ResolvedConfig,
-    ResolvedRequest,
+    ResolutionReport,
+    SimConfig,
 )
 
 _GB = Decimal(1_000_000_000)
@@ -162,9 +175,13 @@ def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, 
     )
 
 
-def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬件、存储及仿真请求 → 物理页容量与运行可行性报告
+def resolve_config(config: SimConfig) -> ResolutionReport:
+    """预览物理推理配置；报告与原输入、运行状态相互独立。"""
+    request = config.inference
+    if not isinstance(request, PhysicalInferenceConfig):
+        raise ValueError("容量预览仅适用于 physical 推理配置")
     model, hardware, storage = request.model, request.hardware, request.storage
-    page_size = request.config.engine.page_size
+    page_size = request.page_size
     tp_size = request.tp_size
     is_moe = model.moe_layers > 0
     if hardware.gpu_count != tp_size:
@@ -236,50 +253,35 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
     l3_bw = storage.l3_to_l2_gb_s if l3 else None
 
     l2_pages, l3_pages = l2 // page_bytes, l3 // page_bytes
-    engine = request.config.engine.model_copy(
-        update={
-            "max_total_tokens": l1_pages * page_size,
-            "l2_capacity_tokens": l2_pages * page_size,
-            "l3_capacity_tokens": l3_pages * page_size,
-        }
-    )
-    perf = request.config.perf_model.model_copy(
-        update={
-            "kv_bytes_per_token": group_kv_bytes,
-            "l2_to_l1_bandwidth_bytes_per_ms": (l2_bw * 1_000_000 if l2_bw is not None else None),
-            "l3_to_l2_bandwidth_bytes_per_ms": (l3_bw * 1_000_000 if l3_bw is not None else None),
-            "l2_latency_ms": storage.l2_latency_ms,
-            "l3_latency_ms": storage.l3_latency_ms,
-            "l3_lookup_latency_ms": storage.l3_lookup_latency_ms,
-        }
-    )
-    config = request.config.model_copy(update={"engine": engine, "perf_model": perf})
-    # model_copy 不运行 Pydantic 校验；统一经过正式配置校验入口。
-    config = type(config).model_validate(config.model_dump())
-    return ResolvedConfig(
-        config=config,
-        model=model,
-        hardware=hardware,
-        storage=storage,
-        timing=request.timing,
-        tp_size=tp_size,
-        ep_size=request.ep_size,
-        runnable=(
-            (tp_size == 1 or request.timing == "analytical")
-            and (not is_moe or request.timing == "analytical")
-            and (
-                tp_size == 1
-                or (
-                    hardware.effective_interconnect_gb_s is not None
-                    and hardware.collective_latency_ms is not None
-                )
+    runnable = (
+        (tp_size == 1 or request.timing.mode == "analytical")
+        and (not is_moe or request.timing.mode == "analytical")
+        and (
+            tp_size == 1
+            or (
+                hardware.effective_interconnect_gb_s is not None
+                and hardware.collective_latency_ms is not None
             )
-            and (
-                not is_moe
-                or request.ep_size == 1
-                or hardware.ep_communication_latency_ms is not None
-            )
-        ),
+        )
+        and (
+            not is_moe
+            or request.ep_size == 1
+            or hardware.ep_communication_latency_ms is not None
+        )
+    )
+    reason = None
+    if not runnable:
+        reason = (
+            "TP/EP 或 MoE 仅支持解析计时；四系数无法表达逐卡计算与通信"
+            if request.timing.mode == "empirical"
+            else "多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销"
+        )
+    return ResolutionReport(
+        max_total_tokens=l1_pages * page_size,
+        l2_capacity_tokens=l2_pages * page_size,
+        l3_capacity_tokens=l3_pages * page_size,
+        runnable=runnable,
+        reason=reason,
         capacity=CapacityReport(
             kv_bytes_per_token=group_kv_bytes,
             kv_bytes_per_page=page_bytes,
@@ -303,3 +305,89 @@ def resolve_config(request: ResolvedRequest) -> ResolvedConfig:  # 模型、硬�
             rank_reports=rank_reports,
         ),
     )
+
+
+def prepare_runtime(config: SimConfig) -> RuntimeConfig:
+    """运行前解析一次容量、GPU 计时与每页链路成本，不改写输入。"""
+    inference = config.inference
+    scheduler = config.scheduler
+    if isinstance(inference, ManualInferenceConfig):
+        kv, timing = inference.kv, inference.timing
+        engine = EngineConfig(
+            max_running_requests=scheduler.max_running_requests,
+            max_prefill_tokens=scheduler.max_prefill_tokens,
+            pd_mutually_exclusive=scheduler.pd_mutually_exclusive,
+            l3_prefetch_min_tokens=scheduler.l3_prefetch_min_tokens,
+            page_size=inference.page_size,
+            max_total_tokens=kv.max_total_tokens,
+            l2_capacity_tokens=kv.l2_capacity_tokens,
+            l3_capacity_tokens=kv.l3_capacity_tokens,
+        )
+        perf = PerfModelConfig(
+            prefill_c1=timing.prefill_c1,
+            prefill_c2=timing.prefill_c2,
+            decode_d1=timing.decode_d1,
+            decode_d2=timing.decode_d2,
+            kv_bytes_per_token=kv.kv_bytes_per_token,
+            l2_to_l1_bandwidth_bytes_per_ms=kv.l2_to_l1_bandwidth_bytes_per_ms,
+            l3_to_l2_bandwidth_bytes_per_ms=kv.l3_to_l2_bandwidth_bytes_per_ms,
+            l2_latency_ms=kv.l2_latency_ms,
+            l3_latency_ms=kv.l3_latency_ms,
+            l3_lookup_latency_ms=kv.l3_lookup_latency_ms,
+        )
+        return runtime_from_components(engine, perf)
+
+    report = resolve_config(config)
+    if not report.runnable:
+        if inference.timing.mode == "empirical":
+            raise NotImplementedError(report.reason)
+        raise ValueError(report.reason)
+    storage = inference.storage
+    engine = EngineConfig(
+        max_running_requests=scheduler.max_running_requests,
+        max_prefill_tokens=scheduler.max_prefill_tokens,
+        pd_mutually_exclusive=scheduler.pd_mutually_exclusive,
+        l3_prefetch_min_tokens=scheduler.l3_prefetch_min_tokens,
+        page_size=inference.page_size,
+        max_total_tokens=report.max_total_tokens,
+        l2_capacity_tokens=report.l2_capacity_tokens,
+        l3_capacity_tokens=report.l3_capacity_tokens,
+    )
+    coefficients = (
+        inference.timing.model_dump(exclude={"mode"})
+        if isinstance(inference.timing, EmpiricalTimingConfig)
+        else {"prefill_c1": 0.0, "prefill_c2": 0.0, "decode_d1": 0.0, "decode_d2": 0.0}
+    )
+    perf = PerfModelConfig(
+        **coefficients,
+        kv_bytes_per_token=report.capacity.kv_bytes_per_token,
+        l2_to_l1_bandwidth_bytes_per_ms=(
+            storage.l2_to_l1_gb_s * 1_000_000
+            if engine.l2_capacity_tokens and storage.l2_to_l1_gb_s is not None else None
+        ),
+        l3_to_l2_bandwidth_bytes_per_ms=(
+            storage.l3_to_l2_gb_s * 1_000_000
+            if engine.l3_capacity_tokens and storage.l3_to_l2_gb_s is not None else None
+        ),
+        l2_latency_ms=storage.l2_latency_ms,
+        l3_latency_ms=storage.l3_latency_ms,
+        l3_lookup_latency_ms=storage.l3_lookup_latency_ms,
+    )
+    capacity = report.capacity
+    l2 = (
+        TransferLink(capacity.kv_bytes_per_page,
+                     inference.page_size / capacity.l2_to_l1_tokens_per_ms,
+                     storage.l2_latency_ms)
+        if capacity.l2_to_l1_tokens_per_ms is not None else None
+    )
+    l3 = (
+        TransferLink(capacity.kv_bytes_per_page,
+                     inference.page_size / capacity.l3_to_l2_tokens_per_ms,
+                     storage.l3_latency_ms)
+        if capacity.l3_to_l2_tokens_per_ms is not None else None
+    )
+    analytical = (
+        AnalyticalSpec(inference.model, inference.hardware, inference.tp_size, inference.ep_size)
+        if inference.timing.mode == "analytical" else None
+    )
+    return RuntimeConfig(engine, perf, TransferLinks(l2, l3), analytical, report)

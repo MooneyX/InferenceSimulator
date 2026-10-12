@@ -1,12 +1,12 @@
 """simcore —— LLM Serving 系统级离散事件仿真内核。
 
 仿真逻辑无文件、无网络 IO；顶层入口仅用性能时钟统计实际运行耗时。主要对外入口为 :func:`simulate`，
-输入 :class:`SimConfig` 或已解析规格，可选 :class:`TraceReplay`，输出仿真结果及可选解析成本。
+输入唯一 :class:`SimConfig`，Trace 计划内容通过独立资源参数提供，输出 :class:`SimResult`。
 
 模块间单向依赖关系见 ``docs/design/architecture.md``「内核内部模块」。
 """
 
-from simcore.runner import TraceReplay, simulate
+from simcore.runner import simulate
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
@@ -25,6 +25,7 @@ from simcore.schemas import (
     SimResult,
     SkippedRequest,
     SyntheticWorkloadConfig,
+    TracePlan,
     WorkloadConfig,
     WorkloadMode,
 )
@@ -49,7 +50,7 @@ __all__ = [
     "SimResult",
     "SkippedRequest",
     "SyntheticWorkloadConfig",
-    "TraceReplay",
+    "TracePlan",
     "WorkloadConfig",
     "WorkloadMode",
     "__version__",

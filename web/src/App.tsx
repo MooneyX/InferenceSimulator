@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 
-import { simulate, simulateAutomatic, simulateReplayPlan, simulateReplayPlanAutomatic, SimulationApiError } from "./api/client";
-import type { ResolvedRequest, ResolvedRun, SimConfig, SimResult } from "./api/types";
+import { simulate, SimulationApiError } from "./api/client";
+import type { SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
 import { WarningsPanel } from "./components/WarningsPanel";
@@ -43,10 +43,12 @@ function presentError(error: unknown): PresentationError {
 export default function App() {
   const [result, setResult] = useState<SimResult | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<number | null>(null);
-  const [automatic, setAutomatic] = useState<ResolvedRun | null>(null);
   const [error, setError] = useState<PresentationError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const selectedInstance = result?.instances.find((item) => item.instance_id === selectedInstanceId);
+  const inference = result?.meta.config.inference;
+  const resolution = result?.resolution;
+  const analysis = result?.analysis;
   const [activeSection, setActiveSection] = useState(() =>
     navigation.some(({ id }) => `#${id}` === window.location.hash)
       ? window.location.hash.slice(1)
@@ -58,65 +60,9 @@ export default function App() {
     setError(null);
     setResult(null);
     setSelectedInstanceId(null);
-    setAutomatic(null);
 
     try {
       setResult(await simulate(config));
-    } catch (cause) {
-      setError(presentError(cause));
-    } finally {
-      setIsRunning(false);
-    }
-  }
-
-  async function handleSubmitAuto(request: ResolvedRequest): Promise<void> {
-    setIsRunning(true);
-    setError(null);
-    setResult(null);
-    setSelectedInstanceId(null);
-    setAutomatic(null);
-    try {
-      const response = await simulateAutomatic(request);
-      setAutomatic(response);
-      setResult(response.result);
-    } catch (cause) {
-      setError(presentError(cause));
-    } finally {
-      setIsRunning(false);
-    }
-  }
-
-  async function handleReplay(
-    id: string, config: SimConfig, mode: "open_loop" | "session", rate: number, seed: number,
-    targetQps?: number,
-  ): Promise<void> {
-    setIsRunning(true);
-    setError(null);
-    setResult(null);
-    setSelectedInstanceId(null);
-    setAutomatic(null);
-    try {
-      setResult(await simulateReplayPlan(id, config, mode, rate, seed, targetQps));
-    } catch (cause) {
-      setError(presentError(cause));
-    } finally {
-      setIsRunning(false);
-    }
-  }
-
-  async function handleReplayAuto(
-    id: string, request: ResolvedRequest, mode: "open_loop" | "session", rate: number, seed: number,
-    targetQps?: number,
-  ): Promise<void> {
-    setIsRunning(true);
-    setError(null);
-    setResult(null);
-    setSelectedInstanceId(null);
-    setAutomatic(null);
-    try {
-      const response = await simulateReplayPlanAutomatic(id, request, mode, rate, seed, targetQps);
-      setAutomatic(response);
-      setResult(response.result);
     } catch (cause) {
       setError(presentError(cause));
     } finally {
@@ -161,8 +107,7 @@ export default function App() {
           </div>
         </header>
 
-        <SimulationForm onSubmit={handleSubmit} onSubmitAuto={handleSubmitAuto}
-          onReplay={handleReplay} onReplayAuto={handleReplayAuto} disabled={isRunning} />
+        <SimulationForm onSubmit={handleSubmit} disabled={isRunning} />
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">
@@ -212,42 +157,42 @@ export default function App() {
                   </ul>
                 ) : null}
               </section>
-              {automatic && <section className="simulation-status" aria-label="解析配置与成本">
-                <h3>自动解析 · TP{automatic.resolution.tp_size}{automatic.resolution.model.moe_layers ? ` + EP${automatic.resolution.ep_size}` : ""} · {automatic.resolution.timing === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
-                <p>模型 {automatic.resolution.model.name} · GPU {automatic.resolution.hardware.name} ·
-                  {result.meta.config.num_instances} 实例 × 每实例 {automatic.resolution.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * automatic.resolution.hardware.gpu_count} GPU ·
-                  {automatic.resolution.tp_size > 1 ? "整组权重" : "权重"} {(automatic.resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
-                <p>每 token KV {automatic.resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
-                  L1 {automatic.resolution.config.engine.max_total_tokens.toLocaleString()} token ·
-                  L2 {automatic.resolution.config.engine.l2_capacity_tokens.toLocaleString()} token ·
-                  L3 {automatic.resolution.config.engine.l3_capacity_tokens.toLocaleString()} token</p>
-                {(automatic.resolution.capacity.rank_reports ?? []).length > 0 &&
+              {inference?.mode === "physical" && resolution && <section className="simulation-status" aria-label="解析配置与成本">
+                <h3>自动解析 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · {(inference.timing?.mode ?? "analytical") === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
+                <p>模型 {inference.model.name} · GPU {inference.hardware.name} ·
+                  {result.meta.config.num_instances} 实例 × 每实例 {inference.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * inference.hardware.gpu_count} GPU ·
+                  {inference.tp_size > 1 ? "整组权重" : "权重"} {(resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
+                <p>每 token KV {resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
+                  L1 {resolution.max_total_tokens.toLocaleString()} token ·
+                  L2 {resolution.l2_capacity_tokens.toLocaleString()} token ·
+                  L3 {resolution.l3_capacity_tokens.toLocaleString()} token</p>
+                {(resolution.capacity.rank_reports ?? []).length > 0 &&
                   <div aria-label="逐卡容量账单">
-                    {(automatic.resolution.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
+                    {(resolution.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
                       GPU {rank.rank}：TP 分片 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB ·
                       复制权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB ·
-                      {automatic.resolution.model.moe_layers ? `专家驻留 ${((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB ·` : ""}
+                      {inference.model.moe_layers ? `专家驻留 ${((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB ·` : ""}
                       KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token ·
                       L1 {rank.l1_capacity_pages.toLocaleString()} 页
                     </p>)}
                   </div>}
-                {automatic.analysis && <p>解析步骤 {automatic.analysis.steps} ·
-                  {automatic.resolution.tp_size > 1 ? "单 rank FLOPs" : "FLOPs"} {automatic.analysis.flops.toExponential(3)} ·
-                  {automatic.resolution.tp_size > 1 ? "单 rank HBM" : "HBM"} { (automatic.analysis.hbm_bytes / 1e9).toFixed(3) } GB ·
-                  GPU 计时 {automatic.analysis.device_ms.toFixed(2)} ms ·
-                  KV 传输 {automatic.analysis.restore_ms.toFixed(2)} ms
-                  {automatic.resolution.tp_size > 1 && <>
-                    {" · "}TP 同步 {(automatic.analysis.tp_communication_ms ?? automatic.analysis.communication_ms).toFixed(2)} ms
-                    （已含于 GPU 计时） · {automatic.analysis.collectives} 次 ·
-                    单 rank 流量 {((automatic.analysis.tp_communication_bytes ?? automatic.analysis.communication_bytes) / 1e9).toFixed(3)} GB
+                {analysis && <p>解析步骤 {analysis.steps} ·
+                  {inference.tp_size > 1 ? "单 rank FLOPs" : "FLOPs"} {analysis.flops.toExponential(3)} ·
+                  {inference.tp_size > 1 ? "单 rank HBM" : "HBM"} {(analysis.hbm_bytes / 1e9).toFixed(3)} GB ·
+                  GPU 计时 {analysis.device_ms.toFixed(2)} ms ·
+                  KV 传输 {analysis.restore_ms.toFixed(2)} ms
+                  {inference.tp_size > 1 && <>
+                    {" · "}TP 同步 {(analysis.tp_communication_ms ?? analysis.communication_ms).toFixed(2)} ms
+                    （已含于 GPU 计时） · {analysis.collectives} 次 ·
+                    单 rank 流量 {((analysis.tp_communication_bytes ?? analysis.communication_bytes) / 1e9).toFixed(3)} GB
                   </>}
-                  {automatic.resolution.model.moe_layers > 0 && <>
-                    {" · "}EP dispatch {(automatic.analysis.ep_dispatch_ms ?? 0).toFixed(2)} ms / combine {(automatic.analysis.ep_combine_ms ?? 0).toFixed(2)} ms
-                    （已含于 GPU 计时） · {automatic.analysis.ep_exchanges ?? 0} 次 ·
-                    单 rank 逻辑流量 {(((automatic.analysis.ep_dispatch_bytes ?? 0) + (automatic.analysis.ep_combine_bytes ?? 0)) / 1e9).toFixed(3)} GB
+                  {inference.model.moe_layers > 0 && <>
+                    {" · "}EP dispatch {(analysis.ep_dispatch_ms ?? 0).toFixed(2)} ms / combine {(analysis.ep_combine_ms ?? 0).toFixed(2)} ms
+                    （已含于 GPU 计时） · {analysis.ep_exchanges ?? 0} 次 ·
+                    单 rank 逻辑流量 {(((analysis.ep_dispatch_bytes ?? 0) + (analysis.ep_combine_bytes ?? 0)) / 1e9).toFixed(3)} GB
                   </>}
                 </p>}
-                {automatic.resolution.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
+                {inference.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
               </section>}
               <section className="simulation-status" aria-label="实例结果筛选">
                 <label htmlFor="instance-filter">查看范围：</label>{" "}
@@ -265,8 +210,8 @@ export default function App() {
               <MetricsPanel metrics={selectedInstance?.metrics ?? result.metrics}
                 wallClockMs={result.meta.wall_clock_ms}
                 peakAggregated={selectedInstanceId === null && result.instances.length > 1}
-                targetQps={selectedInstanceId === null ? result.meta.config.workload.synthetic?.arrival_rate ?? undefined : undefined}
-                targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.synthetic?.session_rate ?? undefined : undefined} />
+                targetQps={selectedInstanceId === null ? result.meta.config.workload.synthetic?.arrival_rate ?? result.meta.config.workload.trace?.target_qps ?? undefined : undefined}
+                targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.synthetic?.session_rate ?? result.meta.config.workload.trace?.session_rate ?? undefined : undefined} />
               <WarningsPanel warnings={result.warnings} />
               {(result.requests ?? []).some((item) => selectedInstanceId === null || item.instance_id === selectedInstanceId) ? (
                 <Suspense

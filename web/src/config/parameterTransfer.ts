@@ -1,14 +1,14 @@
-import type { ResolvedRequest, SimConfig } from "../api/types";
+import type { PhysicalInferenceConfig, SimConfig, TimingConfig } from "../api/types";
 import { validateSimConfig } from "./simulation";
 
-function objectWithKeys(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+function objectWithKeys(value: unknown, path: string, keys: readonly string[], defaults: Record<string, unknown> = {}): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${path || "参数配置"} 必须为 JSON 对象`);
   }
 
   const record = value as Record<string, unknown>;
   for (const key of keys) {
-    if (!Object.hasOwn(record, key)) {
+    if (!Object.hasOwn(record, key) && !Object.hasOwn(defaults, key)) {
       throw new Error(`缺少参数：${path ? `${path}.` : ""}${key}`);
     }
   }
@@ -17,13 +17,13 @@ function objectWithKeys(value: unknown, path: string, keys: readonly string[]): 
       throw new Error(`不支持的参数：${path ? `${path}.` : ""}${key}`);
     }
   }
-  return record;
+  return { ...defaults, ...record };
 }
 
 function numericFields(record: Record<string, unknown>, path: string, keys: readonly string[]): void {
   for (const key of keys) {
-    if (typeof record[key] !== "number") {
-      throw new Error(`${path}.${key} 必须是数值`);
+    if (typeof record[key] !== "number" || !Number.isFinite(record[key])) {
+      throw new Error(`${path}.${key} 必须是数值且为有限数值`);
     }
   }
 }
@@ -52,72 +52,74 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("JSON 格式不正确");
   }
 
-  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "engine", "perf_model"]);
+  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference"]);
   numericFields(root, "参数配置", ["num_instances"]);
-  const workloadMode = (root.workload as Record<string, unknown> | null)?.mode;
-  if (workloadMode === "trace") {
-    objectWithKeys(root.workload, "workload", ["mode"]);
-  } else if (workloadMode === "synthetic") {
-    const workload = objectWithKeys(root.workload, "workload", ["mode", "synthetic"]);
-    const arrivalMode = (workload.synthetic as Record<string, unknown> | null)?.arrival_mode;
-    if (arrivalMode !== "open_loop" && arrivalMode !== "session") {
-      throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 session");
+  const workload = objectWithKeys(root.workload, "workload", ["mode", "synthetic", "trace"], {
+    mode: "synthetic", synthetic: null, trace: null,
+  });
+  if (workload.mode === "trace") {
+    if (workload.synthetic != null) throw new Error("Trace 负载不能同时配置 workload.synthetic");
+    const trace = { seed: 0, ...physicalObject(workload.trace, "workload.trace", ["mode", "session_rate"], ["seed", "target_qps", "plan_id"]) } as Record<string, unknown>;
+    if (trace.mode !== "open_loop" && trace.mode !== "session") throw new Error("workload.trace.mode 仅支持 open_loop 或 session");
+    numericFields(trace, "workload.trace", ["session_rate", "seed"]);
+    if (trace.target_qps != null) numericFields(trace, "workload.trace", ["target_qps"]);
+    if (trace.mode === "session" && trace.target_qps != null) throw new Error("目标 QPS 仅适用于开环 trace 回放");
+    if (trace.plan_id != null && (typeof trace.plan_id !== "string" || trace.plan_id.length === 0)) {
+      throw new Error("workload.trace.plan_id 必须是非空字符串或 null");
     }
-    const fields = arrivalMode === "open_loop"
-      ? ["arrival_rate"] : ["session_rate", "session"];
+    root.workload = { mode: "trace", trace };
+  } else if (workload.mode === "synthetic") {
+    if (workload.trace != null) throw new Error("合成负载不能同时配置 workload.trace");
     const synthetic = objectWithKeys(workload.synthetic, "workload.synthetic", [
-      "num_requests", "arrival_mode", "prompt_len", "turn_increment_len", "output_len",
-      "max_new_tokens", "seed", ...fields,
-    ]);
-    numericFields(synthetic, "workload.synthetic", [
-      "num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate",
-    ]);
+      "num_requests", "arrival_mode", "prompt_len", "turn_increment_len", "output_len", "max_new_tokens", "seed", "arrival_rate", "session_rate", "session",
+    ], { arrival_mode: "session", max_new_tokens: 128, arrival_rate: null, session_rate: null, session: {} });
+    const arrivalMode = synthetic.arrival_mode;
+    if (arrivalMode !== "open_loop" && arrivalMode !== "session") throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 session");
+    numericFields(synthetic, "workload.synthetic", ["num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate"]);
+    if ((arrivalMode === "open_loop" ? synthetic.session_rate : synthetic.arrival_rate) != null) {
+      throw new Error("开环与闭环到达率不能混用");
+    }
     lengthDistribution(synthetic.prompt_len, "workload.synthetic.prompt_len");
     lengthDistribution(synthetic.turn_increment_len, "workload.synthetic.turn_increment_len");
     lengthDistribution(synthetic.output_len, "workload.synthetic.output_len");
-    if (arrivalMode === "session") {
-      const session = objectWithKeys(synthetic.session, "workload.synthetic.session", [
-        "num_sessions", "topology", "think_time_ms",
-      ]);
-      if (session.topology !== "linear") throw new Error("workload.synthetic.session.topology 仅支持 linear");
-      numericFields(session, "workload.synthetic.session", [
-        "num_sessions", "think_time_ms",
-      ]);
+    const session = objectWithKeys(synthetic.session, "workload.synthetic.session", ["num_sessions", "topology", "think_time_ms"], {
+      num_sessions: null, topology: "linear", think_time_ms: 0,
+    });
+    if (session.topology !== "linear") throw new Error("workload.synthetic.session.topology 仅支持 linear");
+    numericFields(session, "workload.synthetic.session", ["think_time_ms"]);
+    if (session.num_sessions != null) numericFields(session, "workload.synthetic.session", ["num_sessions"]);
+    if (arrivalMode === "open_loop" && (session.num_sessions != null || session.think_time_ms !== 0)) {
+      throw new Error("开环负载不使用会话数或思考时间");
     }
-  } else {
-    throw new Error("workload.mode 仅支持 synthetic 或 trace 模式");
-  }
+    root.workload = { mode: "synthetic", synthetic: arrivalMode === "session"
+      ? { ...synthetic, session: { ...session, num_sessions: session.num_sessions ?? synthetic.num_requests }, arrival_rate: undefined }
+      : { ...synthetic, session: undefined, session_rate: undefined } };
+  } else throw new Error("workload.mode 仅支持 synthetic 或 trace 模式");
 
-  const engine = objectWithKeys(root.engine, "engine", [
-    "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
-    "max_prefill_tokens", "l3_prefetch_min_tokens", "page_size", "pd_mutually_exclusive",
-  ]);
-  numericFields(engine, "engine", [
-    "max_running_requests", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
-    "max_prefill_tokens", "l3_prefetch_min_tokens", "page_size",
-  ]);
-  if (typeof engine.pd_mutually_exclusive !== "boolean") {
-    throw new Error("engine.pd_mutually_exclusive 必须是布尔值");
-  }
-
-  const perfModel = objectWithKeys(root.perf_model, "perf_model", [
-    "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "kv_bytes_per_token",
-    "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
-    "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms",
-  ]);
-  numericFields(perfModel, "perf_model", [
-    "prefill_c1", "prefill_c2", "decode_d1", "decode_d2", "l2_latency_ms", "l3_latency_ms",
-    "l3_lookup_latency_ms",
-  ]);
-  for (const key of [
-    "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms",
-  ]) {
-    if (perfModel[key] !== null && typeof perfModel[key] !== "number") {
-      throw new Error(`perf_model.${key} 必须是数值或 null`);
+  const scheduler = objectWithKeys(root.scheduler, "scheduler", ["max_running_requests", "max_prefill_tokens", "l3_prefetch_min_tokens", "pd_mutually_exclusive"], {
+    max_prefill_tokens: 16_384, l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true,
+  });
+  numericFields(scheduler, "scheduler", ["max_running_requests", "max_prefill_tokens", "l3_prefetch_min_tokens"]);
+  if (typeof scheduler.pd_mutually_exclusive !== "boolean") throw new Error("scheduler.pd_mutually_exclusive 必须是布尔值");
+  root.scheduler = scheduler;
+  const inferenceMode = (root.inference as Record<string, unknown> | null)?.mode;
+  if (inferenceMode === "physical") {
+    root.inference = validatePhysicalInference(root.inference);
+  } else if (inferenceMode === "manual") {
+    const inference = objectWithKeys(root.inference, "inference", ["mode", "page_size", "kv", "timing"], { page_size: 64 });
+    numericFields(inference, "inference", ["page_size"]);
+    const kv = objectWithKeys(inference.kv, "inference.kv", [
+      "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms",
+    ], { l2_capacity_tokens: 0, l3_capacity_tokens: 0, kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
+      l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0 });
+    numericFields(kv, "inference.kv", ["max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]);
+    for (const key of ["kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms"]) {
+      if (kv[key] !== null && typeof kv[key] !== "number") throw new Error(`inference.kv.${key} 必须是数值或 null`);
     }
-  }
+    root.inference = { ...inference, kv, timing: validateTiming(inference.timing, false) };
+  } else throw new Error("inference.mode 仅支持 manual 或 physical");
 
-  const config = parsed as SimConfig;
+  const config = root as SimConfig;
   const error = validateSimConfig(config)[0];
   if (error) {
     throw new Error(`${error.field}：${error.message}`);
@@ -165,22 +167,42 @@ function physicalDtype(record: Record<string, unknown>, path: string, key: strin
   }
 }
 
-function validateResolvedRequest(value: unknown): ResolvedRequest {
-  const root = physicalObject(value, "自动解析参数", ["config", "model", "hardware", "storage"],
-    ["timing", "tp_size", "ep_size"]);
-  const config = parseSimConfigJson(JSON.stringify(root.config));
-  const model = physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
+function validateTiming(value: unknown, analyticalAllowed: boolean): TimingConfig {
+  const mode = (value as Record<string, unknown> | null)?.mode;
+  const timingMode = mode === undefined && !analyticalAllowed ? "empirical" : mode;
+  if (timingMode === "analytical" && analyticalAllowed) {
+    return objectWithKeys(value, "inference.timing", ["mode"]) as TimingConfig;
+  } else if (timingMode === "empirical") {
+    const timing = objectWithKeys(value, "inference.timing", ["mode", "prefill_c1", "prefill_c2", "decode_d1", "decode_d2"], { mode: "empirical", prefill_c2: 0 });
+    numericFields(timing, "inference.timing", ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"]);
+    return timing as TimingConfig;
+  } else throw new Error("inference.timing.mode 不支持该计时模式");
+}
+
+function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
+  const root = objectWithKeys(value, "inference", ["mode", "page_size", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
+    page_size: 64, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
+  });
+  numericFields(root, "inference", ["page_size"]);
+  root.timing = validateTiming(root.timing, true);
+  const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
+    num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
+    ...physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
       "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
-      "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]);
-  const hardware = physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
+      "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]) } as Record<string, unknown>;
+  const hardware = { gpu_count: 1, kernel_overhead_ms: 0, ...physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
-    "kernel_overhead_ms"]);
-  const storage = physicalObject(root.storage, "storage", ["l1_available_gb"],
+    "kernel_overhead_ms"]) } as Record<string, unknown>;
+  const storage = { l2_available_gb: 0, l3_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: 0,
+    l3_latency_ms: 0, l3_lookup_latency_ms: 0, ...physicalObject(root.storage, "storage", ["l1_available_gb"],
     ["l2_available_gb", "l3_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
-      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]);
+      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]) } as Record<string, unknown>;
+  root.model = model;
+  root.hardware = hardware;
+  root.storage = storage;
   for (const [part, record] of [["model", model], ["hardware", hardware]] as const) {
     if (typeof record.name !== "string" || !record.name.trim()) throw new Error(`${part}.name 不能为空`);
   }
@@ -316,9 +338,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
   for (const key of ["l2_to_l1_gb_s", "l3_to_l2_gb_s"] as const) {
     physicalNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
   }
-  if (root.timing !== undefined && root.timing !== "analytical" && root.timing !== "empirical") {
-    throw new Error("timing 不支持该计时模式");
-  }
+
   for (const field of ["tp_size", "ep_size"] as const) {
     if (root[field] !== undefined && (!Number.isInteger(root[field]) || (root[field] as number) < 1)) {
       throw new Error(`${field} 必须是正整数`);
@@ -338,24 +358,7 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
              Number(model.experts_per_token ?? 0) > 0 || model.expert_intermediate_size != null) {
     throw new Error("Dense 模型不能设置 EP 或 MoE 专家参数");
   }
-  return { ...root, config, timing: root.timing ?? "analytical",
-    tp_size: tpSize, ep_size: epSize } as ResolvedRequest;
-}
-
-export function parseResolvedRequestJson(json: string): ResolvedRequest {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    throw new Error("JSON 格式不正确");
-  }
-  return validateResolvedRequest(parsed);
-}
-
-export function serializeResolvedRequest(request: ResolvedRequest): string {
-  serializeSimConfig(request.config);
-  validateResolvedRequest(request);
-  return JSON.stringify(request);
+  return root as PhysicalInferenceConfig;
 }
 
 export function serializeSimConfig(config: SimConfig): string {
@@ -363,7 +366,11 @@ export function serializeSimConfig(config: SimConfig): string {
   if (error) {
     throw new Error(`${error.field}：${error.message}`);
   }
-  const json = JSON.stringify(config);
+  if (config.inference.mode === "physical") validatePhysicalInference(config.inference);
+  const reusable = config.workload.mode === "trace" && config.workload.trace
+    ? { ...config, workload: { mode: "trace", trace: { ...config.workload.trace, plan_id: null } } }
+    : config;
+  const json = JSON.stringify(reusable);
   parseSimConfigJson(json);
   return json;
 }

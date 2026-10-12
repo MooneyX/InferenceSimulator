@@ -32,7 +32,7 @@
 
 | 模块 | 入口 | 状态 |
 |---|---|---|
-| 内核 | `simcore.simulate(SimConfig | ResolvedConfig, *, replay=None) -> (SimResult, AnalyticalSummary | None)` | M1 已完成 |
+| 内核 | `simcore.simulate(SimConfig, *, trace_plan: TracePlan | None = None) -> SimResult` | M1 已完成 |
 | 服务层 | `simserver.app:create_app`；`POST /api/simulate` | M2 已完成 |
 | API 类型 | `web/openapi.json`；`web/src/api/schema.d.ts` | M2 已完成，运行 `npm run gen:api` 更新 |
 | 前端应用 | `web/src/App.tsx`；`web/src/components/RequestGantt.tsx` | M3 已完成 |

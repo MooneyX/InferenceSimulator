@@ -14,7 +14,7 @@ from simcore.schemas import (
     SessionConfig,
     SyntheticWorkloadConfig,
 )
-from simcore.workload import build_plan, sample_length
+from simcore.workload import build_synthetic_closed_loop_plan, sample_length
 
 
 class TestSampleLength:
@@ -95,7 +95,7 @@ class TestSampleLength:
             session=SessionConfig(num_sessions=20, think_time_ms=10000),
         )
         engine = EngineConfig(max_running_requests=32, max_total_tokens=4_000_000, page_size=64)
-        plan = build_plan(config, engine)
+        plan = build_synthetic_closed_loop_plan(config, engine)
         assert len(plan.root_request_ids) == 20
         root_lengths = [plan.turns[key].prompt_len for key in plan.root_request_ids]
         assert statistics.mean(root_lengths) == pytest.approx(32768, rel=0.02)
@@ -104,4 +104,4 @@ class TestSampleLength:
                 parent = plan.turns[turn.parent_request_id]
                 assert turn.prompt_len > parent.prompt_len + parent.output_len
         assert plan.constructed_ideal_prefix_hit_rate > 0.9
-        assert build_plan(config, engine) == plan
+        assert build_synthetic_closed_loop_plan(config, engine) == plan

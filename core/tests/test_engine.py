@@ -20,7 +20,7 @@ from simcore.schemas import (
     TurnPlan,
     WorkloadPlan,
 )
-from simcore.workload import _visible_limit, build_plan
+from simcore.workload import _visible_limit, build_synthetic_closed_loop_plan
 from test_client import planned_client
 from test_schemas import runtime_config
 
@@ -232,7 +232,7 @@ def synthetic_run(seed: int = 7, **engine: int) -> EngineRun:
         }
     )
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
-    plan = build_plan(workload, cfg)
+    plan = build_synthetic_closed_loop_plan(workload, cfg)
     client = planned_client(plan, cfg)
     from simcore.router import Router
 

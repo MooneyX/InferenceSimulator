@@ -62,7 +62,7 @@ resolved_tokens    = min(hardware_tokens, user_cap_tokens)  # 仅当用户提供
 
 ## 5. 服务、内核与页面契约
 
-1. **服务端解析入口。** `GET /api/presets` 提供参考规格；后续目录状态、证据与来源扩展按本计划验收。`POST /api/resolve` 与运行接收同一个 `SimConfig`，模型/硬件/存储及页大小位于 `inference.mode=physical`，返回 `ResolutionReport`（容量账单、运行 token 容量、可运行性与原因），不返回另一套仿真输入。内核在 `build_plan` 与 `Engine(runtime, ...)` 创建之前调用一次 `capacity.prepare_runtime`；纯解析逻辑只消费显式规格，不读取服务端目录或执行 IO。
+1. **服务端解析入口。** `GET /api/presets` 提供参考规格；后续目录状态、证据与来源扩展按本计划验收。`POST /api/resolve` 与运行接收同一个 `SimConfig`，模型/硬件/存储及页大小位于 `inference.mode=physical`，返回 `ResolutionReport`（容量账单、运行 token 容量、可运行性与原因），不返回另一套仿真输入。内核在 `Client` 与 `Engine(runtime, ...)` 创建之前调用一次 `capacity.prepare_runtime`；纯解析逻辑只消费显式规格，不读取服务端目录或执行 IO。
 2. **仿真模式区分。** 唯一 `POST /api/simulate` 接收统一 `SimConfig`：手动分支使用显式 `kv` 容量和四系数经验计时，物理分支根据模型/硬件/存储推导内部运行容量并使用选定计时后端，返回单个 `SimResult`。`meta.config` 回显包含字段默认值的原规范化输入，`resolution` 展示实际容量与账单，`analysis` 展示解析计时汇总；不能将临时预览报告重新当作运行配置，也不能由此推断规格已获真实部署认证。非法规格、不支持布局或显存不足返回具体 422；请求级 KV 失败仍归运行结果。
 3. **前端配置与展示。** 在同一 `SimConfig` 表单编辑手动/物理推理分支和独立调度、负载字段；展示服务端的显存账单、KV bytes/token、完整页数、最终运行容量与已实现的步骤成本分项。前端不维护另一套容量或 Roofline 公式；不可计算的配置给出原因并禁止提交。JSON 导入导出只保留统一输入规格与计时/回放设置，不嵌入解析报告；Trace 导出清空临时 `plan_id`，导入后重新上传独立计划资源。后续证据目录的版本/来源展示不得冒充已认证部署。
 4. 改动对外 schema/路由后同步 `web/openapi.json` 和 `web/src/api/schema.d.ts`，更新 [服务计划](server-api.md)、[前端计划](frontend.md) 的交付与校验；只把真正落地行为迁入 `docs/design/`，不把目录选项当作已有仿真模式。

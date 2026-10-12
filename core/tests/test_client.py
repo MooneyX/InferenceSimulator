@@ -20,12 +20,12 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
-from simcore.workload import build_plan
+from simcore.workload import build_synthetic_closed_loop_plan
 
 
 def planned_client(plan: WorkloadPlan, engine: EngineConfig) -> Client:
     workload = synthetic_workload("closed_loop")
-    with patch("simcore.client.build_plan", return_value=plan):
+    with patch("simcore.client.build_synthetic_closed_loop_plan", return_value=plan):
         return Client(workload, engine)
 
 
@@ -143,7 +143,7 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
         seed=2,
         session=SessionConfig(num_sessions=1),
     )
-    base = build_plan(cfg, engine)
+    base = build_synthetic_closed_loop_plan(cfg, engine)
     root_id = base.root_request_ids[0]
     child_id = base.children[root_id][0]
     grandchild_id = base.children[child_id][0]
@@ -220,7 +220,9 @@ def trace_plan(output: int = 2) -> TracePlan:
 
 @pytest.mark.parametrize("source", ["synthetic", "trace"])
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
-def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str) -> None:
+def test_four_modes_share_preparation_dispatch_and_lifecycle_contract(
+    source: str, mode: str
+) -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     workload = (
         synthetic_workload(mode)
@@ -245,8 +247,17 @@ def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str
         client.workload_mode = "trace"  # type: ignore[misc]
     with pytest.raises(AttributeError):
         client.arrival_mode = "closed_loop"  # type: ignore[misc]
+    assert not client._sent and not client._inflight
+    initial_plan = client.plan
+    dynamic = source == "synthetic" and mode == "open_loop"
+    assert len(initial_plan.turns) == (0 if dynamic else 4 if source == "synthetic" else 3)
+    if source == "synthetic" and mode == "closed_loop":
+        assert workload.synthetic is not None
+        assert initial_plan == build_synthetic_closed_loop_plan(workload.synthetic, engine)
     wakeups = client.initial_wakeups()
+    assert len(wakeups) == (1 if mode == "closed_loop" else 4 if dynamic else 3)
     assert client.initial_wakeups() == wakeups
+    assert client.plan == initial_plan
     request, output = client.on_wakeup(wakeups[0])
     assert request.is_trace == (source == "trace")
     assert output == 2 and not hasattr(request, "output_len")
@@ -306,6 +317,54 @@ def test_synthetic_open_loop_ready_queue_tie_breaks_by_session() -> None:
     client.on_request_completed(RequestCompletion(first.request_id, 100, output0))
     assert client.on_wakeup(wakeups[2])[0].parent_request_id == first.request_id
     assert client.on_wakeup(wakeups[3])[0].parent_request_id == second.request_id
+
+
+@pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
+def test_preparation_rejects_trace_plan_for_wrong_workload_source(mode: str) -> None:
+    engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
+    with pytest.raises(ValueError, match="合成仿真不能提供 trace_plan"):
+        Client(synthetic_workload(mode), engine, trace_plan=trace_plan())
+    workload = WorkloadConfig(
+        mode="trace",
+        trace=TraceWorkloadConfig.model_validate({"mode": mode, "session_rate": 10}),
+    )
+    with pytest.raises(ValueError, match="Trace 仿真须提供 trace_plan"):
+        Client(workload, engine)
+
+
+@pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
+def test_trace_preparation_preserves_all_independent_roots(mode: str) -> None:
+    base = trace_plan()
+    source = TracePlan(
+        block_size=base.block_size,
+        sessions=base.sessions,
+        requests=(
+            *base.requests,
+            TraceTurn(
+                request_id=3,
+                session_id=0,
+                arrival_offset_ms=40,
+                prompt_len=5,
+                output_len=2,
+                hash_ids=(0, 1),
+            ),
+        ),
+    )
+    engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
+    workload = WorkloadConfig(
+        mode="trace",
+        trace=TraceWorkloadConfig.model_validate({"mode": mode, "session_rate": 10}),
+    )
+    client = Client(workload, engine, trace_plan=source)
+    wakeups = client.initial_wakeups()
+    assert [item.turn_id for item in wakeups] == (
+        [0, 3] if mode == "closed_loop" else [0, 1, 2, 3]
+    )
+    assert wakeups[-1].send_time_ms - wakeups[0].send_time_ms == pytest.approx(40)
+    assert client.plan.children == {0: (1, 2)}
+    request, output = client.on_wakeup(wakeups[-1])
+    assert request.parent_request_id is None
+    assert request.trace_hash_ids == (0, 1) and output == 2
 
 
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])

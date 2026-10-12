@@ -2,6 +2,10 @@
 
 本文描述合成负载与 Trace 如何准备计划、决定理想复用量，以及由统一客户端在模拟时间内提交请求。完整块 ID 的编码规则见 [chunk-hash-encoding.md](chunk-hash-encoding.md)，事件堆的处理顺序见 [events.md](events.md)。
 
+## 统一负载准备入口
+
+`Client.__init__` 初始化公共在途状态后，统一调用 `_prepare_workload(workload, trace_plan=...)`。该入口按合成/Trace、开环/闭环初始化所需计划、随机流与完成状态，不提前构造 `InferenceRequest`：合成闭环委托 `build_synthetic_closed_loop_plan` 生成静态轮次，合成开环只准备动态生成状态，Trace 两种模式委托 `_prepare_trace` 转换已有计划。合成开环的父子关系仍在发送时依据已完成会话确定，不能预生成完整拓扑。初始投放由 `initial_wakeups()` 返回，实际请求统一由 `on_wakeup()` 构造。
+
 ## 开环多轮模式（网页默认）
 
 配置 `arrival_mode="open_loop"`、根轮 `prompt_len`、子轮 `turn_increment_len`、每轮 `output_len`，不设置 `session.num_sessions` 或 `session.think_time_ms`。`num_requests=N` 指全部投放次数；`arrival_rate=q` 指目标发送 QPS。`Client.initial_wakeups` 使用从 `seed` 独立派生的开环到达随机流，逐次采样均值 `1000/q` ms 的指数间隔并累加为到达时刻（首个请求也采样，不固定在 0）；因此固定请求数 N 的实际发送 QPS 只是有限样本的观测值，不保证等于 q。到达不依赖引擎吞吐；单请求无可测的投放间隔。完成结算先于同刻投放。若有完成且未续写的会话，按完成时刻、session ID 优先选一个子轮；否则创建新根会话。单会话一次只有一个请求在途，父轮失败不会生成后代，下一投放节拍可以新建会话。即使引擎已过载，仍会投放全部 N 次；完成吞吐并不保证等于 q。N 次后不再新投放，但引擎排空才结束。
@@ -10,7 +14,7 @@
 
 ## 有限会话闭环模式（`arrival_mode="closed_loop"`）
 
-`build_plan` 消费 `SyntheticWorkloadConfig` 与一次性准备好的运行容量/页大小，一次性生成不可变 `WorkloadPlan`，不访问 Engine 或 KV cache。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录输入长度、截断后的目标 `output_len`、可见 `max_new_tokens` 和 `ideal_reuse_blocks`，不预生成块 ID。
+`build_synthetic_closed_loop_plan` 消费 `SyntheticWorkloadConfig` 与一次性准备好的运行容量/页大小，一次性生成不可变 `WorkloadPlan`，不访问 Engine 或 KV cache。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录输入长度、截断后的目标 `output_len`、可见 `max_new_tokens` 和 `ideal_reuse_blocks`，不预生成块 ID。
 
 闭环不配置目标请求 QPS；`session_rate` 直接设定根会话的泊松到达频率（会话/秒），首根同样采样指数间隔，不固定在时刻 0。子轮须等父轮实际完成后，再经过独立采样的平均思考间隔投放；实际请求 QPS 由所有已发送轮次的首末时间计算，而非由会话速率推导。`S=N` 时每个会话仅有一个根请求。根到达、根输入、子轮新增内容、输出、拓扑及思考时间分别由 `stable_derive(seed, domain)` 派生独立随机流，保持相同配置与种子的计划可复现。`session.think_time_ms` 是子轮思考时间的指数分布均值（毫秒），每个子轮独立采样一次；设为 `0` 时始终无等待。根轮不采样思考时间，子轮实际到达仍由父轮完成时刻决定。
 

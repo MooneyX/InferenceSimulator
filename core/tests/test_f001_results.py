@@ -76,7 +76,7 @@ def mixed_plan() -> WorkloadPlan:
 
 def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     settings = config()
-    with patch("simcore.client.build_plan", return_value=mixed_plan()):
+    with patch("simcore.client.build_synthetic_closed_loop_plan", return_value=mixed_plan()):
         result = simulate(settings)
         second = simulate(settings)
     exclude = {"meta": {"wall_clock_ms"}}

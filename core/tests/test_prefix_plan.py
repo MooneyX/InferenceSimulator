@@ -17,7 +17,7 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
-from simcore.workload import build_plan
+from simcore.workload import build_synthetic_closed_loop_plan
 from test_client import planned_client
 from test_schemas import manual_config
 
@@ -54,7 +54,7 @@ def test_defaults_and_capacity() -> None:
 
 def test_plan_topology_and_root_poisson_rate() -> None:
     cfg = config(n=100, s=20)
-    plan = build_plan(cfg, engine())
+    plan = build_synthetic_closed_loop_plan(cfg, engine())
     assert len(plan.turns) == 100
     assert len(plan.root_request_ids) == 20
     assert {sum(turn.session_id == sid for turn in plan.turns.values()) for sid in range(20)} == {5}
@@ -71,9 +71,10 @@ def test_plan_topology_and_root_poisson_rate() -> None:
     roots = [(plan.turns[key].root_arrival_time_ms or 0.0) for key in plan.root_request_ids]
     assert roots == sorted(roots)
     assert (
-        build_plan(config(n=100, s=20, rate=50), engine()).root_request_ids == plan.root_request_ids
+        build_synthetic_closed_loop_plan(config(n=100, s=20, rate=50), engine()).root_request_ids
+        == plan.root_request_ids
     )
-    fast = build_plan(config(n=100, s=20, rate=50), engine())
+    fast = build_synthetic_closed_loop_plan(config(n=100, s=20, rate=50), engine())
     for key in plan.root_request_ids:
         assert plan.turns[key].root_arrival_time_ms == pytest.approx(
             (fast.turns[key].root_arrival_time_ms or 0.0) * 2
@@ -82,19 +83,19 @@ def test_plan_topology_and_root_poisson_rate() -> None:
 
 def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> None:
     cfg = config(n=100, s=20)
-    plan = build_plan(cfg, engine())
+    plan = build_synthetic_closed_loop_plan(cfg, engine())
     delays = [
         turn.think_time_ms for turn in plan.turns.values() if turn.parent_request_id is not None
     ]
     rng = random.Random(stable_derive(cfg.seed, "think-time"))
     assert delays == [rng.expovariate(1.0 / 30) for _ in range(80)]
     assert len(set(delays)) == 80
-    assert build_plan(cfg, engine()) == plan
+    assert build_synthetic_closed_loop_plan(cfg, engine()) == plan
 
     changed = cfg.model_copy(
         update={"session": cfg.session.model_copy(update={"think_time_ms": 60.0})}
     )
-    changed_plan = build_plan(changed, engine())
+    changed_plan = build_synthetic_closed_loop_plan(changed, engine())
     for request_id, turn in plan.turns.items():
         other = changed_plan.turns[request_id]
         assert turn.root_arrival_time_ms == other.root_arrival_time_ms
@@ -107,7 +108,7 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
             assert other.think_time_ms == pytest.approx(2 * turn.think_time_ms)
 
     zero = cfg.model_copy(update={"session": cfg.session.model_copy(update={"think_time_ms": 0.0})})
-    zero_plan = build_plan(zero, engine())
+    zero_plan = build_synthetic_closed_loop_plan(zero, engine())
     assert all(
         turn.think_time_ms == 0.0
         for turn in zero_plan.turns.values()
@@ -116,20 +117,20 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
 
 
 def test_context_grows_and_inherits_every_completed_parent_page() -> None:
-    plan = build_plan(config(n=6, s=2), engine())
+    plan = build_synthetic_closed_loop_plan(config(n=6, s=2), engine())
     assert [plan.turns[key].prompt_len for key in range(3)] == [10, 18, 26]
     assert [plan.turns[key].ideal_reuse_blocks for key in range(3)] == [0, 3, 5]
     total = sum(turn.prompt_len for turn in plan.turns.values())
     ideal = 4 * sum(turn.ideal_reuse_blocks for turn in plan.turns.values())
     assert plan.constructed_ideal_prefix_hit_rate == pytest.approx(ideal / total)
-    roots_only = build_plan(config(n=2, s=2), engine())
+    roots_only = build_synthetic_closed_loop_plan(config(n=2, s=2), engine())
     assert roots_only.constructed_ideal_prefix_hit_rate == 0
 
 
 def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
     cache = engine()
-    plan = build_plan(config(n=6, s=2), cache)
-    assert plan == build_plan(config(n=6, s=2), cache)
+    plan = build_synthetic_closed_loop_plan(config(n=6, s=2), cache)
+    assert plan == build_synthetic_closed_loop_plan(config(n=6, s=2), cache)
     client = planned_client(plan, cache)
     roots = [client.on_wakeup(wakeup)[0] for wakeup in client.initial_wakeups()]
     assert all(request.inherited_prefix_ids == () for request in roots)
@@ -141,7 +142,7 @@ def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
 
 def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
     cache = engine()
-    plan = build_plan(config(n=3, s=1), cache)
+    plan = build_synthetic_closed_loop_plan(config(n=3, s=1), cache)
     root_id = plan.root_request_ids[0]
     root = plan.turns[root_id]
     assert not hasattr(root, "output_token_plan")
@@ -162,7 +163,7 @@ def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
 
 def test_distinct_roots_have_isolated_chunk_ids() -> None:
     cache = engine()
-    plan = build_plan(config(n=2, s=2), cache)
+    plan = build_synthetic_closed_loop_plan(config(n=2, s=2), cache)
     client = planned_client(plan, cache)
     roots = [client.on_wakeup(wakeup)[0] for wakeup in client.initial_wakeups()]
     assert len(roots) == 2
@@ -184,7 +185,7 @@ def test_output_is_clamped_without_exposing_sample_to_request() -> None:
         seed=7,
     )
     runtime = engine(page_size=64, capacity=256)
-    plan = build_plan(cfg, runtime)
+    plan = build_synthetic_closed_loop_plan(cfg, runtime)
     turn = plan.turns[0]
     assert (turn.max_new_tokens, turn.output_len) == (64, 64)
     client = planned_client(plan, runtime)
@@ -192,10 +193,12 @@ def test_output_is_clamped_without_exposing_sample_to_request() -> None:
     assert output == client.plan.turns[request.request_id].output_len
     assert request.max_new_tokens == 64
     assert not hasattr(request, "output_len")
-    short_plan = build_plan(cfg.model_copy(update={"output_len": FixedLength(value=2)}), runtime)
+    short_plan = build_synthetic_closed_loop_plan(
+        cfg.model_copy(update={"output_len": FixedLength(value=2)}), runtime
+    )
     assert short_plan.turns[0].output_len == 2
     assert short_plan.turns[0].max_new_tokens == request.max_new_tokens
-    assert build_plan(cfg, runtime) == plan
+    assert build_synthetic_closed_loop_plan(cfg, runtime) == plan
 
 
 def test_clamped_parent_output_drives_child_context_and_capacity() -> None:
@@ -205,7 +208,7 @@ def test_clamped_parent_output_drives_child_context_and_capacity() -> None:
         output_len=FixedLength(value=100), max_new_tokens=200, seed=7,
         session=SessionConfig(num_sessions=1),
     )
-    plan = build_plan(cfg, engine(page_size=64, capacity=256))
+    plan = build_synthetic_closed_loop_plan(cfg, engine(page_size=64, capacity=256))
     parent, child, descendant = (plan.turns[key] for key in range(3))
     assert parent.output_len == 64
     assert (child.prompt_len, child.max_new_tokens, child.output_len) == (130, 0, 0)
@@ -220,7 +223,7 @@ def test_engine_completes_at_private_target_not_visible_limit() -> None:
         "prompt_len": FixedLength(value=5), "output_len": FixedLength(value=2),
         "max_new_tokens": 10,
     })
-    plan = build_plan(cfg, runtime)
+    plan = build_synthetic_closed_loop_plan(cfg, runtime)
     client = planned_client(plan, runtime)
     request, output = client.on_wakeup(client.initial_wakeups()[0])
     assert output == client.plan.turns[request.request_id].output_len

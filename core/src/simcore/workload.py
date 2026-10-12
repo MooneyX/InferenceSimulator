@@ -1,7 +1,8 @@
-"""合成负载规划。
+"""合成负载长度采样与闭环规划。
 
-``build_plan`` 只生成 session 拓扑、累积上下文长度、理想继承块数和根发送计划，不物化 token
-或预生成块 ID；根到达、根/增量长度、拓扑分别使用稳定派生的独立随机流。
+``build_synthetic_closed_loop_plan`` 只为合成闭环生成 session 拓扑、累积上下文长度、
+理想继承块数和根发送计划，不物化 token 或预生成块 ID；根到达、根/增量长度、拓扑
+分别使用稳定派生的独立随机流。
 
 依赖层级：``schemas``、``prefix_hash.stable_derive``。
 """
@@ -22,7 +23,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 
-__all__ = ["build_plan", "sample_length"]
+__all__ = ["build_synthetic_closed_loop_plan", "sample_length"]
 
 _MS_PER_SECOND = 1000.0
 
@@ -96,8 +97,10 @@ def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig)
     )
 
 
-def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPlan:  # 合成负载与 KV 引擎配置 → 会话拓扑和根到达计划, 仅用于闭环模式
-    """预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
+def build_synthetic_closed_loop_plan(
+    cfg: SyntheticWorkloadConfig, engine: EngineConfig
+) -> WorkloadPlan:
+    """合成闭环预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
     block_size = engine.page_size
     sessions = cast(int, cfg.session.num_sessions)
     n = cfg.num_requests

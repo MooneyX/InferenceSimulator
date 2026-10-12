@@ -18,7 +18,7 @@
 ## 编码接入点
 
 1. `core/src/simcore/schemas.py`：唯一 `SimConfig` 由实例数、负载、调度和 `inference` 判别分支组成；手动分支传 KV/经验计时，物理分支传模型、硬件、存储、TP/EP 和计时规格，不保留旧外部配置结构。
-2. `server/src/simserver/routes.py`、`core/src/simcore/runner.py`：预览和运行都接收同一 `SimConfig`；预览返回 `ResolutionReport`，唯一仿真入口返回含可空 `resolution` / `analysis` 的 `SimResult`。内核保持零 IO，在 `build_plan` 和 `Engine(runtime, ...)` 创建前通过 `capacity.prepare_runtime` 一次性确定内部运行容量；`meta.config` 回显原规范化输入而非推导配置；`core/src/simcore/coordinator.py` 保持时钟与事件所有权。
+2. `server/src/simserver/routes.py`、`core/src/simcore/runner.py`：预览和运行都接收同一 `SimConfig`；预览返回 `ResolutionReport`，唯一仿真入口返回含可空 `resolution` / `analysis` 的 `SimResult`。内核保持零 IO，在 `Client` 和 `Engine(runtime, ...)` 创建前通过 `capacity.prepare_runtime` 一次性确定内部运行容量；`meta.config` 回显原规范化输入而非推导配置；`core/src/simcore/coordinator.py` 保持时钟与事件所有权。
 3. `core/src/simcore/scheduler.py`、`core/src/simcore/kv_cache.py`：保留逻辑页、前缀复用、准入与完成语义，不按 GPU 数直接扩大 token 池。启用 L2/L3 时，恢复传输的 KV 字节口径须与解析容量一致。
 4. `core/src/simcore/engine.py`、`core/src/simcore/perf_model.py`：复用 `StepWorkload` 的实际 Prefill/Decode 请求与上下文作为解析成本输入；将静态模型/设备参数与动态步工作量分开。TP/EP 共享逐 rank 成本接口，EP 逐层计费；不得在包含完整步成本的四系数结果上重复叠加通信费。
 5. 对外契约实现时同步 `web/openapi.json`、`web/src/api/schema.d.ts`、表单、配置 JSON 导入导出及结果展示；前端不另算容量或性能公式，错误按缺失规格、显存不足和不支持的布局区分。

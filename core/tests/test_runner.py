@@ -20,7 +20,7 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
-from simcore.workload import build_plan
+from simcore.workload import build_synthetic_closed_loop_plan
 from test_schemas import manual_config, metric_inputs
 
 
@@ -327,7 +327,7 @@ class TestEndToEnd:
         )
         synthetic = config.workload.synthetic
         assert synthetic is not None
-        plan = build_plan(synthetic, prepare_runtime(config).engine)
+        plan = build_synthetic_closed_loop_plan(synthetic, prepare_runtime(config).engine)
         result = simulate(config)
         metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
@@ -471,7 +471,7 @@ class TestSmallCases:
         result = simulate(cfg)
         synthetic = cfg.workload.synthetic
         assert synthetic is not None
-        plan = build_plan(synthetic, prepare_runtime(cfg).engine)
+        plan = build_synthetic_closed_loop_plan(synthetic, prepare_runtime(cfg).engine)
         assert len(result.requests) == 3
         assert result.metrics.arrival_qps == pytest.approx(
             2000 / (result.requests[-1].arrival - result.requests[0].arrival)

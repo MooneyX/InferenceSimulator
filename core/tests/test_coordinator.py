@@ -22,7 +22,7 @@ from simcore.schemas import (
     TraceWorkloadConfig,
     WorkloadConfig,
 )
-from simcore.workload import build_plan
+from simcore.workload import build_synthetic_closed_loop_plan
 from test_client import planned_client, synthetic_workload, trace_plan
 from test_schemas import manual_config, runtime_config
 
@@ -104,7 +104,7 @@ def test_single_session_children_arrive_only_after_completion() -> None:
     records = first.requests
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_plan(workload, prepare_runtime(cfg).engine)
+    plan = build_synthetic_closed_loop_plan(workload, prepare_runtime(cfg).engine)
     assert len(records) == 3
     for parent, child in pairwise(records):
         delay = plan.turns[child.id].think_time_ms
@@ -117,7 +117,7 @@ def test_zero_think_done_callback_send_step_order() -> None:
     cfg = config()
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_plan(workload, prepare_runtime(cfg).engine)
+    plan = build_synthetic_closed_loop_plan(workload, prepare_runtime(cfg).engine)
     client = planned_client(plan, prepare_runtime(cfg).engine)
     from simcore.router import Router
 

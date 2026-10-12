@@ -22,7 +22,11 @@ from simcore.schemas import (
     WorkloadMode,
     WorkloadPlan,
 )
-from simcore.workload import _visible_limit, build_plan, sample_length
+from simcore.workload import (
+    _visible_limit,
+    build_synthetic_closed_loop_plan,
+    sample_length,
+)
 
 __all__ = ["Client"]
 
@@ -40,6 +44,13 @@ class Client:
         self.engine = engine
         self._sent: set[int] = set()
         self._inflight: dict[int, InferenceRequest] = {}
+        self._workload_mode: WorkloadMode
+        self._prepare_workload(workload, trace_plan=trace_plan)
+
+    def _prepare_workload(
+        self, workload: WorkloadConfig, *, trace_plan: TracePlan | None = None
+    ) -> None:
+        """统一准备四种负载的计划或动态生成状态；请求仍在发送时构造。"""
         self._workload_mode = workload.mode
         self._arrival_mode: Literal["closed_loop", "open_loop"]
         if workload.mode == "trace":
@@ -57,7 +68,7 @@ class Client:
             self._arrival_mode = self._synthetic.arrival_mode
             self._finished: dict[int, tuple[InferenceRequest, int]] = {}
             if self.arrival_mode == "closed_loop":
-                self._plan = build_plan(self._synthetic, engine)
+                self._plan = build_synthetic_closed_loop_plan(self._synthetic, self.engine)
             else:
                 self._roots_rng = random.Random(stable_derive(self._synthetic.seed, "root-length"))
                 self._increments_rng = random.Random(

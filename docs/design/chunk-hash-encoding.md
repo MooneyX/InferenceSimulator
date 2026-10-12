@@ -26,5 +26,5 @@ hash 对内核其余部分保持不透明字符串；禁止按 session ID、请�
 
 ## 生成与发布时机
 
-- `workload.build_plan` 不预生成 ID；`Client.on_wakeup` 从已完成父轮的继承前缀和父轮请求 ID 按页序号推导所需的前缀 ID，只发送这段 `inherited_prefix_ids`。根轮的该元组为空，新输入/输出页由引擎用当前请求 ID 和页序号按需编码。完成回调保存实际建立的 `P+generated_tokens-1` 长度，供子轮发送时再推导可继承页，而不是复制整条父轮块序列。
+- `workload.build_synthetic_closed_loop_plan` 不预生成 ID；`Client.on_wakeup` 从已完成父轮的继承前缀和父轮请求 ID 按页序号推导所需的前缀 ID，只发送这段 `inherited_prefix_ids`。根轮的该元组为空，新输入/输出页由引擎用当前请求 ID 和页序号按需编码。完成回调保存实际建立的 `P+generated_tokens-1` 长度，供子轮发送时再推导可继承页，而不是复制整条父轮块序列。
 - `TieredKVCache` 由引擎在 `finish_step`（GPU 步完成事件）按请求 ID 发布 Prefill 已计算完整页，步首不公开；Decode 中新填满的完整页保持私有，`RequestDone` 调用引擎 `complete` 后由缓存 `finish` 发布，回撤则丢弃未发布私有页。输入尾页可由后续已建立输出 token 补齐，但未建立的末次采样 token 不形成页。连续前缀命中只比较已发布的完整页 ID；新计算私有页按实际计算需求分配，异步恢复页另经传输占位和完成迁入。

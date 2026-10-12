@@ -65,6 +65,47 @@ describe("AutomaticConfig", () => {
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
+  it("matches complete Qwen defaults independently of API object key order", async () => {
+    const qwen = JSON.parse(JSON.stringify(initialModel)) as typeof initialModel;
+    qwen.attention_groups = qwen.attention_groups!.map((group) =>
+      Object.fromEntries(Object.entries(group).reverse()) as typeof group);
+    qwen.norms = Object.fromEntries(Object.entries(qwen.norms!).reverse()) as typeof qwen.norms;
+    vi.mocked(getPresets).mockResolvedValue({ models: [qwen], hardware: [], scenarios: [] });
+    const onModelChange = vi.fn();
+    render(<AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={1} epSize={1} onTpSizeChange={vi.fn()} onEpSizeChange={vi.fn()}
+      onModelChange={onModelChange} onHardwareChange={vi.fn()} onStorageChange={vi.fn()} disabled={false} />);
+    await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue("Qwen/Qwen3-8B"));
+    expect(screen.getByLabelText("第 1 组注意力方式")).toHaveValue("gqa");
+    expect(screen.getByLabelText("第 1 组层数")).toHaveValue(36);
+    expect(screen.getByLabelText("第 1 组 Query 头数")).toHaveValue(32);
+    expect(screen.getByLabelText("第 1 组KV 头数")).toHaveValue(8);
+    expect(screen.getByLabelText("第 1 组每头维度")).toHaveValue(128);
+    expect(screen.getByLabelText("第 1 组 Q/K 归一化")).toBeChecked();
+    expect(screen.getByLabelText("第 1 组注意力输出门控")).not.toBeChecked();
+    expect(onModelChange).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("第 1 组 Query 头数"), { target: { value: "64" } });
+    expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({
+      name: "自定义模型", attention_groups: [expect.objectContaining({ num_attention_heads: 64 })],
+    }));
+  });
+
+  it("uses themed collapsible auxiliary sections and attention cards without disabling editable fields", () => {
+    const { container } = render(<fieldset disabled><AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={1} epSize={1} onTpSizeChange={vi.fn()} onEpSizeChange={vi.fn()}
+      onModelChange={vi.fn()} onHardwareChange={vi.fn()} onStorageChange={vi.fn()} disabled /></fieldset>);
+    const details = screen.getByText("辅助权重容量配置", { exact: true }).closest("details")!;
+    expect(details).toHaveClass("model-subsection", "auxiliary-config");
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("辅助权重容量配置", { exact: true }));
+    expect(details).toHaveAttribute("open");
+    expect(screen.getByLabelText("主干归一化类型")).toBeDisabled();
+    expect(container.querySelector(".auxiliary-config-fields")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "第 1 组注意力" }).closest(".model-group-card")).toBeInTheDocument();
+  });
+
   it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [], scenarios: [] });
     const onModelChange = vi.fn();
@@ -264,7 +305,8 @@ describe("AutomaticConfig", () => {
 
   it("creates attention groups with output gates disabled by default", () => {
     const onModelChange = vi.fn();
-    const props = { config: createDefaultSimConfig(), model: initialModel, hardware: initialHardware,
+    const legacy = { ...initialModel, attention_layout: "full_gqa" as const, attention_groups: null };
+    const props = { config: createDefaultSimConfig(), model: legacy, hardware: initialHardware,
       storage: initialStorage, timing: "analytical" as const, tpSize: 1, epSize: 1,
       onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
       onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
@@ -508,7 +550,10 @@ describe("AutomaticConfig", () => {
   it("separates model and hardware cards and converts GB inputs to API units", async () => {
     vi.mocked(getPresets).mockResolvedValue({
       models: [initialModel, { ...initialModel, name: "Qwen/Qwen3-235B-A22B",
-        moe_layers: 94 }],
+        num_layers: 94, num_attention_heads: 64, num_kv_heads: 4,
+        moe_layers: 94, num_experts: 128, experts_per_token: 8, expert_intermediate_size: 1536,
+        attention_groups: [{ ...initialModel.attention_groups![0],
+          layers: 94, num_attention_heads: 64, num_kv_heads: 4 }] }],
       hardware: [{ name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
         peak_fp16_tflops: 2250, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
       scenarios: [],
@@ -540,7 +585,7 @@ describe("AutomaticConfig", () => {
       effective_interconnect_gb_s: 600,
     }));
     expect(screen.queryByLabelText("参考组合")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("模型名称")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("模型名称")).toHaveValue("Qwen/Qwen3-8B");
     expect(screen.queryByRole("button", { name: "导入自动参数" })).not.toBeInTheDocument();
     expect(Array.from((screen.getByLabelText("模型选择") as HTMLSelectElement).options)
       .map((option) => option.textContent)).toEqual([

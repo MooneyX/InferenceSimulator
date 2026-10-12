@@ -258,8 +258,53 @@ def test_presets_and_unsupported_modes() -> None:
     assert catalog.json()["hardware"][0]["peak_interconnect_gb_s"] == 1800
     assert catalog.json()["models"][0]["vocab_size"] == 151936
     assert catalog.json()["models"][1]["expert_intermediate_size"] == 1536
+    for model, layers, heads, kv_heads in (
+        (catalog.json()["models"][0], 36, 32, 8),
+        (catalog.json()["models"][1], 94, 64, 4),
+    ):
+        assert model["attention_layout"] == "grouped"
+        assert len(model["attention_groups"]) == 1
+        group = model["attention_groups"][0]
+        assert (
+            group["kind"],
+            group["layers"],
+            group["num_attention_heads"],
+            group["num_kv_heads"],
+            group["head_dim"],
+        ) == ("gqa", layers, heads, kv_heads, 128)
+        assert group["qk_norm"] is True
+        assert group["output_gate"] is False
+        assert group["sink_dtype"] is None
+        assert group["topk"] is None
     assert "total_parameters" not in catalog.json()["models"][0]
     assert catalog.json()["scenarios"][1]["stage"] == "requires_tp_ep"
+    for model in catalog.json()["models"][:2]:
+        request = payload()
+        request["model"] = model
+        request["hardware"].update(
+            {
+                "gpu_count": 8,
+                "memory_bytes_per_gpu": 288_000_000_000,
+                "effective_interconnect_gb_s": 600,
+                "collective_latency_ms": 0.01,
+                "ep_communication_latency_ms": 0.02,
+            }
+        )
+        request["storage"].update(
+            {"l1_available_gb": 200, "l2_available_gb": 0, "l3_available_gb": 0}
+        )
+        request.update({"tp_size": 8, "ep_size": 8 if model["moe_layers"] else 1})
+        explicit = client.post("/api/resolve", json=request)
+        assert explicit.status_code == 200, explicit.text
+        legacy = dict(
+            request, model=dict(model, attention_layout="full_gqa", attention_groups=None)
+        )
+        original = client.post("/api/resolve", json=legacy)
+        assert original.status_code == 200, original.text
+        assert explicit.json()["capacity"] == original.json()["capacity"]
+        assert client.post("/api/simulate/resolved", json=request).json()["analysis"] == (
+            client.post("/api/simulate/resolved", json=legacy).json()["analysis"]
+        )
     request = payload()
     missing_vocab = payload()
     del missing_vocab["model"]["vocab_size"]

@@ -34,7 +34,13 @@ export const initialModel: Model = {
   weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
   num_shared_experts: 0, shared_expert_intermediate_size: null,
-  attention_layout: "full_gqa", attention_groups: null,
+  attention_layout: "grouped", attention_groups: [{
+    kind: "gqa", layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+    q_rank: null, kv_rank: null, rope_dim: null, nope_dim: null, value_dim: null,
+    index_heads: null, index_dim: null, topk: null, full_indexer_layers: null,
+    output_gate: false, qk_norm: true, norm_dtype: null,
+    index_norm: "layer", index_norm_dtype: null, sink_dtype: null,
+  }],
   norms: defaultNorms, router: defaultRouter, ihc: null,
 };
 export const initialHardware: Hardware = {
@@ -49,6 +55,20 @@ export const initialStorage: Storage = {
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
   l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
 };
+
+function sameConfig(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => sameConfig(value, right[index]));
+  }
+  if (left !== null && right !== null && typeof left === "object" && typeof right === "object") {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    return Object.keys(a).length === Object.keys(b).length &&
+      Object.keys(a).every((key) => Object.hasOwn(b, key) && sameConfig(a[key], b[key]));
+  }
+  return false;
+}
 
 function DtypeInput({ label, value, onChange, disabled = false, nullable = true }: {
   label: string; value: AuxiliaryDtype | null | undefined;
@@ -92,8 +112,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
   const request: ResolvedRequest = { model, hardware, storage, timing, tp_size: tpSize, ep_size: epSize, config };
   const key = JSON.stringify(request);
   const selectedModel = catalog?.models.find((entry) => entry.name === model.name &&
-    Object.entries(entry).every(([field, value]) =>
-      JSON.stringify(model[field as keyof Model]) === JSON.stringify(value)));
+    Object.entries(entry).every(([field, value]) => sameConfig(model[field as keyof Model], value)));
   const selectedHardware = catalog?.hardware.find((entry) => entry.name === hardware.name &&
     entry.memory_bytes_per_gpu === hardware.memory_bytes_per_gpu);
 
@@ -202,10 +221,11 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           updateModel({ tie_word_embeddings: event.target.checked })} />
       </label></div>
     </div>
-    <details>
+    <details className="model-subsection auxiliary-config">
       <summary>辅助权重容量配置</summary>
+      <div className="auxiliary-config-body">
       <p>辅助参数只计入容量，不增加性能耗时。精度留空跟随主权重；none 归一化不含参数。路由选位修正向量不是 Linear bias；iHC 固定为每层两处和最终 head。</p>
-      <fieldset>
+      <fieldset className="auxiliary-config-fields">
         <div className="form-grid">
           <div className="form-field"><label>主干归一化类型
             <select value={norms.kind} onChange={(event) => updateModel({
@@ -238,7 +258,9 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           <DtypeInput label="iHC 精度" value={model.ihc?.dtype ?? "fp32"} nullable={false} disabled={model.ihc == null}
             onChange={(dtype) => updateModel({ ihc: { mult: model.ihc!.mult, dtype: dtype! } })} />
         </div>
-        {model.attention_groups?.map((group, index) => <div key={index} className="form-grid">
+        {model.attention_groups?.map((group, index) => <div key={index} className="model-group-card">
+          <h4>第 {index + 1} 组辅助权重</h4>
+          <div className="form-grid">
           <div className="form-field"><label>第 {index + 1} 组 Q/K 归一化
             <input type="checkbox" checked={group.qk_norm ?? true}
               onChange={(event) => updateGroup(index, { qk_norm: event.currentTarget.checked })} />
@@ -260,12 +282,14 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
           </label></div>
           <DtypeInput label={`第 ${index + 1} 组 attention sink 精度`} value={group.sink_dtype ?? "fp32"}
             nullable={false} disabled={group.sink_dtype == null} onChange={(sink_dtype) => updateGroup(index, { sink_dtype })} />
+          </div>
         </div>)}
       </fieldset>
+      </div>
     </details>
+    <div className="model-subsection">
     <div className="section-heading"><div><h3>注意力组合</h3></div>
       <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；组合内头数决定容量与注意力计算，上方头数仅保留在当前性能基线。</p></div>
-    <>
       {model.attention_groups != null && <div className="form-grid"><div className="form-field">
         <label>模型名称<input type="text" value={model.name} onChange={(event) =>
           updateModel({ name: event.target.value })} /></label>
@@ -276,7 +300,8 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         onClick={() => updateGroups([newGroup("gqa", model.num_layers)])}>启用注意力组合配置</button> : <>
         <p>已配置 {model.attention_groups.reduce((total, group) => total + group.layers, 0)} / {model.num_layers} 层。
           不按具体层号排列；不支持顺序敏感的跨层依赖。</p>
-        {model.attention_groups.map((group, index) => <div key={index} className="form-section">
+        {model.attention_groups.map((group, index) => <div key={index} className="model-group-card">
+          <h4>第 {index + 1} 组注意力</h4>
           <div className="form-grid">
             <div className="form-field"><label>第 {index + 1} 组注意力方式
               <select value={group.kind} onChange={(event) => updateGroups(model.attention_groups!.map((item, i) =>
@@ -319,7 +344,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         }}>添加注意力组</button>
       </>}
       <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延。归一化、路由修正向量、iHC 与 attention sink 使用统一通用容量公式，只计容量、不增加性能耗时；其他运行时空间不自动推断。</p>
-    </>
+    </div>
     </section>
     <section className="form-section" aria-labelledby="auto-hardware-heading">
       <div className="section-heading"><div>

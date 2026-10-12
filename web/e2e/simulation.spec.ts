@@ -112,6 +112,42 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   await expect(page.getByLabel("第 2 组注意力方式")).toHaveCount(0);
 });
 
+test("shows Qwen attention defaults with consistent auxiliary form styling", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("radio", { name: /自动解析/ }).check();
+  await expect(page.getByLabel("模型选择")).toHaveValue("Qwen/Qwen3-8B");
+  for (const preset of [
+    { name: "Qwen/Qwen3-8B", layers: "36", heads: "32", kv: "8" },
+    { name: "Qwen/Qwen3-235B-A22B", layers: "94", heads: "64", kv: "4" },
+  ]) {
+    await page.getByLabel("模型选择").selectOption(preset.name);
+    await expect(page.getByLabel("第 1 组注意力方式")).toHaveValue("gqa");
+    await expect(page.getByLabel("第 1 组层数")).toHaveValue(preset.layers);
+    await expect(page.getByLabel("第 1 组 Query 头数")).toHaveValue(preset.heads);
+    await expect(page.getByLabel("第 1 组KV 头数")).toHaveValue(preset.kv);
+    await expect(page.getByLabel("第 1 组每头维度")).toHaveValue("128");
+    await expect(page.getByLabel("第 1 组注意力输出门控")).not.toBeChecked();
+  }
+  const auxiliary = page.locator("details.auxiliary-config");
+  await expect(auxiliary).not.toHaveAttribute("open", "");
+  await auxiliary.locator("summary").click();
+  await expect(auxiliary).toHaveAttribute("open", "");
+  await expect(page.getByRole("checkbox", { name: "第 1 组 Q/K 归一化", exact: true })).toBeChecked();
+  await expect(page.getByLabel("第 1 组启用 attention sink")).not.toBeChecked();
+  const title = page.getByRole("heading", { name: "第 1 组注意力", exact: true });
+  expect(await auxiliary.locator("summary").evaluate((element) => getComputedStyle(element).color))
+    .toBe(await title.evaluate((element) => getComputedStyle(element).color));
+  expect(await auxiliary.locator("summary").evaluate((element) => getComputedStyle(element).backgroundColor))
+    .toBe(await title.locator("..").evaluate((element) => getComputedStyle(element).backgroundColor));
+  await expect(auxiliary.locator("fieldset")).toHaveCSS("border-top-width", "0px");
+  await expect(page.getByRole("heading", { name: "第 1 组注意力", exact: true }))
+    .toHaveCSS("font-size", "12.8px");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)).toBe(false);
+  await auxiliary.locator("summary").click();
+  await expect(auxiliary).not.toHaveAttribute("open", "");
+});
+
 test("keeps the configuration page within a mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");

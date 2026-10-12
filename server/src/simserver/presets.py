@@ -16,6 +16,11 @@ MODELS = (
         ffn_intermediate_size=12288,
         vocab_size=151_936,
         tie_word_embeddings=False,
+        attention_layout="grouped",
+        attention_groups=[AttentionGroup(
+            kind="gqa", layers=36, num_attention_heads=32, num_kv_heads=8, head_dim=128,
+            qk_norm=True, output_gate=False,
+        )],
     ),
     ModelSpec(
         name="Qwen/Qwen3-235B-A22B",
@@ -31,6 +36,11 @@ MODELS = (
         num_experts=128,
         experts_per_token=8,
         moe_layers=94,
+        attention_layout="grouped",
+        attention_groups=[AttentionGroup(
+            kind="gqa", layers=94, num_attention_heads=64, num_kv_heads=4, head_dim=128,
+            qk_norm=True, output_gate=False,
+        )],
     ),
     # BF16 主干；不计独立 MTP 草稿层。规格来自该 revision 的 config.json。
     ModelSpec(

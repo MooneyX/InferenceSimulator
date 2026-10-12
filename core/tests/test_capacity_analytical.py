@@ -486,11 +486,16 @@ def test_hy4_generic_cost_preserves_original_step_cost(
     assert step_cost(workload, custom, hardware, 8, 8) == cost
 
 
-def test_hy4_requires_complete_explicit_components_and_empty_steps_are_free() -> None:
+def test_hy4_parameters_are_editable_and_empty_steps_are_free() -> None:
     request = hy4_request()
     payload = request.model.model_dump()
+    with pytest.raises(ValidationError, match="必须提供注意力组"):
+        ModelSpec.model_validate(payload | {"attention_groups": None})
     updates: tuple[dict[str, object], ...] = (
-        {"attention_groups": None},
+        {"name": "modified", "revision": "user-revision"},
+        {"hidden_size": 4096},
+        {"ffn_intermediate_size": 16384},
+        {"weight_dtype": "fp16", "kv_dtype": "fp16"},
         {"attention_groups": [payload["attention_groups"][0] | {"output_gate": False}]},
         {"num_shared_experts": 0, "shared_expert_intermediate_size": None},
         {"norms": payload["norms"] | {"kind": "layer"}},
@@ -505,16 +510,18 @@ def test_hy4_requires_complete_explicit_components_and_empty_steps_are_free() ->
         {"ihc": payload["ihc"] | {"dtype": "bf16"}},
     )
     for update in updates:
-        with pytest.raises(ValidationError, match="HY4-Preview"):
-            ModelSpec.model_validate(payload | update)
+        modified = ModelSpec.model_validate(payload | update)
+        assert ModelSpec.model_validate_json(modified.model_dump_json()) == modified
+        assert resolve_config(request.model_copy(update={"model": modified})).runnable
     for field, value in (
         ("qk_norm", False), ("norm_dtype", "fp32"),
         ("index_norm", "rms"), ("index_norm_dtype", None), ("sink_dtype", None),
+        ("topk", 1024), ("q_rank", 1024), ("kv_rank", 256),
     ):
-        with pytest.raises(ValidationError, match="HY4-Preview"):
-            ModelSpec.model_validate(payload | {
-                "attention_groups": [payload["attention_groups"][0] | {field: value}],
-            })
+        modified = ModelSpec.model_validate(payload | {
+            "attention_groups": [payload["attention_groups"][0] | {field: value}],
+        })
+        assert resolve_config(request.model_copy(update={"model": modified})).runnable
     restore = StepWorkload("RESTORE", (), (), 0, 1, (("a", "L2"),), 4, (0,))
     cost = step_cost(restore, request.model, request.hardware, 8, 8)
     assert all(value == 0 for value in asdict(cost).values())

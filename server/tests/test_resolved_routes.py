@@ -125,8 +125,19 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     request["model"]["kv_dtype"] = "fp8"
     assert client.post("/api/resolve", json=request).status_code == 422
     request["model"]["kv_dtype"] = "bf16"
-    request["model"]["revision"] = "different-checkpoint"
-    assert client.post("/api/resolve", json=request).status_code == 422
+    request["model"]["revision"] = "user-revision"
+    request["model"]["hidden_size"] = 4096
+    request["model"]["attention_groups"][0]["topk"] = 1024
+    modified = client.post("/api/resolve", json=request)
+    assert modified.status_code == 200, modified.text
+    assert modified.json()["model"]["revision"] == "user-revision"
+    assert (
+        modified.json()["capacity"]["weights_resident_bytes"]
+        < preview.json()["capacity"]["weights_resident_bytes"]
+    )
+    run_modified = client.post("/api/simulate/resolved", json=request)
+    assert run_modified.status_code == 200, run_modified.text
+    assert run_modified.json()["resolution"] == modified.json()
 
 
 def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:

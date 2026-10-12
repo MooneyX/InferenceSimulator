@@ -40,7 +40,7 @@ DSA 主注意力每层另按有效候选数计一次 INT32 选位索引读取，
 
 ## HY4-Preview BF16 MLA/DSA 条件化粗估
 
-固定官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe`，预设必须显式提供完整注意力组、输出门控和独立共享专家配置，性能与自定义组使用同一条通用计算路径，不按 HY4 名称或布局分派性能公式。权重与 KV 容量均使用通用组件账本，FP32 router、iHC、sink、索引 LayerNorm 及 BF16 block/最终/低秩 RMSNorm 由预设显式填写；复制为自定义模型保留完整容量与性能配置。固定 revision 的 `model.safetensors.index.json` 确认存在 `model.norm.weight`（`model-00099-of-00131.safetensors`），SGLang `hunyuan_v4.py` 创建并在最终 iHC head 后使用它。原账本遗漏此最终 RMSNorm，现补上 6,144 个逻辑参数及每 rank 12,288 字节 BF16 权重；未将索引目录核验表述为全部 tensor 形状/精度审计。78 层中 21 层 full indexer 执行选位，其余复用索引；所有层仍处理每个 query 的至多 2048 个候选。解析模式按一组 step 聚合查询与历史位置对数，full 层另计索引 Key（FP8 + scale）读写、投影与打分，所有层计压缩 KV 读写、稀疏 MLA、注意力门控；独立共享专家的计算亦单列。复用下文 TP/EP 平均负载通信公式，不含 MTP、算子融合、top-k 排序和 iHC 的逐算子成本，也未做形状/硬件校准。结果用于趋势对比，不能视为 SGLang 真实延迟。
+HY4 预设以官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe` 为初始参考，提供完整注意力组、输出门控和独立共享专家配置，参数不锁定；用户可直接修改主干、注意力与辅助参数，界面编辑后标为自定义模型并清除参考修订号。预设和自定义组使用同一条通用计算路径，不按 HY4 名称或布局分派性能公式。权重与 KV 容量均使用通用组件账本，FP32 router、iHC、sink、索引 LayerNorm 及 BF16 block/最终/低秩 RMSNorm 由预设显式填写；复制为自定义模型保留完整容量与性能配置。固定 revision 的 `model.safetensors.index.json` 确认存在 `model.norm.weight`（`model-00099-of-00131.safetensors`），SGLang `hunyuan_v4.py` 创建并在最终 iHC head 后使用它。原账本遗漏此最终 RMSNorm，现补上 6,144 个逻辑参数及每 rank 12,288 字节 BF16 权重；未将索引目录核验表述为全部 tensor 形状/精度审计。78 层中 21 层 full indexer 执行选位，其余复用索引；所有层仍处理每个 query 的至多 2048 个候选。解析模式按一组 step 聚合查询与历史位置对数，full 层另计索引 Key（FP8 + scale）读写、投影与打分，所有层计压缩 KV 读写、稀疏 MLA、注意力门控；独立共享专家的计算亦单列。复用下文 TP/EP 平均负载通信公式，不含 MTP、算子融合、top-k 排序和 iHC 的逐算子成本，也未做形状/硬件校准。结果用于趋势对比，不能视为 SGLang 真实延迟。
 
 ## 平均负载 MoE/EP 解析计时（未经校准）
 

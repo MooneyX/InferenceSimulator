@@ -73,6 +73,45 @@ test("reports browser response for 100/1k/10k in both P/D modes", async ({ page 
   }
 });
 
+test("edits HY4 preset and exposes complete attention group parameters", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("radio", { name: /自动解析/ }).check();
+  await page.getByLabel("模型选择").selectOption("tencent/Hy4-preview");
+  await expect(page.getByLabel("第 1 组注意力方式")).toHaveValue("mla_dsa");
+  await expect(page.getByLabel("第 1 组层数")).toHaveValue("78");
+  await expect(page.getByLabel("第 1 组Q 压缩维度")).toBeEnabled();
+  await expect(page.getByLabel("第 1 组KV 压缩维度")).toBeEnabled();
+  await expect(page.getByLabel("第 1 组选取 token 数")).toBeEnabled();
+  await expect(page.getByLabel("共享专家数（0 为关闭）")).toBeEnabled();
+  await page.getByLabel("隐藏维度", { exact: true }).fill("4096");
+  await page.getByLabel("第 1 组选取 token 数").fill("1024");
+  await expect(page.getByLabel("模型选择")).toHaveValue("custom");
+  await page.getByText("辅助权重容量配置", { exact: true }).click();
+  await expect(page.getByLabel("启用 iHC", { exact: true })).toBeEnabled();
+  await expect(page.getByLabel("第 1 组启用 attention sink")).toBeEnabled();
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().endsWith("/api/resolve") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "预览解析容量" }).click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  const submitted = response.request().postDataJSON().model;
+  expect(submitted.hidden_size).toBe(4096);
+  expect(submitted.attention_groups[0].topk).toBe(1024);
+  expect(submitted.attention_layout).toBe("grouped");
+  expect(submitted.revision).toBeNull();
+  expect(submitted.ihc).toEqual({ mult: 4, dtype: "fp32" });
+  expect(submitted.router).toEqual({ dtype: "fp32", correction_bias: true, correction_dtype: "fp32" });
+  await expect(page.getByRole("status")).toContainText("服务端单实例解析");
+  await page.getByRole("button", { name: "添加注意力组" }).click();
+  await expect(page.getByLabel("第 1 组层数")).toHaveValue("77");
+  await expect(page.getByLabel("第 2 组注意力方式")).toHaveValue("gqa");
+  await expect(page.getByLabel("第 2 组KV 头数")).toBeEnabled();
+  await page.getByLabel("第 1 组层数").fill("78");
+  await page.getByRole("button", { name: "删除第 2 组" }).click();
+  await expect(page.getByLabel("第 2 组注意力方式")).toHaveCount(0);
+});
+
 test("keeps the configuration page within a mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");

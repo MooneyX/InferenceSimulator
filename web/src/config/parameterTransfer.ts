@@ -239,12 +239,13 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
     throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
   }
   if (model.weight_dtype === "fp8" || model.kv_dtype === "fp8" || model.attention_layout === "other") {
-    throw new Error("当前解析仅支持 BF16/FP16 全注意力或 HY4-Preview BF16");
+    throw new Error("当前解析仅支持 BF16/FP16 全注意力或注意力组合");
   }
-  if ((model.attention_layout === "grouped" && model.attention_groups == null) ||
+  if (((model.attention_layout === "grouped" || model.attention_layout === "hy4_preview") &&
+        model.attention_groups == null) ||
       (model.attention_layout !== "grouped" && model.attention_layout !== "hy4_preview" &&
         model.attention_groups != null)) {
-    throw new Error("grouped 注意力布局必须提供注意力组，其他布局不能混用");
+    throw new Error("grouped/hy4_preview 注意力布局必须提供注意力组，其他布局不能混用");
   }
   if (model.attention_groups !== undefined && model.attention_groups !== null) {
     if (!Array.isArray(model.attention_groups) || model.attention_groups.length === 0) {
@@ -292,57 +293,6 @@ function validateResolvedRequest(value: unknown): ResolvedRequest {
       layers += Number(group.layers);
     }
     if (layers !== Number(model.num_layers)) throw new Error("注意力组层数之和必须等于模型总层数");
-  }
-  if (model.attention_layout === "hy4_preview") {
-    const expected = {
-      name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
-      num_layers: 78, hidden_size: 6144,
-      num_attention_heads: 64, num_kv_heads: 8, head_dim: 256,
-      ffn_intermediate_size: 18432, vocab_size: 120832,
-      moe_layers: 77, num_experts: 256, experts_per_token: 8,
-      expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
-      tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16",
-    };
-    if (Object.entries(expected).some(([field, expectedValue]) =>
-      (model[field] ?? (field === "tie_word_embeddings" ? false : undefined)) !== expectedValue)) {
-      throw new Error("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP");
-    }
-    const expectedAuxiliary = {
-      norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
-      router: { dtype: "fp32", correction_bias: true, correction_dtype: "fp32" },
-      ihc: { mult: 4, dtype: "fp32" },
-    };
-    const auxiliaryDefaults = {
-      norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
-      router: { dtype: null, correction_bias: false, correction_dtype: "fp32" },
-      ihc: { dtype: "fp32" },
-    };
-    for (const key of ["norms", "router", "ihc"] as const) {
-      const actual = model[key] === null || (key === "ihc" && model[key] === undefined)
-        ? null : { ...auxiliaryDefaults[key], ...model[key] as Record<string, unknown> | undefined };
-      if (actual === null || Object.entries(expectedAuxiliary[key]).some(([field, value]) =>
-        (actual as Record<string, unknown>)[field] !== value)) {
-        throw new Error(`HY4-Preview 的 model.${key} 须与固定修订结构一致`);
-      }
-    }
-    if (model.attention_groups == null) {
-      throw new Error("HY4-Preview 必须提供完整固定注意力组");
-    }
-    const group = model.attention_groups[0] as Record<string, unknown>;
-    const expectedGroup = { kind: "mla_dsa", layers: 78, num_attention_heads: 64,
-      q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-      index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true };
-    const expectedGroupAuxiliary = { qk_norm: true, norm_dtype: null, index_norm: "layer",
-      index_norm_dtype: "fp32", sink_dtype: "fp32" };
-    const effectiveGroupAuxiliary = { qk_norm: true, norm_dtype: null, index_norm: "layer",
-      index_norm_dtype: null, sink_dtype: null,
-      ...Object.fromEntries(Object.entries(group).filter(([, value]) => value !== undefined)) };
-    if (model.attention_groups.length !== 1 ||
-        Object.entries(expectedGroup).some(([field, value]) => group[field] !== value) ||
-        Object.entries(expectedGroupAuxiliary).some(([field, value]) =>
-          (effectiveGroupAuxiliary as Record<string, unknown>)[field] !== value)) {
-      throw new Error("HY4-Preview 的注意力组须与固定修订结构一致");
-    }
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {
     physicalNumber(hardware, "hardware", key, 1, true);

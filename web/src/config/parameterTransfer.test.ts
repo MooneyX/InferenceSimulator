@@ -183,7 +183,7 @@ describe("parameter JSON transfer", () => {
     } }))).toThrow("注意力组层数之和");
   });
 
-  it("round-trips the pinned HY4 BF16 model and rejects unsupported revisions", () => {
+  it.each(["grouped", "hy4_preview"] as const)("round-trips editable HY4 parameters with %s layout and rejects only invalid structures", (attention_layout) => {
     const request: ResolvedRequest = {
       config: createDefaultSimConfig(),
       model: { ...initialModel, name: "tencent/Hy4-preview",
@@ -196,7 +196,7 @@ describe("parameter JSON transfer", () => {
         norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
         router: { dtype: "fp32", correction_bias: true, correction_dtype: "fp32" },
         ihc: { mult: 4, dtype: "fp32" },
-        attention_layout: "hy4_preview", attention_groups: [{
+        attention_layout, attention_groups: [{
           kind: "mla_dsa", layers: 78, num_attention_heads: 64,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
           index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
@@ -206,59 +206,50 @@ describe("parameter JSON transfer", () => {
       storage: initialStorage, timing: "analytical", tp_size: 8, ep_size: 8,
     };
     expect(parseResolvedRequestJson(serializeResolvedRequest(request))).toEqual(request);
-    expect(() => parseResolvedRequestJson(JSON.stringify({ ...request,
-      model: { ...request.model, revision: "other" },
-    }))).toThrow("仅支持已核对");
-    for (const attention_groups of [undefined, null]) {
-      expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model: {
-        ...request.model, attention_groups,
-      } }))).toThrow("必须提供完整固定注意力组");
-    }
-    for (const output_gate of [undefined, false]) {
-      const invalid = { ...request, model: { ...request.model,
-        attention_groups: [{ ...request.model.attention_groups![0], output_gate }],
-      } };
-      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
-      expect(() => serializeResolvedRequest(invalid as unknown as ResolvedRequest)).toThrow("固定修订结构一致");
-    }
-    for (const model of [
-      { ...request.model, num_shared_experts: 2 },
-      { ...request.model, shared_expert_intermediate_size: 1024 },
-    ]) {
-      expect(() => parseResolvedRequestJson(JSON.stringify({ ...request, model }))).toThrow("仅支持已核对");
-    }
-    for (const model of [
-      { ...request.model, norms: { ...request.model.norms!, kind: "none" } },
-      { ...request.model, norms: { ...request.model.norms!, block_per_layer: 1 } },
-      { ...request.model, norms: { ...request.model.norms!, final_norm: false } },
-      { ...request.model, norms: { ...request.model.norms!, dtype: "fp32" } },
-      { ...request.model, router: { ...request.model.router!, dtype: null } },
-      { ...request.model, router: { ...request.model.router!, correction_bias: false } },
-      { ...request.model, router: { ...request.model.router!, correction_dtype: "bf16" } },
-      { ...request.model, router: undefined },
-      { ...request.model, ihc: undefined },
-      { ...request.model, ihc: null },
-      { ...request.model, ihc: { mult: 2, dtype: "fp32" } },
-      { ...request.model, ihc: { mult: 4, dtype: "bf16" } },
-    ]) {
-      const invalid = { ...request, model } as unknown as ResolvedRequest;
-      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
-      expect(() => serializeResolvedRequest(invalid)).toThrow("固定修订结构一致");
-    }
-    const omittedDefaults = { ...request, model: { ...request.model, norms: undefined,
-      attention_groups: [{ ...request.model.attention_groups![0], qk_norm: undefined, norm_dtype: undefined,
-        index_norm: undefined }],
+    const group = request.model.attention_groups![0];
+    const changed: ResolvedRequest = { ...request, model: { ...request.model,
+      name: "edited-hy4", revision: "another-revision", num_layers: 80, hidden_size: 8192,
+      weight_dtype: "fp16", kv_dtype: "fp16", tie_word_embeddings: true,
+      num_shared_experts: 2, shared_expert_intermediate_size: 1024,
+      norms: { kind: "layer", block_per_layer: 3, final_norm: false, dtype: "bf16" },
+      router: { dtype: "bf16", correction_bias: false, correction_dtype: "fp16" },
+      ihc: { mult: 2, dtype: "bf16" }, attention_groups: [{ ...group, layers: 79,
+        num_attention_heads: 32, q_rank: 1024, kv_rank: 256, rope_dim: 128, nope_dim: 128, value_dim: 128,
+        index_heads: 16, index_dim: 256, topk: 1024, full_indexer_layers: 20, output_gate: false,
+        qk_norm: false, norm_dtype: "fp32", index_norm: "rms", index_norm_dtype: "bf16", sink_dtype: null },
+        { kind: "gqa", layers: 1, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+          output_gate: false, qk_norm: true, index_norm: "layer" }],
     } };
-    const parsedDefaults = parseResolvedRequestJson(JSON.stringify(omittedDefaults));
-    expect(parseResolvedRequestJson(serializeResolvedRequest(parsedDefaults)))
-      .toEqual(JSON.parse(JSON.stringify(omittedDefaults)));
-    for (const patch of [{ qk_norm: false }, { norm_dtype: "fp32" }, { index_norm: "rms" },
+    expect(parseResolvedRequestJson(serializeResolvedRequest(changed))).toEqual(changed);
+    for (const patch of [{ revision: null }, { num_shared_experts: 0, shared_expert_intermediate_size: null },
+      { norms: undefined, router: undefined, ihc: undefined }, { ihc: null }]) {
+      const edited = { ...request, model: { ...request.model, ...patch } };
+      expect(parseResolvedRequestJson(serializeResolvedRequest(edited)))
+        .toEqual(JSON.parse(JSON.stringify(edited)));
+    }
+    for (const patch of [{ output_gate: undefined }, { output_gate: false }, { qk_norm: false },
+      { norm_dtype: "fp32" as const }, { index_norm: "rms" as const },
       { index_norm_dtype: undefined }, { sink_dtype: undefined }, { index_norm_dtype: null }, { sink_dtype: null }]) {
-      const invalid = { ...request, model: { ...request.model,
-        attention_groups: [{ ...request.model.attention_groups![0], ...patch }],
-      } } as unknown as ResolvedRequest;
-      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow("固定修订结构一致");
-      expect(() => serializeResolvedRequest(invalid)).toThrow("固定修订结构一致");
+      const edited = { ...request, model: { ...request.model, attention_groups: [{ ...group, ...patch }] } };
+      const parsed = parseResolvedRequestJson(JSON.stringify(edited));
+      expect(parseResolvedRequestJson(serializeResolvedRequest(parsed)))
+        .toEqual(JSON.parse(JSON.stringify(edited)));
+    }
+    for (const [patch, message] of [
+      [{ attention_groups: undefined }, "必须提供注意力组"], [{ attention_groups: null }, "必须提供注意力组"],
+      [{ attention_groups: [] }, "必须包含至少一个"],
+      [{ attention_groups: [{ ...group, layers: 79 }] }, "注意力组层数之和"],
+      [{ attention_groups: [{ ...group, index_dim: 192 }] }, "MLA/DSA 参数无效"],
+      [{ attention_groups: [{ ...group, full_indexer_layers: 79 }] }, "MLA/DSA 参数无效"],
+      [{ attention_groups: [{ ...group, num_attention_heads: 0 }] }, "num_attention_heads"],
+      [{ moe_layers: 79 }, "MoE 层数不符合模型结构"],
+      [{ experts_per_token: 257 }, "MoE 需要"],
+      [{ shared_expert_intermediate_size: null }, "启用共享专家需要"],
+      [{ weight_dtype: "fp8" }, "BF16/FP16"],
+    ] as const) {
+      const invalid = { ...request, model: { ...request.model, ...patch } } as unknown as ResolvedRequest;
+      expect(() => parseResolvedRequestJson(JSON.stringify(invalid))).toThrow(message);
+      expect(() => serializeResolvedRequest(invalid)).toThrow(message);
     }
   });
 

@@ -52,7 +52,7 @@ MODELS = (
         shared_expert_intermediate_size=2048,
         router=RouterSpec(dtype="fp32", correction_bias=True),
         ihc=IHCSpec(mult=4),
-        attention_layout="hy4_preview",
+        attention_layout="grouped",
         attention_groups=[AttentionGroup(
             kind="mla_dsa", layers=78, num_attention_heads=64,
             q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,

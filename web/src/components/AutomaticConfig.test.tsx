@@ -30,7 +30,7 @@ const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee5
   head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
   moe_layers: 77, num_experts: 256, experts_per_token: 8,
   expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
-  attention_layout: "hy4_preview" as const,
+  attention_layout: "grouped" as const,
   norms: { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null },
   router: { dtype: "fp32" as const, correction_bias: true, correction_dtype: "fp32" as const },
   ihc: { mult: 4, dtype: "fp32" as const },
@@ -86,7 +86,7 @@ describe("AutomaticConfig", () => {
     expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ l1_available_gb: 260 }));
   });
 
-  it("keeps HY4 gates and shared experts locked and preserves them when copying", async () => {
+  it("directly edits HY4 structure, precision, auxiliary weights and groups while preserving the preview request", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [hy4], hardware: [], scenarios: [] });
     const onModelChange = vi.fn();
     const props = { config: createDefaultSimConfig(), model: hy4, hardware: initialHardware,
@@ -94,47 +94,136 @@ describe("AutomaticConfig", () => {
       onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
       onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
     const { rerender } = render(<AutomaticConfig {...props} />);
+    const refresh = () => rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
-    expect(screen.getByText(/复制为自定义模型保留完整辅助配置/)).toBeInTheDocument();
-    expect(screen.queryByText(/专用容量账本|不包含 iHC、attention sink 等辅助容量/)).not.toBeInTheDocument();
-    for (const label of ["主干归一化类型", "每层主干归一化数量", "最终主干归一化", "主干归一化精度",
+    expect(screen.getByText(/HY4-Preview 为可编辑参考预设/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "复制为自定义模型" })).not.toBeInTheDocument();
+    for (const label of ["模型层数", "隐藏维度", "权重精度", "KV 精度", "输入输出词嵌入共享",
+      "共享专家数（0 为关闭）", "共享专家中间维度（启用时必填）",
+      "主干归一化类型", "每层主干归一化数量", "最终主干归一化", "主干归一化精度",
       "路由权重精度", "路由选位修正向量", "路由选位修正向量精度", "启用 iHC", "iHC 信息通路数（mult）", "iHC 精度",
       "第 1 组 Q/K 归一化", "第 1 组 Q/K 归一化精度", "第 1 组索引归一化类型",
-      "第 1 组索引归一化精度", "第 1 组启用 attention sink", "第 1 组 attention sink 精度"]) {
+      "第 1 组索引归一化精度", "第 1 组启用 attention sink", "第 1 组 attention sink 精度",
+      "第 1 组注意力方式", "第 1 组注意力输出门控", "第 1 组层数", "第 1 组 Query 头数",
+      "第 1 组Q 压缩维度", "第 1 组KV 压缩维度", "第 1 组位置 Key 维度", "第 1 组非位置 Q/K 维度",
+      "第 1 组V 维度", "第 1 组索引头数", "第 1 组索引 Key 维度（128 倍数）",
+      "第 1 组选取 token 数", "第 1 组重算索引的层数"]) {
+      expect(screen.getByLabelText(label)).toBeEnabled();
+    }
+    for (const label of ["Query 头数", "KV 头数", "每头维度"]) {
       expect(screen.getByLabelText(label)).toBeDisabled();
     }
-    expect(screen.getByLabelText("路由权重精度")).toHaveValue("fp32");
-    expect(screen.getByLabelText("iHC 信息通路数（mult）")).toHaveValue(4);
-    expect(screen.getByLabelText("第 1 组启用 attention sink")).toBeChecked();
-    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
-    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(1);
-    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
-    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toHaveValue(2048);
-    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeChecked();
-    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeDisabled();
-    const custom = { ...hy4, name: "自定义模型", revision: null, attention_layout: "grouped" };
-    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "custom" } });
-    expect(onModelChange).toHaveBeenLastCalledWith(custom);
-    fireEvent.click(screen.getByRole("button", { name: "复制为自定义模型" }));
-    expect(onModelChange).toHaveBeenLastCalledWith(custom);
-    const copied = onModelChange.mock.lastCall![0];
-    expect(copied.norms).toEqual(hy4.norms);
-    expect(copied.router).toEqual(hy4.router);
-    expect(copied.ihc).toEqual(hy4.ihc);
-    expect(copied.attention_groups).toEqual(hy4.attention_groups);
-    rerender(<AutomaticConfig {...props} model={copied} />);
-    expect(screen.getByLabelText("主干归一化类型")).toBeEnabled();
-    expect(screen.getByLabelText("iHC 精度")).toBeEnabled();
-    expect(screen.getByLabelText("第 1 组 attention sink 精度")).toBeEnabled();
-    expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeEnabled();
-    expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeEnabled();
-    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeEnabled();
-    expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeChecked();
+    fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "8192" } });
+    expect(onModelChange).toHaveBeenLastCalledWith({ ...hy4, name: "自定义模型", revision: null, hidden_size: 8192 });
+    refresh();
+    expect(screen.getByLabelText("模型选择")).toHaveValue("custom");
+    for (const [label, value] of [["权重精度", "fp16"], ["KV 精度", "fp16"],
+      ["共享专家数（0 为关闭）", "2"], ["共享专家中间维度（启用时必填）", "1024"],
+      ["主干归一化精度", "fp32"], ["路由权重精度", "bf16"], ["iHC 信息通路数（mult）", "2"],
+      ["第 1 组索引归一化精度", "bf16"], ["第 1 组选取 token 数", "1024"],
+      ["第 1 组索引 Key 维度（128 倍数）", "256"], ["第 1 组重算索引的层数", "20"]]) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      refresh();
+    }
+    fireEvent.click(screen.getByLabelText("输入输出词嵌入共享"));
+    refresh();
     fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
-    expect(onModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      num_shared_experts: 1, shared_expert_intermediate_size: 2048,
-      attention_groups: [expect.objectContaining({ output_gate: false })],
+    refresh();
+    const edited = onModelChange.mock.lastCall![0];
+    expect(edited).toEqual({ ...hy4, name: "自定义模型", revision: null, hidden_size: 8192,
+      weight_dtype: "fp16", kv_dtype: "fp16", tie_word_embeddings: true,
+      num_shared_experts: 2, shared_expert_intermediate_size: 1024,
+      norms: { ...hy4.norms, dtype: "fp32" }, router: { ...hy4.router, dtype: "bf16" },
+      ihc: { ...hy4.ihc, mult: 2 }, attention_groups: [{ ...hy4.attention_groups[0],
+        index_norm_dtype: "bf16", topk: 1024, index_dim: 256, full_indexer_layers: 20, output_gate: false }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加注意力组" }));
+    const added = onModelChange.mock.lastCall![0];
+    expect(added.attention_groups).toEqual([
+      { ...edited.attention_groups[0], layers: 77 }, expect.objectContaining({ kind: "gqa", layers: 1 }),
+    ]);
+    refresh();
+    fireEvent.click(screen.getByRole("button", { name: "删除第 2 组" }));
+    refresh();
+    fireEvent.change(screen.getByLabelText("第 1 组层数"), { target: { value: "78" } });
+    refresh();
+    expect(onModelChange.mock.lastCall![0]).toEqual(edited);
+    fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
+    await waitFor(() => expect(resolveAutomatic).toHaveBeenCalledWith({
+      model: edited, hardware: initialHardware, storage: initialStorage,
+      timing: "analytical", tp_size: 8, ep_size: 8, config: props.config,
     }));
+  });
+
+  it.each(["grouped", "hy4_preview"] as const)("customizes every model edit path directly from a %s HY4 preset", async (attention_layout) => {
+    const model = { ...hy4, attention_layout };
+    vi.mocked(getPresets).mockResolvedValue({ models: [model], hardware: [], scenarios: [] });
+    const onModelChange = vi.fn();
+    const props = { config: createDefaultSimConfig(), model, hardware: initialHardware,
+      storage: initialStorage, timing: "analytical" as const, tpSize: 8, epSize: 8,
+      onTpSizeChange: vi.fn(), onEpSizeChange: vi.fn(), onModelChange,
+      onHardwareChange: vi.fn(), onStorageChange: vi.fn(), disabled: false };
+    const { rerender } = render(<AutomaticConfig {...props} />);
+    await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
+    for (const [label, value, patch] of [
+      ["隐藏维度", "8192", { hidden_size: 8192 }],
+      ["权重精度", "fp16", { weight_dtype: "fp16" }],
+      ["KV 精度", "fp16", { kv_dtype: "fp16" }],
+      ["共享专家数（0 为关闭）", "2", { num_shared_experts: 2 }],
+      ["共享专家中间维度（启用时必填）", "1024", { shared_expert_intermediate_size: 1024 }],
+      ["主干归一化精度", "fp32", { norms: { ...hy4.norms, dtype: "fp32" } }],
+      ["路由权重精度", "bf16", { router: { ...hy4.router, dtype: "bf16" } }],
+      ["iHC 信息通路数（mult）", "2", { ihc: { ...hy4.ihc, mult: 2 } }],
+      ["第 1 组选取 token 数", "1024", { attention_groups: [{ ...hy4.attention_groups[0], topk: 1024 }] }],
+      ["模型名称", "user-model", { name: "user-model" }],
+      ["修订号（可选）", "user-revision", { revision: "user-revision" }],
+    ] as const) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      expect(onModelChange).toHaveBeenLastCalledWith({ ...hy4, name: "自定义模型", revision: null, ...patch });
+      rerender(<AutomaticConfig {...props} model={onModelChange.mock.lastCall![0]} />);
+      expect(screen.getByLabelText("模型选择")).toHaveValue("custom");
+      rerender(<AutomaticConfig {...props} />);
+    }
+    fireEvent.click(screen.getByLabelText("输入输出词嵌入共享"));
+    expect(onModelChange).toHaveBeenLastCalledWith({ ...hy4, name: "自定义模型", revision: null,
+      tie_word_embeddings: true });
+    fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
+    expect(onModelChange).toHaveBeenLastCalledWith({ ...hy4, name: "自定义模型", revision: null,
+      attention_groups: [{ ...hy4.attention_groups[0], output_gate: false }] });
+    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "custom" } });
+    expect(onModelChange).toHaveBeenLastCalledWith({ ...hy4, name: "自定义模型", revision: null });
+  });
+
+  it("does not apply HY4 parallelism or storage defaults to other grouped presets", async () => {
+    const other = { ...hy4, name: "another-grouped-model" };
+    vi.mocked(getPresets).mockResolvedValue({ models: [other], hardware: [], scenarios: [] });
+    const onTpSizeChange = vi.fn();
+    const onEpSizeChange = vi.fn();
+    const onHardwareChange = vi.fn();
+    const onStorageChange = vi.fn();
+    render(<AutomaticConfig config={createDefaultSimConfig()} model={initialModel}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={2} epSize={1} onTpSizeChange={onTpSizeChange} onEpSizeChange={onEpSizeChange}
+      onModelChange={vi.fn()} onHardwareChange={onHardwareChange}
+      onStorageChange={onStorageChange} disabled={false} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: other.name })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: other.name } });
+    expect(onTpSizeChange).not.toHaveBeenCalled();
+    expect(onEpSizeChange).toHaveBeenCalledWith(2);
+    expect(onHardwareChange).not.toHaveBeenCalled();
+    expect(onStorageChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves a custom grouped model identity when adjusting its parameters", () => {
+    const model = { ...hy4, name: "user-model", revision: "user-revision" };
+    const onModelChange = vi.fn();
+    render(<AutomaticConfig config={createDefaultSimConfig()} model={model}
+      hardware={initialHardware} storage={initialStorage} timing="analytical"
+      tpSize={8} epSize={8} onTpSizeChange={vi.fn()} onEpSizeChange={vi.fn()}
+      onModelChange={onModelChange} onHardwareChange={vi.fn()}
+      onStorageChange={vi.fn()} disabled={false} />);
+    fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "8192" } });
+    expect(onModelChange).toHaveBeenLastCalledWith({ ...model, hidden_size: 8192 });
   });
 
   it.each(["mla", "mla_dsa"] as const)("edits %s output gates and resets them when switching to GQA", (kind) => {

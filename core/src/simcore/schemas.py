@@ -383,7 +383,9 @@ class ModelSpec(_Frozen):
                 raise ValueError("共享专家需要 MoE 层及共享专家中间维度")
         elif self.shared_expert_intermediate_size is not None:
             raise ValueError("未启用共享专家时不能配置其中间维度")
-        if (self.attention_layout == "grouped" and self.attention_groups is None) or (
+        if (
+            self.attention_layout in ("grouped", "hy4_preview") and self.attention_groups is None
+        ) or (
             self.attention_layout not in ("grouped", "hy4_preview")
             and self.attention_groups is not None
         ):
@@ -393,32 +395,6 @@ class ModelSpec(_Frozen):
             or sum(group.layers for group in self.attention_groups) != self.num_layers
         ):
             raise ValueError("注意力组层数之和必须等于模型总层数")
-        if self.attention_layout == "hy4_preview":
-            expected = {
-                "name": "tencent/Hy4-preview",
-                "revision": "705d81ee51566a186d645b74c974d642ef2828fe",
-                "num_layers": 78, "hidden_size": 6144,
-                "num_attention_heads": 64, "num_kv_heads": 8, "head_dim": 256,
-                "ffn_intermediate_size": 18432, "vocab_size": 120832,
-                "moe_layers": 77, "num_experts": 256, "experts_per_token": 8,
-                "expert_intermediate_size": 2048, "tie_word_embeddings": False,
-                "num_shared_experts": 1, "shared_expert_intermediate_size": 2048,
-                "weight_dtype": "bf16", "kv_dtype": "bf16",
-                "norms": NormSpec(),
-                "router": RouterSpec(dtype="fp32", correction_bias=True),
-                "ihc": IHCSpec(mult=4),
-            }
-            if any(getattr(self, field) != value for field, value in expected.items()):
-                raise ValueError("HY4-Preview 仅支持已核对的 BF16 主干结构；不含 MTP")
-            if self.attention_groups != [
-                AttentionGroup(
-                    kind="mla_dsa", layers=78, num_attention_heads=64,
-                    q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
-                    index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
-                    output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
-                )
-            ]:
-                raise ValueError("HY4-Preview 的注意力组须与固定修订结构一致")
         return self
 
 

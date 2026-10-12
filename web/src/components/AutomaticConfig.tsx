@@ -98,19 +98,18 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     entry.memory_bytes_per_gpu === hardware.memory_bytes_per_gpu);
 
   function updateGroups(groups: AttentionGroup[] | null) {
-    onModelChange({ ...model,
-      name: selectedModel || model.attention_layout === "hy4_preview" ? "自定义模型" : model.name,
-      revision: selectedModel || model.attention_layout === "hy4_preview" ? null : model.revision,
-      attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups });
+    updateModel({ attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups });
   }
 
-  const fixedModel = model.attention_layout === "hy4_preview";
   const norms = { ...defaultNorms, ...model.norms };
   const router = { ...defaultRouter, ...model.router };
 
   function updateModel(patch: Partial<Model>) {
-    onModelChange({ ...model, name: selectedModel ? "自定义模型" : model.name,
-      revision: selectedModel ? null : model.revision, ...patch });
+    const custom = selectedModel || model.attention_layout === "hy4_preview";
+    onModelChange({ ...model, name: custom ? "自定义模型" : model.name,
+      revision: custom ? null : model.revision,
+      attention_layout: model.attention_layout === "hy4_preview" ? "grouped" : model.attention_layout,
+      ...patch });
   }
 
   function updateGroup(index: number, patch: Partial<AttentionGroup>) {
@@ -157,7 +156,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
             onModelChange(selected ?? { ...model, name: "自定义模型", revision: null,
               attention_layout: model.attention_groups ? "grouped" : "full_gqa" });
-            if (selected?.attention_layout === "hy4_preview") {
+            if (selected?.name === "tencent/Hy4-preview") {
               onTpSizeChange(8);
               onEpSizeChange(8);
               onHardwareChange({ ...hardware, gpu_count: 8 });
@@ -169,7 +168,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
           <option value="custom">自定义</option></select>
       </div></div>
-    {fixedModel && <p>HY4-Preview 仅支持 BF16 主干：含输出门控与共享专家的 MLA + DSA 容量和时延粗估，不含 MTP。归一化、路由、iHC 与 attention sink 使用统一通用权重账本，复制为自定义模型保留完整辅助配置，不使用专用容量公式。结构字段固定，调整 TP/EP、硬件和负载可进行情景试算。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
+    {(selectedModel?.name === "tencent/Hy4-preview" || model.attention_layout === "hy4_preview") && <p>HY4-Preview 为可编辑参考预设：含输出门控与共享专家的 MLA + DSA 容量和时延粗估，不含 MTP。可直接调整模型结构、精度、辅助权重与注意力组合；修改后转为自定义模型并保留其他参数。归一化、路由、iHC 与 attention sink 使用统一通用权重账本。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
     <div className="form-grid">{([
       ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
@@ -179,37 +178,34 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
       ["expert_intermediate_size", "专家中间维度（MoE 必填）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={model[field]} optional={field === "expert_intermediate_size"}
-      disabled={model.attention_layout === "hy4_preview" ||
-        (model.attention_groups != null && (["num_attention_heads", "num_kv_heads", "head_dim"] as string[]).includes(field))}
-      onChange={(value) => onModelChange({ ...model, name: "自定义模型", [field]: value,
+      disabled={model.attention_groups != null && (["num_attention_heads", "num_kv_heads", "head_dim"] as string[]).includes(field)}
+      onChange={(value) => updateModel({ [field]: value,
         ...(field === "moe_layers" && value === 0
           ? { num_shared_experts: 0, shared_expert_intermediate_size: null, router: defaultRouter } : {}) })} />)}
       <Input label="共享专家数（0 为关闭）" value={model.num_shared_experts ?? 0}
-        disabled={model.attention_layout === "hy4_preview" || !model.moe_layers}
-        onChange={(value) => onModelChange({ ...model, name: "自定义模型",
-          num_shared_experts: value ?? NaN,
+        disabled={!model.moe_layers}
+        onChange={(value) => updateModel({ num_shared_experts: value ?? NaN,
           ...(value === 0 ? { shared_expert_intermediate_size: null } : {}) })} />
       <Input label="共享专家中间维度（启用时必填）" value={model.shared_expert_intermediate_size}
-        optional disabled={model.attention_layout === "hy4_preview" || !model.moe_layers || !model.num_shared_experts}
-        onChange={(value) => onModelChange({ ...model, name: "自定义模型",
-          shared_expert_intermediate_size: value })} />
-      <div className="form-field"><label>权重精度<select disabled={model.attention_layout === "hy4_preview"} value={model.weight_dtype} onChange={(event) =>
-        onModelChange({ ...model, name: "自定义模型", weight_dtype: event.target.value as Model["weight_dtype"] })}>
+        optional disabled={!model.moe_layers || !model.num_shared_experts}
+        onChange={(value) => updateModel({ shared_expert_intermediate_size: value })} />
+      <div className="form-field"><label>权重精度<select value={model.weight_dtype} onChange={(event) =>
+        updateModel({ weight_dtype: event.target.value as Model["weight_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
       </select></label></div>
-      <div className="form-field"><label>KV 精度<select disabled={model.attention_layout === "hy4_preview"} value={model.kv_dtype} onChange={(event) =>
-        onModelChange({ ...model, name: "自定义模型", kv_dtype: event.target.value as Model["kv_dtype"] })}>
+      <div className="form-field"><label>KV 精度<select value={model.kv_dtype} onChange={(event) =>
+        updateModel({ kv_dtype: event.target.value as Model["kv_dtype"] })}>
         <option value="bf16">BF16</option><option value="fp16">FP16</option><option value="fp8">FP8（待支持）</option>
       </select></label></div>
       <div className="form-field"><label>输入输出词嵌入共享
-        <input type="checkbox" disabled={model.attention_layout === "hy4_preview"} checked={model.tie_word_embeddings} onChange={(event) =>
-          onModelChange({ ...model, name: "自定义模型", tie_word_embeddings: event.target.checked })} />
+        <input type="checkbox" checked={model.tie_word_embeddings} onChange={(event) =>
+          updateModel({ tie_word_embeddings: event.target.checked })} />
       </label></div>
     </div>
     <details>
       <summary>辅助权重容量配置</summary>
       <p>辅助参数只计入容量，不增加性能耗时。精度留空跟随主权重；none 归一化不含参数。路由选位修正向量不是 Linear bias；iHC 固定为每层两处和最终 head。</p>
-      <fieldset disabled={fixedModel}>
+      <fieldset>
         <div className="form-grid">
           <div className="form-field"><label>主干归一化类型
             <select value={norms.kind} onChange={(event) => updateModel({
@@ -269,23 +265,13 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
     </details>
     <div className="section-heading"><div><h3>注意力组合</h3></div>
       <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；组合内头数决定容量与注意力计算，上方头数仅保留在当前性能基线。</p></div>
-    {model.attention_layout === "hy4_preview" && <>
-      <div className="form-grid">{model.attention_groups?.map((group, index) =>
-        <div key={index} className="form-field"><label>第 {index + 1} 组注意力输出门控
-          <input type="checkbox" checked={group.output_gate ?? false} disabled />
-        </label></div>)}</div>
-      <button type="button" className="transfer-button"
-        onClick={() => updateGroups(model.attention_groups ?? null)}>
-        复制为自定义模型
-      </button>
-    </>}
-    {model.attention_layout !== "hy4_preview" && <>
+    <>
       {model.attention_groups != null && <div className="form-grid"><div className="form-field">
         <label>模型名称<input type="text" value={model.name} onChange={(event) =>
-          onModelChange({ ...model, name: event.target.value })} /></label>
+          updateModel({ name: event.target.value })} /></label>
       </div><div className="form-field"><label>修订号（可选）<input type="text"
         value={model.revision ?? ""} onChange={(event) =>
-          onModelChange({ ...model, revision: event.target.value || null })} /></label></div></div>}
+          updateModel({ revision: event.target.value || null })} /></label></div></div>}
       {model.attention_groups == null ? <button type="button" className="transfer-button"
         onClick={() => updateGroups([newGroup("gqa", model.num_layers)])}>启用注意力组合配置</button> : <>
         <p>已配置 {model.attention_groups.reduce((total, group) => total + group.layers, 0)} / {model.num_layers} 层。
@@ -333,7 +319,7 @@ export function AutomaticConfig({ config, model, hardware, storage, timing, tpSi
         }}>添加注意力组</button>
       </>}
       <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延。归一化、路由修正向量、iHC 与 attention sink 使用统一通用容量公式，只计容量、不增加性能耗时；其他运行时空间不自动推断。</p>
-    </>}
+    </>
     </section>
     <section className="form-section" aria-labelledby="auto-hardware-heading">
       <div className="section-heading"><div>

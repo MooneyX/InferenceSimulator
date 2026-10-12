@@ -1,6 +1,6 @@
 """schemas 模块单测：可判别联合、校验边界、不可变性、序列化往返。"""
 
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -80,6 +80,22 @@ def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> "RuntimeConfi
         output_len=FixedLength(value=1), seed=0,
     ))
     return prepare_runtime(manual_config(workload=workload, engine=engine, perf_model=perf))
+
+
+def metric_inputs() -> dict[str, Any]:
+    from simcore.kv_cache import L1Snapshot, TierSnapshot
+    from simcore.schemas import WorkloadPlan
+
+    return {
+        "plan": WorkloadPlan({}, (), {}), "page_size": 1, "workload_mode": "synthetic",
+        "cache_snapshot": L1Snapshot(0, 0, 0, 0, 0, 0),
+        "l2_snapshot": TierSnapshot(0, 0, 0, 0, 0, 0, 0),
+        "l3_snapshot": TierSnapshot(0, 0, 0, 0, 0, 0, 0),
+        "l1_evictions": 0, "l1_peak_resident_blocks": 0, "promotions": 0, "demotions": 0,
+        "restore_bytes": 0, "restore_time_ms": 0.0,
+        "earliest_sent_arrival": None, "latest_sent_arrival": None, "num_sent": 0,
+        "replayed_prefill_tokens": 0,
+    }
 
 
 def make_config(**engine_overrides: object) -> SimConfig:
@@ -712,7 +728,6 @@ class TestConfigValidation:
         assert runtime.engine.page_size == 64
         assert runtime.perf_model.prefill_c1 == config.inference.timing.prefill_c1
         assert runtime.perf_model.kv_bytes_per_token == 16
-        assert runtime.links.l2_to_l1.page_bytes == runtime.links.l3_to_l2.page_bytes == 1024
         assert runtime.links.l2_to_l1.transfer_ms == 8
         assert runtime.links.l3_to_l2.transfer_ms == 16
         assert runtime.links.l2_to_l1.latency_ms == 0.5
@@ -731,8 +746,8 @@ class TestConfigValidation:
 
 class TestArrival:
     def test_valid(self) -> None:
-        a = Arrival(request_id=0, sim_time=0.0, prompt_len=10, output_len=5)
-        assert (a.request_id, a.sim_time, a.max_new_tokens) == (0, 0.0, 128)
+        a = Arrival(request_id=0, sim_time=0.0, prompt_len=10, output_len=5, max_new_tokens=5)
+        assert (a.request_id, a.sim_time, a.max_new_tokens) == (0, 0.0, 5)
         assert (
             Arrival(
                 request_id=1, sim_time=0.0, prompt_len=10, output_len=5, max_new_tokens=2
@@ -751,7 +766,10 @@ class TestArrival:
         ],
     )
     def test_bounds(self, overrides: dict[str, float]) -> None:
-        base = {"request_id": 0, "sim_time": 1.0, "prompt_len": 10, "output_len": 5}
+        base = {
+            "request_id": 0, "sim_time": 1.0, "prompt_len": 10,
+            "output_len": 5, "max_new_tokens": 5,
+        }
         with pytest.raises(ValidationError):
             Arrival.model_validate({**base, **overrides})
 
@@ -764,11 +782,19 @@ class TestRequestRecord:
         "prefill_end": 3.0,
         "finish": 4.0,
         "prompt_len": 10,
+        "actual_prefill_tokens": 10,
         "output_len": 5,
     }
 
     def test_monotonic_endpoints_accepted(self) -> None:
         assert RequestRecord.model_validate(self.BASE).prefill_end == 3.0
+
+    def test_actual_prefill_tokens_required_and_not_nullable(self) -> None:
+        missing = {key: value for key, value in self.BASE.items() if key != "actual_prefill_tokens"}
+        with pytest.raises(ValidationError, match="actual_prefill_tokens"):
+            RequestRecord.model_validate(missing)
+        with pytest.raises(ValidationError, match="actual_prefill_tokens"):
+            RequestRecord.model_validate(self.BASE | {"actual_prefill_tokens": None})
 
     def test_degenerate_intervals_accepted(self) -> None:
         """零长度区间合法：到达即被调度、单 token 输出等情形。"""

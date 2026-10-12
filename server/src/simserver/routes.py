@@ -60,18 +60,9 @@ class HardwareCatalogEntry(BaseModel):
     peak_interconnect_gb_s: float
 
 
-class ScenarioCatalogEntry(BaseModel):
-    id: str
-    model_name: str
-    hardware_name: str
-    gpu_count: int
-    stage: str
-
-
 class PresetCatalog(BaseModel):
     models: list[ModelSpec]
     hardware: list[HardwareCatalogEntry]
-    scenarios: list[ScenarioCatalogEntry]
 
 
 @router.get("/presets", response_model=PresetCatalog, summary="模型与硬件参考目录")
@@ -79,22 +70,6 @@ def presets_endpoint() -> PresetCatalog:
     return PresetCatalog(
         models=list(MODELS),
         hardware=[HardwareCatalogEntry.model_validate(item) for item in HARDWARE],
-        scenarios=[
-            ScenarioCatalogEntry(
-                id="qwen3-8b-b300-1",
-                model_name="Qwen/Qwen3-8B",
-                hardware_name="NVIDIA B300",
-                gpu_count=1,
-                stage="single_gpu_example",
-            ),
-            ScenarioCatalogEntry(
-                id="qwen3-235b-b300-8",
-                model_name="Qwen/Qwen3-235B-A22B",
-                hardware_name="NVIDIA B300",
-                gpu_count=8,
-                stage="requires_tp_ep",
-            ),
-        ],
     )
 
 

@@ -6,19 +6,20 @@ from dataclasses import FrozenInstanceError
 import pytest
 from pydantic import ValidationError
 
+from simcore import simulate
 from simcore.client import ClientDriver
-from simcore.engine import run_engine
 from simcore.prefix_hash import encode, stable_derive
 from simcore.schemas import (
-    Arrival,
     EngineConfig,
     FixedLength,
     PerfModelConfig,
     RequestCompletion,
     SessionConfig,
     SyntheticWorkloadConfig,
+    WorkloadConfig,
 )
-from simcore.workload import build_plan, plan_from_arrivals
+from simcore.workload import build_plan
+from test_schemas import manual_config
 
 
 def config(n: int = 10, s: int = 3, rate: float = 25.0) -> SyntheticWorkloadConfig:
@@ -211,48 +212,20 @@ def test_clamped_parent_output_drives_child_context_and_capacity() -> None:
     assert descendant.ideal_reuse_blocks == 0
 
 
-def test_manual_limit_and_unexecutable_request_are_planned() -> None:
-    runtime = engine(page_size=64, capacity=192)
-    arrivals = (
-        Arrival(request_id=0, sim_time=0, prompt_len=64, output_len=30, max_new_tokens=3),
-        Arrival(request_id=1, sim_time=1, prompt_len=65, output_len=5),
-    )
-    plan = plan_from_arrivals(arrivals, runtime)
-    assert (plan.turns[0].max_new_tokens, plan.turns[0].output_len) == (3, 3)
-    assert (plan.turns[1].max_new_tokens, plan.turns[1].output_len) == (0, 0)
-    client = ClientDriver(plan, runtime)
-    assert client.on_wakeup(client.initial_wakeups()[0]).max_new_tokens == 3
-
-
 def test_engine_completes_at_private_target_not_visible_limit() -> None:
     runtime = engine(page_size=4, capacity=64)
-    arrival = Arrival(request_id=3, sim_time=0, prompt_len=5, output_len=2, max_new_tokens=10)
-    plan = plan_from_arrivals((arrival,), runtime)
+    cfg = config(n=1, s=1).model_copy(update={
+        "prompt_len": FixedLength(value=5), "output_len": FixedLength(value=2),
+        "max_new_tokens": 10,
+    })
+    plan = build_plan(cfg, runtime)
     client = ClientDriver(plan, runtime)
     request = client.on_wakeup(client.initial_wakeups()[0])
     assert request.max_new_tokens == 10
-    assert plan.turns[3].output_len == 2
-    run = run_engine(
-        runtime,
-        PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
-        (arrival,),
-    )
-    assert run.records[0].output_len == 2
-    assert run.num_engine_steps == 2
-
-
-def test_length_arrival_adapter() -> None:
-    arrival = Arrival(request_id=8, sim_time=1, prompt_len=3, output_len=2)
-    plan = plan_from_arrivals((arrival,), engine())
-    assert plan.root_request_ids == (8,)
-    client = ClientDriver(plan, engine())
-    request = client.on_wakeup(client.initial_wakeups()[0])
-    assert (request.prompt_len, request.max_new_tokens, request.inherited_prefix_ids) == (
-        3,
-        128,
-        (),
-    )
-    assert plan.turns[8].output_len == 2
-    assert client.on_request_completed(RequestCompletion(8, 5, 2)) == ()
-    with pytest.raises(ValueError, match="重复"):
-        plan_from_arrivals((arrival, arrival), engine())
+    assert plan.turns[0].output_len == 2
+    result = simulate(manual_config(
+        workload=WorkloadConfig(synthetic=cfg), engine=runtime,
+        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+    ))
+    assert result.requests[0].output_len == 2
+    assert result.meta.num_engine_steps == 2

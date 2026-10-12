@@ -10,7 +10,6 @@ from simcore.runtime import (
     TransferLinks,
     runtime_from_components,
 )
-
 from simcore.schemas import (
     AttentionGroup,
     CapacityReport,
@@ -375,14 +374,12 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     )
     capacity = report.capacity
     l2 = (
-        TransferLink(capacity.kv_bytes_per_page,
-                     inference.page_size / capacity.l2_to_l1_tokens_per_ms,
+        TransferLink(inference.page_size / capacity.l2_to_l1_tokens_per_ms,
                      storage.l2_latency_ms)
         if capacity.l2_to_l1_tokens_per_ms is not None else None
     )
     l3 = (
-        TransferLink(capacity.kv_bytes_per_page,
-                     inference.page_size / capacity.l3_to_l2_tokens_per_ms,
+        TransferLink(inference.page_size / capacity.l3_to_l2_tokens_per_ms,
                      storage.l3_latency_ms)
         if capacity.l3_to_l2_tokens_per_ms is not None else None
     )

@@ -49,41 +49,39 @@ def percentile(sorted_values: Sequence[float], q: float) -> float:  # 升序样�
 def compute_metrics(
     records: Sequence[RequestRecord],
     *,
-    plan: WorkloadPlan | None = None,
-    page_size: int = 1,
-    workload_mode: WorkloadMode = "synthetic",
-    cache_snapshot: L1Snapshot | None = None,
-    l2_snapshot: TierSnapshot | None = None,
-    l3_snapshot: TierSnapshot | None = None,
-    l1_evictions: int = 0,
-    l1_peak_resident_blocks: int = 0,
-    promotions: int = 0,
-    demotions: int = 0,
-    restore_bytes: int = 0,
-    restore_time_ms: float = 0.0,
-    earliest_sent_arrival: float | None = None,
-    latest_sent_arrival: float | None = None,
-    num_sent: int | None = None,
-    replayed_prefill_tokens: int = 0,
+    plan: WorkloadPlan,
+    page_size: int,
+    workload_mode: WorkloadMode,
+    cache_snapshot: L1Snapshot,
+    l2_snapshot: TierSnapshot,
+    l3_snapshot: TierSnapshot,
+    l1_evictions: int,
+    l1_peak_resident_blocks: int,
+    promotions: int,
+    demotions: int,
+    restore_bytes: int,
+    restore_time_ms: float,
+    earliest_sent_arrival: float | None,
+    latest_sent_arrival: float | None,
+    num_sent: int,
+    replayed_prefill_tokens: int,
 ) -> Metrics:  # 完成记录、计划/配置、缓存及发送时间窗/计数 → 全场指标（无成功请求时部分未定义）
     """仅对完成请求计算时延；全失败时返回无定义指标和实际容量。"""
-    constructed = plan.constructed_ideal_prefix_hit_rate if plan else 0.0
-    num_sessions = len(plan.root_request_ids) if plan else 0
+    constructed = plan.constructed_ideal_prefix_hit_rate
+    num_sessions = len(plan.root_request_ids)
     root_count = (
         sum(turn.parent_request_id is None for turn in plan.turns.values())
-        if plan and workload_mode == "trace"
+        if workload_mode == "trace"
         else num_sessions
     )
-    root_ratio = root_count / len(plan.turns) if plan and plan.turns else 0.0
+    root_ratio = root_count / len(plan.turns) if plan.turns else 0.0
     arrival_qps = (
         (num_sent - 1) * _MS_PER_SECOND / (latest_sent_arrival - earliest_sent_arrival)
-        if num_sent is not None and num_sent > 1
+        if num_sent > 1
         and earliest_sent_arrival is not None and latest_sent_arrival is not None
         and latest_sent_arrival > earliest_sent_arrival else None
     )
-    peak_resident = max(
-        l1_peak_resident_blocks, cache_snapshot.resident_blocks if cache_snapshot else 0
-    )
+    peak_resident = max(l1_peak_resident_blocks, cache_snapshot.resident_blocks)
     if not records:
         return Metrics(
             ttft_mean=None,
@@ -103,31 +101,27 @@ def compute_metrics(
             demotions=demotions,
             l1_evictions=l1_evictions,
             l1_peak_resident_blocks=peak_resident,
-            l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
-            l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
-            l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,
-            l1_evictable_blocks=cache_snapshot.evictable_blocks if cache_snapshot else 0,
-            l1_free_blocks=cache_snapshot.free_blocks if cache_snapshot else 0,
-            l1_reserved_future_blocks=(
-                cache_snapshot.reserved_future_blocks if cache_snapshot else 0
-            ),
-            l1_internal_fragmentation_tokens=(
-                cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
-            ),
-            l2_evictions=l2_snapshot.evictions if l2_snapshot else 0,
-            l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks if l2_snapshot else 0,
-            l2_capacity_blocks=l2_snapshot.capacity_blocks if l2_snapshot else 0,
-            l2_resident_blocks=l2_snapshot.resident_blocks if l2_snapshot else 0,
-            l2_active_blocks=l2_snapshot.active_blocks if l2_snapshot else 0,
-            l2_evictable_blocks=l2_snapshot.evictable_blocks if l2_snapshot else 0,
-            l2_free_blocks=l2_snapshot.free_blocks if l2_snapshot else 0,
-            l3_evictions=l3_snapshot.evictions if l3_snapshot else 0,
-            l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks if l3_snapshot else 0,
-            l3_capacity_blocks=l3_snapshot.capacity_blocks if l3_snapshot else 0,
-            l3_resident_blocks=l3_snapshot.resident_blocks if l3_snapshot else 0,
-            l3_active_blocks=l3_snapshot.active_blocks if l3_snapshot else 0,
-            l3_evictable_blocks=l3_snapshot.evictable_blocks if l3_snapshot else 0,
-            l3_free_blocks=l3_snapshot.free_blocks if l3_snapshot else 0,
+            l1_capacity_blocks=cache_snapshot.capacity_blocks,
+            l1_resident_blocks=cache_snapshot.resident_blocks,
+            l1_active_blocks=cache_snapshot.active_blocks,
+            l1_evictable_blocks=cache_snapshot.evictable_blocks,
+            l1_free_blocks=cache_snapshot.free_blocks,
+            l1_reserved_future_blocks=cache_snapshot.reserved_future_blocks,
+            l1_internal_fragmentation_tokens=cache_snapshot.internal_fragmentation_tokens,
+            l2_evictions=l2_snapshot.evictions,
+            l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks,
+            l2_capacity_blocks=l2_snapshot.capacity_blocks,
+            l2_resident_blocks=l2_snapshot.resident_blocks,
+            l2_active_blocks=l2_snapshot.active_blocks,
+            l2_evictable_blocks=l2_snapshot.evictable_blocks,
+            l2_free_blocks=l2_snapshot.free_blocks,
+            l3_evictions=l3_snapshot.evictions,
+            l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks,
+            l3_capacity_blocks=l3_snapshot.capacity_blocks,
+            l3_resident_blocks=l3_snapshot.resident_blocks,
+            l3_active_blocks=l3_snapshot.active_blocks,
+            l3_evictable_blocks=l3_snapshot.evictable_blocks,
+            l3_free_blocks=l3_snapshot.free_blocks,
         )
 
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
@@ -149,12 +143,7 @@ def compute_metrics(
     actual = sum(record.actual_hit_tokens for record in records)
     children = [record for record in records if record.parent_request_id is not None]
     child_input = sum(record.prompt_len for record in children)
-    prefill = sum(
-        record.actual_prefill_tokens
-        if record.actual_prefill_tokens is not None
-        else record.prompt_len - record.actual_hit_tokens
-        for record in records
-    )
+    prefill = sum(record.actual_prefill_tokens for record in records)
     block_size = page_size
     fully_cached = sum(
         0 < (record.prompt_len // block_size) * block_size == record.matched_cache_tokens
@@ -170,7 +159,7 @@ def compute_metrics(
         tpot_mean=tpot_mean,
         throughput=throughput,
         makespan=makespan,
-        constructed_ideal_prefix_hit_rate=constructed if plan else ideal / input_tokens,
+        constructed_ideal_prefix_hit_rate=constructed,
         arrival_qps=arrival_qps,
         num_sessions=num_sessions,
         root_request_ratio=root_ratio,
@@ -204,27 +193,25 @@ def compute_metrics(
         demotions=demotions,
         l1_evictions=l1_evictions,
         l1_peak_resident_blocks=peak_resident,
-        l1_capacity_blocks=cache_snapshot.capacity_blocks if cache_snapshot else 0,
-        l1_resident_blocks=cache_snapshot.resident_blocks if cache_snapshot else 0,
-        l1_active_blocks=cache_snapshot.active_blocks if cache_snapshot else 0,
-        l1_evictable_blocks=cache_snapshot.evictable_blocks if cache_snapshot else 0,
-        l1_free_blocks=cache_snapshot.free_blocks if cache_snapshot else 0,
-        l1_reserved_future_blocks=(cache_snapshot.reserved_future_blocks if cache_snapshot else 0),
-        l1_internal_fragmentation_tokens=(
-            cache_snapshot.internal_fragmentation_tokens if cache_snapshot else 0
-        ),
-        l2_evictions=l2_snapshot.evictions if l2_snapshot else 0,
-        l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks if l2_snapshot else 0,
-        l2_capacity_blocks=l2_snapshot.capacity_blocks if l2_snapshot else 0,
-        l2_resident_blocks=l2_snapshot.resident_blocks if l2_snapshot else 0,
-        l2_active_blocks=l2_snapshot.active_blocks if l2_snapshot else 0,
-        l2_evictable_blocks=l2_snapshot.evictable_blocks if l2_snapshot else 0,
-        l2_free_blocks=l2_snapshot.free_blocks if l2_snapshot else 0,
-        l3_evictions=l3_snapshot.evictions if l3_snapshot else 0,
-        l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks if l3_snapshot else 0,
-        l3_capacity_blocks=l3_snapshot.capacity_blocks if l3_snapshot else 0,
-        l3_resident_blocks=l3_snapshot.resident_blocks if l3_snapshot else 0,
-        l3_active_blocks=l3_snapshot.active_blocks if l3_snapshot else 0,
-        l3_evictable_blocks=l3_snapshot.evictable_blocks if l3_snapshot else 0,
-        l3_free_blocks=l3_snapshot.free_blocks if l3_snapshot else 0,
+        l1_capacity_blocks=cache_snapshot.capacity_blocks,
+        l1_resident_blocks=cache_snapshot.resident_blocks,
+        l1_active_blocks=cache_snapshot.active_blocks,
+        l1_evictable_blocks=cache_snapshot.evictable_blocks,
+        l1_free_blocks=cache_snapshot.free_blocks,
+        l1_reserved_future_blocks=cache_snapshot.reserved_future_blocks,
+        l1_internal_fragmentation_tokens=cache_snapshot.internal_fragmentation_tokens,
+        l2_evictions=l2_snapshot.evictions,
+        l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks,
+        l2_capacity_blocks=l2_snapshot.capacity_blocks,
+        l2_resident_blocks=l2_snapshot.resident_blocks,
+        l2_active_blocks=l2_snapshot.active_blocks,
+        l2_evictable_blocks=l2_snapshot.evictable_blocks,
+        l2_free_blocks=l2_snapshot.free_blocks,
+        l3_evictions=l3_snapshot.evictions,
+        l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks,
+        l3_capacity_blocks=l3_snapshot.capacity_blocks,
+        l3_resident_blocks=l3_snapshot.resident_blocks,
+        l3_active_blocks=l3_snapshot.active_blocks,
+        l3_evictable_blocks=l3_snapshot.evictable_blocks,
+        l3_free_blocks=l3_snapshot.free_blocks,
     )

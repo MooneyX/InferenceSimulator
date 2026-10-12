@@ -7,10 +7,9 @@ import pytest
 
 import simcore
 from simcore import SimConfig, SimResult, simulate
+from simcore.capacity import prepare_runtime
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import stable_derive
-from simcore.capacity import prepare_runtime
-from test_schemas import manual_config
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -22,6 +21,7 @@ from simcore.schemas import (
     WorkloadConfig,
 )
 from simcore.workload import build_plan
+from test_schemas import manual_config, metric_inputs
 
 
 def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) -> SimConfig:
@@ -252,11 +252,10 @@ class TestEndToEnd:
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_metrics_consistent_with_records(self, result: SimResult) -> None:
-        baseline = compute_metrics(
-            result.requests,
-            page_size=result.meta.config.inference.page_size,
-            workload_mode=result.meta.config.workload.mode,
-        )
+        baseline = compute_metrics(result.requests, **(metric_inputs() | {
+            "page_size": result.meta.config.inference.page_size,
+            "workload_mode": result.meta.config.workload.mode,
+        }))
         for name in ("ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "throughput", "makespan"):
             assert getattr(result.metrics, name) == getattr(baseline, name)
         assert result.metrics.total_input_tokens == sum(r.prompt_len for r in result.requests)
@@ -332,9 +331,9 @@ class TestEndToEnd:
         result = simulate(config)
         metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
-        empty = compute_metrics(
-            [], plan=plan, page_size=config.inference.page_size, workload_mode="synthetic",
-        )
+        empty = compute_metrics([], **(metric_inputs() | {
+            "plan": plan, "page_size": config.inference.page_size,
+        }))
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:

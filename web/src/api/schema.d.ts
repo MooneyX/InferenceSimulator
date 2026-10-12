@@ -1018,8 +1018,6 @@ export interface components {
             models: components["schemas"]["ModelSpec"][];
             /** Hardware */
             hardware: components["schemas"]["HardwareCatalogEntry"][];
-            /** Scenarios */
-            scenarios: components["schemas"]["ScenarioCatalogEntry"][];
         };
         /** RankCapacityReport */
         RankCapacityReport: {
@@ -1094,7 +1092,7 @@ export interface components {
              */
             actual_hit_tokens: number;
             /** Actual Prefill Tokens */
-            actual_prefill_tokens?: number | null;
+            actual_prefill_tokens: number;
             /**
              * Replayed Prefill Tokens
              * @default 0
@@ -1161,19 +1159,6 @@ export interface components {
              * @enum {string}
              */
             correction_dtype: "bf16" | "fp16" | "fp32";
-        };
-        /** ScenarioCatalogEntry */
-        ScenarioCatalogEntry: {
-            /** Id */
-            id: string;
-            /** Model Name */
-            model_name: string;
-            /** Hardware Name */
-            hardware_name: string;
-            /** Gpu Count */
-            gpu_count: number;
-            /** Stage */
-            stage: string;
         };
         /**
          * SchedulerConfig

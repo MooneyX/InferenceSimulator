@@ -263,7 +263,7 @@ class PerfModelConfig(_Frozen):
 
 
 def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:  # 引擎容量与传输系数 → 校验层间带宽配置；无返回值
-    """同时供 SimConfig、Engine 与 run_engine 检查 KV 层与传输参数。"""
+    """为手动运行规格检查 KV 层与传输参数。"""
     if engine.l2_capacity_tokens and (
         perf.kv_bytes_per_token is None or perf.l2_to_l1_bandwidth_bytes_per_ms is None
     ):
@@ -721,17 +721,13 @@ class ClientWakeup:
 
 
 class Arrival(_Frozen):
-    """请求 ID、到达时刻与长度记录；手写序列由 ``plan_from_arrivals`` 转为独立根 session。
-
-    客户端向引擎提交 ``InferenceRequest``；引擎仍用此类型记录实际提交时刻，
-    不经此类型传递 token 内容。
-    """
+    """引擎保存的请求 ID、实际提交时刻与长度记录，不传递 token 内容。"""
 
     request_id: int = Field(ge=0)
     sim_time: float = Field(ge=0, description="到达时刻（ms）")
     prompt_len: int = Field(ge=1, description="prompt token 数")
     output_len: int = Field(ge=1, description="待生成 token 数")
-    max_new_tokens: int = Field(default=128, ge=1, description="手写到达请求的可见生成上限")
+    max_new_tokens: int = Field(ge=1, description="请求的可见生成上限")
 
 
 class RequestRecord(_Record):
@@ -754,7 +750,7 @@ class RequestRecord(_Record):
     ideal_reuse_tokens: int = Field(default=0, ge=0)
     matched_cache_tokens: int = Field(default=0, ge=0)
     actual_hit_tokens: int = Field(default=0, ge=0)
-    actual_prefill_tokens: int | None = Field(default=None, ge=0)
+    actual_prefill_tokens: int = Field(ge=0)
     replayed_prefill_tokens: int = Field(default=0, ge=0)
     retry_count: int = Field(default=0, ge=0)
     logical_context_tokens: int = Field(default=0, ge=0)
@@ -772,7 +768,7 @@ class RequestRecord(_Record):
             )
         if self.l1_hit_tokens + self.l2_hit_tokens + self.l3_hit_tokens != self.actual_hit_tokens:
             raise ValueError("请求级分层复用与实际命中 token 不守恒")
-        if self.actual_prefill_tokens is not None and not (  # 每个输入 token 要么命中，要么重算
+        if not (  # 每个输入 token 要么命中，要么重算
             self.actual_hit_tokens <= self.ideal_reuse_tokens <= self.prompt_len
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.prompt_len
         ):

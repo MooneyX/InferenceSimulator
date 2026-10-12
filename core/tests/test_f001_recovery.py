@@ -4,22 +4,26 @@ occupy 和直接 withdraw/requeue 用于故障状态注入，不代表正常端�
 """
 
 from simcore import simulate
-from simcore.engine import Engine, run_engine
+from simcore.client import ClientDriver
+from simcore.coordinator import Coordinator
+from simcore.engine import Engine
 from simcore.kv_cache import TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import encode
+from simcore.router import Router
 from simcore.scheduler import F001Scheduler
-from test_schemas import manual_config, runtime_config
 from simcore.schemas import (
-    Arrival,
     EngineConfig,
     FixedLength,
     InferenceRequest,
     PerfModelConfig,
     SessionConfig,
     SyntheticWorkloadConfig,
+    TurnPlan,
     WorkloadConfig,
+    WorkloadPlan,
 )
+from test_schemas import manual_config, metric_inputs, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=1)
 
@@ -50,8 +54,7 @@ def test_decode_evicts_cached_pages_before_considering_withdrawal() -> None:
     assert engine._prefix_cache.free_pages == 0
     assert engine.start_step(4, 1) == (10, (0,))
     assert engine.finish_step(14) == (0,)
-    trace = list(engine._log.steps())[-1]
-    assert trace.evicted_blocks == 1 and trace.withdrawn == ()
+    assert not engine._retry_counts
     assert engine._prefix_cache.evictions == 1
     engine.complete(14, 0)
     assert engine.finalize().aborted_requests == ()
@@ -98,15 +101,15 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
     assert engine._prefix_cache.free_pages == 0
     assert engine.start_step(12, 1) == (10, ())
     assert engine.finish_step(22) == ()
-    step = list(engine._log.steps())[-1]
-    assert step.withdrawn == (1,) and step.evicted_blocks == 1
+    assert engine._retry_counts == {1: 1}
+    assert engine._prefix_cache.evictions == 1
     assert engine._prefix_scheduler.advance_ratio({}) == 1.0
     assert engine._prefix_scheduler.num_waiting == 1
     assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 8
     engine._prefix_cache.withdraw(99)
     assert engine.start_step(22, 2) == (8, ())
     assert engine.finish_step(30) == ()
-    assert list(engine._log.steps())[-1].phase == "PREFILL"
+    assert engine._running == {0: 2, 1: 1}
     assert engine._running[1] == 1 and engine._prefix_cache.state(1).k == 8
     assert engine._prefill_end[1] == 12
     assert engine._replayed_tokens[1] == 8
@@ -137,8 +140,8 @@ def test_evictable_pages_are_removed_before_withdrawing_active_requests() -> Non
     assert engine._prefix_cache.free_pages == 0
     assert engine.start_step(8, 1) == (10, ())
     assert engine.finish_step(18) == ()
-    trace = list(engine._log.steps())[-1]
-    assert trace.evicted_blocks == 1 and trace.withdrawn == (0,)
+    assert engine._prefix_cache.evictions == 1
+    assert engine._retry_counts == {0: 1}
     assert engine._prefix_cache.page("chunk:98:0") is None
     assert engine._prefix_cache.page("chunk:0:0") is not None
 
@@ -153,7 +156,6 @@ def test_withdrawal_tie_breaks_by_smaller_request_id() -> None:
     occupy(engine._prefix_cache, 99, 16)
     assert engine.start_step(8, 1) == (10, ())
     assert engine.finish_step(18) == ()
-    assert list(engine._log.steps())[-1].withdrawn == (0,)
     assert engine._running == {1: 2}
     assert engine._retry_counts[0] == 1
 
@@ -174,11 +176,9 @@ def test_fused_mode_fixes_decode_set_before_prefill_admission() -> None:
     engine.submit(request(2, maximum=1), 12)
     assert engine.start_step(12, 1) == (10, ())
     assert engine.finish_step(22) == ()
-    step = list(engine._log.steps())[-1]
-    assert step.phase == "DECODE"
-    assert step.num_decoding == 1 and step.batch_total_tokens == 5
-    assert step.admitted == ()
-    assert list(engine._log.steps())[-1].withdrawn == (1,)
+    assert engine._running == {0: 2}
+    assert engine._prefix_cache.state(0).k == 5
+    assert engine._retry_counts == {1: 1}
     assert engine._prefix_scheduler.num_waiting == 2
     assert 1 not in engine._running  # 本步回撤者不能重新被 Prefill 准入
 
@@ -199,9 +199,7 @@ def test_restore_with_two_sampled_tokens_recomputes_only_p_plus_one() -> None:
     engine._prefix_scheduler.requeue(item, 14, generated_tokens=2)
     assert engine.start_step(14, 2) == (1, ())
     assert engine.finish_step(15) == ()
-    step = list(engine._log.steps())[-1]
-    assert step.phase == "PREFILL" and step.admitted == (0,)
-    assert step.batch_total_tokens == 5 and step.matched_cache_tokens == 4
+    assert engine._replayed_tokens[0] == 1
     assert engine._prefix_cache.state(0).k == 5 and engine._running[0] == 2
     assert engine._prefill_end[0] == 4
     assert engine.start_step(15, 3) == (11, (0,))
@@ -261,8 +259,9 @@ def test_single_request_that_cannot_decode_is_aborted_instead_of_looping() -> No
 
 def test_input_limit_aborts_at_actual_arrival_without_scheduling_step() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=64)
-    arrival = Arrival(request_id=4, sim_time=5, prompt_len=64, output_len=2)
-    run = run_engine(cfg, PERF, (arrival,))
+    engine = Engine(runtime_config(cfg, PERF), output_targets={4: 0})
+    assert not engine.submit(request(4, prompt=64, maximum=0), 5)
+    run = engine.finalize()
     assert run.num_engine_steps == 0 and run.records == ()
     assert run.aborted_requests[0].reason == "input_exceeds_kv_capacity"
     assert run.aborted_requests[0].arrival == run.aborted_requests[0].failed_at == 5
@@ -271,18 +270,20 @@ def test_input_limit_aborts_at_actual_arrival_without_scheduling_step() -> None:
 
 def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=192, page_size=64)
-    run = run_engine(
-        cfg,
-        PERF,
-        (
-            Arrival(request_id=0, sim_time=0, prompt_len=128, output_len=1),
-            Arrival(request_id=1, sim_time=1, prompt_len=1, output_len=1),
-        ),
-    )
+    plan = WorkloadPlan({
+        0: TurnPlan(0, 0, None, 0, None, 128, 0, 0, 0),
+        1: TurnPlan(1, 1, None, 1, None, 1, 1, 1, 0),
+    }, (0, 1), {})
+    run = Coordinator(
+        (Engine(runtime_config(cfg, PERF), output_targets={}),),
+        ClientDriver(plan, cfg), Router(1),
+    ).run()[0]
     assert [item.id for item in run.aborted_requests] == [0]
     assert [item.id for item in run.records] == [1]
     assert (run.sim_start, run.sim_end, run.num_engine_steps) == (0, 2, 1)
-    metrics = compute_metrics(run.records, earliest_sent_arrival=run.sim_start)
+    metrics = compute_metrics(run.records, **(metric_inputs() | {
+        "earliest_sent_arrival": run.sim_start,
+    }))
     assert metrics.makespan == 2 and metrics.ttft_mean == 1
 
 
@@ -297,7 +298,7 @@ def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> Non
     engine.complete(1, 1)
     run = engine.finalize()
     assert (len(run.records), len(run.aborted_requests), run.num_engine_steps) == (1, 1, 1)
-    assert next(run.trace.steps()).aborted == (0,)
+    assert [item.id for item in run.aborted_requests] == [0]
 
 
 def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> None:

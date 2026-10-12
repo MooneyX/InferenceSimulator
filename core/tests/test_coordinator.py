@@ -5,12 +5,10 @@ from itertools import pairwise
 import pytest
 
 from simcore import simulate
+from simcore.capacity import prepare_runtime
 from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
-from simcore.events import ArrivalTrace, DoneTrace, StepTrace
-from simcore.capacity import prepare_runtime
-from test_schemas import manual_config
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -21,6 +19,7 @@ from simcore.schemas import (
     WorkloadConfig,
 )
 from simcore.workload import build_plan
+from test_schemas import manual_config
 
 
 def config(think: float = 0) -> SimConfig:
@@ -76,7 +75,5 @@ def test_zero_think_done_callback_send_step_order() -> None:
     records = run.records
     assert records[0].finish == records[1].arrival
     assert records[1].prefill_start == records[1].arrival
-    entries = list(run.trace)
-    same_time = [entry for entry in entries if entry.time == records[0].finish]
-    assert [type(item) for item in same_time] == [DoneTrace, ArrivalTrace, StepTrace]
+    assert run.num_engine_steps == 6
     assert [record.id for record in records] == [0, 1, 2]

@@ -83,7 +83,7 @@ function createTooltipFormatter(model: GanttModel) {
       `<strong>请求 #${row.id}</strong>`,
       `会话：#${row.session_id ?? row.id} / 父请求：${row.parent_request_id == null ? "无" : `#${row.parent_request_id}`}`,
       `理想复用：${row.ideal_reuse_tokens ?? 0} token / 物理匹配：${row.matched_cache_tokens ?? 0} token`,
-      `实际复用（总计）：${row.actual_hit_tokens} token / 实际 Prefill：${row.actual_prefill_tokens ?? row.prompt_len} token`,
+      `实际复用（总计）：${row.actual_hit_tokens} token / 实际 Prefill：${row.actual_prefill_tokens} token`,
       `来源 L1：${row.l1_hit_tokens} token / L2：${row.l2_hit_tokens} token / L3：${row.l3_hit_tokens} token`,
       `阶段：${PHASE_LABELS[phase]}`,
       `TTFT：${formatTime(row.ttft)}`,

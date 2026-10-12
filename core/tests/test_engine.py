@@ -3,31 +3,35 @@
 手算场景统一使用 SIMPLE 性能模型：prefill 耗时 = prompt_len ms，decode 每步固定 10 ms。
 """
 
-import itertools
-
 import pytest
 
 from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
-from simcore.engine import Engine, EngineRun, run_engine
-from simcore.events import StepTrace
-from test_schemas import runtime_config
+from simcore.engine import Engine, EngineRun
+from simcore.router import Router
 from simcore.schemas import (
     Arrival,
     EngineConfig,
+    InferenceRequest,
     LognormalLength,
     PerfModelConfig,
     PoissonLength,
     RequestRecord,
     SyntheticWorkloadConfig,
+    TurnPlan,
+    WorkloadPlan,
 )
-from simcore.workload import build_plan, plan_from_arrivals
+from simcore.workload import _visible_limit, build_plan
+from test_schemas import runtime_config
 
 SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
 
 
 def req(request_id: int, t: float, prompt_len: int, output_len: int) -> Arrival:
-    return Arrival(request_id=request_id, sim_time=t, prompt_len=prompt_len, output_len=output_len)
+    return Arrival(
+        request_id=request_id, sim_time=t, prompt_len=prompt_len,
+        output_len=output_len, max_new_tokens=128,
+    )
 
 
 def run(
@@ -37,33 +41,37 @@ def run(
     budget: int = 1000,
     perf: PerfModelConfig = SIMPLE,
 ) -> EngineRun:
-    return run_engine(
-        EngineConfig(
-            max_running_requests=max_batch_size,
-            max_total_tokens=budget,
-            page_size=1,
-            pd_mutually_exclusive=False,
-        ),
-        perf,
-        arrivals,
+    config = EngineConfig(
+        max_running_requests=max_batch_size,
+        max_total_tokens=budget,
+        page_size=1,
+        pd_mutually_exclusive=False,
     )
+    turns = {}
+    for arrival in arrivals:
+        if arrival.request_id in turns:
+            raise ValueError("重复的请求 ID")
+        maximum = _visible_limit(arrival.prompt_len, arrival.max_new_tokens, config)
+        turns[arrival.request_id] = TurnPlan(
+            arrival.request_id, arrival.request_id, None, arrival.sim_time, None,
+            arrival.prompt_len, min(arrival.output_len, maximum), maximum, 0,
+        )
+    plan = WorkloadPlan(turns, tuple(turns), {})
+    return Coordinator(
+        (Engine(runtime_config(config, perf), output_targets={}),),
+        ClientDriver(plan, config), Router(1),
+    ).run()[0]
 
 
 def interval(r: RequestRecord) -> tuple[float, float, float, float]:
     return (r.arrival, r.prefill_start, r.prefill_end, r.finish)
 
 
-def steps(result: EngineRun) -> list[StepTrace]:
-    return list(result.trace.steps())
-
-
 class TestImmediateEngine:
     def test_submit_step_and_completion_return_finish_time(self) -> None:
         config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
-        plan = plan_from_arrivals((req(7, 3.0, 5, 1),), config)
-        client = ClientDriver(plan, config)
-        request = client.on_wakeup(client.initial_wakeups()[0])
-        engine = Engine(runtime_config(config, SIMPLE), output_targets={7: plan.turns[7].output_len})
+        request = InferenceRequest(7, 7, None, 5, 1, (), 0)
+        engine = Engine(runtime_config(config, SIMPLE), output_targets={7: 1})
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
         assert not hasattr(engine, "step")
@@ -115,7 +123,6 @@ class TestHandComputed:
             (100.0, 100.0, 105.0, 105.0),
         ]
         assert result.num_engine_steps == 2
-        assert [s.time for s in steps(result)] == [0.0, 100.0]
 
     def test_fused_step_takes_max(self) -> None:
         # step1 @5: r0 decode(10) 与 r1 prefill(20) 融合 → 20 → 25
@@ -124,7 +131,7 @@ class TestHandComputed:
             (0.0, 0.0, 5.0, 35.0),
             (2.0, 5.0, 25.0, 35.0),
         ]
-        assert [s.duration for s in steps(result)] == [5.0, 20.0, 10.0]
+        assert result.num_engine_steps == 3
 
     def test_same_time_arrivals_batched_together(self) -> None:
         result = run([req(0, 0.0, 5, 1), req(1, 0.0, 7, 1)])
@@ -133,7 +140,7 @@ class TestHandComputed:
             (0.0, 0.0, 12.0, 12.0),
             (0.0, 0.0, 12.0, 12.0),
         ]
-        assert steps(result)[0].admitted == (0, 1)
+        assert result.num_engine_steps == 1
 
     def test_arrival_during_step_waits_for_step_end(self) -> None:
         result = run([req(0, 0.0, 50, 1), req(1, 10.0, 5, 1)])
@@ -162,7 +169,6 @@ class TestSameTimeOrdering:
         """同刻 Arrival 先于 EngineStep：t=5 到达的请求被 t=5 的步准入。"""
         result = run([req(0, 0.0, 5, 2), req(1, 5.0, 3, 1)])
         assert interval(result.records[1]) == (5.0, 5.0, 15.0, 15.0)
-        assert steps(result)[1].admitted == (1,)
 
 
 class TestKVBehaviour:
@@ -178,7 +184,6 @@ class TestKVBehaviour:
         assert result.records[1].prefill_start >= result.records[0].finish
         assert result.cache_snapshot.resident_blocks <= result.cache_snapshot.capacity_blocks
         assert result.cache_snapshot.reserved_future_blocks == 0
-        assert all(step.kv_overflow == 0 and not step.forced for step in steps(result))
 
     @pytest.mark.parametrize(
         "arrivals",
@@ -195,7 +200,6 @@ class TestEdgeCases:
         result = run([])
         assert result.records == () and result.num_engine_steps == 0
         assert (result.sim_start, result.sim_end) == (0.0, 0.0)
-        assert len(result.trace) == 0
 
     def test_duplicate_request_id_rejected(self) -> None:
         with pytest.raises(ValueError, match="重复"):
@@ -209,7 +213,7 @@ class TestEdgeCases:
         assert result.num_engine_steps == 4
 
 
-def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) -> EngineRun:
+def synthetic_run(seed: int = 7, **engine: int) -> EngineRun:
     workload = SyntheticWorkloadConfig(
         num_requests=300,
         session_rate=40.0,
@@ -233,7 +237,7 @@ def synthetic_run(seed: int = 7, *, record_trace: bool = True, **engine: int) ->
     from simcore.router import Router
 
     return Coordinator(
-        (Engine(runtime_config(cfg, perf), output_targets={}, record_trace=record_trace),),
+        (Engine(runtime_config(cfg, perf), output_targets={}),),
         client,
         Router(1),
     ).run()[0]
@@ -254,48 +258,21 @@ class TestInvariants:
             == result.cache_snapshot.capacity_blocks
         )
 
-    def test_batch_size_never_exceeded(self, result: EngineRun) -> None:
-        assert all(s.num_decoding + len(s.admitted) <= 16 for s in steps(result))
-
-    def test_each_request_spans_output_len_steps(self, result: EngineRun) -> None:
-        """每请求恰好参与 output_len 个连续步：1 个准入步 + (output_len-1) 个 decode 步。"""
-        step_list = steps(result)
-        for r in result.records:
-            spanned = [s for s in step_list if r.prefill_start <= s.time < r.finish]
-            assert len(spanned) == r.output_len
+    def test_completed_request_intervals_are_ordered(self, result: EngineRun) -> None:
+        assert all(r.arrival <= r.prefill_start <= r.prefill_end <= r.finish for r in result.records)
 
     def test_fcfs_admission_order(self, result: EngineRun) -> None:
         starts = [r.prefill_start for r in result.records]
         assert starts == sorted(starts)
 
-    def test_steps_are_contiguous_while_busy(self, result: EngineRun) -> None:
-        """忙碌期内步首尾相接，只在空闲时出现跳跃，且跳跃终点是某个到达时刻。"""
-        arrival_times = {r.arrival for r in result.records}
-        step_list = steps(result)
-        for prev, cur in itertools.pairwise(step_list):
-            previous_end = prev.time + prev.duration
-            assert cur.time >= previous_end
-            if cur.time > previous_end:
-                assert cur.time in arrival_times
-
-    def test_trace_time_monotonic(self, result: EngineRun) -> None:
-        times = [record.time for record in result.trace]
-        assert times == sorted(times)
-
     def test_meta_window(self, result: EngineRun) -> None:
         assert result.sim_start == min(r.arrival for r in result.records)
         assert result.sim_end == max(r.finish for r in result.records)
-        assert result.num_engine_steps == len(steps(result))
+        assert result.num_engine_steps > 0
 
 
 class TestReproducibility:
     def test_same_seed_bit_identical(self, result: EngineRun) -> None:
         rerun = synthetic_run()
         assert [r.model_dump() for r in result.records] == [r.model_dump() for r in rerun.records]
-        assert result.warnings == rerun.warnings and list(result.trace) == list(rerun.trace)
-
-    def test_trace_toggle_does_not_change_results(self, result: EngineRun) -> None:
-        without = synthetic_run(record_trace=False)
-        assert result.records == without.records
-        assert result.warnings == without.warnings
-        assert len(without.trace) == 0 and len(result.trace) > 0
+        assert result == rerun

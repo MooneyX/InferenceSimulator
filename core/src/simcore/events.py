@@ -1,11 +1,7 @@
-"""事件类型定义与事件流记录。
+"""调度事件类型与同刻全序。
 
-两层概念，刻意分开：
-
-- **调度事件** ``Event``：压入协调器事件队列的最小载荷，只携带排序键与引用 ID。
-  事件队列本身由 ``coordinator`` 持有，本模块只定义事件形态与全序。
-- **事件流** ``TraceRecord``：引擎处理事件后产出的自描述记录，按处理顺序追加到
-  ``EventLog``。内核产出完整事件流但不经 API 暴露，为决策溯源与播放式仿真预留。
+``Event`` 是压入协调器事件队列的最小载荷，只携带排序键与引用 ID。
+事件队列本身由 ``coordinator`` 持有。
 
 同刻全序（可复现性的前提）：``(time, kind, ref, seq)``。
 
@@ -17,21 +13,10 @@
 依赖层级：仅依赖标准库。
 """
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Literal
 
-__all__ = [
-    "ArrivalTrace",
-    "DoneTrace",
-    "Event",
-    "EventFactory",
-    "EventKind",
-    "EventLog",
-    "StepTrace",
-    "TraceRecord",
-]
+__all__ = ["Event", "EventFactory", "EventKind"]
 
 
 class EventKind(IntEnum):
@@ -111,134 +96,3 @@ class EventFactory:
 
     def request_done(self, time: float, request_id: int) -> Event:  # 结算时刻与请求 ID → 完成事件
         return self._make(time, EventKind.REQUEST_DONE, request_id)
-
-
-# ---------------------------------------------------------------- 事件流记录
-
-
-@dataclass(frozen=True, slots=True)
-class ArrivalTrace:
-    """记录请求到达；即刻失败的请求不会进入等待队列。"""
-
-    time: float
-    request_id: int
-    prompt_len: int
-    output_len: int
-
-
-@dataclass(frozen=True, slots=True)
-class StepTrace:
-    """一个引擎步的完整决策与结果，是决策溯源的主要载体。
-
-    Attributes:
-        time: 步起点（ms）。
-        step_index: 步序号，从 0 开始连续编号。
-        duration: 步长（ms）。
-        admitted: 本步准入的 request_id，按准入顺序。
-        forced: 其中强制准入的 request_id。
-        num_decoding: 本步 decode 的请求数。
-        batch_total_tokens: 本步 batch 的 KV token 总量（含本步准入 prompt）。
-        kv_used: 步末 decode 增长后、释放完成请求前的逻辑 KV token 数。
-        kv_overflow: 预留的兼容字段，目前固定为 0。
-        finished: 本步结束时完成的 request_id。
-    """
-
-    time: float
-    step_index: int
-    duration: float
-    admitted: tuple[int, ...]
-    forced: tuple[int, ...]
-    num_decoding: int
-    batch_total_tokens: int
-    kv_used: int
-    kv_overflow: int
-    finished: tuple[int, ...]
-    probes: int = 0
-    matched_cache_tokens: int = 0
-    actual_hit_tokens: int = 0
-    allocated_blocks: int = 0
-    evicted_blocks: int = 0
-    l1_active_before: int = 0
-    l1_evictable_before: int = 0
-    l1_free_before: int = 0
-    l1_active_after: int = 0
-    l1_evictable_after: int = 0
-    l1_free_after: int = 0
-    l1_internal_fragmentation_tokens: int = 0
-    phase: Literal["PREFILL", "DECODE", "MIXED"] | None = None
-    withdrawn: tuple[int, ...] = ()
-    aborted: tuple[int, ...] = ()
-    restored: tuple[int, ...] = ()
-    l1_evictions: int = 0
-    l2_evictions: int = 0
-    l3_evictions: int = 0
-    promotions: int = 0
-    demotions: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class DoneTrace:
-    """请求完成结算，KV 额度已归还。"""
-
-    time: float
-    request_id: int
-    released_tokens: int
-
-
-TraceRecord = ArrivalTrace | StepTrace | DoneTrace
-
-
-class EventLog:
-    """按处理顺序追加的事件流。
-
-    不变式：记录时刻单调不减——违反说明引擎的事件处理顺序有误，立即抛出。
-
-    ``enabled=False`` 时 ``record`` 为空操作（仍做时序校验），供基准测试剥离记录开销。
-    """
-
-    __slots__ = ("_enabled", "_last_time", "_records")
-
-    def __init__(self, *, enabled: bool = True) -> None:  # 是否保存记录 → 初始化时序校验日志；无返回值
-        self._enabled = enabled
-        self._records: list[TraceRecord] = []
-        self._last_time = float("-inf")
-
-    @property
-    def enabled(self) -> bool:  # 构造时设置 → 是否保存事件流
-        return self._enabled
-
-    def record(self, entry: TraceRecord) -> None:  # 事件条目 → 校验时间并追加（启用时）；无返回值
-        """追加一条记录。
-
-        Raises:
-            ValueError: 记录时刻早于上一条。
-        """
-        if entry.time < self._last_time:
-            raise ValueError(
-                f"事件流时刻倒退：{type(entry).__name__}@{entry.time} 早于上一条 @{self._last_time}"
-            )
-        self._last_time = entry.time
-        if self._enabled:
-            self._records.append(entry)
-
-    def __iter__(self) -> Iterator[TraceRecord]:  # 当前日志 → 按记录顺序的迭代器
-        return iter(self._records)
-
-    def __len__(self) -> int:  # 当前日志 → 保存的事件条目数
-        return len(self._records)
-
-    def steps(self) -> Iterator[StepTrace]:  # 当前日志 → 仅包含引擎步的迭代器
-        return (r for r in self._records if isinstance(r, StepTrace))
-
-    def for_request(self, request_id: int) -> list[TraceRecord]:  # 请求 ID → 相关到达、步进与完成记录
-        """某请求相关的全部记录：到达、参与的步（准入或完成）、完成结算。"""
-        out: list[TraceRecord] = []
-        for r in self._records:
-            match r:
-                case ArrivalTrace() | DoneTrace() if r.request_id == request_id:
-                    out.append(r)
-                case StepTrace() if (
-                    request_id in r.admitted or request_id in r.restored or request_id in r.finished
-                ):
-                    out.append(r)
-        return out

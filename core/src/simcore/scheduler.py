@@ -57,13 +57,8 @@ class AdmissionBatch:
     admitted: tuple[PrefillCandidate, ...]
     restored: tuple[WaitingRequest, ...]
     aborted: tuple[WaitingRequest, ...]
-    blocked: bool
-    decode_new_tokens: int
-    current_offset: int
-    total_offset: float
     restore_only: tuple[WaitingRequest, ...] = ()
     promote_ids: tuple[str, ...] = ()
-    restore_hits: tuple[tuple[int, tuple[tuple[str, str], ...]], ...] = ()
 
 
 class F001Scheduler:
@@ -132,16 +127,11 @@ class F001Scheduler:
     def select_prefill(
         self,
         running: Mapping[int, RunningRequest],
-        decode_ids: tuple[int, ...] = (),
         *,
         is_ready: Callable[[int], bool] | None = None,
         can_reuse: Callable[[int, str, str], bool] | None = None,
-    ) -> AdmissionBatch:  # 运行集、Decode ID 与就绪/复用条件 → 本步准入、恢复和阻塞批次
-        """固定本步 Decode 集合，逐个保护候选命中页，预算失败不跳过队头。"""
-        if len(set(decode_ids)) != len(decode_ids) or not set(decode_ids) <= running.keys():
-            raise ValueError("Decode 集合必须是步首运行请求的不重复子集")
-        if self._engine.pd_mutually_exclusive and decode_ids:
-            raise ValueError("互斥模式不得同时规划 Prefill 和 Decode")
+    ) -> AdmissionBatch:  # 运行集与就绪/复用条件 → 本步准入、恢复和失败批次
+        """逐个保护候选命中页，预算失败不跳过队头。"""
         cache = self._cache
         block_size = cache.page_size
         for request_id, active in running.items():
@@ -151,8 +141,6 @@ class F001Scheduler:
             ):
                 raise ValueError("运行请求身份或生成进度不合法")
             cache.state(request_id)
-        # 本步跨页的 Decode 请求需要申请新页。
-        decode_new = block_size * sum(cache.state(key).k % block_size == 0 for key in decode_ids)
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
             for item in running.values()
@@ -161,19 +149,16 @@ class F001Scheduler:
         selected: list[PrefillCandidate] = []
         restored: list[WaitingRequest] = []
         restore_only: list[WaitingRequest] = []
-        restore_hits: list[tuple[int, tuple[tuple[str, str], ...]]] = []
         promotions: set[str] = set()
         aborted: list[WaitingRequest] = []
-        current_offset = decode_new  # 本步新页、增长余量及页提升的容量预算（不预占）
+        current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
         selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
-        blocked = False
         tiered = self._engine.l2_capacity_tokens > 0
         while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
             item = self._waiting[0]
             request = item.request
             if is_ready is not None and not is_ready(request.request_id):
-                blocked = True
                 break
             target = item.target_tokens
             sources = cache.probe(request, target, restoring=item.restoring)
@@ -215,13 +200,12 @@ class F001Scheduler:
                 or not new_tokens
                 or (
                     required_tokens
-                    < self._engine.max_prefill_tokens - len(decode_ids) - selected_pages_tokens
+                    < self._engine.max_prefill_tokens - selected_pages_tokens
                 )
             )
             planned_promotions = tuple(sorted(promotions | new_promotions))
             planned_new_pages = (
-                decode_new // block_size
-                + sum(candidate.required_pages for candidate in selected)
+                sum(candidate.required_pages for candidate in selected)
                 + required_tokens // block_size
             )
             capacity_ok = True
@@ -249,11 +233,9 @@ class F001Scheduler:
                 ):
                     aborted.append(self._pop_head())
                     continue
-                blocked = True  # FCFS 不跳过当前队头去接纳后续请求
                 break
             if item.restoring and new_tokens == 0:
                 restore_only.append(item)
-                restore_hits.append((request.request_id, sources))
                 active_count += 1
                 running_future += future * self._ratio
             else:
@@ -265,19 +247,12 @@ class F001Scheduler:
             self._pop_head()
             promotions.update(new_promotions)
             current_offset = proposed_current
-        if self._waiting and active_count + len(selected) >= self._engine.max_running_requests:
-            blocked = True
         return AdmissionBatch(
             tuple(selected),
             tuple(restored),
             tuple(aborted),
-            blocked,
-            decode_new,
-            current_offset,
-            current_offset + selected_future + running_future,
             tuple(sorted(restore_only, key=lambda item: item.request.request_id)),
             tuple(sorted(promotions)),
-            tuple(sorted(restore_hits)),
         )
 
     def rollback_selection(self, selection: AdmissionBatch) -> None:  # 已选准入批次 → 取消保护并还原 FCFS 队列；无返回值

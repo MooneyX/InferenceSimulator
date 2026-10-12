@@ -372,7 +372,11 @@ def test_presets_and_unsupported_modes() -> None:
         assert group["sink_dtype"] is None
         assert group["topk"] is None
     assert "total_parameters" not in catalog.json()["models"][0]
-    assert catalog.json()["scenarios"][1]["stage"] == "requires_tp_ep"
+    assert set(catalog.json()) == {"models", "hardware"}
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    assert "ScenarioCatalogEntry" not in schemas
+    assert set(schemas["PresetCatalog"]["properties"]) == {"models", "hardware"}
+    assert "effective_fp8_tflops" in schemas["HardwareSpec"]["properties"]
     for model in catalog.json()["models"][:2]:
         request = payload()
         request["inference"]["model"] = model

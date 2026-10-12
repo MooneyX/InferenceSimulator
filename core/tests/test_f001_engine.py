@@ -3,25 +3,28 @@
 直接注入缓存种子或 withdraw/requeue 的用例是组件状态测试，不是端到端恢复。
 """
 
-from dataclasses import fields
 
 import pytest
 
 from simcore import simulate
-from simcore.engine import Engine, run_engine
-from simcore.events import DoneTrace, EventKind
+from simcore.client import ClientDriver
+from simcore.coordinator import Coordinator
+from simcore.engine import Engine
+from simcore.events import EventKind
 from simcore.prefix_hash import encode
-from test_schemas import manual_config, runtime_config
+from simcore.router import Router
 from simcore.schemas import (
-    Arrival,
     EngineConfig,
     FixedLength,
     InferenceRequest,
     PerfModelConfig,
     SessionConfig,
     SyntheticWorkloadConfig,
+    TurnPlan,
     WorkloadConfig,
+    WorkloadPlan,
 )
+from test_schemas import manual_config, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=5, decode_d2=1)
 
@@ -51,10 +54,8 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
     assert started == (65, ())
     assert engine._prefix_cache.page(encode(0, 0)) is None
     assert engine.finish_step(65) == ()
-    prefill_step = list(engine._log.steps())[-1]
-    assert prefill_step.phase == "PREFILL"
-    assert prefill_step.admitted == (0,) and prefill_step.num_decoding == 0
-    assert prefill_step.batch_total_tokens == 65 and prefill_step.allocated_blocks == 2
+    assert engine._running == {0: 1}
+    assert engine._prefix_cache.resident_pages == 2
     assert engine._prefix_cache.state(0).k == 65
     assert engine._prefix_cache.state(0).f == 64
     assert engine._prefix_cache.private_page_count(0) == 1
@@ -62,15 +63,13 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
     assert engine._prefix_cache.snapshot().reserved_future_blocks == 0
     assert engine.start_step(65, 1) == (71, ())
     assert engine.finish_step(136) == ()
-    decode_step = list(engine._log.steps())[-1]
-    assert decode_step.phase == "DECODE"
-    assert decode_step.num_decoding == 1 and decode_step.batch_total_tokens == 66
+    assert engine._running == {0: 2}
     assert engine._prefix_cache.state(0).k == 66
     assert engine.start_step(136, 2) == (72, (0,))
     assert engine.finish_step(208) == (0,)
     assert engine._prefix_cache.state(0).k == 67  # 最后采样输出不建立 KV
     engine.complete(208, 0)
-    assert DoneTrace(208, 0, 67) in engine.finalize().trace
+    assert engine.finalize().cache_snapshot.active_blocks == 0
     run = engine.finalize()
     assert (run.records[0].prefill_end, run.records[0].finish) == (65, 208)
     assert run.cache_snapshot.resident_blocks == run.cache_snapshot.evictable_blocks == 1
@@ -113,23 +112,14 @@ def test_exclusive_mode_prefills_next_arrival_without_decoding_existing_request(
     engine.submit(request(1), 4)
     assert engine.start_step(4, 1) == (4, ())
     assert engine.finish_step(8) == ()
-    prefill_step = list(engine._log.steps())[-1]
-    assert prefill_step.phase == "PREFILL"
-    assert prefill_step.admitted == (1,) and prefill_step.num_decoding == 0
+    assert engine._running == {0: 1, 1: 1}
     assert engine._prefix_cache.state(0).k == 4
     assert engine.start_step(8, 2) == (15, (0, 1))
     assert engine.finish_step(23) == (0, 1)
-    decode_step = list(engine._log.steps())[-1]
-    assert decode_step.phase == "DECODE"
-    assert decode_step.allocated_blocks == 2 and decode_step.num_decoding == 2
-    assert decode_step.batch_total_tokens == 10
+    assert engine._prefix_cache.state(0).k == engine._prefix_cache.state(1).k == 5
     engine.complete(23, 0)
     engine.complete(23, 1)
-    assert [item.phase for item in engine.finalize().trace.steps()] == [
-        "PREFILL",
-        "PREFILL",
-        "DECODE",
-    ]
+    assert engine.finalize().num_engine_steps == 3
 
 
 def test_fused_mode_only_decodes_request_running_at_step_start() -> None:
@@ -140,20 +130,14 @@ def test_fused_mode_only_decodes_request_running_at_step_start() -> None:
     engine.submit(request(1), 4)
     assert engine.start_step(4, 1) == (10, (0,))
     assert engine.finish_step(14) == (0,)
-    mixed_step = list(engine._log.steps())[-1]
-    assert mixed_step.phase == "MIXED"
-    assert mixed_step.admitted == (1,) and mixed_step.num_decoding == 1
-    assert mixed_step.batch_total_tokens == 9 and mixed_step.allocated_blocks == 2
+    assert engine._prefix_cache.state(0).k == 5
     assert engine._prefix_cache.state(1).k == 4
+    assert engine._running == {1: 1}
     engine.complete(14, 0)
     assert engine.start_step(14, 2) == (10, (1,))
     assert engine.finish_step(24) == (1,)
     engine.complete(24, 1)
-    assert [item.phase for item in engine.finalize().trace.steps()] == [
-        "PREFILL",
-        "MIXED",
-        "DECODE",
-    ]
+    assert engine.finalize().num_engine_steps == 3
 
 
 def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> None:
@@ -162,7 +146,6 @@ def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> Non
     engine.submit(request(1, prompt=65, maximum=1, inherited=shared), 0)
     engine.submit(request(2, prompt=65, maximum=1, inherited=shared), 0)
     assert engine.start_step(0, 0) == (130, (1, 2))
-    assert list(engine._log.steps())[-1].allocated_blocks == 4
     assert engine._prefix_cache.page(shared[0]) is None
     assert engine._prefix_cache.resident_pages == 4
     assert engine.finish_step(130) == (1, 2)
@@ -188,9 +171,7 @@ def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
     engine.submit(request(1, prompt=65, maximum=1, inherited=(encode(0, 0),)), 4096)
     assert engine.start_step(4096, 1) == (129, (1,))
     assert engine.finish_step(4225) == (1,)
-    prefill_step = list(engine._log.steps())[-1]
-    assert prefill_step.admitted == (1,)
-    assert prefill_step.matched_cache_tokens == 64 and prefill_step.batch_total_tokens == 65
+    assert engine._admission_stats[1] == (64, 64)
     engine.complete(4225, 1)
     assert engine.finalize().records[1].actual_prefill_tokens == 1
 
@@ -198,13 +179,18 @@ def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
 def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=4)
     zero = PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0)
-    arrivals = (Arrival(request_id=0, sim_time=1, prompt_len=5, output_len=3),)
-    first = run_engine(cfg, zero, arrivals)
-    second = run_engine(cfg, zero, arrivals)
+    plan = WorkloadPlan({0: TurnPlan(0, 0, None, 1, None, 5, 3, 3, 0)}, (0,), {})
+    first = Coordinator(
+        (Engine(runtime_config(cfg, zero), output_targets={}),),
+        ClientDriver(plan, cfg), Router(1),
+    ).run()[0]
+    second = Coordinator(
+        (Engine(runtime_config(cfg, zero), output_targets={}),),
+        ClientDriver(plan, cfg), Router(1),
+    ).run()[0]
     assert first.num_engine_steps == 3
     assert first.records[0].finish == first.records[0].arrival == 1
-    assert first.records == second.records
-    assert tuple(first.trace.steps()) == tuple(second.trace.steps())
+    assert first == second
     assert first.cache_snapshot.reserved_future_blocks == 0
 
 
@@ -240,7 +226,7 @@ def test_empty_step_is_rejected_without_advancing_clock() -> None:
     engine = make_engine({})
     with pytest.raises(RuntimeError, match="没有可执行"):
         engine.start_step(0, 0)
-    assert engine.num_steps == 0 and tuple(engine._log.steps()) == ()
+    assert engine.num_steps == 0
 
 
 def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> None:
@@ -286,8 +272,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     engine.on_transfer_done(kind, transfer_id, now)
     assert engine.start_step(now, 0) == (2, (1, 2))
     assert engine.finish_step(7) == (1, 2)
-    trace = next(engine._log.steps())
-    assert trace.phase == "PREFILL" and trace.duration == 2
+    assert engine.num_steps == 1
     promoted_page = cache.page(shared)
     assert promoted_page is not None and promoted_page.tier == "L1"
     assert promoted_page.ref_count == 2
@@ -346,7 +331,7 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
     assert engine._running[0] == 1 and engine._prefill_end[0] == 4
     assert engine.start_step(9, 1) == (10, (0,))
     assert engine.finish_step(19) == (0,)
-    assert [step.phase for step in engine._log.steps()] == ["PREFILL", "DECODE"]
+    assert engine.num_steps == 2
     engine.complete(19, 0)
     run = engine.finalize()
     assert run.records[0].finish == 19
@@ -398,9 +383,8 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
     assert 0 not in engine._running
     engine.on_transfer_done(kind, transfer_id, now)
     assert engine.finish_step(18) == (1,)
-    trace = list(engine._log.steps())[-1]
-    assert trace.phase == "DECODE" and trace.num_decoding == 1
-    assert trace.restored == ()
+    assert 0 not in engine._running
+    assert engine._pending_selection is not None
     engine.complete(18, 1)
     assert engine.start_step(18, 2) == (0, ())
     assert engine.finish_step(18) == ()
@@ -464,13 +448,12 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     engine.on_transfer_done(kind, transfer_id, now)
     assert engine.start_step(now, 0) == (1, (1,))
     assert engine.finish_step(15) == (1,)
-    trace = next(engine._log.steps())
-    assert trace.phase == "PREFILL" and trace.duration == 1
+    assert engine.num_steps == 1
     engine.complete(15, 1)
     run = engine.finalize()
     assert run.records[0].l3_hit_tokens == 4
     assert run.restore_bytes == 16 and run.restore_time_ms == 14
-    assert (run.l3_promotions, run.l2_promotions, run.promotions) == (1, 1, 2)
+    assert run.promotions == 2
     assert run.l3_snapshot is not None
     assert run.l3_snapshot.free_blocks + run.l3_snapshot.resident_blocks == 2
 
@@ -558,17 +541,17 @@ def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -
         l2_latency_ms=3,
         l3_latency_ms=5,
     )
-    arrivals = (
-        Arrival(request_id=0, sim_time=0, prompt_len=5, output_len=3, max_new_tokens=3),
-        Arrival(request_id=1, sim_time=5, prompt_len=4, output_len=2, max_new_tokens=2),
-    )
-    old = run_engine(legacy, PERF, arrivals)
-    new = run_engine(explicitly_disabled, extra_perf, arrivals)
-    for field in fields(old):
-        if field.name != "trace":
-            assert getattr(old, field.name) == getattr(new, field.name), field.name
-    assert tuple(old.trace) == tuple(new.trace)
-    assert [record.model_dump() for record in old.records] == [
-        record.model_dump() for record in new.records
-    ]
+    plan = WorkloadPlan({
+        0: TurnPlan(0, 0, None, 0, None, 5, 3, 3, 0),
+        1: TurnPlan(1, 1, None, 5, None, 4, 2, 2, 0),
+    }, (0, 1), {})
+    old = Coordinator(
+        (Engine(runtime_config(legacy, PERF), output_targets={}),),
+        ClientDriver(plan, legacy), Router(1),
+    ).run()[0]
+    new = Coordinator(
+        (Engine(runtime_config(explicitly_disabled, extra_perf), output_targets={}),),
+        ClientDriver(plan, explicitly_disabled), Router(1),
+    ).run()[0]
+    assert old == new
     assert new.promotions == new.demotions == new.restore_bytes == new.restore_time_ms == 0

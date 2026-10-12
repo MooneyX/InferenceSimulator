@@ -5,6 +5,7 @@ import pytest
 from simcore.kv_cache import TierSnapshot
 from simcore.metrics import compute_metrics, percentile
 from simcore.schemas import RequestRecord
+from test_schemas import metric_inputs
 
 
 def rec(
@@ -22,6 +23,7 @@ def rec(
         prefill_end=prefill_end,
         finish=finish,
         prompt_len=10,
+        actual_prefill_tokens=10,
         output_len=output_len,
     )
 
@@ -68,19 +70,21 @@ class TestPercentile:
 class TestTTFT:
     def test_ttft_is_prefill_end_minus_arrival(self) -> None:
         """TTFT 含排队时间：从到达算起，而非从 prefill_start。"""
-        m = compute_metrics([rec(0, 10.0, 25.0, 25.0, 1, prefill_start=20.0)])
+        m = compute_metrics(**metric_inputs(), records=[rec(0, 10.0, 25.0, 25.0, 1, prefill_start=20.0)])
         assert (m.ttft_mean, m.ttft_p50, m.ttft_p99) == (15.0, 15.0, 15.0)
 
     def test_ttft_stats(self) -> None:
         records = [rec(i, 0.0, float(ttft), 100.0, 1) for i, ttft in enumerate([10, 20, 30, 40])]
-        m = compute_metrics(records)
+        m = compute_metrics(**metric_inputs(), records=records)
         assert m.ttft_mean == pytest.approx(25.0)
         assert m.ttft_p50 == pytest.approx(25.0)
         assert m.ttft_p99 == pytest.approx(39.7)  # h=2.97
 
     def test_order_independent(self) -> None:
         records = [rec(i, 0.0, float(t), 100.0, 1) for i, t in enumerate([40, 10, 30, 20])]
-        assert compute_metrics(records) == compute_metrics(sorted(records, key=lambda r: r.id))
+        assert compute_metrics(records, **metric_inputs()) == compute_metrics(
+            sorted(records, key=lambda r: r.id), **metric_inputs()
+        )
 
 
 class TestTPOT:
@@ -90,32 +94,32 @@ class TestTPOT:
             rec(0, 0.0, 10.0, 20.0, 2),  # 10 ms / 1 token = 10
             rec(1, 0.0, 10.0, 40.0, 11),  # 30 ms / 10 token = 3
         ]
-        m = compute_metrics(records)
+        m = compute_metrics(**metric_inputs(), records=records)
         # 按请求平均 = 6.5；若按 token 加权则为 40 / 11 ≈ 3.64
         assert m.tpot_mean == pytest.approx(6.5)
 
     def test_single_token_requests_excluded(self) -> None:
         records = [rec(0, 0.0, 10.0, 10.0, 1), rec(1, 0.0, 10.0, 30.0, 3)]
-        assert compute_metrics(records).tpot_mean == pytest.approx(10.0)
+        assert compute_metrics(**metric_inputs(), records=records).tpot_mean == pytest.approx(10.0)
 
     def test_all_single_token_gives_none(self) -> None:
         records = [rec(0, 0.0, 10.0, 10.0, 1), rec(1, 5.0, 12.0, 12.0, 1)]
-        assert compute_metrics(records).tpot_mean is None
+        assert compute_metrics(**metric_inputs(), records=records).tpot_mean is None
 
 
 class TestThroughputAndMakespan:
     def test_makespan_from_first_arrival_to_last_finish(self) -> None:
         records = [rec(0, 100.0, 110.0, 150.0, 2), rec(1, 120.0, 130.0, 600.0, 2)]
-        assert compute_metrics(records).makespan == pytest.approx(500.0)
+        assert compute_metrics(**metric_inputs(), records=records).makespan == pytest.approx(500.0)
 
     def test_throughput_in_requests_per_second(self) -> None:
         """2 个请求 / 500 ms = 4 请求/秒。"""
         records = [rec(0, 100.0, 110.0, 150.0, 2), rec(1, 120.0, 130.0, 600.0, 2)]
-        assert compute_metrics(records).throughput == pytest.approx(4.0)
+        assert compute_metrics(**metric_inputs(), records=records).throughput == pytest.approx(4.0)
 
     def test_zero_makespan_gives_none_throughput(self) -> None:
         records = [rec(0, 5.0, 5.0, 5.0, 1), rec(1, 5.0, 5.0, 5.0, 1)]
-        m = compute_metrics(records)
+        m = compute_metrics(**metric_inputs(), records=records)
         assert m.makespan == 0.0 and m.throughput is None
 
 
@@ -148,7 +152,7 @@ class TestPrefixMetrics:
             actual_prefill_tokens=1,
             l1_hit_tokens=4,
         )
-        result = compute_metrics([first, second], page_size=2, workload_mode="synthetic")
+        result = compute_metrics([first, second], **(metric_inputs() | {"page_size": 2}))
         assert result.total_input_tokens == 15
         assert result.ideal_hit_tokens == 4
         assert result.actual_prefix_hit_rate == pytest.approx(4 / 15)
@@ -178,7 +182,7 @@ class TestPrefixMetrics:
 
 class TestEdgeCases:
     def test_empty_has_undefined_success_metrics(self) -> None:
-        result = compute_metrics([])
+        result = compute_metrics(**metric_inputs(), records=[])
         assert result.ttft_mean is None and result.ttft_p50 is None
         assert result.ttft_p99 is None and result.tpot_mean is None
         assert result.throughput is None and result.makespan == 0
@@ -188,15 +192,11 @@ class TestEdgeCases:
         l2 = TierSnapshot(3, 2, 1, 1, 1, 3, 4)
         l3 = TierSnapshot(2, 1, 0, 1, 1, 1, 2)
         records = [rec(0, 0.0, 10.0, 20.0, 2)] if has_success else []
-        metrics = compute_metrics(
-            records,
-            l2_snapshot=l2,
-            l3_snapshot=l3,
-            promotions=5,
-            demotions=6,
-            restore_bytes=1024,
-            restore_time_ms=4.5,
-        )
+        inputs = metric_inputs() | {
+            "l2_snapshot": l2, "l3_snapshot": l3, "promotions": 5, "demotions": 6,
+            "restore_bytes": 1024, "restore_time_ms": 4.5,
+        }
+        metrics = compute_metrics(records, **inputs)
         assert (metrics.l2_capacity_blocks, metrics.l2_resident_blocks) == (3, 2)
         assert (metrics.l2_active_blocks, metrics.l2_evictable_blocks) == (1, 1)
         assert (metrics.l2_free_blocks, metrics.l2_peak_resident_blocks, metrics.l2_evictions) == (
@@ -217,5 +217,5 @@ class TestEdgeCases:
         assert metrics.model_validate_json(metrics.model_dump_json()) == metrics
 
     def test_accepts_tuple(self) -> None:
-        m = compute_metrics((rec(0, 0.0, 10.0, 30.0, 3),))
+        m = compute_metrics(**metric_inputs(), records=(rec(0, 0.0, 10.0, 30.0, 3),))
         assert m.ttft_mean == 10.0

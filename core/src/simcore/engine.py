@@ -3,13 +3,13 @@
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
 
 from simcore.analytical import step_cost
-from simcore.events import ArrivalTrace, DoneTrace, EventKind, EventLog, StepTrace
+from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, L1Snapshot, TieredKVCache, TierSnapshot
 from simcore.perf_model import (
     DecodeWork,
@@ -17,22 +17,19 @@ from simcore.perf_model import (
     StepWorkload,
     workload_time,
 )
-from simcore.runtime import RuntimeConfig, runtime_from_components
+from simcore.runtime import RuntimeConfig
 from simcore.scheduler import AdmissionBatch, F001Scheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
     Arrival,
-    EngineConfig,
     InferenceRequest,
-    PerfModelConfig,
     RequestCompletion,
     RequestRecord,
     SkippedRequest,
-    validate_kv_config,
 )
 
-__all__ = ["Engine", "EngineRun", "run_engine"]
+__all__ = ["Engine", "EngineRun"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +42,6 @@ class EngineRun:
         num_engine_steps: 执行的引擎步数。
         sim_start: 首请求到达时刻（ms）；无请求时为 0。
         sim_end: 最晚请求完成或失败时刻（ms）；无请求时为 0。
-        trace: 完整事件流（``record_trace=False`` 时为空）。
         cache_snapshot: 仿真结束时的物理 L1 容量快照。
     """
 
@@ -54,26 +50,16 @@ class EngineRun:
     num_engine_steps: int
     sim_start: float
     sim_end: float
-    trace: EventLog
     cache_snapshot: L1Snapshot
+    l2_snapshot: TierSnapshot
+    l3_snapshot: TierSnapshot
     l1_evictions: int = 0
     l1_peak_resident_blocks: int = 0
     aborted_requests: tuple[AbortedRequest, ...] = ()
     skipped_requests: tuple[SkippedRequest, ...] = ()
     replayed_prefill_tokens: int = 0
-    l2_snapshot: TierSnapshot | None = None
-    l3_snapshot: TierSnapshot | None = None
-    l2_evictions: int = 0
-    l3_evictions: int = 0
-    l2_peak_resident_blocks: int = 0
-    l3_peak_resident_blocks: int = 0
     promotions: int = 0
     demotions: int = 0
-    l2_promotions: int = 0
-    l3_promotions: int = 0
-    l1_to_l2_demotions: int = 0
-    l2_to_l3_demotions: int = 0
-    cache_deletions: int = 0
     restore_bytes: int = 0
     restore_time_ms: float = 0.0
     analysis: AnalyticalSummary | None = None
@@ -82,45 +68,8 @@ class EngineRun:
 @dataclass(slots=True)
 class _TransferTask:
     chunk_id: str
-    source: str
-    destination: str
     waiting_requests: set[int]
     service_ms: float
-
-
-def run_engine(
-    engine: EngineConfig,
-    perf: PerfModelConfig,
-    arrivals: Iterable[Arrival],
-    *,
-    record_trace: bool = True,
-) -> EngineRun:  # 引擎配置、计时系数、到达序列及轨迹开关 → 单实例仿真结果
-    """执行一场仿真。
-
-    Args:
-        engine: 引擎配置。
-        perf: 性能模型系数。
-        arrivals: 到达序列，``request_id`` 须唯一。经事件堆排序，故不要求输入有序；
-            同刻到达按请求 ID 排序处理。
-        record_trace: 是否保存事件流；基准测试可关闭以剥离记录开销。
-
-    Raises:
-        ValueError: ``request_id`` 重复。
-    """
-    from simcore.client import ClientDriver
-    from simcore.coordinator import Coordinator
-    from simcore.workload import plan_from_arrivals
-
-    validate_kv_config(engine, perf)
-    plan = plan_from_arrivals(arrivals, engine)
-    client = ClientDriver(plan, engine)
-    from simcore.router import Router
-
-    return Coordinator(
-        (Engine(runtime_from_components(engine, perf), output_targets={}, record_trace=record_trace),),
-        client,
-        Router(1),
-    ).run()[0]
 
 
 class Engine:
@@ -131,7 +80,6 @@ class Engine:
         runtime: RuntimeConfig,
         *,
         output_targets: Mapping[int, int],
-        record_trace: bool = True,
     ) -> None:
         engine, perf = runtime.engine, runtime.perf_model
         self._links = runtime.links
@@ -151,7 +99,6 @@ class Engine:
         self._admission_tiers: dict[int, tuple[int, int, int]] = {}  # 请求 ID → 首次准入时 L1/L2/L3 命中 token 数
         self._restore_bytes = 0
         self._restore_time_ms = 0.0
-        self._log = EventLog(enabled=record_trace)
         self._requests: dict[int, InferenceRequest] = {}
         self._arrivals: dict[int, Arrival] = {}
         self._arrival_times: dict[int, float] = {}
@@ -215,7 +162,7 @@ class Engine:
         if existing is not None:
             self._transfers[existing].waiting_requests.add(request_id)
             return existing
-        source = self._prefix_cache.reserve_transfer(chunk_id, destination)
+        self._prefix_cache.reserve_transfer(chunk_id, destination)
         link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
         if link is None:
             raise ValueError("传输链路须配置有效带宽和 KV 字节数")
@@ -226,7 +173,7 @@ class Engine:
         transfer_id = self._next_transfer_id
         self._next_transfer_id += 1
         self._transfers[transfer_id] = _TransferTask(
-            chunk_id, source, destination, {request_id}, service_ms
+            chunk_id, {request_id}, service_ms
         )
         self._transfer_by_chunk[chunk_id] = transfer_id
         kind = EventKind.L3_L2_DONE if destination == "L2" else EventKind.L2_L1_DONE
@@ -248,14 +195,12 @@ class Engine:
         if request.is_trace and (output_len == 0 or output_len > request.max_new_tokens):
             self._requests[key] = request
             self._arrival_times[key] = now_ms
-            self._log.record(ArrivalTrace(now_ms, key, request.prompt_len, output_len))
             self._abort(key, now_ms, "invalid_trace_output" if output_len == 0 else "output_exceeds_kv_capacity")
             return False
         if request.max_new_tokens > 0 and not 1 <= output_len <= request.max_new_tokens:
             raise ValueError("请求实际输出长度与可见上限不一致")
         self._requests[key] = request
         self._arrival_times[key] = now_ms
-        self._log.record(ArrivalTrace(now_ms, key, request.prompt_len, output_len))
         if not self._prefix_scheduler.enqueue(request, now_ms):
             self._abort(key, now_ms, "input_exceeds_kv_capacity")
             return False
@@ -388,7 +333,7 @@ class Engine:
         if selection is not None and self._pending_loads:
             if not self._running:
                 return None
-            selection = AdmissionBatch((), (), (), True, 0, 0, 0)
+            selection = AdmissionBatch((), (), ())
         elif selection is not None:
             self._pending_selection = None
         else:
@@ -467,13 +412,6 @@ class Engine:
             key: RunningRequest(self._requests[key], generated)
             for key, generated in self._running.items()
         }
-        before = cache.snapshot() if self._log.enabled else None
-        evictions_before = cache.evictions
-        l2_evictions_before = cache.tier_snapshot("L2").evictions
-        l3_evictions_before = cache.tier_snapshot("L3").evictions
-        promotions_before = cache.promotions
-        demotions_before = cache.demotions
-        aborts_before = len(self._recent_aborts)
         withdrawn: tuple[tuple[int, int], ...] = ()
         if self._engine_config.pd_mutually_exclusive:
             if not selection.admitted and not selection.restore_only and running:
@@ -624,52 +562,6 @@ class Engine:
         )
         finished.sort()
         self._pending_finished = tuple(finished)
-        if before is not None:
-            cache_after = cache.snapshot()
-            self._log.record(
-                StepTrace(
-                    time=now_ms,
-                    step_index=step_index,
-                    duration=duration,
-                    admitted=tuple(
-                        candidate.waiting.request.request_id for candidate in selection.admitted
-                    ),
-                    forced=(),
-                    num_decoding=len(decode),
-                    batch_total_tokens=sum(item.context_after for item in prefill)
-                    + sum(item.context_after_decode for item in decode),
-                    kv_used=sum(cache.state(key).k for key in self._running)
-                    + sum(cache.state(key).k for key in self._pending_done),
-                    kv_overflow=0,
-                    finished=tuple(finished),
-                    probes=len(selection.admitted),
-                    matched_cache_tokens=sum(item.reused_tokens for item in prefill),
-                    actual_hit_tokens=sum(item.reused_tokens for item in prefill),
-                    allocated_blocks=allocated_pages,
-                    evicted_blocks=cache.evictions - evictions_before,
-                    l1_active_before=before.active_blocks,
-                    l1_evictable_before=before.evictable_blocks,
-                    l1_free_before=before.free_blocks,
-                    l1_active_after=cache_after.active_blocks,
-                    l1_evictable_after=cache_after.evictable_blocks,
-                    l1_free_after=cache_after.free_blocks,
-                    l1_internal_fragmentation_tokens=cache_after.internal_fragmentation_tokens,
-                    phase=workload.phase,
-                    withdrawn=tuple(key for key, _ in withdrawn),
-                    aborted=tuple(sorted(self._recent_aborts[aborts_before:])),
-                    restored=tuple(
-                        sorted(
-                            item.request.request_id
-                            for item in (*selection.restored, *selection.restore_only)
-                        )
-                    ),
-                    l1_evictions=cache.evictions - evictions_before,
-                    l2_evictions=cache.tier_snapshot("L2").evictions - l2_evictions_before,
-                    l3_evictions=cache.tier_snapshot("L3").evictions - l3_evictions_before,
-                    promotions=cache.promotions - promotions_before,
-                    demotions=cache.demotions - demotions_before,
-                )
-            )
         for key in finished:
             del self._running[key]
             self._pending_done[key] = end  # KV 等 Done 事件结算时才释放
@@ -688,9 +580,7 @@ class Engine:
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
             raise ValueError(f"请求 {request_id} 未待结算或完成时刻不符")
-        released = self._prefix_cache.state(request_id).k
         self._prefix_cache.finish(request_id)
-        self._log.record(DoneTrace(now_ms, request_id, released))
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
         if not self.has_work and not self._pending_done:
@@ -743,7 +633,6 @@ class Engine:
             num_engine_steps=self._num_steps,
             sim_start=sim_start,
             sim_end=sim_end,
-            trace=self._log,
             cache_snapshot=self._prefix_cache.snapshot(),
             l1_evictions=self._prefix_cache.evictions,
             l1_peak_resident_blocks=self._prefix_cache.peak_resident_pages,
@@ -752,17 +641,8 @@ class Engine:
             replayed_prefill_tokens=sum(self._replayed_tokens.values()),
             l2_snapshot=self._prefix_cache.tier_snapshot("L2"),
             l3_snapshot=self._prefix_cache.tier_snapshot("L3"),
-            l2_evictions=self._prefix_cache.tier_snapshot("L2").evictions,
-            l3_evictions=self._prefix_cache.tier_snapshot("L3").evictions,
-            l2_peak_resident_blocks=self._prefix_cache.tier_snapshot("L2").peak_resident_blocks,
-            l3_peak_resident_blocks=self._prefix_cache.tier_snapshot("L3").peak_resident_blocks,
             promotions=self._prefix_cache.promotions,
             demotions=self._prefix_cache.demotions,
-            l2_promotions=self._prefix_cache.l2_promotions,
-            l3_promotions=self._prefix_cache.l3_promotions,
-            l1_to_l2_demotions=self._prefix_cache.l1_to_l2_demotions,
-            l2_to_l3_demotions=self._prefix_cache.l2_to_l3_demotions,
-            cache_deletions=self._prefix_cache.deletions,
             restore_bytes=self._restore_bytes,
             restore_time_ms=self._restore_time_ms,
             analysis=self._analysis,

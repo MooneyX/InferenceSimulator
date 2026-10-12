@@ -109,11 +109,6 @@ class TieredKVCache:
         self._access_seq = 0
         self.promotions = 0
         self.demotions = 0
-        self.deletions = 0
-        self.l2_promotions = 0
-        self.l3_promotions = 0
-        self.l1_to_l2_demotions = 0
-        self.l2_to_l3_demotions = 0
 
     @property
     def resident_pages(self) -> int:  # L1 计数 → 当前驻留页数
@@ -277,7 +272,6 @@ class TieredKVCache:
                 lower.resident -= 1
                 lower.evictable -= 1
                 lower.evictions += 1
-                self.deletions += 1
                 self._access_seq += 1
                 self._entries[chunk_id] = CacheEntry(chunk_id, "L1", 1, self._access_seq)
                 self._tiers["L1"].ids.add(chunk_id)
@@ -452,20 +446,10 @@ class TieredKVCache:
             old.evictable -= 1
         if destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(source):
             self.promotions += 1
-            if source == "L2":
-                self.l2_promotions += 1
-            else:
-                self.l3_promotions += 1
         else:
             old.evictions += 1
-            if destination is None:
-                self.deletions += 1
-            else:
+            if destination is not None:
                 self.demotions += 1
-                if (source, destination) == ("L1", "L2"):
-                    self.l1_to_l2_demotions += 1
-                elif (source, destination) == ("L2", "L3"):
-                    self.l2_to_l3_demotions += 1
         if destination is None:
             del self._entries[chunk_id]
             return

@@ -1,7 +1,6 @@
 """顶层入口：负载客户端 → 统一事件时钟 → 引擎 → 指标。
 
 开环模式按独立泊松时钟投放请求；显式闭环模式只预先规划根到达。
-事件流不经 API 暴露，默认关闭记录；手写 Arrival 由 ``engine.run_engine`` 适配。
 """
 
 from dataclasses import fields
@@ -60,7 +59,7 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
             client = ClientDriver(build_plan(synthetic, engine_config), engine_config)
     runs = Coordinator(
         tuple(
-            Engine(runtime, output_targets={}, record_trace=False)
+            Engine(runtime, output_targets={})
             for _ in range(config.num_instances)
         ),
         client,

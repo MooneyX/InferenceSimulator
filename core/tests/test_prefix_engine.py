@@ -7,15 +7,14 @@ import pytest
 from simcore.client import ClientDriver
 from simcore.engine import Engine
 from simcore.prefix_hash import encode
-from test_schemas import runtime_config
 from simcore.schemas import (
-    Arrival,
     EngineConfig,
     InferenceRequest,
     PerfModelConfig,
+    TurnPlan,
     WorkloadPlan,
 )
-from simcore.workload import plan_from_arrivals
+from test_schemas import runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
 
@@ -72,12 +71,10 @@ def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> No
 @pytest.mark.parametrize("output", [1, 2, 3, 4, 5])
 def test_completed_parent_publishes_only_established_kv(prompt: int, output: int) -> None:
     config = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=4)
-    root_plan = plan_from_arrivals(
-        (Arrival(request_id=7, sim_time=0, prompt_len=prompt, output_len=output),), config
-    )
+    root = TurnPlan(7, 7, None, 0, None, prompt, output, output, 0)
     blocks = (prompt + output - 1) // config.page_size
     child = replace(
-        root_plan.turns[7],
+        root,
         request_id=8,
         parent_request_id=7,
         root_arrival_time_ms=None,
@@ -86,7 +83,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         output_len=1,
         ideal_reuse_blocks=blocks,
     )
-    plan = WorkloadPlan({7: root_plan.turns[7], 8: child}, (7,), {7: (8,)})
+    plan = WorkloadPlan({7: root, 8: child}, (7,), {7: (8,)})
     client = ClientDriver(plan, config)
     engine = Engine(runtime_config(config, PERF), output_targets={7: output, 8: 1})
     parent = client.on_wakeup(client.initial_wakeups()[0])

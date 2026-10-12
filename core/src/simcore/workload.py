@@ -1,20 +1,17 @@
-"""合成负载规划及手写 Arrival 到达序列的适配。
+"""合成负载规划。
 
 ``build_plan`` 只生成 session 拓扑、累积上下文长度、理想继承块数和根发送计划，不物化 token
 或预生成块 ID；根到达、根/增量长度、拓扑分别使用稳定派生的独立随机流。
-``plan_from_arrivals`` 将手写到达序列转换为各自独立的根 session。
 
 依赖层级：``schemas``、``prefix_hash.stable_derive``。
 """
 
 import math
 import random
-from collections.abc import Iterable
 from typing import cast
 
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
-    Arrival,
     EngineConfig,
     FixedLength,
     LengthDist,
@@ -25,7 +22,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 
-__all__ = ["build_plan", "plan_from_arrivals", "sample_length"]
+__all__ = ["build_plan", "sample_length"]
 
 _MS_PER_SECOND = 1000.0
 
@@ -178,33 +175,4 @@ def build_plan(cfg: SyntheticWorkloadConfig, engine: EngineConfig) -> WorkloadPl
         root_request_ids=tuple(roots),
         children=children,
         constructed_ideal_prefix_hit_rate=achieved,
-    )
-
-
-def plan_from_arrivals(arrivals: Iterable[Arrival], engine: EngineConfig) -> WorkloadPlan:  # 手写到达序列与引擎配置 → 独立根会话的计划
-    """将手写 Arrival 到达序列适配为各自独立的根 session。"""
-    turns: dict[int, TurnPlan] = {}
-    roots: list[int] = []
-    for arrival in arrivals:
-        key = arrival.request_id
-        if key in turns:
-            raise ValueError(f"重复的 request_id: {key}")
-        max_new_tokens = _visible_limit(arrival.prompt_len, arrival.max_new_tokens, engine)
-        turns[key] = TurnPlan(
-            request_id=key,
-            session_id=key,
-            parent_request_id=None,
-            root_arrival_time_ms=arrival.sim_time,
-            think_time_ms=None,
-            prompt_len=arrival.prompt_len,
-            output_len=min(arrival.output_len, max_new_tokens),
-            max_new_tokens=max_new_tokens,
-            ideal_reuse_blocks=0,
-        )
-        roots.append(key)
-    roots.sort(key=lambda key: (turns[key].root_arrival_time_ms or 0, key))
-    return WorkloadPlan(
-        turns=turns,
-        root_request_ids=tuple(roots),
-        children={},
     )

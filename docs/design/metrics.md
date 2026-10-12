@@ -2,6 +2,8 @@
 
 `metrics.compute_metrics` 以**已完成请求**的区间记录计算时延、分层前缀命中和首次 Prefill，并结合全场回撤重算量、L1/L2/L3 缓存快照与迁移、restore 计数；已发送但失败和未发送而跳过的请求不进入成功请求指标分母。多个实例共享一条到达时间线：请求记录和逐实例指标标注 `instance_id`，全场延迟、分位数和吞吐从合并请求重新计算；容量、末态驻留及迁移量按独占实例求和。全场 `l1/l2/l3_peak_resident_blocks` 为各实例各自峰值之和，是容量规划上界，**不是同一时刻的全场峰值**。字段定义由 `core/src/simcore/schemas.py` 提供，HTTP 传输见 [api.md](api.md)。下述单位除吞吐（请求/秒）、块数、token 数及传输字节数外均为 ms。
 
+`compute_metrics` 的计划、页大小、负载模式、三级快照及发送/迁移/重算统计均为必填输入；关闭的缓存层仍提供零容量快照。成功请求的 `RequestRecord.actual_prefill_tokens` 是必填非负整数，不再从缺省值回算。
+
 ## 时延与吞吐
 
 - 每请求 `TTFT = prefill_end - arrival`，返回均值、P50、P99。分位数先升序排序，再在位置 `(n-1)*q` 的两侧样本上线性插值。

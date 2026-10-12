@@ -52,7 +52,7 @@ def test_fcfs_failed_head_remains_waiting_while_running_decodes() -> None:
     scheduler.enqueue(request(1, maximum=30), 1)
     scheduler.enqueue(request(2), 1)
     batch = scheduler.select_prefill({0: RunningRequest(running, 1)})
-    assert batch.admitted == () and batch.blocked
+    assert batch.admitted == ()
     assert scheduler.num_waiting == 2
     assert cache.free_pages + cache.resident_pages == cache.capacity_pages
 

@@ -5,38 +5,7 @@ import random
 
 import pytest
 
-from simcore.events import (
-    ArrivalTrace,
-    DoneTrace,
-    Event,
-    EventFactory,
-    EventKind,
-    EventLog,
-    StepTrace,
-    TraceRecord,
-)
-
-
-def step_trace(
-    time: float,
-    step_index: int = 0,
-    admitted: tuple[int, ...] = (),
-    finished: tuple[int, ...] = (),
-    restored: tuple[int, ...] = (),
-) -> StepTrace:
-    return StepTrace(
-        time=time,
-        step_index=step_index,
-        duration=5.0,
-        admitted=admitted,
-        forced=(),
-        num_decoding=0,
-        batch_total_tokens=10,
-        kv_used=10,
-        kv_overflow=0,
-        finished=finished,
-        restored=restored,
-    )
+from simcore.events import Event, EventFactory, EventKind
 
 
 class TestOrdering:
@@ -142,70 +111,3 @@ class TestEventFactory:
         e = EventFactory().client_send(0.0, 0)
         with pytest.raises(AttributeError):
             e.time = 1.0  # type: ignore[misc]
-
-
-class TestEventLog:
-    def test_records_in_order(self) -> None:
-        log = EventLog()
-        entries: list[TraceRecord] = [
-            ArrivalTrace(1.0, 0, 10, 2),
-            step_trace(1.0),
-            DoneTrace(6.0, 0, 12),
-        ]
-        for e in entries:
-            log.record(e)
-        assert list(log) == entries and len(log) == 3
-
-    def test_equal_time_accepted(self) -> None:
-        log = EventLog()
-        log.record(DoneTrace(3.0, 0, 5))
-        log.record(ArrivalTrace(3.0, 1, 5, 1))
-        assert len(log) == 2
-
-    def test_time_regression_rejected(self) -> None:
-        log = EventLog()
-        log.record(ArrivalTrace(5.0, 0, 10, 2))
-        with pytest.raises(ValueError, match="倒退"):
-            log.record(ArrivalTrace(4.0, 1, 10, 2))
-
-    def test_disabled_log_still_validates_but_stores_nothing(self) -> None:
-        log = EventLog(enabled=False)
-        log.record(ArrivalTrace(5.0, 0, 10, 2))
-        assert len(log) == 0 and not log.enabled
-        with pytest.raises(ValueError):
-            log.record(ArrivalTrace(4.0, 1, 10, 2))
-
-    def test_steps_filter(self) -> None:
-        log = EventLog()
-        log.record(ArrivalTrace(0.0, 0, 10, 2))
-        log.record(step_trace(0.0, 0))
-        log.record(step_trace(5.0, 1))
-        assert [s.step_index for s in log.steps()] == [0, 1]
-
-    def test_for_request(self) -> None:
-        log = EventLog()
-        log.record(ArrivalTrace(0.0, 0, 10, 2))
-        log.record(ArrivalTrace(0.0, 1, 10, 2))
-        log.record(step_trace(0.0, 0, admitted=(0, 1)))
-        log.record(step_trace(5.0, 1, finished=(0,)))
-        log.record(DoneTrace(10.0, 0, 12))
-        log.record(step_trace(10.0, 2, finished=(1,)))
-        history = log.for_request(0)
-        assert [type(r).__name__ for r in history] == [
-            "ArrivalTrace",
-            "StepTrace",
-            "StepTrace",
-            "DoneTrace",
-        ]
-        assert len(log.for_request(1)) == 3
-        assert log.for_request(99) == []
-
-    def test_diagnostic_queries_include_restore_steps(self) -> None:
-        log = EventLog()
-        restored_step = step_trace(5.0, restored=(7,))
-        log.record(ArrivalTrace(0.0, 7, 10, 2))
-        log.record(restored_step)
-        log.record(DoneTrace(10.0, 7, 12))
-        assert len(log) == 3
-        assert list(log.steps()) == [restored_step]
-        assert log.for_request(7) == list(log)

@@ -6,10 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
-from simcore.engine import Engine, run_engine
+from simcore.engine import Engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
-from test_schemas import manual_config, runtime_config
 from simcore.schemas import (
     AbortedRequest,
     EngineConfig,
@@ -29,6 +28,7 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
+from test_schemas import manual_config, metric_inputs, runtime_config
 
 
 def config() -> SimConfig:
@@ -50,15 +50,13 @@ def config() -> SimConfig:
     )
 
 
-def test_direct_engine_and_run_engine_reject_missing_transfer_config() -> None:
+def test_direct_engine_rejects_missing_transfer_config() -> None:
     engine = EngineConfig(
         max_running_requests=1, max_total_tokens=8, page_size=4, l2_capacity_tokens=4
     )
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
     with pytest.raises(ValueError, match="kv_bytes_per_token"):
         Engine(runtime_config(engine, perf), output_targets={})
-    with pytest.raises(ValueError, match="kv_bytes_per_token"):
-        run_engine(engine, perf, [])
 
 
 def mixed_plan() -> WorkloadPlan:
@@ -158,7 +156,9 @@ def test_failed_before_success_is_counted_in_makespan_not_ttft_denominator() -> 
         output_len=3,
         actual_prefill_tokens=4,
     )
-    metrics = compute_metrics([successful], earliest_sent_arrival=1, replayed_prefill_tokens=7)
+    metrics = compute_metrics([successful], **(metric_inputs() | {
+        "earliest_sent_arrival": 1, "replayed_prefill_tokens": 7,
+    }))
     assert (metrics.ttft_mean, metrics.ttft_p50, metrics.ttft_p99) == (4, 4, 4)
     assert metrics.tpot_mean == 3  # 只计算成功请求的后续两个输出 token
     assert metrics.makespan == 19
@@ -169,7 +169,9 @@ def test_failed_before_success_is_counted_in_makespan_not_ttft_denominator() -> 
 
 def test_no_success_metrics_are_undefined_but_physical_pages_remain_counted() -> None:
     snapshot = L1Snapshot(4, 1, 0, 1, 3, 0)
-    metrics = compute_metrics([], cache_snapshot=snapshot, replayed_prefill_tokens=11)
+    metrics = compute_metrics([], **(metric_inputs() | {
+        "cache_snapshot": snapshot, "replayed_prefill_tokens": 11,
+    }))
     assert (metrics.ttft_mean, metrics.ttft_p50, metrics.ttft_p99) == (None, None, None)
     assert metrics.tpot_mean is None and metrics.throughput is None
     assert metrics.makespan == 0 and metrics.total_input_tokens == 0
@@ -208,12 +210,11 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     assert run.records == () and run.aborted_requests[0].retry_count == 1
     assert run.aborted_requests[0].generated_tokens == 2
     assert run.replayed_prefill_tokens == 4
-    metrics = compute_metrics(
-        run.records,
-        cache_snapshot=run.cache_snapshot,
-        l1_peak_resident_blocks=run.l1_peak_resident_blocks,
-        replayed_prefill_tokens=run.replayed_prefill_tokens,
-    )
+    metrics = compute_metrics(run.records, **(metric_inputs() | {
+        "cache_snapshot": run.cache_snapshot,
+        "l1_peak_resident_blocks": run.l1_peak_resident_blocks,
+        "replayed_prefill_tokens": run.replayed_prefill_tokens,
+    }))
     assert metrics.replayed_prefill_tokens == 4
     assert metrics.total_input_tokens == metrics.actual_prefill_tokens == 0
 

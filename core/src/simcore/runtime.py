@@ -22,7 +22,6 @@ class AnalyticalSpec:
 
 @dataclass(frozen=True, slots=True)
 class TransferLink:
-    page_bytes: int
     transfer_ms: float
     latency_ms: float
 
@@ -43,12 +42,11 @@ class RuntimeConfig:
 
 
 def runtime_from_components(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig:
-    """将手写到达入口的容量与经验系数准备为同一种实例规格。"""
+    """将手动配置的容量与经验系数准备为实例规格。"""
     validate_kv_config(engine, perf)
     page_bytes = engine.page_size * (perf.kv_bytes_per_token or 0)
     l2 = (
         TransferLink(
-            page_bytes,
             page_bytes / perf.l2_to_l1_bandwidth_bytes_per_ms,
             perf.l2_latency_ms,
         )
@@ -57,7 +55,6 @@ def runtime_from_components(engine: EngineConfig, perf: PerfModelConfig) -> Runt
     )
     l3 = (
         TransferLink(
-            page_bytes,
             page_bytes / perf.l3_to_l2_bandwidth_bytes_per_ms,
             perf.l3_latency_ms,
         )

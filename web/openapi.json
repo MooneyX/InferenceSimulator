@@ -2057,20 +2057,12 @@
             },
             "type": "array",
             "title": "Hardware"
-          },
-          "scenarios": {
-            "items": {
-              "$ref": "#/components/schemas/ScenarioCatalogEntry"
-            },
-            "type": "array",
-            "title": "Scenarios"
           }
         },
         "type": "object",
         "required": [
           "models",
-          "hardware",
-          "scenarios"
+          "hardware"
         ],
         "title": "PresetCatalog"
       },
@@ -2199,15 +2191,8 @@
             "default": 0
           },
           "actual_prefill_tokens": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "minimum": 0.0,
             "title": "Actual Prefill Tokens"
           },
           "replayed_prefill_tokens": {
@@ -2256,7 +2241,8 @@
           "prefill_end",
           "finish",
           "prompt_len",
-          "output_len"
+          "output_len",
+          "actual_prefill_tokens"
         ],
         "title": "RequestRecord",
         "description": "单请求的生命周期区间记录，供甘特图与指标汇总消费。\n\n不变式：``arrival <= prefill_start <= prefill_end <= finish``；\n``prefill_end`` 同时是 decode 阶段起点。"
@@ -2344,39 +2330,6 @@
         "type": "object",
         "title": "RouterSpec",
         "description": "逐 rank 复制的专家打分矩阵及选位修正向量。"
-      },
-      "ScenarioCatalogEntry": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "model_name": {
-            "type": "string",
-            "title": "Model Name"
-          },
-          "hardware_name": {
-            "type": "string",
-            "title": "Hardware Name"
-          },
-          "gpu_count": {
-            "type": "integer",
-            "title": "Gpu Count"
-          },
-          "stage": {
-            "type": "string",
-            "title": "Stage"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "model_name",
-          "hardware_name",
-          "gpu_count",
-          "stage"
-        ],
-        "title": "ScenarioCatalogEntry"
       },
       "SchedulerConfig": {
         "properties": {

@@ -1487,7 +1487,7 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     runtime = prepare_runtime(config)
     # 组件测试只缩小运行容量；物理解析报告与原始配置保持不变。
     runtime = replace(runtime, engine=runtime.engine.model_copy(update={"max_total_tokens": 128}))
-    engine = Engine(runtime, output_targets={0: 2, 1: 2}, record_trace=True)
+    engine = Engine(runtime, output_targets={0: 2, 1: 2})
     request0 = InferenceRequest(0, 0, None, 4, 2, (), 0)
     request1 = InferenceRequest(1, 1, None, 4, 2, (), 0)
     engine.submit(request0, 0)
@@ -1499,7 +1499,8 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     mixed = engine.start_step(first_duration, 1)
     assert mixed is not None
     mixed_duration, _ = mixed
-    assert list(engine._log.steps())[-1].phase == "MIXED"
+    assert engine._prefix_cache.state(0).k == 5
+    assert engine._prefix_cache.state(1).k == 4
     assert engine.finish_step(first_duration + mixed_duration) == (0,)
     expected = step_cost(
         StepWorkload("MIXED", (PrefillWork(1, 0, 4, 4),), (DecodeWork(0, 5),), 2, 2),
@@ -1517,7 +1518,7 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     assert engine.finish_step(first_duration + mixed_duration + last_duration) == (1,)
     engine.complete(first_duration + mixed_duration + last_duration, 1)
     run = engine.finalize()
-    assert [item.phase for item in run.trace.steps()] == ["PREFILL", "MIXED", "DECODE"]
+    assert run.num_engine_steps == 3
     assert run.analysis is not None
     assert run.analysis.steps == 3
     assert run.analysis.ep_exchanges == 3 * expected.ep_exchanges
@@ -1560,7 +1561,6 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     expected_ms = 2 * l2_service + l3_service
     l2_link, l3_link = runtime.links.l2_to_l1, runtime.links.l3_to_l2
     assert l2_link is not None and l3_link is not None
-    assert l2_link.page_bytes == l3_link.page_bytes == page_bytes
     assert l2_link.latency_ms + l2_link.transfer_ms == pytest.approx(l2_service)
     assert l3_link.latency_ms + l3_link.transfer_ms == pytest.approx(l3_service)
     assert l2_service == pytest.approx(
@@ -1571,7 +1571,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         storage.l3_latency_ms
         + runtime.engine.page_size / cast(float, resolved.capacity.l3_to_l2_tokens_per_ms)
     )
-    engine = Engine(runtime, output_targets={}, record_trace=True)
+    engine = Engine(runtime, output_targets={})
     cache = engine._prefix_cache
     for key in range(3):
         parent = InferenceRequest(key, key, None, 4, 1, (), 0)
@@ -1613,7 +1613,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         for name, value in run.analysis.model_dump().items()
         if name != "restore_ms"
     )
-    assert run.num_engine_steps == 0 and list(run.trace.steps()) == []
+    assert run.num_engine_steps == 0
     assert not engine._transfers and not cache._transfers
     assert config.model_dump() == original_data
 

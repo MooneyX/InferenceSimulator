@@ -7,12 +7,12 @@ import pytest
 from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
-from simcore.events import ArrivalTrace, DoneTrace, EventKind, StepTrace
+from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CacheEntry
 from simcore.prefix_hash import encode
 from simcore.router import Router
-from test_schemas import runtime_config
 from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig, TurnPlan, WorkloadPlan
+from test_schemas import runtime_config
 
 
 def make_plan(*, ordinary_at: float = 8, think: float = 0) -> WorkloadPlan:
@@ -40,54 +40,47 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
 
 
 def test_parent_done_callback_and_immediate_children_precede_other_send() -> None:
-    coordinator, _ = make_run(make_plan())
-    with patch.object(
-        coordinator.client,
-        "on_request_completed",
-        wraps=coordinator.client.on_request_completed,
-    ) as callbacks:
+    coordinator, engine = make_run(make_plan())
+    with (
+        patch.object(
+            coordinator.client, "on_request_completed",
+            wraps=coordinator.client.on_request_completed,
+        ) as callbacks,
+        patch.object(engine, "submit", wraps=engine.submit) as submissions,
+    ):
         run = coordinator.run()[0]
+    assert [
+        call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 8
+    ] == [3, 4, 2]
     assert [
         call.args[0].request_id
         for call in callbacks.call_args_list
         if call.args[0].finish_time_ms == 8
     ] == [0, 1]
-    same_time = [entry for entry in run.trace if entry.time == 8]
-    assert [
-        (type(item), item.request_id) for item in same_time if not isinstance(item, StepTrace)
-    ] == [
-        (DoneTrace, 0),
-        (DoneTrace, 1),
-        (ArrivalTrace, 3),
-        (ArrivalTrace, 4),
-        (ArrivalTrace, 2),
-    ]
-    assert isinstance(same_time[-1], StepTrace)
-    assert same_time[-1].admitted == (2, 3, 4)
+    assert [run.records[key].prefill_start for key in (2, 3, 4)] == [8, 8, 8]
     assert run.records[3].actual_hit_tokens == run.records[4].actual_hit_tokens == 4
     assert run.records[3].arrival == run.records[0].finish == 8
     assert run.num_engine_steps == 2
 
 
 def test_future_think_time_child_is_ordered_like_other_same_time_send() -> None:
-    coordinator, _ = make_run(make_plan(ordinary_at=12, think=4))
-    run = coordinator.run()[0]
+    coordinator, engine = make_run(make_plan(ordinary_at=12, think=4))
+    with patch.object(engine, "submit", wraps=engine.submit) as submissions:
+        run = coordinator.run()[0]
     assert [
-        item.request_id for item in run.trace if isinstance(item, ArrivalTrace) and item.time == 12
+        call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 12
     ] == [2, 3, 4]
-    assert [step.time for step in run.trace.steps()] == [0, 12]
+    assert [run.records[key].arrival for key in (2, 3, 4)] == [12, 12, 12]
+    assert [run.records[key].prefill_start for key in (2, 3, 4)] == [12, 12, 12]
+    assert run.num_engine_steps == 2
     assert run.records[3].arrival == run.records[0].finish + 4
 
 
 def test_same_time_roots_are_sent_in_id_order_even_if_created_in_reverse() -> None:
     coordinator, _ = make_run(make_plan(ordinary_at=0))
     run = coordinator.run()[0]
-    assert [
-        entry.request_id
-        for entry in run.trace
-        if isinstance(entry, ArrivalTrace) and entry.time == 0
-    ] == [0, 1, 2]
-    assert next(run.trace.steps()).admitted == (0, 1, 2)
+    assert [run.records[key].arrival for key in (0, 1, 2)] == [0, 0, 0]
+    assert [run.records[key].prefill_start for key in (0, 1, 2)] == [0, 0, 0]
 
 
 @pytest.mark.parametrize("load_fails", [False, True])
@@ -320,16 +313,11 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     run = coordinator.run()[0]
     assert coordinator.max_pending == 1
     assert run.num_engine_steps == 2
-    assert [(item.time, item.step_index) for item in run.trace.steps()] == [(0, 0), (0, 1)]
-    assert [item.request_id for item in run.trace if isinstance(item, DoneTrace)] == [0, 1, 2, 3, 4]
+    assert [record.id for record in run.records] == [0, 1, 2, 3, 4]
     assert run.records[3].arrival == run.records[0].finish == 0
     assert run.records[4].arrival == run.records[1].finish == 0
-    assert list(run.trace) == list(
-        CheckedCoordinator(
-            (Engine(runtime_config(config, zero), output_targets={}),),
-            ClientDriver(plan, config),
-            Router(1),
-        )
-        .run()[0]
-        .trace
-    )
+    repeated = CheckedCoordinator(
+        (Engine(runtime_config(config, zero), output_targets={}),),
+        ClientDriver(plan, config), Router(1),
+    ).run()[0]
+    assert run == repeated

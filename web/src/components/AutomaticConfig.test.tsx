@@ -44,7 +44,7 @@ const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee5
 
 describe("AutomaticConfig", () => {
   beforeEach(() => {
-    vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [] });
     vi.mocked(resolveConfig).mockResolvedValue(resolution);
   });
 
@@ -69,7 +69,7 @@ describe("AutomaticConfig", () => {
     qwen.attention_groups = qwen.attention_groups!.map((group) =>
       Object.fromEntries(Object.entries(group).reverse()) as typeof group);
     qwen.norms = Object.fromEntries(Object.entries(qwen.norms!).reverse()) as typeof qwen.norms;
-    vi.mocked(getPresets).mockResolvedValue({ models: [qwen], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [qwen], hardware: [] });
     const onInferenceChange = vi.fn();
     render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue("Qwen/Qwen3-8B"));
@@ -102,7 +102,7 @@ describe("AutomaticConfig", () => {
   });
 
   it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
-    vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [] });
     const onInferenceChange = vi.fn();
     render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByRole("option", { name: "tencent/Hy4-preview" })).toBeInTheDocument());
@@ -114,7 +114,7 @@ describe("AutomaticConfig", () => {
   });
 
   it("directly edits HY4 structure, precision, auxiliary weights and groups while preserving the preview request", async () => {
-    vi.mocked(getPresets).mockResolvedValue({ models: [hy4], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [hy4], hardware: [] });
     const onInferenceChange = vi.fn();
     const props = { config: physicalConfig({ model: hy4, tp_size: 8, ep_size: 8 }),
       onInferenceChange: onInferenceChange, disabled: false };
@@ -183,7 +183,7 @@ describe("AutomaticConfig", () => {
 
   it.each(["grouped", "hy4_preview"] as const)("customizes every model edit path directly from a %s HY4 preset", async (attention_layout) => {
     const model = { ...hy4, attention_layout };
-    vi.mocked(getPresets).mockResolvedValue({ models: [model], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [model], hardware: [] });
     const onInferenceChange = vi.fn();
     const props = { config: physicalConfig({ model, tp_size: 8, ep_size: 8 }),
       onInferenceChange: onInferenceChange, disabled: false };
@@ -225,7 +225,7 @@ describe("AutomaticConfig", () => {
 
   it("does not apply HY4 parallelism or storage defaults to other grouped presets", async () => {
     const other = { ...hy4, name: "another-grouped-model" };
-    vi.mocked(getPresets).mockResolvedValue({ models: [other], hardware: [], scenarios: [] });
+    vi.mocked(getPresets).mockResolvedValue({ models: [other], hardware: [] });
     const onInferenceChange = vi.fn();
     const config = physicalConfig({ tp_size: 2 });
     render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
@@ -509,7 +509,6 @@ describe("AutomaticConfig", () => {
           layers: 94, num_attention_heads: 64, num_kv_heads: 4 }] }],
       hardware: [{ name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
         peak_fp16_tflops: 2250, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
-      scenarios: [],
     });
     const onInferenceChange = vi.fn();
     let config = createDefaultPhysicalSimConfig();

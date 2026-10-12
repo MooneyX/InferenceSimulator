@@ -14,4 +14,4 @@ StepDone → RequestDone → ClientCompletion → L3LookupDone → L3L2Done → 
 - `L3LookupDone` / `L3L2Done` / `L2L1Done`：分别完成查询、L3→L2 预取和 L2→L1 回载，由引擎处理状态与缓存迁入，协调器派发事件并唤醒可执行工作。同实例每条传输链路按页串行，传输不计入 GPU 步长。
 - `RequestDone`：调用引擎 `complete` 完成结算，由缓存 `finish` 发布剩余完整页并释放 KV，生成携带 ID、完成时间及 `generated_tokens` 的 `RequestCompletion`；同刻的 `ClientCompletion` 再回调客户端，为零 think-time 子轮产生 `ClientChildSend`，因此它可以看到父请求已发布且释放的完整页。
 
-客户端/引擎间只传不可变消息；协调器不构造块身份、不参与调度或缓存决策。内部 `EventLog` 可记录到达、步骤与完成事件，但默认仿真关闭记录且 HTTP 响应不暴露该流。模块所有权和数据类型见 [architecture.md](architecture.md)，当前每步计算语义见 [kernel.md](kernel.md)。
+客户端/引擎间只传不可变消息；协调器不构造块身份、不参与调度或缓存决策。调度事件仅用于推进仿真，不保存逐步诊断日志；结果通过请求区间和汇总指标提供。模块所有权和数据类型见 [architecture.md](architecture.md)，当前每步计算语义见 [kernel.md](kernel.md)。

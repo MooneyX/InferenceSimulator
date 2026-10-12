@@ -5,10 +5,9 @@
 
 from dataclasses import fields
 from time import perf_counter
-from typing import cast
 
 from simcore.capacity import prepare_runtime
-from simcore.client import ClientDriver, OpenLoopClient
+from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
 from simcore.kv_cache import L1Snapshot, TierSnapshot
@@ -24,13 +23,9 @@ from simcore.schemas import (
     SimMeta,
     SimResult,
     SkippedRequest,
-    SyntheticWorkloadConfig,
     TracePlan,
-    TraceWorkloadConfig,
     WorkloadPlan,
 )
-from simcore.trace_client import TraceClient
-from simcore.workload import build_plan
 
 __all__ = ["simulate"]
 
@@ -44,19 +39,7 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
     runtime = prepare_runtime(config)
     engine_config = runtime.engine
     started_at = perf_counter()
-    client: ClientDriver | OpenLoopClient | TraceClient
-    if trace_plan is not None:
-        replay = cast(TraceWorkloadConfig, config.workload.trace)
-        client = TraceClient(
-            trace_plan, engine_config, mode=replay.mode, session_rate=replay.session_rate,
-            seed=replay.seed, target_qps=replay.target_qps,
-        )
-    else:
-        synthetic = cast(SyntheticWorkloadConfig, config.workload.synthetic)
-        if synthetic.arrival_mode == "open_loop":
-            client = OpenLoopClient(synthetic, engine_config)
-        else:
-            client = ClientDriver(build_plan(synthetic, engine_config), engine_config)
+    client = Client(config.workload, engine_config, trace_plan=trace_plan)
     runs = Coordinator(
         tuple(
             Engine(runtime, output_targets={})

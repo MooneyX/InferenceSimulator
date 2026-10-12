@@ -7,7 +7,6 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
-from simcore.client import ClientDriver
 from simcore.prefix_hash import encode, stable_derive
 from simcore.schemas import (
     EngineConfig,
@@ -19,6 +18,7 @@ from simcore.schemas import (
     WorkloadConfig,
 )
 from simcore.workload import build_plan
+from test_client import planned_client
 from test_schemas import manual_config
 
 
@@ -130,8 +130,8 @@ def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
     cache = engine()
     plan = build_plan(config(n=6, s=2), cache)
     assert plan == build_plan(config(n=6, s=2), cache)
-    client = ClientDriver(plan, cache)
-    roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
+    client = planned_client(plan, cache)
+    roots = [client.on_wakeup(wakeup)[0] for wakeup in client.initial_wakeups()]
     assert all(request.inherited_prefix_ids == () for request in roots)
     assert encode(roots[0].request_id, 0) != encode(roots[1].request_id, 0)
     assert stable_derive(17, "length") != stable_derive(17, "root-arrival")
@@ -146,14 +146,15 @@ def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
     root = plan.turns[root_id]
     assert not hasattr(root, "output_token_plan")
     assert not hasattr(root, "unique_suffix_seed")
-    client = ClientDriver(plan, cache)
-    request = client.on_wakeup(client.initial_wakeups()[0])
+    client = planned_client(plan, cache)
+    request, output = client.on_wakeup(client.initial_wakeups()[0])
+    assert output == client.plan.turns[request.request_id].output_len
     assert request.inherited_prefix_ids == ()
     assert request.max_new_tokens == 128
     assert not hasattr(request, "output_len")
     assert not hasattr(request, "input_chunk_ids")
     child_wakeup = client.on_request_completed(RequestCompletion(root_id, 10, root.output_len))[0]
-    child = client.on_wakeup(child_wakeup)
+    child, _ = client.on_wakeup(child_wakeup)
     assert child.inherited_prefix_ids == tuple(
         encode(root_id, index) for index in range(child.ideal_reuse_blocks)
     )
@@ -162,8 +163,8 @@ def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
 def test_distinct_roots_have_isolated_chunk_ids() -> None:
     cache = engine()
     plan = build_plan(config(n=2, s=2), cache)
-    client = ClientDriver(plan, cache)
-    roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
+    client = planned_client(plan, cache)
+    roots = [client.on_wakeup(wakeup)[0] for wakeup in client.initial_wakeups()]
     assert len(roots) == 2
     assert all(root.ideal_reuse_blocks == 0 for root in roots)
     assert roots[0].inherited_prefix_ids == roots[1].inherited_prefix_ids == ()
@@ -172,7 +173,7 @@ def test_distinct_roots_have_isolated_chunk_ids() -> None:
     )
 
 
-def test_output_is_clamped_without_exposing_sample_to_client() -> None:
+def test_output_is_clamped_without_exposing_sample_to_request() -> None:
     cfg = SyntheticWorkloadConfig(
         num_requests=1,
         session_rate=1,
@@ -186,8 +187,9 @@ def test_output_is_clamped_without_exposing_sample_to_client() -> None:
     plan = build_plan(cfg, runtime)
     turn = plan.turns[0]
     assert (turn.max_new_tokens, turn.output_len) == (64, 64)
-    client = ClientDriver(plan, runtime)
-    request = client.on_wakeup(client.initial_wakeups()[0])
+    client = planned_client(plan, runtime)
+    request, output = client.on_wakeup(client.initial_wakeups()[0])
+    assert output == client.plan.turns[request.request_id].output_len
     assert request.max_new_tokens == 64
     assert not hasattr(request, "output_len")
     short_plan = build_plan(cfg.model_copy(update={"output_len": FixedLength(value=2)}), runtime)
@@ -219,8 +221,9 @@ def test_engine_completes_at_private_target_not_visible_limit() -> None:
         "max_new_tokens": 10,
     })
     plan = build_plan(cfg, runtime)
-    client = ClientDriver(plan, runtime)
-    request = client.on_wakeup(client.initial_wakeups()[0])
+    client = planned_client(plan, runtime)
+    request, output = client.on_wakeup(client.initial_wakeups()[0])
+    assert output == client.plan.turns[request.request_id].output_len
     assert request.max_new_tokens == 10
     assert plan.turns[0].output_len == 2
     result = simulate(manual_config(

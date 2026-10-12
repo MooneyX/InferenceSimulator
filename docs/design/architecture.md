@@ -18,7 +18,7 @@ web/      前端：React + TypeScript + Vite + ECharts
 schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
 workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
-client       ClientDriver：消费计划、保存已完成请求身份与实际 KV 长度、发送时按需推导继承页 ID（依赖 schemas、prefix_hash）
+client       Client：统一合成/Trace、开环/闭环投放与请求生命周期（依赖 schemas、workload、prefix_hash、events）
 perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU、传输占位与完成迁入（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
@@ -29,7 +29,7 @@ coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成�
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
 runtime      RuntimeConfig、AnalyticalSpec、具名 TransferLinks 的不可变值对象
 capacity     prepare_runtime：从 SimConfig 一次性准备容量、计时规格与链路（依赖 runtime、schemas）
-runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult（依赖 runtime、workload、client、trace_client、coordinator、engine、metrics）
+runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult（依赖 runtime、client、coordinator、engine、metrics）
 ```
 
 `runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
@@ -40,7 +40,7 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 - 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime, ...)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
 - `EngineConfig` / `PerfModelConfig` 是内部组件规格；手动配置经 `runtime_from_components` 准备运行规格，不构成第二套外部仿真配置。运行墙钟不包含配置解析；结果回显包含模型默认字段的原规范化 `SimConfig`。
 
-合成开环、合成闭环和 Trace 仍使用各自的客户端；统一入口 `simulate` 使用 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete` 生命周期。GPU 步完成与异步页传输分别通过事件推进，再统一汇总指标。
+四种负载组合均使用单个 `Client`，只读 `workload_mode` 与 `arrival_mode` 区分请求来源及投放模式，专用状态按需初始化；统一入口 `simulate` 使用 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete` 生命周期。GPU 步完成与异步页传输分别通过事件推进，再统一汇总指标。
 
 规则：
 

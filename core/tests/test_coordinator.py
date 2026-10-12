@@ -6,7 +6,6 @@ import pytest
 
 from simcore import simulate
 from simcore.capacity import prepare_runtime
-from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.schemas import (
@@ -19,6 +18,7 @@ from simcore.schemas import (
     WorkloadConfig,
 )
 from simcore.workload import build_plan
+from test_client import planned_client
 from test_schemas import manual_config
 
 
@@ -64,7 +64,7 @@ def test_zero_think_done_callback_send_step_order() -> None:
     workload = cfg.workload.synthetic
     assert workload is not None
     plan = build_plan(workload, prepare_runtime(cfg).engine)
-    client = ClientDriver(plan, prepare_runtime(cfg).engine)
+    client = planned_client(plan, prepare_runtime(cfg).engine)
     from simcore.router import Router
 
     run = Coordinator(

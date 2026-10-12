@@ -4,7 +4,6 @@ occupy 和直接 withdraw/requeue 用于故障状态注入，不代表正常端�
 """
 
 from simcore import simulate
-from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.kv_cache import TieredKVCache
@@ -23,6 +22,7 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
+from test_client import planned_client
 from test_schemas import manual_config, metric_inputs, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=1)
@@ -276,7 +276,7 @@ def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> 
     }, (0, 1), {})
     run = Coordinator(
         (Engine(runtime_config(cfg, PERF), output_targets={}),),
-        ClientDriver(plan, cfg), Router(1),
+        planned_client(plan, cfg), Router(1),
     ).run()[0]
     assert [item.id for item in run.aborted_requests] == [0]
     assert [item.id for item in run.records] == [1]

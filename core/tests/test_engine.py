@@ -5,7 +5,6 @@
 
 import pytest
 
-from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
 from simcore.router import Router
@@ -22,6 +21,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from simcore.workload import _visible_limit, build_plan
+from test_client import planned_client
 from test_schemas import runtime_config
 
 SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
@@ -59,7 +59,7 @@ def run(
     plan = WorkloadPlan(turns, tuple(turns), {})
     return Coordinator(
         (Engine(runtime_config(config, perf), output_targets={}),),
-        ClientDriver(plan, config), Router(1),
+        planned_client(plan, config), Router(1),
     ).run()[0]
 
 
@@ -233,7 +233,7 @@ def synthetic_run(seed: int = 7, **engine: int) -> EngineRun:
     )
     perf = PerfModelConfig(prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002)
     plan = build_plan(workload, cfg)
-    client = ClientDriver(plan, cfg)
+    client = planned_client(plan, cfg)
     from simcore.router import Router
 
     return Coordinator(

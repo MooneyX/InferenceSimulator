@@ -1,17 +1,13 @@
 """一条全局事件时间线编排多个独占 KV 的推理实例。"""
 
 import heapq
-import random
 from collections.abc import Iterable, Sequence
-from typing import cast
 
-from simcore.client import ClientDriver, OpenLoopClient
+from simcore.client import Client
 from simcore.engine import Engine, EngineRun
 from simcore.events import Event, EventFactory, EventKind
-from simcore.prefix_hash import stable_derive
 from simcore.router import Router
 from simcore.schemas import ClientWakeup, InferenceRequest, RequestCompletion
-from simcore.trace_client import TraceClient
 
 __all__ = ["Coordinator"]
 
@@ -22,7 +18,7 @@ class Coordinator:
     def __init__(
         self,
         engines: Sequence[Engine],
-        client: ClientDriver | OpenLoopClient | TraceClient,
+        client: Client,
         router: Router,
     ) -> None:  # 引擎副本、客户端、选路器 → 建立统一事件队列；无返回值
         self.engines = tuple(engines)
@@ -36,22 +32,17 @@ class Coordinator:
         self._busy_until = [float("-inf")] * len(self.engines)
         self._transfer_owners: dict[int, tuple[int, int]] = {}
         self._next_transfer_id = 0
-        if isinstance(client, OpenLoopClient):
-            arrival_rng = random.Random(stable_derive(client.config.seed, "open-loop-arrival"))
-            rate_per_ms = cast(float, client.config.arrival_rate) / 1000.0
-            clock = 0.0
-            for index in range(client.config.num_requests):
-                clock += arrival_rng.expovariate(rate_per_ms)
-                heapq.heappush(self._heap, self._factory.open_loop_tick(clock, index))
-        else:
-            self._enqueue_wakeups(client.initial_wakeups())
+        self._enqueue_wakeups(client.initial_wakeups(), kind=client.initial_send_kind)
 
     def _enqueue_wakeups(
-        self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None
+        self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None,
+        kind: EventKind = EventKind.CLIENT_SEND,
     ) -> None:  # 唤醒序列与可选父轮完成时刻 → 按事件优先级入堆；无返回值
         for wakeup in wakeups:
             self._wakeups[wakeup.turn_id] = wakeup
-            if completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
+            if kind is EventKind.OPEN_LOOP_TICK:
+                event = self._factory.open_loop_tick(wakeup.send_time_ms, wakeup.turn_id)
+            elif completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
                 event = self._factory.client_child_send(wakeup.send_time_ms, wakeup.turn_id)
             else:
                 event = self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
@@ -60,10 +51,7 @@ class Coordinator:
     def _process_aborts(self, instance_id: int) -> None:  # 副本 ID → 通知客户端失败并标记后代；无返回值
         engine = self.engines[instance_id]
         for request_id in engine.drain_aborts():
-            if isinstance(self.client, OpenLoopClient):
-                self.client.on_request_aborted(request_id)
-            else:
-                engine.register_skipped(self.client.on_request_aborted(request_id))
+            engine.register_skipped(self.client.on_request_aborted(request_id))
 
     def _schedule_step(self, instance_id: int, now_ms: float) -> None:  # 副本 ID 与当前时刻 → 安排可运行的引擎步；无返回值
         if not self._step_pending[instance_id] and self.engines[instance_id].can_step:
@@ -117,12 +105,9 @@ class Coordinator:
                 self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.CLIENT_COMPLETION:
                 completion = self._completions.pop(event.ref)
-                if isinstance(self.client, OpenLoopClient):
-                    self.client.on_request_completed(completion)
-                else:
-                    self._enqueue_wakeups(
-                        self.client.on_request_completed(completion), completed_at_ms=now_ms
-                    )
+                self._enqueue_wakeups(
+                    self.client.on_request_completed(completion), completed_at_ms=now_ms
+                )
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)
                 self.engines[instance_id].on_l3_lookup(event.ref, now_ms)
@@ -133,16 +118,11 @@ class Coordinator:
                 self.engines[instance_id].on_transfer_done(event.kind, local_ref, now_ms)
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
-            elif event.kind in (EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND):
+            elif event.kind in (
+                EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND, EventKind.OPEN_LOOP_TICK
+            ):
                 wakeup = self._wakeups.pop(event.ref)
-                if not isinstance(self.client, (ClientDriver, TraceClient)):
-                    raise RuntimeError("合成开环客户端不接受计划唤醒")
-                request = self.client.on_wakeup(wakeup)
-                self._submit(request, self.client.plan.turns[request.request_id].output_len, now_ms)
-            elif event.kind is EventKind.OPEN_LOOP_TICK:
-                if not isinstance(self.client, OpenLoopClient):
-                    raise RuntimeError("闭环客户端不接受开环时钟")
-                request, output_len = self.client.send(now_ms)
+                request, output_len = self.client.on_wakeup(wakeup)
                 self._submit(request, output_len, now_ms)
             elif event.kind is EventKind.ENGINE_STEP:
                 instance_id = event.ref

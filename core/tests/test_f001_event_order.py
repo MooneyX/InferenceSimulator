@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 import pytest
 
-from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
@@ -12,6 +11,7 @@ from simcore.kv_cache import CacheCapacityError, CacheEntry
 from simcore.prefix_hash import encode
 from simcore.router import Router
 from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig, TurnPlan, WorkloadPlan
+from test_client import planned_client
 from test_schemas import runtime_config
 
 
@@ -36,7 +36,7 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
     engine = Engine(
         runtime_config(config, perf), output_targets={key: item.output_len for key, item in plan.turns.items()}
     )
-    return Coordinator((engine,), ClientDriver(plan, config), Router(1)), engine
+    return Coordinator((engine,), planned_client(plan, config), Router(1)), engine
 
 
 def test_parent_done_callback_and_immediate_children_precede_other_send() -> None:
@@ -114,9 +114,9 @@ def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> Non
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
         ):
-            run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
+            run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     else:
-        run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
+        run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     child = next(item for item in run.records if item.id == 1)
     assert child.arrival == 50
     assert child.prefill_start == pytest.approx(50 if load_fails else 55)
@@ -162,9 +162,9 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
         ):
-            run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
+            run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     else:
-        run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
+        run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     child = next(item for item in run.records if item.id == 1)
     assert child.arrival == 78
     assert child.prefill_start == pytest.approx(81 if prefetch_fails else 95)
@@ -287,7 +287,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
         children={},
     )
     engine = ObservingEngine(runtime_config(config, perf), output_targets={0: 1, 1: 1})
-    run = Coordinator((engine,), ClientDriver(plan, config), Router(1)).run()[0]
+    run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
     assert engine._prefix_cache.page("chunk:0:0") is not None
     assert [item.prefill_start for item in run.records] == [0, 8]
@@ -309,7 +309,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     engine = Engine(
         runtime_config(config, zero), output_targets={key: item.output_len for key, item in plan.turns.items()}
     )
-    coordinator = CheckedCoordinator((engine,), ClientDriver(plan, config), Router(1))
+    coordinator = CheckedCoordinator((engine,), planned_client(plan, config), Router(1))
     run = coordinator.run()[0]
     assert coordinator.max_pending == 1
     assert run.num_engine_steps == 2
@@ -318,6 +318,6 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     assert run.records[4].arrival == run.records[1].finish == 0
     repeated = CheckedCoordinator(
         (Engine(runtime_config(config, zero), output_targets={}),),
-        ClientDriver(plan, config), Router(1),
+        planned_client(plan, config), Router(1),
     ).run()[0]
     assert run == repeated

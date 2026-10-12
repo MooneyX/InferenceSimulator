@@ -113,7 +113,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
         engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
     )
-    with patch("simcore.coordinator.random.Random.expovariate", side_effect=[7.0, 32.0]):
+    with patch("simcore.client.random.Random.expovariate", side_effect=[7.0, 32.0]):
         result = simulate(config)
     assert [record.arrival for record in result.requests] == [7.0, 39.0]
     assert result.requests[0].finish == 39.0

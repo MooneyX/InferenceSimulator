@@ -4,7 +4,6 @@ from dataclasses import replace
 
 import pytest
 
-from simcore.client import ClientDriver
 from simcore.engine import Engine
 from simcore.prefix_hash import encode
 from simcore.schemas import (
@@ -14,6 +13,7 @@ from simcore.schemas import (
     TurnPlan,
     WorkloadPlan,
 )
+from test_client import planned_client
 from test_schemas import runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
@@ -84,9 +84,10 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         ideal_reuse_blocks=blocks,
     )
     plan = WorkloadPlan({7: root, 8: child}, (7,), {7: (8,)})
-    client = ClientDriver(plan, config)
+    client = planned_client(plan, config)
     engine = Engine(runtime_config(config, PERF), output_targets={7: output, 8: 1})
-    parent = client.on_wakeup(client.initial_wakeups()[0])
+    parent, output = client.on_wakeup(client.initial_wakeups()[0])
+    assert output == root.output_len
     assert parent.inherited_prefix_ids == ()
     engine.submit(parent, 0)
     now = 0.0
@@ -105,7 +106,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         if produced < output:
             assert engine._prefix_cache.page(encode(7, k // 4)) is None or state.f > k // 4 * 4
     completion = engine.complete(now, 7)
-    successor = client.on_wakeup(client.on_request_completed(completion)[0])
+    successor, _ = client.on_wakeup(client.on_request_completed(completion)[0])
     assert successor.inherited_prefix_ids == tuple(encode(7, i) for i in range(blocks))
     for index in range(blocks):
         page = engine._prefix_cache.page(encode(7, index))

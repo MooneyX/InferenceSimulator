@@ -7,7 +7,6 @@
 import pytest
 
 from simcore import simulate
-from simcore.client import ClientDriver
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
@@ -24,6 +23,7 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
+from test_client import planned_client
 from test_schemas import manual_config, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=5, decode_d2=1)
@@ -182,11 +182,11 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
     plan = WorkloadPlan({0: TurnPlan(0, 0, None, 1, None, 5, 3, 3, 0)}, (0,), {})
     first = Coordinator(
         (Engine(runtime_config(cfg, zero), output_targets={}),),
-        ClientDriver(plan, cfg), Router(1),
+        planned_client(plan, cfg), Router(1),
     ).run()[0]
     second = Coordinator(
         (Engine(runtime_config(cfg, zero), output_targets={}),),
-        ClientDriver(plan, cfg), Router(1),
+        planned_client(plan, cfg), Router(1),
     ).run()[0]
     assert first.num_engine_steps == 3
     assert first.records[0].finish == first.records[0].arrival == 1
@@ -547,11 +547,11 @@ def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -
     }, (0, 1), {})
     old = Coordinator(
         (Engine(runtime_config(legacy, PERF), output_targets={}),),
-        ClientDriver(plan, legacy), Router(1),
+        planned_client(plan, legacy), Router(1),
     ).run()[0]
     new = Coordinator(
         (Engine(runtime_config(explicitly_disabled, extra_perf), output_targets={}),),
-        ClientDriver(plan, explicitly_disabled), Router(1),
+        planned_client(plan, explicitly_disabled), Router(1),
     ).run()[0]
     assert old == new
     assert new.promotions == new.demotions == new.restore_bytes == new.restore_time_ms == 0

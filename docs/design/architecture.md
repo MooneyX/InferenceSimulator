@@ -18,7 +18,7 @@ web/      前端：React + TypeScript + Vite + ECharts
 schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
 workload     build_plan 规划长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
-client       Client：统一合成/Trace、开环/闭环投放与请求生命周期（依赖 schemas、workload、prefix_hash、events）
+client       Client：统一合成/Trace、开环/闭环投放与请求生命周期（依赖 schemas、workload、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU、传输占位与完成迁入（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）

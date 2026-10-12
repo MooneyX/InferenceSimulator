@@ -7,8 +7,8 @@
 
 - ``kind`` 优先级：步末发布、请求结算及客户端回调先于传输完成，
   传输完成先于本时刻的发送，所有发送先于新引擎步。
-  闭环子轮与普通计划发送同级，同刻按轮次 ID 排序。
-- ``ref`` 在同类事件内排序（请求、实例、传输或时钟序号）；``seq`` 打破同引用的平局。
+  四种客户端模式的所有发送同级，同刻按请求 ID 排序。
+- ``ref`` 在同类事件内排序（请求、实例或传输 ID）；``seq`` 打破同引用的平局。
 
 依赖层级：仅依赖标准库。
 """
@@ -29,20 +29,19 @@ class EventKind(IntEnum):
     L3_L2_DONE = 4
     L2_L1_DONE = 5
     CLIENT_SEND = 6
-    OPEN_LOOP_TICK = 7
-    ENGINE_STEP = 8
+    ENGINE_STEP = 7
 
 
 @dataclass(frozen=True, slots=True, order=True)
 class Event:
     """调度事件。按 ``(time, kind, ref, seq)`` 排序，可直接入 ``heapq``。
 
-    同一时间同类事件按引用 ID 排序；引用可指请求、副本、传输或时钟序号。
+    同一时间同类事件按引用 ID 排序；引用可指请求、副本或传输。
 
     Attributes:
         time: 事件触发时刻（ms）。
         kind: 事件类别。
-        ref: 发送为 turn_id；完成/回调为 request_id；引擎步为 instance_id。
+        ref: 发送及完成/回调为 request_id；引擎步为 instance_id。
         seq: 创建序号，由 ``EventFactory`` 分配。
     """
 
@@ -68,11 +67,8 @@ class EventFactory:
     def client_completion(self, time: float, request_id: int) -> Event:  # 完成时刻与请求 ID → 客户端回调事件
         return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
 
-    def client_send(self, time: float, turn_id: int) -> Event:  # 发送时刻与轮次 ID → 计划发送事件
-        return self._make(time, EventKind.CLIENT_SEND, turn_id)
-
-    def open_loop_tick(self, time: float, index: int) -> Event:  # 投放时刻与序号 → 开环时钟事件
-        return self._make(time, EventKind.OPEN_LOOP_TICK, index)
+    def client_send(self, time: float, request_id: int) -> Event:  # 时刻与请求 ID → 发送事件
+        return self._make(time, EventKind.CLIENT_SEND, request_id)
 
     def engine_step(self, time: float, instance_id: int) -> Event:  # 步起点与副本 ID → 引擎步事件
         return self._make(time, EventKind.ENGINE_STEP, instance_id)

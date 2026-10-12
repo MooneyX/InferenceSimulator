@@ -32,18 +32,14 @@ class Coordinator:
         self._busy_until = [float("-inf")] * len(self.engines)
         self._transfer_owners: dict[int, tuple[int, int]] = {}
         self._next_transfer_id = 0
-        self._enqueue_wakeups(client.initial_wakeups(), kind=client.initial_send_kind)
+        self._enqueue_wakeups(client.initial_wakeups())
 
-    def _enqueue_wakeups(
-        self, wakeups: Iterable[ClientWakeup], *, kind: EventKind = EventKind.CLIENT_SEND,
-    ) -> None:  # 唤醒序列与发送类别 → 按事件优先级入堆；无返回值
+    def _enqueue_wakeups(self, wakeups: Iterable[ClientWakeup]) -> None:
         for wakeup in wakeups:
             self._wakeups[wakeup.turn_id] = wakeup
-            if kind is EventKind.OPEN_LOOP_TICK:
-                event = self._factory.open_loop_tick(wakeup.send_time_ms, wakeup.turn_id)
-            else:
-                event = self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
-            heapq.heappush(self._heap, event)
+            heapq.heappush(
+                self._heap, self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
+            )
 
     def _process_aborts(self, instance_id: int) -> None:  # 副本 ID → 通知客户端失败并标记后代；无返回值
         engine = self.engines[instance_id]
@@ -113,7 +109,7 @@ class Coordinator:
                 self.engines[instance_id].on_transfer_done(event.kind, local_ref, now_ms)
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
-            elif event.kind in (EventKind.CLIENT_SEND, EventKind.OPEN_LOOP_TICK):
+            elif event.kind is EventKind.CLIENT_SEND:
                 wakeup = self._wakeups.pop(event.ref)
                 request, output_len = self.client.on_wakeup(wakeup)
                 self._submit(request, output_len, now_ms)

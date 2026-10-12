@@ -6,7 +6,6 @@ import random
 from collections import Counter
 from typing import Literal, cast
 
-from simcore.events import EventKind
 from simcore.prefix_hash import logical_chunk_id, stable_derive
 from simcore.schemas import (
     ClientWakeup,
@@ -81,16 +80,12 @@ class Client:
         return self._arrival_mode
 
     @property
-    def initial_send_kind(self) -> EventKind:
-        return (
-            EventKind.OPEN_LOOP_TICK
-            if self.workload_mode == "synthetic" and self.arrival_mode == "open_loop"
-            else EventKind.CLIENT_SEND
-        )
+    def _dynamic_requests(self) -> bool:
+        return self.workload_mode == "synthetic" and self.arrival_mode == "open_loop"
 
     @property
     def plan(self) -> WorkloadPlan:
-        if self.initial_send_kind is not EventKind.OPEN_LOOP_TICK:
+        if not self._dynamic_requests:
             return self._plan
         total = sum(turn.prompt_len for turn in self._turns.values())
         ideal = sum(turn.ideal_reuse_blocks for turn in self._turns.values())
@@ -235,7 +230,7 @@ class Client:
     def on_wakeup(self, wakeup: ClientWakeup) -> tuple[InferenceRequest, int]:
         if wakeup.turn_id in self._sent:
             raise ValueError("轮次未就绪、重复发送或发送时间不符")
-        dynamic = self.initial_send_kind is EventKind.OPEN_LOOP_TICK
+        dynamic = self._dynamic_requests
         turn = self._next_synthetic_turn(wakeup) if dynamic else self._plan.turns[wakeup.turn_id]
         if not dynamic and turn.session_id != wakeup.session_id:
             raise ValueError("客户端唤醒的 session_id 与轮次不一致")

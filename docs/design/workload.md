@@ -37,6 +37,6 @@ constructed_ideal_prefix_hit_rate = B*sum(K_i)/sum(P_i)
 
 ## 客户端的发送契约
 
-单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，`initial_send_kind` 标明普通发送或合成开环 tick；所有投放均调用 `on_wakeup()`，返回 `(InferenceRequest, output_len)`，实际输出目标单独交给引擎，不放进请求。合成模式仅在发送时构造 `InferenceRequest`：根据完成父轮保存的请求身份和已建立长度，按需推导前 `ideal_reuse_blocks` 个**完整**页 ID 并传递为 `inherited_prefix_ids`；其余页 ID 由引擎按当前请求 ID 与页序号生成，不发送整条 `input_chunk_ids`。请求携带 `max_new_tokens`，不携带实际输出目标或未来到达时间。
+单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，协调器统一将初始投放和完成回调产生的子轮唤醒安排为 `ClientSend(时间戳, 请求 ID)`。所有投放均调用 `on_wakeup()`，客户端内部按模式读取计划，或在合成开环发送时选择会话并动态采样请求内容；预排时间和请求 ID 不会提前构造完整请求。该方法返回 `(InferenceRequest, output_len)`，实际输出目标单独交给引擎，不放进请求。合成模式仅在发送时构造 `InferenceRequest`：根据完成父轮保存的请求身份和已建立长度，按需推导前 `ideal_reuse_blocks` 个**完整**页 ID 并传递为 `inherited_prefix_ids`；其余页 ID 由引擎按当前请求 ID 与页序号生成，不发送整条 `input_chunk_ids`。请求携带 `max_new_tokens`，不携带实际输出目标或未来到达时间。
 
 `on_request_completed(RequestCompletion)` 统一结算在途请求。合成模式保存父轮请求身份与已建立长度 `prompt_len+generated_tokens-1`，Trace 只保存完成 ID，不重构原始块身份。闭环返回子轮 `finish_time_ms+think_time_ms` 的唤醒；合成开环只把会话放入待续堆，Trace 开环不改变固定时间线，两者均返回空元组。`on_request_aborted` 在闭环递归返回未发送后代的 `SkippedRequest`，开环返回空元组且不取消后续投放。客户端不预存未来完整请求、不调用真实 `sleep()`、不自行维护事件堆；协调器不按具体客户端类分派。

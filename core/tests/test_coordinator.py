@@ -1,13 +1,17 @@
 """真实完成触发会话后续轮次与统一时钟同刻事件顺序。"""
 
 from itertools import pairwise
+from unittest.mock import patch
 
 import pytest
 
 from simcore import simulate
 from simcore.capacity import prepare_runtime
+from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
+from simcore.events import EventFactory, EventKind
+from simcore.router import Router
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -15,11 +19,12 @@ from simcore.schemas import (
     SessionConfig,
     SimConfig,
     SyntheticWorkloadConfig,
+    TraceWorkloadConfig,
     WorkloadConfig,
 )
 from simcore.workload import build_plan
-from test_client import planned_client
-from test_schemas import manual_config
+from test_client import planned_client, synthetic_workload, trace_plan
+from test_schemas import manual_config, runtime_config
 
 
 def config(think: float = 0) -> SimConfig:
@@ -39,6 +44,55 @@ def config(think: float = 0) -> SimConfig:
         engine=EngineConfig(max_running_requests=1, max_total_tokens=200, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=0),
     )
+
+
+@pytest.mark.parametrize("source", ["synthetic", "trace"])
+@pytest.mark.parametrize("mode", ["session", "open_loop"])
+def test_all_client_modes_use_send_events_with_time_and_request_id(
+    source: str, mode: str
+) -> None:
+    engine_config = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
+    workload = (
+        synthetic_workload(mode)
+        if source == "synthetic"
+        else WorkloadConfig(
+            mode="trace",
+            trace=TraceWorkloadConfig.model_validate(
+                {"mode": mode, "session_rate": 10, "seed": 42}
+            ),
+        )
+    )
+    client = Client(
+        workload, engine_config, trace_plan=trace_plan() if source == "trace" else None
+    )
+    initial = client.initial_wakeups()
+    engine = Engine(
+        runtime_config(engine_config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)),
+        output_targets={},
+    )
+    with (
+        patch.object(
+            EventFactory, "client_send", autospec=True, side_effect=EventFactory.client_send
+        ) as sends,
+        patch.object(engine, "submit", wraps=engine.submit) as submissions,
+    ):
+        coordinator = Coordinator((engine,), client, Router(1, session_affinity=source == "trace"))
+        assert {event.kind for event in coordinator._heap} == {EventKind.CLIENT_SEND}
+        assert sorted((event.time, event.ref) for event in coordinator._heap) == sorted(
+            (wakeup.send_time_ms, wakeup.turn_id) for wakeup in initial
+        )
+        if source == "synthetic" and mode == "open_loop":
+            assert client.plan.turns == {}
+        run = coordinator.run()[0]
+    count = 4 if source == "synthetic" else 3
+    assert sends.call_count == len(run.records) == count
+    assert sorted((call.args[1], call.args[2]) for call in sends.call_args_list) == sorted(
+        (call.args[1], call.args[0].request_id) for call in submissions.call_args_list
+    )
+    assert sorted(
+        call.args[0].request_id for call in submissions.call_args_list
+    ) == list(range(count))
+    assert not run.aborted_requests and not run.skipped_requests
 
 
 def test_single_session_children_arrive_only_after_completion() -> None:

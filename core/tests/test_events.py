@@ -16,7 +16,7 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻先发布与回调，再传输、计划发送和开环时钟，最后步进。"""
+        """同刻先发布与回调，再传输和客户端发送，最后步进。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         send = f.client_send(5.0, 1)
@@ -26,8 +26,7 @@ class TestOrdering:
         lookup = f.l3_lookup_done(5.0, 1)
         l3_l2 = f.l3_l2_done(5.0, 3)
         l2_l1 = f.l2_l1_done(5.0, 4)
-        tick = f.open_loop_tick(5.0, 0)
-        assert sorted([step, send, done, end, callback, lookup, l3_l2, l2_l1, tick]) == [
+        assert sorted([step, send, done, end, callback, lookup, l3_l2, l2_l1]) == [
             end,
             done,
             callback,
@@ -35,7 +34,6 @@ class TestOrdering:
             l3_l2,
             l2_l1,
             send,
-            tick,
             step,
         ]
 

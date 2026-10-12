@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 
 from simcore.client import Client
-from simcore.events import EventKind
 from simcore.prefix_hash import encode
 from simcore.schemas import (
     ClientWakeup,
@@ -239,11 +238,6 @@ def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str
     )
     client = Client(workload, engine, trace_plan=trace_plan() if source == "trace" else None)
     assert client.workload_mode == source and client.arrival_mode == mode
-    assert client.initial_send_kind is (
-        EventKind.OPEN_LOOP_TICK
-        if source == "synthetic" and mode == "open_loop"
-        else EventKind.CLIENT_SEND
-    )
     assert not hasattr(client, "_ready") or (source == "synthetic" and mode == "open_loop")
     assert hasattr(client, "_finished") == (source == "synthetic")
     assert hasattr(client, "_completed") == (source == "trace" and mode == "session")
@@ -269,10 +263,21 @@ def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str
     assert not client._inflight
 
 
-def test_synthetic_open_loop_completion_only_enables_next_tick_and_failure_keeps_clock() -> None:
+def test_synthetic_open_loop_completion_enables_next_send_and_failure_keeps_clock() -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     client = Client(synthetic_workload("open_loop"), engine)
+    length_states = (
+        client._roots_rng.getstate(),
+        client._increments_rng.getstate(),
+        client._outputs_rng.getstate(),
+    )
     wakeups = client.initial_wakeups()
+    assert [item.turn_id for item in wakeups] == list(range(4))
+    assert (
+        client._roots_rng.getstate(),
+        client._increments_rng.getstate(),
+        client._outputs_rng.getstate(),
+    ) == length_states
     assert client.plan.turns == {}
     first, output = client.on_wakeup(wakeups[0])
     assert client.on_request_completed(RequestCompletion(first.request_id, 1, output)) == ()

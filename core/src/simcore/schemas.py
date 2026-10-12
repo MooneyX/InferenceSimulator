@@ -143,7 +143,7 @@ class SyntheticWorkloadConfig(_Frozen):
     session_rate: float | None = Field(
         default=None, gt=0, allow_inf_nan=False, description="闭环新会话投放频率（会话/秒）"
     )
-    arrival_mode: Literal["session", "open_loop"] = "session"
+    arrival_mode: Literal["closed_loop", "open_loop"] = "closed_loop"
     prompt_len: LengthDist
     turn_increment_len: LengthDist | None = None
     output_len: LengthDist
@@ -178,7 +178,7 @@ class SyntheticWorkloadConfig(_Frozen):
 class TraceWorkloadConfig(_Frozen):
     """计划资源引用与回放设置；计划内容由调用方独立提供。"""
 
-    mode: Literal["open_loop", "session"]
+    mode: Literal["open_loop", "closed_loop"]
     session_rate: float = Field(gt=0, allow_inf_nan=False)
     seed: int = Field(default=0, ge=0)
     target_qps: float | None = Field(default=None, gt=0, allow_inf_nan=False)

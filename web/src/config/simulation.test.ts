@@ -95,7 +95,7 @@ describe("validateSimConfig", () => {
   it("validates closed-loop session inputs without requiring a request QPS", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic = {
-      ...config.workload.synthetic!, arrival_mode: "session", arrival_rate: undefined,
+      ...config.workload.synthetic!, arrival_mode: "closed_loop", arrival_rate: undefined,
       turn_increment_len: { dist: "fixed", value: 32 }, session_rate: 1.28,
       session: { num_sessions: 20, topology: "linear", think_time_ms: 200 },
     };
@@ -179,7 +179,7 @@ describe("validateSimConfig", () => {
   it("accepts trace mode independently of any synthetic payload", () => {
     const config: SimConfig = {
       ...createDefaultSimConfig(),
-      workload: { mode: "trace", trace: { mode: "session", session_rate: 2, seed: 42 } },
+      workload: { mode: "trace", trace: { mode: "closed_loop", session_rate: 2, seed: 42 } },
     };
     expect(validateSimConfig(config)).toEqual([]);
   });

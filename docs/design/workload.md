@@ -8,7 +8,7 @@
 
 根轮输入 `P_0=sample(prompt_len)`；子轮输入 `P_child=P_parent+O_parent+sample(turn_increment_len)`，其中 `O_parent` 是父轮实际生成长度。三类长度按 seed 派生独立随机流。超出本实例 KV 容量时，子轮请求仍按节拍发送并失败，该会话不再续写；当前模式不做上下文截断或摘要。前缀在父轮完成后依据完整页身份继承，理想复用量为 `B*min(floor((P_parent+O_parent-1)/B),floor((P_child-1)/B))` token。理想命中率是**构造结果**，不设目标；物理命中还取决于缓存驻留。根请求不跨会话共享前缀。运行中动态确定会话数与根占比。
 
-## 有限会话闭环模式（`arrival_mode="session"`）
+## 有限会话闭环模式（`arrival_mode="closed_loop"`）
 
 `build_plan` 消费 `SyntheticWorkloadConfig` 与一次性准备好的运行容量/页大小，一次性生成不可变 `WorkloadPlan`，不访问 Engine 或 KV cache。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录输入长度、截断后的目标 `output_len`、可见 `max_new_tokens` 和 `ideal_reuse_blocks`，不预生成块 ID。
 

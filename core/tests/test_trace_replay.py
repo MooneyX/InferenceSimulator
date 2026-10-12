@@ -27,7 +27,7 @@ from simcore.schemas import (
 
 
 def config(
-    *, capacity: int = 2048, mode: Literal["open_loop", "session"] = "open_loop",
+    *, capacity: int = 2048, mode: Literal["open_loop", "closed_loop"] = "open_loop",
     session_rate: float = 1, seed: int = 7, target_qps: float | None = None,
 ) -> SimConfig:
     return SimConfig(
@@ -107,10 +107,10 @@ def test_open_loop_target_qps_scales_merged_arrivals_without_changing_shape() ->
 
 
 @pytest.mark.parametrize(
-    ("mode", "target"), [("session", 5), ("open_loop", 0), ("open_loop", float("inf"))]
+    ("mode", "target"), [("closed_loop", 5), ("open_loop", 0), ("open_loop", float("inf"))]
 )
 def test_target_qps_only_accepts_positive_finite_open_loop(
-    mode: Literal["open_loop", "session"], target: float,
+    mode: Literal["open_loop", "closed_loop"], target: float,
 ) -> None:
     with pytest.raises(ValueError, match=r"目标 QPS|target_qps"):
         simulate(config(mode=mode, target_qps=target), trace_plan=plan())
@@ -132,14 +132,14 @@ def test_target_qps_requires_a_nonzero_arrival_window() -> None:
 
 
 def test_trace_closed_loop_uses_simulated_parent_completion() -> None:
-    result = simulate(config(mode="session"), trace_plan=plan())
+    result = simulate(config(mode="closed_loop"), trace_plan=plan())
     first, second = result.requests
     assert second.arrival == pytest.approx(first.finish + 20)
     assert second.actual_hit_tokens >= 128
 
 
 def test_trace_zero_output_aborts_and_skips_only_closed_loop_descendants() -> None:
-    closed = simulate(config(mode="session"), trace_plan=plan(output=0))
+    closed = simulate(config(mode="closed_loop"), trace_plan=plan(output=0))
     assert closed.meta.num_aborted == 1
     assert closed.aborted_requests[0].reason == "invalid_trace_output"
     assert [item.id for item in closed.skipped_requests] == [1]
@@ -181,15 +181,15 @@ def test_timed_root_ratio_counts_all_branches_without_changing_session_count() -
                       prompt_len=129, output_len=1, hash_ids=(0, 1)),
         ),
     )
-    result = simulate(config(mode="session", session_rate=2, seed=3), trace_plan=source)
+    result = simulate(config(mode="closed_loop", session_rate=2, seed=3), trace_plan=source)
     assert result.metrics.num_sessions == 1
     assert result.metrics.root_request_ratio == 1.0
 
 
 @pytest.mark.parametrize("timing", ["empirical", "analytical"])
-@pytest.mark.parametrize("mode", ["open_loop", "session"])
+@pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
 def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
-    timing: Literal["empirical", "analytical"], mode: Literal["open_loop", "session"],
+    timing: Literal["empirical", "analytical"], mode: Literal["open_loop", "closed_loop"],
 ) -> None:
     manual = config(capacity=64, mode=mode)
     original = manual.model_copy(update={
@@ -277,4 +277,4 @@ def test_trace_workload_is_frozen_and_has_default_seed_and_target_qps() -> None:
     assert trace.seed == 0
     assert trace.target_qps is None
     with pytest.raises(ValidationError, match="frozen"):
-        trace.__setattr__("mode", "session")
+        trace.__setattr__("mode", "closed_loop")

@@ -110,7 +110,7 @@ describe("MetricsPanel", () => {
     expect(metricValue("L3 驱逐")).toHaveTextContent("1 次");
   });
 
-  it("shows observed request QPS without an input request-QPS target in session mode", () => {
+  it("shows observed request QPS without an input request-QPS target in closed_loop mode", () => {
     render(<MetricsPanel metrics={metrics} wallClockMs={42.5} targetSessionRate={1.28} />);
     expect(metricValue("新会话投放频率")).toHaveTextContent("1.28 会话/秒");
     expect(metricValue("实际请求 QPS")).toHaveTextContent("1,200 请求/秒");

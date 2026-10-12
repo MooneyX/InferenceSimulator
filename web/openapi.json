@@ -2830,11 +2830,11 @@
           "arrival_mode": {
             "type": "string",
             "enum": [
-              "session",
+              "closed_loop",
               "open_loop"
             ],
             "title": "Arrival Mode",
-            "default": "session"
+            "default": "closed_loop"
           },
           "prompt_len": {
             "oneOf": [
@@ -3090,7 +3090,7 @@
             "type": "string",
             "enum": [
               "open_loop",
-              "session"
+              "closed_loop"
             ],
             "title": "Mode"
           },

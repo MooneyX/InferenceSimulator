@@ -1397,10 +1397,10 @@ export interface components {
             session_rate?: number | null;
             /**
              * Arrival Mode
-             * @default session
+             * @default closed_loop
              * @enum {string}
              */
-            arrival_mode: "session" | "open_loop";
+            arrival_mode: "closed_loop" | "open_loop";
             /** Prompt Len */
             prompt_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
             /** Turn Increment Len */
@@ -1480,7 +1480,7 @@ export interface components {
              * Mode
              * @enum {string}
              */
-            mode: "open_loop" | "session";
+            mode: "open_loop" | "closed_loop";
             /** Session Rate */
             session_rate: number;
             /**

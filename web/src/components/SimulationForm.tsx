@@ -79,7 +79,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
-  const [traceDraft, setTraceDraft] = useState({ mode: "open_loop" as "open_loop" | "session", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
+  const [traceDraft, setTraceDraft] = useState({ mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
   const [manualConfig, setManualConfig] = useState<ManualSimConfig>(createDefaultSimConfig);
   const [automaticConfig, setAutomaticConfig] = useState<PhysicalSimConfig>(createDefaultPhysicalSimConfig);
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
@@ -130,12 +130,12 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
     (needsEpCommunication && hardware.ep_communication_latency_ms == null)
   );
   const synthetic = config.workload.synthetic!;
-  function changeArrivalMode(arrivalMode: "open_loop" | "session"): void {
+  function changeArrivalMode(arrivalMode: "open_loop" | "closed_loop"): void {
     const current = config.workload.synthetic!;
-    const nextSynthetic = arrivalMode === "session"
+    const nextSynthetic = arrivalMode === "closed_loop"
       ? {
           num_requests: current.num_requests,
-          arrival_mode: "session" as const,
+          arrival_mode: "closed_loop" as const,
           session_rate: 1.28,
           prompt_len: current.prompt_len,
           turn_increment_len: current.turn_increment_len,
@@ -307,9 +307,9 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <div className="form-field">
             <label htmlFor="arrival-mode">请求投放方式</label>
             <select id="arrival-mode" value={synthetic.arrival_mode}
-              onChange={(event) => changeArrivalMode(event.currentTarget.value as "open_loop" | "session")}>
+              onChange={(event) => changeArrivalMode(event.currentTarget.value as "open_loop" | "closed_loop")}>
               <option value="open_loop">开环：按目标请求 QPS 投放</option>
-              <option value="session">闭环：按新会话频率投放</option>
+              <option value="closed_loop">闭环：按新会话频率投放</option>
             </select>
           </div>
           <NumberField

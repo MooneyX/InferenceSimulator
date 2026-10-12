@@ -47,7 +47,7 @@ def config(think: float = 0) -> SimConfig:
 
 
 @pytest.mark.parametrize("source", ["synthetic", "trace"])
-@pytest.mark.parametrize("mode", ["session", "open_loop"])
+@pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
 def test_all_client_modes_use_send_events_with_time_and_request_id(
     source: str, mode: str
 ) -> None:

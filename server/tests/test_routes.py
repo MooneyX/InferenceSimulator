@@ -139,6 +139,7 @@ class TestSuccess:
             "allow_cross_session_shared_prefix"
             not in body["meta"]["config"]["workload"]["synthetic"]["session"]
         )
+        assert body["meta"]["config"]["workload"]["synthetic"]["arrival_mode"] == "closed_loop"
         assert body["meta"]["num_requests"] == 100
         assert body["meta"]["wall_clock_ms"] >= 0
         assert body["meta"]["num_completed"] == len(body["requests"])

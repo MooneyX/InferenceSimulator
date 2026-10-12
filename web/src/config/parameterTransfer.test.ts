@@ -36,7 +36,7 @@ describe("parameter JSON transfer", () => {
     expect(config.inference).toMatchObject({ mode: "manual", page_size: 64,
       kv: { max_total_tokens: 128, l2_capacity_tokens: 0, l3_capacity_tokens: 0, l3_lookup_latency_ms: 0 },
       timing: { mode: "empirical", prefill_c2: 0 } });
-    expect(config.workload.synthetic).toMatchObject({ arrival_mode: "session", max_new_tokens: 128,
+    expect(config.workload.synthetic).toMatchObject({ arrival_mode: "closed_loop", max_new_tokens: 128,
       session: { num_sessions: 3, topology: "linear", think_time_ms: 0 } });
   });
 
@@ -167,10 +167,10 @@ describe("parameter JSON transfer", () => {
     expect(config.workload.trace.plan_id).toBe("temporary-plan");
   });
 
-  it("round-trips session mode without a request QPS", () => {
+  it("round-trips closed_loop mode without a request QPS", () => {
     const config = createDefaultSimConfig();
     config.workload.synthetic = {
-      num_requests: 20, arrival_mode: "session", session_rate: 2,
+      num_requests: 20, arrival_mode: "closed_loop", session_rate: 2,
       session: { num_sessions: 5, topology: "linear", think_time_ms: 200 },
       prompt_len: { dist: "fixed", value: 256 },
       turn_increment_len: { dist: "fixed", value: 32 },
@@ -183,6 +183,15 @@ describe("parameter JSON transfer", () => {
     expect(JSON.parse(json).workload.synthetic).not.toHaveProperty("session.target_ideal_prefix_hit_rate");
   });
 
+  it.each(["synthetic", "trace"])("rejects the old session arrival mode for %s", (source) => {
+    const config = createDefaultSimConfig();
+    const workload = source === "synthetic"
+      ? { mode: "synthetic", synthetic: { ...config.workload.synthetic!, arrival_mode: "session" } }
+      : { mode: "trace", trace: { mode: "session", session_rate: 1, seed: 0 } };
+    expect(() => parseSimConfigJson(JSON.stringify({ ...config, workload })))
+      .toThrow("仅支持 open_loop 或 closed_loop");
+  });
+
   it.each(["", "{", "null", "[]", '"hello"'])
   ("rejects non-config JSON: %s", (json) => {
     expect(() => parseSimConfigJson(json)).toThrow();
@@ -191,7 +200,7 @@ describe("parameter JSON transfer", () => {
   it.each([
     [{}, "缺少参数：num_instances"],
     [{ ...createDefaultSimConfig(), metrics: {} }, "不支持的参数：metrics"],
-    [{ ...createDefaultSimConfig(), workload: { mode: "trace", trace: { mode: "session", session_rate: 1, seed: 0 }, synthetic: createDefaultSimConfig().workload.synthetic } }, "Trace 负载不能同时配置 workload.synthetic"],
+    [{ ...createDefaultSimConfig(), workload: { mode: "trace", trace: { mode: "closed_loop", session_rate: 1, seed: 0 }, synthetic: createDefaultSimConfig().workload.synthetic } }, "Trace 负载不能同时配置 workload.synthetic"],
     [{ ...createDefaultSimConfig(), workload: { mode: "synthetic" } }, "workload.synthetic 必须为 JSON 对象"],
     [{ ...createDefaultSimConfig(), scheduler: { ...createDefaultSimConfig().scheduler, capacity_pages: 10 } },
       "不支持的参数：scheduler.capacity_pages"],

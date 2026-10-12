@@ -11,19 +11,19 @@ workload:
   synthetic:                   # 仅 mode=synthetic
     num_requests: int           # 所有 session 的总轮次数
     arrival_rate: float | null  # 仅 open_loop 必填，目标请求 QPS
-    session_rate: float | null  # 仅 session 必填，新会话泊松投放频率（会话/秒）
-    arrival_mode: session | open_loop  # 省略为 session；网页默认 open_loop，可切换
+    session_rate: float | null  # 仅 closed_loop 必填，新会话泊松投放频率（会话/秒）
+    arrival_mode: closed_loop | open_loop  # 省略为 closed_loop；网页默认 open_loop，可切换
     prompt_len: LengthDist      # 两种模式仅根轮输入分布
     turn_increment_len: LengthDist  # 两种模式必填，子轮新增内容分布
     output_len: LengthDist
     max_new_tokens: int         # 每请求可见生成上限，默认 128
     seed: int
-    session:                   # 仅 session 模式使用
+    session:                   # 仅 closed_loop 模式使用
       num_sessions: int        # 省略时等于 num_requests
       topology: linear
       think_time_ms: float     # 子轮思考时间的指数分布均值（ms），默认 0
   trace:                       # 仅 mode=trace；设置属于配置，计划内容是独立资源
-    mode: open_loop | session
+    mode: open_loop | closed_loop
     session_rate: float        # 新会话/秒，正数
     seed: int                  # 非负整数
     target_qps: float | null   # 可选正数，仅 open_loop

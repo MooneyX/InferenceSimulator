@@ -83,7 +83,7 @@ def attach_trace(client: TestClient, request: dict[str, Any], mode: str = "open_
 
 
 @pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
-@pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "session"])
+@pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
 def test_three_inference_modes_use_one_run_contract(
     inference_mode: str, workload_mode: str,
 ) -> None:
@@ -126,7 +126,7 @@ def test_unified_run_maps_kernel_errors_for_every_mode(
 def test_trace_physical_preview_does_not_require_uploaded_plan() -> None:
     request = inference_payload("physical_analytical")
     request["workload"] = {"mode": "trace", "trace": {
-        "mode": "session", "session_rate": 1, "seed": 0,
+        "mode": "closed_loop", "session_rate": 1, "seed": 0,
     }}
     preview = TestClient(create_app()).post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text

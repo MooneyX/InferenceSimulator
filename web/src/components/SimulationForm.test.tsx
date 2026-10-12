@@ -29,19 +29,19 @@ describe("SimulationForm", () => {
       target: { files: [new File(["{}"], "plan.json")] },
     });
     await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "closed_loop" } });
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "2" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
-      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "session", session_rate: 2, seed: 0 } },
+      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 0 } },
       inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
     }));
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByText(/计划已校验/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
-      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "session", session_rate: 2, seed: 0 } },
+      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 0 } },
       inference: expect.objectContaining({ mode: "manual" }),
     }));
     expect(onSubmit).toHaveBeenCalledTimes(2);
@@ -79,18 +79,18 @@ describe("SimulationForm", () => {
       target: { files: [new File(["{}"], "plan.json")] },
     });
     await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "closed_loop" } });
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported).workload).toEqual({ mode: "trace", trace: {
-      mode: "session", session_rate: 3, seed: 0, plan_id: null,
+      mode: "closed_loop", session_rate: 3, seed: 0, plan_id: null,
     } });
     expect(exported).not.toContain("plan-1");
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
     expect(onReplay).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("投放模式")).toHaveValue("session");
+    expect(screen.getByLabelText("投放模式")).toHaveValue("closed_loop");
     expect(screen.getByLabelText("会话/秒")).toHaveValue(3);
     expect(screen.getByRole("status")).toHaveTextContent("请重新上传请求计划");
     expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
@@ -150,25 +150,25 @@ describe("SimulationForm", () => {
     expect(screen.getByText(/1024 页/)).toBeInTheDocument();
   });
 
-  it("uses the selected session workload in automatic resolution too", () => {
+  it("uses the selected closed_loop workload in automatic resolution too", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
-    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ synthetic: expect.objectContaining({
-        arrival_mode: "session", session_rate: 1.28,
+        arrival_mode: "closed_loop", session_rate: 1.28,
         session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
       }) }),
       inference: expect.objectContaining({ mode: "physical" }),
     }));
   });
 
-  it("submits session mode using only session count, rate and think interval", () => {
+  it("submits closed_loop mode using only session count, rate and think interval", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
-    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒，泊松到达）")).not.toBeInTheDocument();
     const incrementGroup = screen.getByRole("group", { name: "子轮新增内容长度" });
     expect(within(incrementGroup).getByLabelText("平均长度（token）")).toHaveValue(256);
@@ -181,7 +181,7 @@ describe("SimulationForm", () => {
       { target: { value: "200" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     const submitted = onSubmit.mock.calls[0][0].workload.synthetic;
-    expect(submitted).toMatchObject({ arrival_mode: "session", session_rate: 3,
+    expect(submitted).toMatchObject({ arrival_mode: "closed_loop", session_rate: 3,
       turn_increment_len: { dist: "poisson", mean: 48 },
       session: { num_sessions: 5, think_time_ms: 200, topology: "linear" } });
     expect(submitted).not.toHaveProperty("arrival_rate");
@@ -195,7 +195,7 @@ describe("SimulationForm", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
-    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "1001" } });
     fireEvent.change(screen.getByLabelText("新会话投放频率（会话/秒，泊松到达）"),
       { target: { value: "0" } });

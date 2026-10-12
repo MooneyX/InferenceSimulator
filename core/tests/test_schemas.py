@@ -359,7 +359,7 @@ class TestWorkloadConfig:
         with pytest.raises(ValidationError):
             WorkloadConfig.model_validate({
                 "mode": "trace",
-                "trace": {"mode": "session", "session_rate": 1, "target_qps": 5},
+                "trace": {"mode": "closed_loop", "session_rate": 1, "target_qps": 5},
             })
 
     @pytest.mark.parametrize("mode", ["synthetic", "trace"])
@@ -370,7 +370,7 @@ class TestWorkloadConfig:
             WorkloadConfig.model_validate(payload)
 
     @pytest.mark.parametrize("field,invalid", [
-        ("mode", "legacy"), ("session_rate", 0), ("session_rate", float("inf")),
+        ("mode", "legacy"), ("mode", "session"), ("session_rate", 0), ("session_rate", float("inf")),
         ("seed", -1), ("target_qps", 0), ("target_qps", float("nan")),
     ])
     def test_trace_payload_rejects_invalid_values(self, field: str, invalid: object) -> None:
@@ -565,6 +565,15 @@ class TestConfigValidation:
         with pytest.raises(ValidationError):
             EngineConfig.model_validate(
                 {"max_running_requests": 8, "max_total_tokens": 4096, "max_batch_tokens": 1024}
+            )
+
+    def test_closed_loop_is_default_and_rejects_legacy_arrival_mode(self) -> None:
+        workload = make_config().workload.synthetic
+        assert workload is not None
+        assert workload.arrival_mode == "closed_loop"
+        with pytest.raises(ValidationError, match="arrival_mode"):
+            SyntheticWorkloadConfig.model_validate(
+                {**workload.model_dump(), "arrival_mode": "session"}
             )
 
     def test_session_rate_and_request_rate_are_mode_specific(self) -> None:

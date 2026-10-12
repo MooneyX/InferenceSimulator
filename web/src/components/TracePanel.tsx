@@ -8,7 +8,7 @@ import "./TracePanel.css";
 
 export interface ReplaySelection {
   id: string;
-  mode: "open_loop" | "session";
+  mode: "open_loop" | "closed_loop";
   rate: number;
   seed: number;
   targetQps?: number;
@@ -27,7 +27,7 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [planId, setPlanId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"open_loop" | "session">(initialReplay?.mode ?? "open_loop");
+  const [mode, setMode] = useState<"open_loop" | "closed_loop">(initialReplay?.mode ?? "open_loop");
   const [rate, setRate] = useState(initialReplay?.rate ?? 1);
   const [scaleToTarget, setScaleToTarget] = useState(initialReplay?.targetQps !== undefined);
   const [targetQps, setTargetQps] = useState(initialReplay?.targetQps ?? 64);
@@ -175,7 +175,7 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
             <select id="trace-arrival-mode" value={mode} disabled={locked}
               onChange={(event) => setMode(event.target.value as typeof mode)}>
               <option value="open_loop">开环 · 按轨迹时间投放</option>
-              <option value="session">闭环 · 父完成后投放</option>
+              <option value="closed_loop">闭环 · 父完成后投放</option>
             </select></div>
           <div className="form-field"><label htmlFor="trace-session-rate">会话/秒</label>
             <input id="trace-session-rate" type="number" min="0.000001" step="any" value={rate} disabled={locked}

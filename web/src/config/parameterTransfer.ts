@@ -60,10 +60,10 @@ export function parseSimConfigJson(json: string): SimConfig {
   if (workload.mode === "trace") {
     if (workload.synthetic != null) throw new Error("Trace 负载不能同时配置 workload.synthetic");
     const trace = { seed: 0, ...physicalObject(workload.trace, "workload.trace", ["mode", "session_rate"], ["seed", "target_qps", "plan_id"]) } as Record<string, unknown>;
-    if (trace.mode !== "open_loop" && trace.mode !== "session") throw new Error("workload.trace.mode 仅支持 open_loop 或 session");
+    if (trace.mode !== "open_loop" && trace.mode !== "closed_loop") throw new Error("workload.trace.mode 仅支持 open_loop 或 closed_loop");
     numericFields(trace, "workload.trace", ["session_rate", "seed"]);
     if (trace.target_qps != null) numericFields(trace, "workload.trace", ["target_qps"]);
-    if (trace.mode === "session" && trace.target_qps != null) throw new Error("目标 QPS 仅适用于开环 trace 回放");
+    if (trace.mode === "closed_loop" && trace.target_qps != null) throw new Error("目标 QPS 仅适用于开环 trace 回放");
     if (trace.plan_id != null && (typeof trace.plan_id !== "string" || trace.plan_id.length === 0)) {
       throw new Error("workload.trace.plan_id 必须是非空字符串或 null");
     }
@@ -72,9 +72,9 @@ export function parseSimConfigJson(json: string): SimConfig {
     if (workload.trace != null) throw new Error("合成负载不能同时配置 workload.trace");
     const synthetic = objectWithKeys(workload.synthetic, "workload.synthetic", [
       "num_requests", "arrival_mode", "prompt_len", "turn_increment_len", "output_len", "max_new_tokens", "seed", "arrival_rate", "session_rate", "session",
-    ], { arrival_mode: "session", max_new_tokens: 128, arrival_rate: null, session_rate: null, session: {} });
+    ], { arrival_mode: "closed_loop", max_new_tokens: 128, arrival_rate: null, session_rate: null, session: {} });
     const arrivalMode = synthetic.arrival_mode;
-    if (arrivalMode !== "open_loop" && arrivalMode !== "session") throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 session");
+    if (arrivalMode !== "open_loop" && arrivalMode !== "closed_loop") throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 closed_loop");
     numericFields(synthetic, "workload.synthetic", ["num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate"]);
     if ((arrivalMode === "open_loop" ? synthetic.session_rate : synthetic.arrival_rate) != null) {
       throw new Error("开环与闭环到达率不能混用");
@@ -91,7 +91,7 @@ export function parseSimConfigJson(json: string): SimConfig {
     if (arrivalMode === "open_loop" && (session.num_sessions != null || session.think_time_ms !== 0)) {
       throw new Error("开环负载不使用会话数或思考时间");
     }
-    root.workload = { mode: "synthetic", synthetic: arrivalMode === "session"
+    root.workload = { mode: "synthetic", synthetic: arrivalMode === "closed_loop"
       ? { ...synthetic, session: { ...session, num_sessions: session.num_sessions ?? synthetic.num_requests }, arrival_rate: undefined }
       : { ...synthetic, session: undefined, session_rate: undefined } };
   } else throw new Error("workload.mode 仅支持 synthetic 或 trace 模式");

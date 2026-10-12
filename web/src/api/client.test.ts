@@ -268,13 +268,13 @@ describe("trace replay requests", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(traceConfig),
     });
-    const sessionConfig: SimConfig = { ...traceConfig, workload: { mode: "trace", trace: {
-      plan_id: "plan-1", mode: "session", session_rate: 2, seed: 7,
+    const closedLoopConfig: SimConfig = { ...traceConfig, workload: { mode: "trace", trace: {
+      plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 7,
     } } };
-    await simulate(sessionConfig);
+    await simulate(closedLoopConfig);
     expect(fetchMock).toHaveBeenLastCalledWith("/api/simulate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sessionConfig),
+      body: JSON.stringify(closedLoopConfig),
     });
   });
 });

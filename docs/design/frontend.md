@@ -10,7 +10,7 @@
 
 表单只暴露当前可编辑字段；其余 Config schema 字段由前端默认值填充或由服务端解析，不与表单控件一一对应：
 
-- **负载（workload）**：`mode=synthetic` 时编辑 `workload.synthetic`，可选 `arrival_mode=open_loop`（默认）或 `session`，共用总请求数、根输入长度、子轮新增内容长度、输出长度、生成上限和种子。子轮输入均为父轮输入 + 父轮已生成输出 + 新增内容，理想命中率由完整页继承自然产生。开环填写 `arrival_rate`（期望请求 QPS），无就绪子轮时新建会话；闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值）。跨 session 不共享公共前缀。`mode=trace` 时编辑 `workload.trace` 的开环/闭环、会话速率、种子与可选目标 QPS，通过上传/扫描/下载计划或直接上传计划获得临时 `plan_id`。
+- **负载（workload）**：`mode=synthetic` 时编辑 `workload.synthetic`，可选 `arrival_mode=open_loop`（默认）或 `closed_loop`，共用总请求数、根输入长度、子轮新增内容长度、输出长度、生成上限和种子。子轮输入均为父轮输入 + 父轮已生成输出 + 新增内容，理想命中率由完整页继承自然产生。开环填写 `arrival_rate`（期望请求 QPS），无就绪子轮时新建会话；闭环**不输入请求 QPS**，填写 `session.num_sessions`、`session_rate`（泊松根会话/秒）和 `session.think_time_ms`（子轮独立指数思考间隔均值）。跨 session 不共享公共前缀。`mode=trace` 时编辑 `workload.trace` 的开环/闭环、会话速率、种子与可选目标 QPS，通过上传/扫描/下载计划或直接上传计划获得临时 `plan_id`。
 - **调度（scheduler）**：编辑 `max_running_requests`、`max_prefill_tokens`（默认 16384）和 `pd_mutually_exclusive`（默认 `true`，Prefill/Decode 分步；关闭后可在同一步融合）。调度参数独立于推理配置方式。
 - **推理（inference）**：`mode=manual` 时编辑 `page_size`（默认 64）、`kv` 中的 L1/L2/L3 token 容量与 KV 上行链路参数，以及 `timing.mode=empirical` 的四系数；`mode=physical` 时编辑同一个 `page_size`、`model`、`hardware`、`storage`、`tp_size`、`ep_size` 与 `timing`（解析或经验）。容量由服务端推导；完整页 ID 判等及 L1 cache 路径始终开启，不提供关闭开关。
 

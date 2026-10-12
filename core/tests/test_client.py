@@ -24,7 +24,7 @@ from simcore.workload import build_plan
 
 
 def planned_client(plan: WorkloadPlan, engine: EngineConfig) -> Client:
-    workload = synthetic_workload("session")
+    workload = synthetic_workload("closed_loop")
     with patch("simcore.client.build_plan", return_value=plan):
         return Client(workload, engine)
 
@@ -219,7 +219,7 @@ def trace_plan(output: int = 2) -> TracePlan:
 
 
 @pytest.mark.parametrize("source", ["synthetic", "trace"])
-@pytest.mark.parametrize("mode", ["session", "open_loop"])
+@pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
 def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str) -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     workload = (
@@ -240,11 +240,11 @@ def test_four_modes_share_dispatch_and_lifecycle_contract(source: str, mode: str
     assert client.workload_mode == source and client.arrival_mode == mode
     assert not hasattr(client, "_ready") or (source == "synthetic" and mode == "open_loop")
     assert hasattr(client, "_finished") == (source == "synthetic")
-    assert hasattr(client, "_completed") == (source == "trace" and mode == "session")
+    assert hasattr(client, "_completed") == (source == "trace" and mode == "closed_loop")
     with pytest.raises(AttributeError):
         client.workload_mode = "trace"  # type: ignore[misc]
     with pytest.raises(AttributeError):
-        client.arrival_mode = "session"  # type: ignore[misc]
+        client.arrival_mode = "closed_loop"  # type: ignore[misc]
     wakeups = client.initial_wakeups()
     assert client.initial_wakeups() == wakeups
     request, output = client.on_wakeup(wakeups[0])
@@ -308,7 +308,7 @@ def test_synthetic_open_loop_ready_queue_tie_breaks_by_session() -> None:
     assert client.on_wakeup(wakeups[3])[0].parent_request_id == second.request_id
 
 
-@pytest.mark.parametrize("mode", ["session", "open_loop"])
+@pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
 def test_trace_failure_skips_branches_only_when_dependency_gates_sending(mode: str) -> None:
     source = trace_plan(output=0)
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
@@ -326,7 +326,7 @@ def test_trace_failure_skips_branches_only_when_dependency_gates_sending(mode: s
     root, output = client.on_wakeup(initial[0])
     assert output == 0
     skipped = client.on_request_aborted(root.request_id)
-    if mode == "session":
+    if mode == "closed_loop":
         assert [(item.id, item.parent_request_id) for item in skipped] == [(1, 0), (2, 0)]
         assert len(initial) == 1
     else:

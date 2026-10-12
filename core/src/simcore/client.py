@@ -41,13 +41,13 @@ class Client:
         self._sent: set[int] = set()
         self._inflight: dict[int, InferenceRequest] = {}
         self._workload_mode = workload.mode
-        self._arrival_mode: Literal["session", "open_loop"]
+        self._arrival_mode: Literal["closed_loop", "open_loop"]
         if workload.mode == "trace":
             replay = cast(TraceWorkloadConfig, workload.trace)
             if trace_plan is None:
                 raise ValueError("Trace 仿真须提供 trace_plan 请求计划")
             self._arrival_mode = replay.mode
-            if self.arrival_mode == "session":
+            if self.arrival_mode == "closed_loop":
                 self._completed: set[int] = set()
             self._prepare_trace(trace_plan, replay)
         else:
@@ -56,7 +56,7 @@ class Client:
             self._synthetic = cast(SyntheticWorkloadConfig, workload.synthetic)
             self._arrival_mode = self._synthetic.arrival_mode
             self._finished: dict[int, tuple[InferenceRequest, int]] = {}
-            if self.arrival_mode == "session":
+            if self.arrival_mode == "closed_loop":
                 self._plan = build_plan(self._synthetic, engine)
             else:
                 self._roots_rng = random.Random(stable_derive(self._synthetic.seed, "root-length"))
@@ -76,7 +76,7 @@ class Client:
         return self._workload_mode
 
     @property
-    def arrival_mode(self) -> Literal["session", "open_loop"]:
+    def arrival_mode(self) -> Literal["closed_loop", "open_loop"]:
         return self._arrival_mode
 
     @property
@@ -238,7 +238,7 @@ class Client:
         hashes: tuple[int, ...] = ()
         if self.workload_mode == "trace":
             if (
-                self.arrival_mode == "session"
+                self.arrival_mode == "closed_loop"
                 and turn.parent_request_id is not None
                 and turn.parent_request_id not in self._completed
             ):
@@ -294,7 +294,7 @@ class Client:
                 heapq.heappush(
                     self._ready, (completion.finish_time_ms, request.session_id, request.request_id)
                 )
-        elif self.arrival_mode == "session":
+        elif self.arrival_mode == "closed_loop":
             self._completed.add(request.request_id)
         if self.arrival_mode == "open_loop":
             return ()

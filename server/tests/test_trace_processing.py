@@ -111,7 +111,7 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         plan_id = uploaded.json()["id"]
         request = config()
         request["workload"] = {"mode": "trace", "trace": {
-            "plan_id": plan_id, "mode": "session", "session_rate": 1, "seed": 1,
+            "plan_id": plan_id, "mode": "closed_loop", "session_rate": 1, "seed": 1,
         }}
         result = client.post("/api/simulate", json=request)
         assert result.status_code == 200, result.text
@@ -124,7 +124,7 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["meta"]["num_requests"] == 3
-        request["workload"]["trace"]["mode"] = "session"
+        request["workload"]["trace"]["mode"] = "closed_loop"
         invalid = client.post("/api/simulate", json=request)
         assert invalid.status_code == 422
 

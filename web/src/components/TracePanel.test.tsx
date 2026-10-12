@@ -31,10 +31,10 @@ describe("TracePanel", () => {
     }));
   });
 
-  it("restores imported session replay without an open-loop target", () => {
+  it("restores imported closed_loop replay without an open-loop target", () => {
     render(<TracePanel disabled={false} onChange={vi.fn()}
-      initialReplay={{ mode: "session", rate: 3, seed: 11 }} />);
-    expect(screen.getByLabelText("投放模式")).toHaveValue("session");
+      initialReplay={{ mode: "closed_loop", rate: 3, seed: 11 }} />);
+    expect(screen.getByLabelText("投放模式")).toHaveValue("closed_loop");
     expect(screen.getByLabelText("会话/秒")).toHaveValue(3);
     expect(screen.getByLabelText("随机种子")).toHaveValue(11);
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒）")).not.toBeInTheDocument();
@@ -48,11 +48,11 @@ describe("TracePanel", () => {
       target: { files: [new File(["{}"], "plan.json", { type: "application/json" })] },
     });
     await waitFor(() => expect(screen.getByText(/计划已校验/)).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "closed_loop" } });
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("随机种子"), { target: { value: "11" } });
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
-      id: "plan-1", mode: "session", rate: 2, seed: 11,
+      id: "plan-1", mode: "closed_loop", rate: 2, seed: 11,
     }));
     expect(screen.queryByRole("button", { name: "运行计划" })).not.toBeInTheDocument();
     vi.mocked(uploadReplayPlan).mockRejectedValueOnce(new Error("文件无效"));
@@ -84,10 +84,10 @@ describe("TracePanel", () => {
       target: { value: "0" },
     });
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
-    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "session" } });
+    fireEvent.change(screen.getByLabelText("投放模式"), { target: { value: "closed_loop" } });
     expect(screen.queryByLabelText("目标发送 QPS（请求/秒）")).not.toBeInTheDocument();
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({
-      id: "plan-1", mode: "session", rate: 1, seed: 0,
+      id: "plan-1", mode: "closed_loop", rate: 1, seed: 0,
     }));
   });
 

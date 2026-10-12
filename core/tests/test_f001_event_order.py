@@ -1,16 +1,27 @@
 """F001 同刻完成、客户端回调、子轮发送和单步调度全序验收。"""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
+from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CacheEntry
 from simcore.prefix_hash import encode
 from simcore.router import Router
-from simcore.schemas import EngineConfig, InferenceRequest, PerfModelConfig, TurnPlan, WorkloadPlan
+from simcore.schemas import (
+    EngineConfig,
+    InferenceRequest,
+    PerfModelConfig,
+    TracePlan,
+    TraceTurn,
+    TraceWorkloadConfig,
+    TurnPlan,
+    WorkloadConfig,
+    WorkloadPlan,
+)
 from test_client import planned_client
 from test_schemas import runtime_config
 
@@ -39,7 +50,7 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
     return Coordinator((engine,), planned_client(plan, config), Router(1)), engine
 
 
-def test_parent_done_callback_and_immediate_children_precede_other_send() -> None:
+def test_parent_done_callback_precedes_sends_including_immediate_children() -> None:
     coordinator, engine = make_run(make_plan())
     with (
         patch.object(
@@ -51,7 +62,7 @@ def test_parent_done_callback_and_immediate_children_precede_other_send() -> Non
         run = coordinator.run()[0]
     assert [
         call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 8
-    ] == [3, 4, 2]
+    ] == [2, 3, 4]
     assert [
         call.args[0].request_id
         for call in callbacks.call_args_list
@@ -81,6 +92,102 @@ def test_same_time_roots_are_sent_in_id_order_even_if_created_in_reverse() -> No
     run = coordinator.run()[0]
     assert [run.records[key].arrival for key in (0, 1, 2)] == [0, 0, 0]
     assert [run.records[key].prefill_start for key in (0, 1, 2)] == [0, 0, 0]
+
+
+@pytest.mark.parametrize("lookup_ms", [0.0, 3.0])
+@pytest.mark.parametrize("l2_pages", [1, 2])
+def test_immediate_child_and_normal_send_share_l3_prefetch_order(
+    lookup_ms: float, l2_pages: int
+) -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=64, page_size=4,
+        l2_capacity_tokens=l2_pages * 4, l3_capacity_tokens=256,
+        l3_prefetch_min_tokens=0,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=0, decode_d2=0, kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4, l3_to_l2_bandwidth_bytes_per_ms=2,
+        l2_latency_ms=3, l3_latency_ms=5, l3_lookup_latency_ms=lookup_ms,
+    )
+    send_ms = lookup_ms + 1
+    source = TracePlan(
+        sessions=("competition",), block_size=4,
+        requests=(
+            TraceTurn(
+                request_id=0, session_id=0, arrival_offset_ms=0,
+                prompt_len=1, output_len=1, hash_ids=(),
+            ),
+            TraceTurn(
+                request_id=1, session_id=0, arrival_offset_ms=send_ms,
+                prompt_len=5, output_len=1, hash_ids=(20,),
+            ),
+            TraceTurn(
+                request_id=2, session_id=0, parent_request_id=0,
+                arrival_offset_ms=send_ms, think_time_ms=0,
+                prompt_len=5, output_len=1, hash_ids=(10,),
+            ),
+            TraceTurn(
+                request_id=3, session_id=0, arrival_offset_ms=1000,
+                prompt_len=5, output_len=1, hash_ids=(20,),
+            ),
+            TraceTurn(
+                request_id=4, session_id=0, arrival_offset_ms=1000,
+                prompt_len=5, output_len=1, hash_ids=(10,),
+            ),
+        ),
+    )
+    workload = WorkloadConfig(
+        mode="trace", trace=TraceWorkloadConfig(mode="session", session_rate=10)
+    )
+    with patch("simcore.client.random.Random.expovariate", return_value=0.0):
+        client = Client(workload, config, trace_plan=source)
+    engine = Engine(runtime_config(config, perf), output_targets={})
+    cache = engine._prefix_cache
+    seeds = (
+        InferenceRequest(90, 0, None, 4, 1, (), 0, trace_hash_ids=(20,), is_trace=True),
+        InferenceRequest(91, 0, None, 4, 1, (), 0, trace_hash_ids=(10,), is_trace=True),
+        InferenceRequest(92, 92, None, 64, 1, (), 0),
+        InferenceRequest(93, 93, None, l2_pages * 4, 1, (), 0),
+    )
+    for seed in seeds:
+        cache.pin(seed, 0)
+        cache.admit(seed.request_id)
+        cache.extend(seed.request_id, seed.prompt_len)
+        cache.publish(seed.request_id)
+        cache.finish(seed.request_id)
+    cache.ensure_free(4)
+    for chunk_id in ("trace:0:20", "trace:0:10"):
+        page = cache.page(chunk_id)
+        assert page is not None and page.tier == "L3"
+    order = Mock()
+    with (
+        patch.object(engine, "submit", wraps=engine.submit) as submissions,
+        patch.object(engine, "on_l3_lookup", wraps=engine.on_l3_lookup) as lookups,
+        patch.object(cache, "reserve_transfer", wraps=cache.reserve_transfer) as reserves,
+    ):
+        order.attach_mock(submissions, "send")
+        order.attach_mock(lookups, "lookup")
+        run = Coordinator((engine,), client, Router(1, session_affinity=True)).run()[0]
+    assert [call.args[0].request_id for call in submissions.call_args_list] == [0, 1, 2, 3, 4]
+    assert [(call.args[0], call.args[1]) for call in lookups.call_args_list[:3]] == [
+        (0, lookup_ms), (1, send_ms + lookup_ms), (2, send_ms + lookup_ms),
+    ]
+    assert [call[0] for call in order.mock_calls[:6]] == (
+        ["send", "lookup", "send", "lookup", "send", "lookup"] if lookup_ms == 0
+        else ["send", "lookup", "send", "send", "lookup", "lookup"]
+    )
+    assert [call.args for call in reserves.call_args_list if call.args[1] == "L2"] == [
+        ("trace:0:20", "L2"), ("trace:0:10", "L2"),
+    ]
+    records = {item.id: item for item in run.records}
+    assert records[0].finish == records[1].arrival == records[2].arrival == send_ms
+    assert records[1].l3_hit_tokens == 4
+    assert records[2].l3_hit_tokens == (0 if l2_pages == 1 else 4)
+    assert records[1].prefill_start == send_ms + lookup_ms + 14
+    assert run.restore_bytes == (16 if l2_pages == 1 else 32)
+    assert not run.aborted_requests and not run.skipped_requests
+    assert not engine._transfers and not engine._prefetch_waiting
+    assert run.cache_snapshot.active_blocks == 0
 
 
 @pytest.mark.parametrize("load_fails", [False, True])

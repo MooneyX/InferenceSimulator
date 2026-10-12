@@ -35,15 +35,12 @@ class Coordinator:
         self._enqueue_wakeups(client.initial_wakeups(), kind=client.initial_send_kind)
 
     def _enqueue_wakeups(
-        self, wakeups: Iterable[ClientWakeup], *, completed_at_ms: float | None = None,
-        kind: EventKind = EventKind.CLIENT_SEND,
-    ) -> None:  # 唤醒序列与可选父轮完成时刻 → 按事件优先级入堆；无返回值
+        self, wakeups: Iterable[ClientWakeup], *, kind: EventKind = EventKind.CLIENT_SEND,
+    ) -> None:  # 唤醒序列与发送类别 → 按事件优先级入堆；无返回值
         for wakeup in wakeups:
             self._wakeups[wakeup.turn_id] = wakeup
             if kind is EventKind.OPEN_LOOP_TICK:
                 event = self._factory.open_loop_tick(wakeup.send_time_ms, wakeup.turn_id)
-            elif completed_at_ms is not None and wakeup.send_time_ms == completed_at_ms:
-                event = self._factory.client_child_send(wakeup.send_time_ms, wakeup.turn_id)
             else:
                 event = self._factory.client_send(wakeup.send_time_ms, wakeup.turn_id)
             heapq.heappush(self._heap, event)
@@ -105,9 +102,7 @@ class Coordinator:
                 self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.CLIENT_COMPLETION:
                 completion = self._completions.pop(event.ref)
-                self._enqueue_wakeups(
-                    self.client.on_request_completed(completion), completed_at_ms=now_ms
-                )
+                self._enqueue_wakeups(self.client.on_request_completed(completion))
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)
                 self.engines[instance_id].on_l3_lookup(event.ref, now_ms)
@@ -118,9 +113,7 @@ class Coordinator:
                 self.engines[instance_id].on_transfer_done(event.kind, local_ref, now_ms)
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
-            elif event.kind in (
-                EventKind.CLIENT_CHILD_SEND, EventKind.CLIENT_SEND, EventKind.OPEN_LOOP_TICK
-            ):
+            elif event.kind in (EventKind.CLIENT_SEND, EventKind.OPEN_LOOP_TICK):
                 wakeup = self._wakeups.pop(event.ref)
                 request, output_len = self.client.on_wakeup(wakeup)
                 self._submit(request, output_len, now_ms)

@@ -7,7 +7,7 @@
 
 - ``kind`` 优先级：步末发布、请求结算及客户端回调先于传输完成，
   传输完成先于本时刻的发送，所有发送先于新引擎步。
-  将来才到达的闭环子轮与普通发送同级。
+  闭环子轮与普通计划发送同级，同刻按轮次 ID 排序。
 - ``ref`` 在同类事件内排序（请求、实例、传输或时钟序号）；``seq`` 打破同引用的平局。
 
 依赖层级：仅依赖标准库。
@@ -28,10 +28,9 @@ class EventKind(IntEnum):
     L3_LOOKUP_DONE = 3
     L3_L2_DONE = 4
     L2_L1_DONE = 5
-    CLIENT_CHILD_SEND = 6
-    CLIENT_SEND = 7
-    OPEN_LOOP_TICK = 8
-    ENGINE_STEP = 9
+    CLIENT_SEND = 6
+    OPEN_LOOP_TICK = 7
+    ENGINE_STEP = 8
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -69,12 +68,8 @@ class EventFactory:
     def client_completion(self, time: float, request_id: int) -> Event:  # 完成时刻与请求 ID → 客户端回调事件
         return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
 
-    def client_send(self, time: float, turn_id: int) -> Event:  # 发送时刻与轮次 ID → 普通发送事件
+    def client_send(self, time: float, turn_id: int) -> Event:  # 发送时刻与轮次 ID → 计划发送事件
         return self._make(time, EventKind.CLIENT_SEND, turn_id)
-
-    def client_child_send(self, time: float, turn_id: int) -> Event:  # 回调时刻与子轮 ID → 优先发送事件
-        """完成回调在本时刻唤醒的子轮须先于其他普通发送。"""
-        return self._make(time, EventKind.CLIENT_CHILD_SEND, turn_id)
 
     def open_loop_tick(self, time: float, index: int) -> Event:  # 投放时刻与序号 → 开环时钟事件
         return self._make(time, EventKind.OPEN_LOOP_TICK, index)

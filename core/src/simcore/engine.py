@@ -205,7 +205,6 @@ class Engine:
             max_new_tokens=request.max_new_tokens,
         )
         if self._engine_config.l3_capacity_tokens:
-            self._prefix_cache.probe(request, request.prompt_len)
             self._lookup_waiting.add(key)
             self._scheduled_events.append(
                 (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, key)

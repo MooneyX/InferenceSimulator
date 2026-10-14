@@ -56,6 +56,7 @@ def manual_config(
     )
     timing_fields = ("prefill_c1", "prefill_c2", "decode_d1", "decode_d2")
     page_size = engine_data.pop("page_size")
+    max_output_tokens = engine_data.pop("max_output_tokens")
     scheduler = {name: engine_data.pop(name) for name in scheduler_fields}
     timing = {name: perf_data.pop(name) for name in timing_fields}
     return SimConfig.model_validate({
@@ -64,6 +65,7 @@ def manual_config(
         "scheduler": scheduler,
         "inference": {
             "mode": "manual", "page_size": page_size,
+            "max_output_tokens": max_output_tokens,
             "kv": engine_data | perf_data,
             "timing": {"mode": "empirical", **timing},
         },
@@ -74,10 +76,10 @@ def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> "RuntimeConfi
     """直接组件场景也经过统一运行时准备入口。"""
     from simcore.capacity import prepare_runtime
 
-    workload = WorkloadConfig(synthetic=SyntheticWorkloadConfig(
-        num_requests=1, session_rate=1,
+    workload = WorkloadConfig(session_rate=1, synthetic=SyntheticWorkloadConfig(
+        num_requests=1,
         prompt_len=FixedLength(value=1), turn_increment_len=FixedLength(value=1),
-        output_len=FixedLength(value=1), seed=0,
+        output_len=FixedLength(value=1),
     ))
     return prepare_runtime(manual_config(workload=workload, engine=engine, perf_model=perf))
 
@@ -103,13 +105,12 @@ def make_config(**engine_overrides: object) -> SimConfig:
     return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10.0,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
-                session_rate=10.0,
                 prompt_len=FixedLength(value=128),
                 turn_increment_len=FixedLength(value=8),
                 output_len=FixedLength(value=16),
-                seed=0,
             )
         ),
         engine=EngineConfig.model_validate(
@@ -346,37 +347,101 @@ class TestWorkloadConfig:
         with pytest.raises(ValidationError, match=r"workload\.synthetic"):
             WorkloadConfig(mode="synthetic")
 
-    def test_trace_payload_required_and_mode_specific(self) -> None:
+    def test_trace_payload_required_and_parent_defaults(self) -> None:
         with pytest.raises(ValidationError, match="trace"):
-            WorkloadConfig(mode="trace")
+            WorkloadConfig(mode="trace", session_rate=1)
         workload = WorkloadConfig.model_validate({
-            "mode": "trace", "trace": {"mode": "open_loop", "session_rate": 1},
+            "mode": "trace", "session_rate": 1, "trace": {},
         })
         assert workload.synthetic is None
-        assert workload.trace.seed == 0
-        assert workload.trace.target_qps is None
-        assert workload.trace.plan_id is None
-        with pytest.raises(ValidationError):
-            WorkloadConfig.model_validate({
-                "mode": "trace",
-                "trace": {"mode": "closed_loop", "session_rate": 1, "target_qps": 5},
-            })
+        assert workload.arrival_mode == "closed_loop" and workload.seed == 0
+        assert workload.target_qps is None
+        assert workload.trace is not None and workload.trace.model_dump() == {"plan_id": None}
+        assert WorkloadConfig.model_validate_json(workload.model_dump_json()) == workload
 
     @pytest.mark.parametrize("mode", ["synthetic", "trace"])
     def test_workload_payloads_are_mutually_exclusive(self, mode: str) -> None:
         payload = make_config().workload.model_dump()
-        payload.update(mode=mode, trace={"mode": "open_loop", "session_rate": 1})
+        payload.update(mode=mode, trace={})
         with pytest.raises(ValidationError):
             WorkloadConfig.model_validate(payload)
 
     @pytest.mark.parametrize("field,invalid", [
-        ("mode", "legacy"), ("mode", "session"), ("session_rate", 0), ("session_rate", float("inf")),
+        ("arrival_mode", "legacy"), ("arrival_mode", "session"),
+        ("session_rate", 0), ("session_rate", float("inf")),
         ("seed", -1), ("target_qps", 0), ("target_qps", float("nan")),
     ])
-    def test_trace_payload_rejects_invalid_values(self, field: str, invalid: object) -> None:
-        payload = {"mode": "open_loop", "session_rate": 1, field: invalid}
-        with pytest.raises(ValidationError):
-            WorkloadConfig.model_validate({"mode": "trace", "trace": payload})
+    def test_parent_rejects_invalid_values(self, field: str, invalid: object) -> None:
+        payload = {
+            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1,
+            "trace": {}, field: invalid,
+        }
+        with pytest.raises(ValidationError, match=field):
+            WorkloadConfig.model_validate(payload)
+
+    @pytest.mark.parametrize("source", ["synthetic", "trace"])
+    @pytest.mark.parametrize("arrival_mode", ["closed_loop", "open_loop"])
+    def test_four_modes_enforce_parent_rate_constraints(
+        self, source: str, arrival_mode: str,
+    ) -> None:
+        synthetic = make_config().workload.synthetic
+        assert synthetic is not None
+        body = synthetic.model_dump() if source == "synthetic" else {}
+        if source == "synthetic" and arrival_mode == "open_loop":
+            body["session"] = {}
+        payload = {"mode": source, "arrival_mode": arrival_mode, source: body}
+        request_clock = source == "synthetic" and arrival_mode == "open_loop"
+        required = "target_qps" if request_clock else "session_rate"
+        with pytest.raises(ValidationError, match=required):
+            WorkloadConfig.model_validate(payload)
+        payload[required] = 10
+        parsed = WorkloadConfig.model_validate(payload)
+        assert parsed.seed == 0 and parsed.arrival_mode == arrival_mode
+        assert parsed.session_rate == (None if request_clock else 10)
+        assert parsed.target_qps == (10 if request_clock else None)
+        assert WorkloadConfig.model_validate_json(parsed.model_dump_json()) == parsed
+        forbidden = "session_rate" if request_clock else "target_qps"
+        if source == "trace" and arrival_mode == "open_loop":
+            assert WorkloadConfig.model_validate(payload | {"target_qps": 5}).target_qps == 5
+        else:
+            with pytest.raises(ValidationError):
+                WorkloadConfig.model_validate(payload | {forbidden: 5})
+
+    def test_synthetic_session_count_is_completed_only_by_closed_loop_parent(self) -> None:
+        synthetic = make_config().workload.synthetic
+        assert synthetic is not None
+        body = synthetic.model_dump() | {"session": {}}
+        assert SyntheticWorkloadConfig.model_validate(body).session.num_sessions is None
+        closed = WorkloadConfig(
+            session_rate=1, synthetic=SyntheticWorkloadConfig.model_validate(body),
+        )
+        assert closed.synthetic is not None and closed.synthetic.session.num_sessions == 4
+        opened = WorkloadConfig(arrival_mode="open_loop", target_qps=1,
+                                synthetic=SyntheticWorkloadConfig.model_validate(body))
+        assert opened.synthetic is not None and opened.synthetic.session.num_sessions is None
+        for sessions in (0, 5):
+            with pytest.raises(ValidationError, match="num_sessions"):
+                WorkloadConfig.model_validate({
+                    "session_rate": 1, "synthetic": body | {"session": {"num_sessions": sessions}},
+                })
+        for session in ({"num_sessions": 1}, {"think_time_ms": 1}):
+            with pytest.raises(ValidationError):
+                WorkloadConfig.model_validate({
+                    "arrival_mode": "open_loop", "target_qps": 1,
+                    "synthetic": body | {"session": session},
+                })
+
+    @pytest.mark.parametrize("source", ["synthetic", "trace"])
+    @pytest.mark.parametrize("field", ["arrival_mode", "seed", "session_rate", "target_qps",
+                                       "arrival_rate", "max_new_tokens"])
+    def test_removed_nested_workload_fields_are_rejected(self, source: str, field: str) -> None:
+        synthetic = make_config().workload.synthetic
+        assert synthetic is not None
+        body = synthetic.model_dump() if source == "synthetic" else {}
+        with pytest.raises(ValidationError, match=field):
+            WorkloadConfig.model_validate({
+                "mode": source, "session_rate": 1, source: body | {field: 1},
+            })
 
     def test_unknown_mode_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -423,12 +488,14 @@ class TestConfigValidation:
         engine = prepare_runtime(config).engine
         assert (engine.page_size, engine.capacity_pages) == (64, 64)
         assert engine.max_prefill_tokens == 16_384
+        assert engine.max_output_tokens == config.inference.max_output_tokens == 65_536
         assert engine.l3_prefetch_min_tokens == 256
         assert engine.pd_mutually_exclusive is True
         assert engine.model_dump() == {
             "max_running_requests": 8,
             "max_total_tokens": 4096,
             "max_prefill_tokens": 16_384,
+            "max_output_tokens": 65_536,
             "page_size": 64,
             "l2_capacity_tokens": 0,
             "l3_capacity_tokens": 0,
@@ -437,7 +504,10 @@ class TestConfigValidation:
         }
         assert make_config(l3_prefetch_min_tokens=0).scheduler.l3_prefetch_min_tokens == 0
         assert prepare_runtime(make_config(max_total_tokens=128)).engine.capacity_pages == 2
-        assert prepare_runtime(make_config(max_total_tokens=128, page_size=1)).engine.capacity_pages == 128
+        assert (
+            prepare_runtime(make_config(max_total_tokens=128, page_size=1)).engine.capacity_pages
+            == 128
+        )
         assert make_config(pd_mutually_exclusive=False).scheduler.pd_mutually_exclusive is False
 
     @pytest.mark.parametrize("legacy", ["max_batch_size", "kv_token_budget", "prefix_cache"])
@@ -445,11 +515,28 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match=legacy):
             make_config(**{legacy: 1})
 
-    def test_synthetic_output_limit(self) -> None:
-        synthetic = make_config().workload.synthetic
-        assert synthetic is not None and synthetic.max_new_tokens == 128
-        with pytest.raises(ValidationError):
-            synthetic.model_validate({**synthetic.model_dump(), "max_new_tokens": 0})
+    @pytest.mark.parametrize("cap", [1, 64, 100, 65_536])
+    def test_engine_output_limit_lives_on_manual_inference(self, cap: int) -> None:
+        from simcore.capacity import prepare_runtime
+
+        config = make_config(max_output_tokens=cap)
+        assert config.inference.max_output_tokens == cap
+        assert prepare_runtime(config).engine.max_output_tokens == cap
+        assert "max_output_tokens" not in config.inference.kv.model_dump()
+
+    @pytest.mark.parametrize("invalid", [0, -1, 1.5, None])
+    def test_engine_output_limit_rejects_non_positive_or_non_integer_values(
+        self, invalid: object,
+    ) -> None:
+        payload = make_config().model_dump()
+        payload["inference"]["max_output_tokens"] = invalid
+        with pytest.raises(ValidationError, match="max_output_tokens"):
+            SimConfig.model_validate(payload)
+        with pytest.raises(ValidationError, match="max_output_tokens"):
+            EngineConfig.model_validate({
+                "max_running_requests": 1, "max_total_tokens": 128,
+                "max_output_tokens": invalid,
+            })
 
     def test_prefill_c2_defaults_to_zero(self) -> None:
         inference = make_config().inference
@@ -567,65 +654,42 @@ class TestConfigValidation:
                 {"max_running_requests": 8, "max_total_tokens": 4096, "max_batch_tokens": 1024}
             )
 
-    def test_closed_loop_is_default_and_rejects_legacy_arrival_mode(self) -> None:
-        workload = make_config().workload.synthetic
-        assert workload is not None
-        assert workload.arrival_mode == "closed_loop"
+    def test_closed_loop_is_default_and_common_fields_live_on_parent(self) -> None:
+        workload = make_config().workload
+        assert workload.arrival_mode == "closed_loop" and workload.seed == 0
+        assert workload.session_rate == 10 and workload.target_qps is None
+        assert workload.synthetic is not None
+        assert set(workload.synthetic.model_dump()) == {
+            "num_requests", "prompt_len", "turn_increment_len", "output_len", "session",
+        }
         with pytest.raises(ValidationError, match="arrival_mode"):
-            SyntheticWorkloadConfig.model_validate(
-                {**workload.model_dump(), "arrival_mode": "session"}
-            )
-
-    def test_session_rate_and_request_rate_are_mode_specific(self) -> None:
-        workload = make_config().workload.synthetic
-        assert workload is not None
-        assert workload.arrival_rate is None and workload.session_rate == 10
-        payload = workload.model_dump()
-        with pytest.raises(ValidationError, match="session_rate"):
-            SyntheticWorkloadConfig.model_validate({**payload, "session_rate": None})
-        with pytest.raises(ValidationError, match="session_rate"):
-            SyntheticWorkloadConfig.model_validate({**payload, "arrival_rate": 10})
-        open_payload = {
-            **payload,
-            "arrival_mode": "open_loop",
-            "session_rate": None,
-            "turn_increment_len": {"dist": "fixed", "value": 8},
-            "session": {"think_time_ms": 0},
-        }
+            WorkloadConfig.model_validate(workload.model_dump() | {"arrival_mode": "session"})
         with pytest.raises(ValidationError, match="arrival_rate"):
-            SyntheticWorkloadConfig.model_validate(open_payload)
-        assert (
-            SyntheticWorkloadConfig.model_validate(
-                {**open_payload, "arrival_rate": 10}
-            ).arrival_rate
-            == 10
-        )
+            WorkloadConfig.model_validate(workload.model_dump() | {"arrival_rate": 10})
 
-    def test_both_modes_require_turn_increment_and_reject_old_hit_target(self) -> None:
-        workload = make_config().workload.synthetic
-        assert workload is not None
-        payload = workload.model_dump()
-        with pytest.raises(ValidationError, match="turn_increment_len"):
-            SyntheticWorkloadConfig.model_validate({**payload, "turn_increment_len": None})
-        open_payload = {
-            **payload,
-            "arrival_mode": "open_loop",
-            "session_rate": None,
-            "arrival_rate": 10,
-            "session": {},
+    @pytest.mark.parametrize("arrival_mode", ["closed_loop", "open_loop"])
+    @pytest.mark.parametrize("missing", [True, False])
+    def test_both_modes_require_turn_increment_and_reject_old_hit_target(
+        self, arrival_mode: str, missing: bool,
+    ) -> None:
+        synthetic = make_config().workload.synthetic
+        assert synthetic is not None
+        body = synthetic.model_dump() | {"session": {}}
+        if missing:
+            del body["turn_increment_len"]
+        else:
+            body["turn_increment_len"] = None
+        payload = {
+            "arrival_mode": arrival_mode,
+            "target_qps" if arrival_mode == "open_loop" else "session_rate": 10,
+            "synthetic": body,
         }
         with pytest.raises(ValidationError, match="turn_increment_len"):
-            SyntheticWorkloadConfig.model_validate({**open_payload, "turn_increment_len": None})
+            WorkloadConfig.model_validate(payload)
+        body["turn_increment_len"] = {"dist": "fixed", "value": 8}
+        body["session"] = {"target_ideal_prefix_hit_rate": 0.5}
         with pytest.raises(ValidationError, match="target_ideal_prefix_hit_rate"):
-            SyntheticWorkloadConfig.model_validate(
-                {
-                    **payload,
-                    "session": {
-                        "num_sessions": 2,
-                        "target_ideal_prefix_hit_rate": 0.5,
-                    },
-                }
-            )
+            WorkloadConfig.model_validate(payload)
 
     def test_session_without_cross_session_field_roundtrips(self) -> None:
         payload = make_config().model_dump()

@@ -7,27 +7,22 @@
 ```yaml
 num_instances: int             # 必填，正整数；其余参数描述每实例独占配置
 workload:
-  mode: synthetic | trace
+  mode: synthetic | trace      # 默认 synthetic
+  arrival_mode: closed_loop | open_loop  # 默认 closed_loop；网页显式 open_loop
+  seed: int                    # 默认 0，非负整数
+  session_rate: float | null   # 合成闭环和 Trace 所有模式必填，正数；合成开环禁止
+  target_qps: float | null     # 合成开环必填；Trace 开环可选；闭环禁止
   synthetic:                   # 仅 mode=synthetic
-    num_requests: int           # 所有 session 的总轮次数
-    arrival_rate: float | null  # 仅 open_loop 必填，目标请求 QPS
-    session_rate: float | null  # 仅 closed_loop 必填，新会话泊松投放频率（会话/秒）
-    arrival_mode: closed_loop | open_loop  # 省略为 closed_loop；网页默认 open_loop，可切换
-    prompt_len: LengthDist      # 两种模式仅根轮输入分布
-    turn_increment_len: LengthDist  # 两种模式必填，子轮新增内容分布
-    output_len: LengthDist
-    max_new_tokens: int         # 每请求可见生成上限，默认 128
-    seed: int
-    session:                   # 仅 closed_loop 模式使用
+    num_requests: int          # 必填，所有 session 的总轮次数
+    prompt_len: LengthDist     # 必填，两种模式仅根轮输入分布
+    turn_increment_len: LengthDist  # 必填，子轮新增内容分布
+    output_len: LengthDist     # 必填，实际输出目标的采样分布
+    session:                   # 可选，仅 closed_loop 模式使用
       num_sessions: int        # 省略时等于 num_requests
       topology: linear
       think_time_ms: float     # 子轮思考时间的指数分布均值（ms），默认 0
-  trace:                       # 仅 mode=trace；设置属于配置，计划内容是独立资源
-    mode: open_loop | closed_loop
-    session_rate: float        # 新会话/秒，正数
-    seed: int                  # 非负整数
-    target_qps: float | null   # 可选正数，仅 open_loop
-    plan_id: str | null        # HTTP 运行引用已上传计划；内核另注入 TracePlan
+  trace:                       # 仅 mode=trace；计划内容是独立资源
+    plan_id: str | null        # 可选；HTTP 运行引用已上传计划；内核另注入 TracePlan
 scheduler:
   max_running_requests: int    # 必填，正整数
   max_prefill_tokens: int      # 默认 16384
@@ -36,6 +31,7 @@ scheduler:
 inference:                     # 按 mode 判别，两个分支共用唯一 page_size
   mode: manual | physical
   page_size: int               # 默认 64
+  max_output_tokens: int       # 两分支共用，默认 65536，正整数；引擎输出上限
   # manual 分支：
   kv:
     max_total_tokens: int      # 必填，实际 L1 KV token 容量
@@ -66,7 +62,7 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-开环只传 `arrival_rate=q`（期望请求/秒），全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成负载按 `max_new_tokens` 与输入大小的安全余量截断实际输出目标。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型/硬件/存储均属于 `inference.mode=physical` 分支，手填 token 容量和链路参数属于 `inference.mode=manual` 的 `kv`。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与运行规格准备时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
+合成开环在 `workload` 公共层只传 `target_qps=q`（期望请求/秒），不传 `session_rate`，全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。`max_total_tokens` 必须至少为一页、且为 `page_size` 的整数倍，直接表示实际 L1 KV 池容量；页数仅由二者相除得到，不另设取整或可写容量。合成采样输出与 Trace 原始输出视为已发生结果，不按 KV 容量或输出上限截短。每请求可见 `max_new_tokens=min(next_power_of_two(max(1,output_len)), inference.max_output_tokens)`，但真实输出目标仍单独交给引擎；超过引擎上限时返回请求级 `output_exceeds_engine_limit`。公共投放字段只位于 `workload`，旧合成子层 `arrival_mode`、`seed`、`session_rate`、`arrival_rate`、`max_new_tokens` 及 Trace 子层 `mode`、`seed`、`session_rate`、`target_qps` 均按未知字段返回 422。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型/硬件/存储均属于 `inference.mode=physical` 分支，手填 token 容量和链路参数属于 `inference.mode=manual` 的 `kv`。低层容量为零时保持原有 L1 行为；启用 L2 要求正的 KV 字节/token 和 L2→L1 带宽，启用 L3 还要求 L3→L2 带宽。配置的跨字段约束在 `SimConfig` 与运行规格准备时共用校验，非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
 
 ## API
 
@@ -95,7 +91,7 @@ resolution:        # ResolutionReport | null；物理容量与可运行性报告
 analysis:          # AnalyticalSummary | null；经验计时为 null
 ```
 
-`aborted_requests.reason` 为 `input_exceeds_kv_capacity`、`decode_kv_exhausted`，或 trace 专用的 `invalid_trace_output`、`output_exceeds_kv_capacity`；`skipped_requests.reason` 为 `parent_not_completed`。未发送后代没有 arrival；`requests` 才供甘特图绘制。
+`aborted_requests.reason` 包括 `input_exceeds_kv_capacity`、`decode_kv_exhausted`，以及合成/Trace 通用的 `output_exceeds_engine_limit`；Trace 零输出为 `invalid_trace_output`。`skipped_requests.reason` 为 `parent_not_completed`。未发送后代没有 arrival；`requests` 才供甘特图绘制。
 
 - 请求体即 `SimConfig`，响应体即单个 `SimResult`，服务层不另行定义数据类型。`meta.config` 是包含字段默认值的原规范化输入，完整保留模型/硬件/存储与回放设置，不替换成推导后的运行时配置，不原地修改输入。
 - `meta.wall_clock_ms` 仅度量运行阶段，不包含配置解析；它不是仿真时钟或 GPU 预测时长，也不属于确定性比较字段。除墙钟字段外，相同配置、计划与种子的仿真结果可复现；响应按内核 `SimResult` 序列化。
@@ -118,9 +114,9 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 
 原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划，最大 64 MiB；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID。这些端点只管理计划资源，保留原有上传、扫描、预览及下载路径。
 
-回放将同一个 `SimConfig.workload` 设为 `{"mode":"trace","trace":{"mode":"open_loop","session_rate":1,"seed":0,"plan_id":"已上传计划ID"}}`，向唯一 `POST /api/simulate` 提交完整配置。服务层根据 ID 获取 `TracePlan`，调用 `simulate(config, trace_plan=plan)`；回放设置不再放在独立请求包装体中。手动/物理模式均返回单个 `SimResult`，解析计时保留 TP/EP 通信与 `analysis`，经验计时为 `analysis=null`。
+回放将同一个 `SimConfig.workload` 设为 `{"mode":"trace","arrival_mode":"open_loop","session_rate":1,"seed":0,"trace":{"plan_id":"已上传计划ID"}}`，向唯一 `POST /api/simulate` 提交完整配置。服务层根据 ID 获取 `TracePlan`，调用 `simulate(config, trace_plan=plan)`；回放设置不再放在独立请求包装体中。手动/物理模式均返回单个 `SimResult`，解析计时保留 TP/EP 通信与 `analysis`，经验计时为 `analysis=null`。
 
-`target_qps` 只允许在 `mode=open_loop` 时设置；先由 `session_rate` 生成会话起点，再按整个所选计划的首末发送跨度等比例缩放所有请求到达时间。单请求或所有请求同刻到达时返回 422；闭环携带该参数、非正数及非有限数也返回 422。不设置时沿用原开环时间；缩放不保证均匀投放或完成吞吐。
+公共层 `workload.target_qps` 只允许在 `workload.arrival_mode=open_loop` 时设置；先由 `session_rate` 生成会话起点，再按整个所选计划的首末发送跨度等比例缩放所有请求到达时间。单请求或所有请求同刻到达时返回 422；闭环携带该参数、非正数及非有限数也返回 422。不设置时沿用原开环时间；缩放不保证均匀投放或完成吞吐。
 
 原始文件与计划暂存于服务进程的临时目录，闲置 24 小时后在后续访问时清理；服务进程退出后失效，当前版本不支持跨实例共享任务或断点续传。文件超限为 413，解析/校验失败为 422，处理中尝试导出为 409，未知或过期 ID 为 404。上传计划的块 ID 必须是会话局部一致的前缀身份；原始输入块参与运行时连续缓存匹配，不包含原始输出块身份。计划内容不嵌入 `SimConfig`；HTTP 运行使用 `workload.trace.plan_id` 引用独立资源。参数 JSON 导出将临时 `plan_id` 清为 `null`，保留开环/闭环、会话速率、种子与可选目标 QPS，导入后提示重新上传计划。
 

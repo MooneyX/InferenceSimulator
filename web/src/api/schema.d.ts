@@ -173,7 +173,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "input_exceeds_kv_capacity" | "decode_kv_exhausted" | "invalid_trace_output" | "output_exceeds_kv_capacity";
+            reason: "input_exceeds_kv_capacity" | "decode_kv_exhausted" | "invalid_trace_output" | "output_exceeds_engine_limit";
             /** Generated Tokens */
             generated_tokens: number;
             /** Retry Count */
@@ -550,6 +550,12 @@ export interface components {
              * @default 64
              */
             page_size: number;
+            /**
+             * Max Output Tokens
+             * @description 单请求输出 token 硬上限
+             * @default 65536
+             */
+            max_output_tokens: number;
             kv: components["schemas"]["ManualKVConfig"];
             timing: components["schemas"]["EmpiricalTimingConfig"];
         };
@@ -966,6 +972,12 @@ export interface components {
              * @default 64
              */
             page_size: number;
+            /**
+             * Max Output Tokens
+             * @description 单请求输出 token 硬上限
+             * @default 65536
+             */
+            max_output_tokens: number;
             model: components["schemas"]["ModelSpec"];
             hardware: components["schemas"]["HardwareSpec"];
             storage: components["schemas"]["StorageSpec"];
@@ -1377,7 +1389,7 @@ export interface components {
         };
         /**
          * SyntheticWorkloadConfig
-         * @description 合成负载：开环按请求速率、闭环按新会话速率投放。
+         * @description 合成负载的请求数量、长度分布与会话内容配置。
          */
         SyntheticWorkloadConfig: {
             /**
@@ -1385,39 +1397,12 @@ export interface components {
              * @description 全部轮次请求数
              */
             num_requests: number;
-            /**
-             * Arrival Rate
-             * @description 开环目标请求 QPS
-             */
-            arrival_rate?: number | null;
-            /**
-             * Session Rate
-             * @description 闭环新会话投放频率（会话/秒）
-             */
-            session_rate?: number | null;
-            /**
-             * Arrival Mode
-             * @default closed_loop
-             * @enum {string}
-             */
-            arrival_mode: "closed_loop" | "open_loop";
             /** Prompt Len */
             prompt_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
             /** Turn Increment Len */
-            turn_increment_len?: (components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"]) | null;
+            turn_increment_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
             /** Output Len */
             output_len: components["schemas"]["FixedLength"] | components["schemas"]["PoissonLength"] | components["schemas"]["LognormalLength"];
-            /**
-             * Max New Tokens
-             * @description 每个请求可见的生成上限
-             * @default 128
-             */
-            max_new_tokens: number;
-            /**
-             * Seed
-             * @description 随机种子；同种子必须逐字节可复现
-             */
-            seed: number;
             session?: components["schemas"]["SessionConfig"];
         };
         /** TraceJob */
@@ -1473,23 +1458,9 @@ export interface components {
         };
         /**
          * TraceWorkloadConfig
-         * @description 计划资源引用与回放设置；计划内容由调用方独立提供。
+         * @description 计划资源引用；计划内容由调用方独立提供。
          */
         TraceWorkloadConfig: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "open_loop" | "closed_loop";
-            /** Session Rate */
-            session_rate: number;
-            /**
-             * Seed
-             * @default 0
-             */
-            seed: number;
-            /** Target Qps */
-            target_qps?: number | null;
             /** Plan Id */
             plan_id?: string | null;
         };
@@ -1508,7 +1479,7 @@ export interface components {
         };
         /**
          * WorkloadConfig
-         * @description 互斥的合成负载或 Trace 回放配置。
+         * @description 统一的投放设置与互斥的合成负载或 Trace 资源配置。
          */
         WorkloadConfig: {
             /**
@@ -1517,6 +1488,28 @@ export interface components {
              * @enum {string}
              */
             mode: "synthetic" | "trace";
+            /**
+             * Arrival Mode
+             * @default closed_loop
+             * @enum {string}
+             */
+            arrival_mode: "closed_loop" | "open_loop";
+            /**
+             * Seed
+             * @description 负载随机种子
+             * @default 0
+             */
+            seed: number;
+            /**
+             * Session Rate
+             * @description 新会话投放频率（会话/秒）
+             */
+            session_rate?: number | null;
+            /**
+             * Target Qps
+             * @description 开环目标发送 QPS；合成采样泊松间隔，Trace 缩放原时间线
+             */
+            target_qps?: number | null;
             synthetic?: components["schemas"]["SyntheticWorkloadConfig"] | null;
             trace?: components["schemas"]["TraceWorkloadConfig"] | null;
         };

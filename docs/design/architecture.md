@@ -35,7 +35,7 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 `runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
 
 - `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference` 组成。`inference.mode=manual` 使用显式 KV 容量与经验计时；`physical` 使用模型/硬件/存储推导容量，并选择经验或解析计时。
-- `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload.trace`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
+- `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload` 公共层；`workload.trace` 只保存可选 `plan_id`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
 - 始终返回单个 `SimResult`，其中 `resolution`、`analysis` 可为空；经验计时的 `analysis` 为 `None`。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
 - 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime, ...)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
 - `EngineConfig` / `PerfModelConfig` 是内部组件规格；手动配置经 `runtime_from_components` 准备运行规格，不构成第二套外部仿真配置。运行墙钟不包含配置解析；结果回显包含模型默认字段的原规范化 `SimConfig`。

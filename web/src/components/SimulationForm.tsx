@@ -79,7 +79,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
-  const [traceDraft, setTraceDraft] = useState({ mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
+  const [traceDraft, setTraceDraft] = useState({ arrival_mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
   const [manualConfig, setManualConfig] = useState<ManualSimConfig>(createDefaultSimConfig);
   const [automaticConfig, setAutomaticConfig] = useState<PhysicalSimConfig>(createDefaultPhysicalSimConfig);
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
@@ -110,10 +110,10 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
   const paramsInputRef = useRef<HTMLInputElement>(null);
   const submissionConfig: SimConfig = workloadMode === "trace"
-    ? { ...config, workload: { mode: "trace", trace: replay ? {
-      mode: replay.mode, session_rate: replay.rate, seed: replay.seed, plan_id: replay.id,
+    ? { ...config, workload: { mode: "trace", ...(replay ? {
+      arrival_mode: replay.arrivalMode, session_rate: replay.sessionRate, seed: replay.seed,
       ...(replay.targetQps === undefined ? {} : { target_qps: replay.targetQps }),
-    } : { ...traceDraft, plan_id: null } } }
+    } : traceDraft), trace: { plan_id: replay?.id ?? null } } }
     : config;
   const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
   const errorByField = new Map(
@@ -131,31 +131,15 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   );
   const synthetic = config.workload.synthetic!;
   function changeArrivalMode(arrivalMode: "open_loop" | "closed_loop"): void {
-    const current = config.workload.synthetic!;
-    const nextSynthetic = arrivalMode === "closed_loop"
-      ? {
-          num_requests: current.num_requests,
-          arrival_mode: "closed_loop" as const,
-          session_rate: 1.28,
-          prompt_len: current.prompt_len,
-          turn_increment_len: current.turn_increment_len,
-          output_len: current.output_len,
-          max_new_tokens: current.max_new_tokens,
-          seed: current.seed,
+    const { session: _session, ...current } = config.workload.synthetic!;
+    const { target_qps: _targetQps, session_rate: _sessionRate, ...workload } = config.workload;
+    setConfig({ ...config, workload: { ...workload, arrival_mode: arrivalMode,
+      ...(arrivalMode === "closed_loop"
+        ? { session_rate: 1.28, synthetic: { ...current,
           session: { num_sessions: Math.min(20, current.num_requests), topology: "linear" as const,
-            think_time_ms: 10_000 },
-        }
-      : {
-          num_requests: current.num_requests,
-          arrival_mode: "open_loop" as const,
-          arrival_rate: 64,
-          prompt_len: current.prompt_len,
-          turn_increment_len: current.turn_increment_len,
-          output_len: current.output_len,
-          max_new_tokens: current.max_new_tokens,
-          seed: current.seed,
-        };
-    setConfig({ ...config, workload: { ...config.workload, synthetic: nextSynthetic } });
+            think_time_ms: 10_000 } } }
+        : { target_qps: 64, synthetic: current }),
+    } });
     setShowValidation(false);
   }
 
@@ -210,8 +194,10 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
       }
       setWorkloadMode(imported.workload.mode);
       if (imported.workload.mode === "trace" && imported.workload.trace) {
-        const trace = imported.workload.trace;
-        setTraceDraft({ mode: trace.mode, session_rate: trace.session_rate, seed: trace.seed, target_qps: trace.target_qps ?? undefined });
+        const workload = imported.workload;
+        setTraceDraft({ arrival_mode: workload.arrival_mode ?? "closed_loop",
+          session_rate: workload.session_rate ?? NaN, seed: workload.seed ?? 0,
+          target_qps: workload.target_qps ?? undefined });
       }
       setReplay(null);
       setTraceKey((key) => key + 1);
@@ -249,7 +235,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             <h2 id="workload-heading">负载配置</h2>
           </div>
           <p>{workloadMode === "trace" ? "数据集请求计划 · 开环或依赖闭环投放"
-            : synthetic.arrival_mode === "open_loop" ? "泊松开环投放 · 完成的会话优先续写"
+            : config.workload.arrival_mode === "open_loop" ? "泊松开环投放 · 完成的会话优先续写"
               : "闭环会话 · 完成后按思考时间续写"}</p>
         </div>
 
@@ -300,13 +286,13 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           </div>
         </div>
         {workloadMode === "trace" ? <TracePanel key={traceKey} disabled={disabled}
-          initialReplay={{ mode: traceDraft.mode,
-            rate: traceDraft.session_rate, seed: traceDraft.seed, targetQps: traceDraft.target_qps }}
+          initialReplay={{ arrivalMode: traceDraft.arrival_mode,
+            sessionRate: traceDraft.session_rate, seed: traceDraft.seed, targetQps: traceDraft.target_qps }}
           onChange={setReplay} /> : <>
         <div className="form-grid">
           <div className="form-field">
             <label htmlFor="arrival-mode">请求投放方式</label>
-            <select id="arrival-mode" value={synthetic.arrival_mode}
+            <select id="arrival-mode" value={config.workload.arrival_mode}
               onChange={(event) => changeArrivalMode(event.currentTarget.value as "open_loop" | "closed_loop")}>
               <option value="open_loop">开环：按目标请求 QPS 投放</option>
               <option value="closed_loop">闭环：按新会话频率投放</option>
@@ -333,14 +319,14 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               })
             }
           />
-          {synthetic.arrival_mode === "open_loop" ? <NumberField
+          {config.workload.arrival_mode === "open_loop" ? <NumberField
             id="arrival-rate"
-            name="workload.synthetic.arrival_rate"
+            name="workload.target_qps"
             label="目标发送 QPS（请求/秒，泊松到达）"
-            value={synthetic.arrival_rate ?? NaN}
-            error={errorByField.get("workload.synthetic.arrival_rate")}
-            onChange={(arrivalRate) => setConfig({ ...config, workload: { ...config.workload,
-              synthetic: { ...synthetic, arrival_rate: arrivalRate } } })}
+            value={config.workload.target_qps ?? NaN}
+            error={errorByField.get("workload.target_qps")}
+            onChange={(targetQps) => setConfig({ ...config, workload: { ...config.workload,
+              target_qps: targetQps } })}
           /> : <>
             <NumberField id="num-sessions" name="workload.synthetic.session.num_sessions"
               label="会话数量（根请求数）" integer min={1}
@@ -349,18 +335,18 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               onChange={(numSessions) => setConfig({ ...config, workload: { ...config.workload,
                 synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
                   think_time_ms: synthetic.session?.think_time_ms ?? 0,
-                  num_sessions: numSessions } } } })}
+                  num_sessions: Number.isNaN(numSessions) ? null : numSessions } } } })}
             />
-            <NumberField id="session-rate" name="workload.synthetic.session_rate"
+            <NumberField id="session-rate" name="workload.session_rate"
               label="新会话投放频率（会话/秒，泊松到达）"
-              value={synthetic.session_rate ?? NaN}
-              error={errorByField.get("workload.synthetic.session_rate")}
+              value={config.workload.session_rate ?? NaN}
+              error={errorByField.get("workload.session_rate")}
               onChange={(sessionRate) => setConfig({ ...config, workload: { ...config.workload,
-                synthetic: { ...synthetic, session_rate: sessionRate } } })}
+                session_rate: sessionRate } })}
             />
             <NumberField id="think-time" name="workload.synthetic.session.think_time_ms"
               label="轮次间平均思考时间（ms，指数分布）"
-              value={synthetic.session?.think_time_ms ?? NaN}
+              value={synthetic.session?.think_time_ms ?? 0}
               error={errorByField.get("workload.synthetic.session.think_time_ms")}
               onChange={(thinkTime) => setConfig({ ...config, workload: { ...config.workload,
                 synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
@@ -370,43 +356,20 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           </>}
           <NumberField
             id="seed"
-            name="workload.synthetic.seed"
+            name="workload.seed"
             label="随机种子"
-            value={synthetic.seed}
+            value={config.workload.seed ?? 0}
             integer
-            error={errorByField.get("workload.synthetic.seed")}
-            onChange={(seed) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: { ...synthetic, seed },
-                },
-              })
-            }
+            error={errorByField.get("workload.seed")}
+            onChange={(seed) => setConfig({ ...config,
+              workload: { ...config.workload, seed } })}
           />
         </div>
 
         <div className="form-grid" style={{ marginTop: 18 }}>
-          <NumberField
-            id="max-new-tokens"
-            name="workload.synthetic.max_new_tokens"
-            label="每请求生成上限（token）"
-            value={synthetic.max_new_tokens}
-            integer
-            min={1}
-            error={errorByField.get("workload.synthetic.max_new_tokens")}
-            onChange={(maxNewTokens) =>
-              setConfig({
-                ...config,
-                workload: {
-                  ...config.workload,
-                  synthetic: { ...synthetic, max_new_tokens: maxNewTokens },
-                },
-              })
-            }
-          />
-          <p>{synthetic.arrival_mode === "open_loop"
+          <p>每请求生成上限由实际输出长度向上取二次幂自动确定，不可编辑；
+            输出长度超过引擎输出上限的请求将失败，不会截断输出。</p>
+          <p>{config.workload.arrival_mode === "open_loop"
             ? "没有就绪子轮时自动创建新会话；理想前缀命中率由累积上下文决定。"
             : "闭环子轮须等待父轮完成及思考间隔；实际请求 QPS 由仿真结果计算。"}</p>
         </div>
@@ -504,6 +467,11 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               ...config, scheduler: { ...config.scheduler, max_running_requests: value },
             })}
           />
+          <NumberField id="max-output-tokens" name="inference.max_output_tokens"
+            label="引擎输出上限（token）" value={config.inference.max_output_tokens ?? 65_536}
+            integer min={1} error={errorByField.get("inference.max_output_tokens")}
+            onChange={(value) => setConfig({ ...config,
+              inference: { ...config.inference, max_output_tokens: value } })} />
           {config.inference.mode === "manual" && ([
             ["max_total_tokens", "L1 KV 总容量（token）"],
             ["l2_capacity_tokens", "L2 KV 容量（token，0 为关闭）"],

@@ -88,6 +88,26 @@ def test_output_len_one_finishes_at_prefill_end_and_reclaims_partial_page() -> N
     assert run.records[0].prefill_end == run.records[0].finish == 63
 
 
+@pytest.mark.parametrize("exclusive", [True, False])
+@pytest.mark.parametrize("output", [1, 2])
+def test_short_output_with_large_request_limit_is_not_permanently_rejected(
+    exclusive: bool, output: int,
+) -> None:
+    engine = make_engine({0: output}, exclusive=exclusive, page_size=64, capacity=192)
+    engine.submit(request(0, prompt=65, maximum=65_536), 0)
+    now = 0.0
+    for step in range(output):
+        started = engine.start_step(now, step)
+        assert started is not None
+        now += started[0]
+        completed = engine.finish_step(now)
+    assert completed == (0,)
+    engine.complete(now, 0)
+    run = engine.finalize()
+    assert run.records[0].output_len == output and not run.aborted_requests
+    assert run.num_engine_steps == output and run.cache_snapshot.reserved_future_blocks == 0
+
+
 def test_decode_full_page_remains_private_until_request_completion() -> None:
     engine = make_engine({0: 2}, page_size=64, capacity=256)
     engine.submit(request(0, prompt=63), 0)
@@ -198,13 +218,13 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10,
+            seed=7,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                session_rate=10,
                 prompt_len=FixedLength(value=65),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                seed=7,
                 session=SessionConfig(num_sessions=1),
             )
         ),

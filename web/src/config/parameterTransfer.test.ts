@@ -25,7 +25,7 @@ describe("parameter JSON transfer", () => {
 
   it("imports minimal manual settings using schema defaults rather than UI trial values", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1,
-      workload: { synthetic: { num_requests: 3, seed: 0, session_rate: 1,
+      workload: { session_rate: 1, synthetic: { num_requests: 3,
         prompt_len: { dist: "fixed", value: 64 }, turn_increment_len: { dist: "fixed", value: 16 },
         output_len: { dist: "fixed", value: 8 } } },
       scheduler: { max_running_requests: 2 },
@@ -36,13 +36,23 @@ describe("parameter JSON transfer", () => {
     expect(config.inference).toMatchObject({ mode: "manual", page_size: 64,
       kv: { max_total_tokens: 128, l2_capacity_tokens: 0, l3_capacity_tokens: 0, l3_lookup_latency_ms: 0 },
       timing: { mode: "empirical", prefill_c2: 0 } });
-    expect(config.workload.synthetic).toMatchObject({ arrival_mode: "closed_loop", max_new_tokens: 128,
-      session: { num_sessions: 3, topology: "linear", think_time_ms: 0 } });
+    expect(config.workload).toMatchObject({ mode: "synthetic", arrival_mode: "closed_loop", seed: 0, session_rate: 1 });
+    expect(config.inference).toHaveProperty("max_output_tokens", 65_536);
+    expect(config.workload.synthetic).toMatchObject({ output_len: { dist: "fixed", value: 8 },
+      session: { num_sessions: null, topology: "linear", think_time_ms: 0 } });
+  });
+
+  it("requires an explicit synthetic output length distribution on import", () => {
+    const config = createDefaultSimConfig();
+    const { output_len: _outputLength, ...synthetic } = config.workload.synthetic!;
+    const workload = { ...config.workload, synthetic };
+    expect(() => parseSimConfigJson(JSON.stringify({ ...config, workload })))
+      .toThrow("缺少参数：workload.synthetic.output_len");
   });
 
   it("imports physical defaults and a trace with nullable QPS without a reusable plan", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1, scheduler: { max_running_requests: 2 },
-      workload: { mode: "trace", synthetic: null, trace: { mode: "open_loop", session_rate: 1, target_qps: null } },
+      workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1, target_qps: null, trace: {} },
       inference: { mode: "physical", model: { name: "toy", num_layers: 1, hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
         hardware: { name: "GPU", memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
@@ -51,7 +61,7 @@ describe("parameter JSON transfer", () => {
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" }, model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
       hardware: { gpu_count: 1, kernel_overhead_ms: 0 }, storage: { l2_available_gb: 0, l3_available_gb: 0 } });
-    expect(config.workload.trace).toMatchObject({ seed: 0, target_qps: null });
+    expect(config.workload).toMatchObject({ seed: 0, target_qps: null, trace: { plan_id: null } });
   });
 
   it("keeps analytical timing free of empirical placeholders", () => {
@@ -159,7 +169,8 @@ describe("parameter JSON transfer", () => {
 
   it.each([createDefaultSimConfig, createDefaultPhysicalSimConfig])("round-trips trace settings without reusing a temporary plan ID", (createConfig) => {
     const config = { ...createConfig(), workload: { mode: "trace" as const,
-      trace: { mode: "open_loop" as const, session_rate: 2, seed: 7, target_qps: 7.5, plan_id: "temporary-plan" } } };
+      arrival_mode: "open_loop" as const, session_rate: 2, seed: 7, target_qps: 7.5,
+      trace: { plan_id: "temporary-plan" } } };
     const json = serializeSimConfig(config);
     expect(json).not.toContain("temporary-plan");
     expect(parseSimConfigJson(json)).toEqual({ ...config, workload: { ...config.workload,
@@ -169,13 +180,15 @@ describe("parameter JSON transfer", () => {
 
   it("round-trips closed_loop mode without a request QPS", () => {
     const config = createDefaultSimConfig();
+    config.workload.arrival_mode = "closed_loop";
+    delete config.workload.target_qps;
+    config.workload.session_rate = 2;
     config.workload.synthetic = {
-      num_requests: 20, arrival_mode: "closed_loop", session_rate: 2,
+      num_requests: 20,
       session: { num_sessions: 5, topology: "linear", think_time_ms: 200 },
       prompt_len: { dist: "fixed", value: 256 },
       turn_increment_len: { dist: "fixed", value: 32 },
       output_len: { dist: "fixed", value: 16 },
-      max_new_tokens: 128, seed: 42,
     };
     const json = serializeSimConfig(config);
     expect(parseSimConfigJson(json)).toEqual(config);
@@ -183,11 +196,26 @@ describe("parameter JSON transfer", () => {
     expect(JSON.parse(json).workload.synthetic).not.toHaveProperty("session.target_ideal_prefix_hit_rate");
   });
 
+  it.each(["arrival_mode", "arrival_rate", "session_rate", "seed", "max_new_tokens"])("rejects removed synthetic field %s", (field) => {
+    const config = createDefaultSimConfig();
+    const workload = { ...config.workload, synthetic: { ...config.workload.synthetic, [field]: 1 } };
+    expect(() => parseSimConfigJson(JSON.stringify({ ...config, workload })))
+      .toThrow(`不支持的参数：workload.synthetic.${field}`);
+  });
+
+  it.each(["mode", "session_rate", "seed", "target_qps"])("rejects removed trace field %s", (field) => {
+    const config = createDefaultSimConfig();
+    const workload = { mode: "trace", arrival_mode: "open_loop", session_rate: 1,
+      trace: { plan_id: null, [field]: 1 } };
+    expect(() => parseSimConfigJson(JSON.stringify({ ...config, workload })))
+      .toThrow(`不支持的参数：workload.trace.${field}`);
+  });
+
   it.each(["synthetic", "trace"])("rejects the old session arrival mode for %s", (source) => {
     const config = createDefaultSimConfig();
     const workload = source === "synthetic"
-      ? { mode: "synthetic", synthetic: { ...config.workload.synthetic!, arrival_mode: "session" } }
-      : { mode: "trace", trace: { mode: "session", session_rate: 1, seed: 0 } };
+      ? { ...config.workload, arrival_mode: "session" }
+      : { mode: "trace", arrival_mode: "session", session_rate: 1, trace: {} };
     expect(() => parseSimConfigJson(JSON.stringify({ ...config, workload })))
       .toThrow("仅支持 open_loop 或 closed_loop");
   });
@@ -200,7 +228,7 @@ describe("parameter JSON transfer", () => {
   it.each([
     [{}, "缺少参数：num_instances"],
     [{ ...createDefaultSimConfig(), metrics: {} }, "不支持的参数：metrics"],
-    [{ ...createDefaultSimConfig(), workload: { mode: "trace", trace: { mode: "closed_loop", session_rate: 1, seed: 0 }, synthetic: createDefaultSimConfig().workload.synthetic } }, "Trace 负载不能同时配置 workload.synthetic"],
+    [{ ...createDefaultSimConfig(), workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 1, seed: 0, trace: {}, synthetic: createDefaultSimConfig().workload.synthetic } }, "Trace 负载不能同时配置 workload.synthetic"],
     [{ ...createDefaultSimConfig(), workload: { mode: "synthetic" } }, "workload.synthetic 必须为 JSON 对象"],
     [{ ...createDefaultSimConfig(), scheduler: { ...createDefaultSimConfig().scheduler, capacity_pages: 10 } },
       "不支持的参数：scheduler.capacity_pages"],
@@ -470,9 +498,9 @@ describe("parameter JSON transfer", () => {
 
   it("refuses to export invalid drafts instead of silently converting non-finite values to null", () => {
     const config = createDefaultSimConfig();
-    config.workload.synthetic!.arrival_rate = Number.NaN;
-    expect(() => serializeSimConfig(config)).toThrow("arrival_rate");
-    config.workload.synthetic!.arrival_rate = 1;
+    config.workload.target_qps = Number.NaN;
+    expect(() => serializeSimConfig(config)).toThrow("target_qps");
+    config.workload.target_qps = 1;
     config.inference.kv.kv_bytes_per_token = Number.POSITIVE_INFINITY;
     expect(() => serializeSimConfig(config)).toThrow("kv_bytes_per_token");
     config.inference.kv.kv_bytes_per_token = null;

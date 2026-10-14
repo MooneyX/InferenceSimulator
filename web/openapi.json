@@ -355,7 +355,7 @@
               "input_exceeds_kv_capacity",
               "decode_kv_exhausted",
               "invalid_trace_output",
-              "output_exceeds_kv_capacity"
+              "output_exceeds_engine_limit"
             ],
             "title": "Reason"
           },
@@ -1179,6 +1179,13 @@
             "title": "Page Size",
             "default": 64
           },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Output Tokens",
+            "description": "单请求输出 token 硬上限",
+            "default": 65536
+          },
           "kv": {
             "$ref": "#/components/schemas/ManualKVConfig"
           },
@@ -1928,6 +1935,13 @@
             "minimum": 1.0,
             "title": "Page Size",
             "default": 64
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Output Tokens",
+            "description": "单请求输出 token 硬上限",
+            "default": 65536
           },
           "model": {
             "$ref": "#/components/schemas/ModelSpec"
@@ -2801,41 +2815,6 @@
             "title": "Num Requests",
             "description": "全部轮次请求数"
           },
-          "arrival_rate": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Arrival Rate",
-            "description": "开环目标请求 QPS"
-          },
-          "session_rate": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Rate",
-            "description": "闭环新会话投放频率（会话/秒）"
-          },
-          "arrival_mode": {
-            "type": "string",
-            "enum": [
-              "closed_loop",
-              "open_loop"
-            ],
-            "title": "Arrival Mode",
-            "default": "closed_loop"
-          },
           "prompt_len": {
             "oneOf": [
               {
@@ -2859,33 +2838,26 @@
             }
           },
           "turn_increment_len": {
-            "anyOf": [
+            "oneOf": [
               {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/FixedLength"
-                  },
-                  {
-                    "$ref": "#/components/schemas/PoissonLength"
-                  },
-                  {
-                    "$ref": "#/components/schemas/LognormalLength"
-                  }
-                ],
-                "discriminator": {
-                  "propertyName": "dist",
-                  "mapping": {
-                    "fixed": "#/components/schemas/FixedLength",
-                    "lognormal": "#/components/schemas/LognormalLength",
-                    "poisson": "#/components/schemas/PoissonLength"
-                  }
-                }
+                "$ref": "#/components/schemas/FixedLength"
               },
               {
-                "type": "null"
+                "$ref": "#/components/schemas/PoissonLength"
+              },
+              {
+                "$ref": "#/components/schemas/LognormalLength"
               }
             ],
-            "title": "Turn Increment Len"
+            "title": "Turn Increment Len",
+            "discriminator": {
+              "propertyName": "dist",
+              "mapping": {
+                "fixed": "#/components/schemas/FixedLength",
+                "lognormal": "#/components/schemas/LognormalLength",
+                "poisson": "#/components/schemas/PoissonLength"
+              }
+            }
           },
           "output_len": {
             "oneOf": [
@@ -2909,19 +2881,6 @@
               }
             }
           },
-          "max_new_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max New Tokens",
-            "description": "每个请求可见的生成上限",
-            "default": 128
-          },
-          "seed": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Seed",
-            "description": "随机种子；同种子必须逐字节可复现"
-          },
           "session": {
             "$ref": "#/components/schemas/SessionConfig"
           }
@@ -2931,11 +2890,11 @@
         "required": [
           "num_requests",
           "prompt_len",
-          "output_len",
-          "seed"
+          "turn_increment_len",
+          "output_len"
         ],
         "title": "SyntheticWorkloadConfig",
-        "description": "合成负载：开环按请求速率、闭环按新会话速率投放。"
+        "description": "合成负载的请求数量、长度分布与会话内容配置。"
       },
       "TraceJob": {
         "properties": {
@@ -3086,37 +3045,6 @@
       },
       "TraceWorkloadConfig": {
         "properties": {
-          "mode": {
-            "type": "string",
-            "enum": [
-              "open_loop",
-              "closed_loop"
-            ],
-            "title": "Mode"
-          },
-          "session_rate": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "title": "Session Rate"
-          },
-          "seed": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Seed",
-            "default": 0
-          },
-          "target_qps": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Qps"
-          },
           "plan_id": {
             "anyOf": [
               {
@@ -3132,12 +3060,8 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "mode",
-          "session_rate"
-        ],
         "title": "TraceWorkloadConfig",
-        "description": "计划资源引用与回放设置；计划内容由调用方独立提供。"
+        "description": "计划资源引用；计划内容由调用方独立提供。"
       },
       "ValidationError": {
         "properties": {
@@ -3190,6 +3114,48 @@
             "title": "Mode",
             "default": "synthetic"
           },
+          "arrival_mode": {
+            "type": "string",
+            "enum": [
+              "closed_loop",
+              "open_loop"
+            ],
+            "title": "Arrival Mode",
+            "default": "closed_loop"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "description": "负载随机种子",
+            "default": 0
+          },
+          "session_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Rate",
+            "description": "新会话投放频率（会话/秒）"
+          },
+          "target_qps": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Qps",
+            "description": "开环目标发送 QPS；合成采样泊松间隔，Trace 缩放原时间线"
+          },
           "synthetic": {
             "anyOf": [
               {
@@ -3214,7 +3180,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "WorkloadConfig",
-        "description": "互斥的合成负载或 Trace 回放配置。"
+        "description": "统一的投放设置与互斥的合成负载或 Trace 资源配置。"
       }
     }
   }

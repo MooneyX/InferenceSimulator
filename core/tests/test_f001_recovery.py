@@ -257,10 +257,12 @@ def test_single_request_that_cannot_decode_is_aborted_instead_of_looping() -> No
     assert failure.failed_at == 4
 
 
-def test_input_limit_aborts_at_actual_arrival_without_scheduling_step() -> None:
+def test_input_limit_aborts_at_actual_arrival_without_gpu_step() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=64)
-    engine = Engine(runtime_config(cfg, PERF), output_targets={4: 0})
-    assert not engine.submit(request(4, prompt=64, maximum=0), 5)
+    engine = Engine(runtime_config(cfg, PERF), output_targets={4: 1})
+    assert engine.submit(request(4, prompt=129, maximum=1), 5)
+    assert engine.start_step(5, 0) == (0, ())
+    assert engine.finish_step(5) == ()
     run = engine.finalize()
     assert run.num_engine_steps == 0 and run.records == ()
     assert run.aborted_requests[0].reason == "input_exceeds_kv_capacity"
@@ -271,7 +273,7 @@ def test_input_limit_aborts_at_actual_arrival_without_scheduling_step() -> None:
 def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=192, page_size=64)
     plan = WorkloadPlan({
-        0: TurnPlan(0, 0, None, 0, None, 128, 0, 0, 0),
+        0: TurnPlan(0, 0, None, 0, None, 193, 1, 1, 0),
         1: TurnPlan(1, 1, None, 1, None, 1, 1, 1, 0),
     }, (0, 1), {})
     run = Coordinator(
@@ -290,7 +292,7 @@ def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> 
 def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64)
     engine = Engine(runtime_config(cfg, PERF), output_targets={0: 1, 1: 1})
-    engine.submit(request(0, prompt=128, maximum=1), 0)
+    engine.submit(request(0, prompt=129, maximum=1), 0)
     engine.submit(request(1, prompt=1, maximum=1), 0)
     assert engine.start_step(0, 0) == (1, (1,))
     assert engine.finish_step(1) == (1,)
@@ -305,13 +307,13 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10,
+            seed=7,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                session_rate=10,
-                prompt_len=FixedLength(value=64),
+                prompt_len=FixedLength(value=192),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                seed=7,
                 session=SessionConfig(num_sessions=1),
             )
         ),

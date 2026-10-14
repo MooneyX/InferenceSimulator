@@ -59,7 +59,7 @@ def test_fcfs_failed_head_remains_waiting_while_running_decodes() -> None:
 
 def test_permanently_infeasible_head_aborts_then_admits_next_request() -> None:
     scheduler, cache = setup(capacity=16)
-    scheduler.enqueue(request(0, prompt=12), 0)
+    scheduler.enqueue(request(0, prompt=16), 0)
     scheduler.enqueue(request(1, prompt=1), 0)
     batch = scheduler.select_prefill({})
     assert [item.request.request_id for item in batch.aborted] == [0]

@@ -9,20 +9,19 @@ describe("createDefaultSimConfig", () => {
       num_instances: 1,
       workload: {
         mode: "synthetic",
+        arrival_mode: "open_loop",
+        target_qps: 64,
+        seed: 0,
         synthetic: {
           num_requests: 1000,
-          arrival_rate: 64,
-          arrival_mode: "open_loop",
           prompt_len: { dist: "poisson", mean: 2048 },
           turn_increment_len: { dist: "poisson", mean: 256 },
           output_len: { dist: "poisson", mean: 128 },
-          max_new_tokens: 1024,
-          seed: 42,
         },
       },
       scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
         l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
-      inference: { mode: "manual", page_size: 64,
+      inference: { mode: "manual", page_size: 64, max_output_tokens: 65_536,
         kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
           kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
           l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0,
@@ -60,14 +59,49 @@ describe("validateSimConfig", () => {
 
   it("validates trace replay settings even when the plan must be reuploaded", () => {
     const config = createDefaultSimConfig();
-    config.workload = { mode: "trace", trace: { mode: "open_loop", session_rate: 0, seed: -1, target_qps: 0, plan_id: null } };
+    config.workload = { mode: "trace", arrival_mode: "open_loop", session_rate: 0,
+      seed: -1, target_qps: 0, trace: { plan_id: null } };
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "workload.trace.session_rate", "workload.trace.seed", "workload.trace.target_qps",
+      "workload.session_rate", "workload.target_qps", "workload.seed",
     ]);
   });
 
   it("accepts the default configuration", () => {
     expect(validateSimConfig(createDefaultSimConfig())).toEqual([]);
+  });
+
+  it("enforces synthetic open-loop rate and session exclusions", () => {
+    const config = createDefaultSimConfig();
+    config.workload.target_qps = null;
+    config.workload.session_rate = 1;
+    config.workload.synthetic!.session = { num_sessions: 2, topology: "linear", think_time_ms: 1 };
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "workload.target_qps", "workload.session_rate", "workload.synthetic.session.num_sessions",
+      "workload.synthetic.session.think_time_ms",
+    ]);
+  });
+
+  it("allows closed-loop default session counts but rejects target QPS", () => {
+    const config = createDefaultSimConfig();
+    config.workload.arrival_mode = "closed_loop";
+    config.workload.session_rate = 1;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["workload.target_qps"]);
+    delete config.workload.target_qps;
+    expect(validateSimConfig(config)).toEqual([]);
+    config.workload.session_rate = null;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["workload.session_rate"]);
+  });
+
+  it.each(["open_loop", "closed_loop"] as const)("requires trace session rates for %s", (arrivalMode) => {
+    const config = createDefaultSimConfig();
+    config.workload = { mode: "trace", arrival_mode: arrivalMode, seed: 0, session_rate: null, trace: {} };
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["workload.session_rate"]);
+    config.workload.session_rate = 1;
+    expect(validateSimConfig(config)).toEqual([]);
+    config.workload.target_qps = 2;
+    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(
+      arrivalMode === "closed_loop" ? ["workload.target_qps"] : [],
+    );
   });
 
   it("accepts a synthetic request without an optional session", () => {
@@ -78,7 +112,7 @@ describe("validateSimConfig", () => {
 
   it("validates trace engine settings without requiring synthetic distributions", () => {
     const config = createDefaultSimConfig();
-    config.workload = { mode: "trace", trace: { mode: "open_loop", session_rate: 1, seed: 0 } };
+    config.workload = { mode: "trace", arrival_mode: "open_loop", session_rate: 1, seed: 0, trace: {} };
     expect(validateSimConfig(config)).toEqual([]);
     config.inference.page_size = 0;
     expect(validateSimConfig(config).some(({ field }) => field === "inference.page_size")).toBe(true);
@@ -94,17 +128,19 @@ describe("validateSimConfig", () => {
 
   it("validates closed-loop session inputs without requiring a request QPS", () => {
     const config = createDefaultSimConfig();
+    config.workload.arrival_mode = "closed_loop";
+    delete config.workload.target_qps;
+    config.workload.session_rate = 1.28;
     config.workload.synthetic = {
-      ...config.workload.synthetic!, arrival_mode: "closed_loop", arrival_rate: undefined,
-      turn_increment_len: { dist: "fixed", value: 32 }, session_rate: 1.28,
+      ...config.workload.synthetic!, turn_increment_len: { dist: "fixed", value: 32 },
       session: { num_sessions: 20, topology: "linear", think_time_ms: 200 },
     };
     expect(validateSimConfig(config)).toEqual([]);
-    config.workload.synthetic.session_rate = 0;
+    config.workload.session_rate = 0;
     config.workload.synthetic.session!.num_sessions = 1001;
     config.workload.synthetic.session!.think_time_ms = -1;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "workload.synthetic.session_rate", "workload.synthetic.session.num_sessions",
+      "workload.session_rate", "workload.synthetic.session.num_sessions",
       "workload.synthetic.session.think_time_ms",
     ]);
   });
@@ -179,7 +215,7 @@ describe("validateSimConfig", () => {
   it("accepts trace mode independently of any synthetic payload", () => {
     const config: SimConfig = {
       ...createDefaultSimConfig(),
-      workload: { mode: "trace", trace: { mode: "closed_loop", session_rate: 2, seed: 42 } },
+      workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 2, seed: 0, trace: {} },
     };
     expect(validateSimConfig(config)).toEqual([]);
   });
@@ -187,7 +223,7 @@ describe("validateSimConfig", () => {
   it("requires a payload in synthetic mode", () => {
     const config: SimConfig = {
       ...createDefaultSimConfig(),
-      workload: { mode: "synthetic", synthetic: null },
+      workload: { mode: "synthetic", arrival_mode: "open_loop", seed: 0, target_qps: 1, synthetic: null },
     };
 
     expect(validateSimConfig(config)).toEqual([
@@ -202,9 +238,9 @@ describe("validateSimConfig", () => {
     const config = createDefaultSimConfig();
     const synthetic = config.workload.synthetic!;
     synthetic.num_requests = 1.5;
-    synthetic.arrival_rate = Number.NaN;
-    synthetic.seed = -1;
-    synthetic.max_new_tokens = 0;
+    config.workload.target_qps = Number.NaN;
+    config.workload.seed = -1;
+    config.inference.max_output_tokens = 0;
     config.scheduler.max_running_requests = 0;
     config.inference.kv.max_total_tokens = 2.5;
     config.scheduler.max_prefill_tokens = 0;
@@ -219,13 +255,13 @@ describe("validateSimConfig", () => {
 
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "workload.synthetic.num_requests",
-      "workload.synthetic.arrival_rate",
-      "workload.synthetic.max_new_tokens",
-      "workload.synthetic.seed",
+      "workload.target_qps",
+      "workload.seed",
       "scheduler.max_running_requests",
       "scheduler.max_prefill_tokens",
       "scheduler.l3_prefetch_min_tokens",
       "inference.page_size",
+      "inference.max_output_tokens",
       "scheduler.pd_mutually_exclusive",
       "inference.timing.prefill_c1",
       "inference.timing.prefill_c2",

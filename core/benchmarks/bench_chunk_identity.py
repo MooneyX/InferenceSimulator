@@ -33,13 +33,13 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
     return SimConfig(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=80.0,
+            seed=17,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=requests,
-                session_rate=80.0,
                 prompt_len=FixedLength(value=64),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=16),
-                seed=17,
                 session=SessionConfig(
                     num_sessions=sessions,
                     think_time_ms=5.0,

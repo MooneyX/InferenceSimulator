@@ -16,14 +16,13 @@ def payload() -> dict[str, Any]:
         "num_instances": 1,
         "workload": {
             "mode": "synthetic",
+            "session_rate": 1,
+            "seed": 0,
             "synthetic": {
                 "num_requests": 1,
-                "session_rate": 1,
                 "prompt_len": {"dist": "fixed", "value": 4},
                 "turn_increment_len": {"dist": "fixed", "value": 1},
                 "output_len": {"dist": "fixed", "value": 2},
-                "max_new_tokens": 2,
-                "seed": 0,
             },
         },
         "scheduler": {"max_running_requests": 1},
@@ -67,19 +66,22 @@ def inference_payload(mode: str) -> dict[str, Any]:
     return request
 
 
-def attach_trace(client: TestClient, request: dict[str, Any], mode: str = "open_loop") -> None:
+def attach_trace(
+    client: TestClient, request: dict[str, Any], mode: str = "open_loop", output_len: int = 1,
+) -> None:
     plan = TracePlan(block_size=64, sessions=("session-a",), requests=(
         TraceTurn(request_id=0, session_id=0, arrival_offset_ms=0,
-                  prompt_len=129, output_len=1, hash_ids=(0, 1)),
+                  prompt_len=129, output_len=output_len, hash_ids=(0, 1)),
         TraceTurn(request_id=1, session_id=0, arrival_offset_ms=1000,
                   parent_request_id=0, think_time_ms=100,
                   prompt_len=193, output_len=1, hash_ids=(0, 1, 2)),
     ))
     upload = client.post("/api/replay-plans", content=plan.model_dump_json().encode())
     assert upload.status_code == 201, upload.text
-    request["workload"] = {"mode": "trace", "trace": {
-        "mode": mode, "session_rate": 1, "seed": 3, "plan_id": upload.json()["id"],
-    }}
+    request["workload"] = {
+        "mode": "trace", "arrival_mode": mode, "session_rate": 1, "seed": 3,
+        "trace": {"plan_id": upload.json()["id"]},
+    }
 
 
 @pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
@@ -108,6 +110,30 @@ def test_three_inference_modes_use_one_run_contract(
 
 
 @pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
+def test_engine_output_limit_is_request_failure_in_every_mode(
+    inference_mode: str, workload_mode: str,
+) -> None:
+    with TestClient(create_app()) as client:
+        request = inference_payload(inference_mode)
+        request["inference"]["max_output_tokens"] = 1
+        if workload_mode != "synthetic":
+            attach_trace(client, request, workload_mode, output_len=2)
+        response = client.post("/api/simulate", json=request)
+        assert response.status_code == 200, response.text
+        result = SimResult.model_validate_json(response.content)
+        assert result.meta.config.inference.max_output_tokens == 1
+        assert len(result.aborted_requests) == 1
+        assert result.aborted_requests[0].reason == "output_exceeds_engine_limit"
+        assert result.aborted_requests[0].generated_tokens == 0
+        assert result.meta.num_completed == (1 if workload_mode == "open_loop" else 0)
+        assert result.meta.num_skipped == (1 if workload_mode == "closed_loop" else 0)
+        if result.requests:
+            assert result.requests[0].prompt_len == 193
+            assert result.requests[0].output_len == 1
+
+
+@pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
 @pytest.mark.parametrize("error,status", [(ValueError("invalid"), 422), (NotImplementedError("unsupported"), 501)])
 def test_unified_run_maps_kernel_errors_for_every_mode(
@@ -125,9 +151,7 @@ def test_unified_run_maps_kernel_errors_for_every_mode(
 
 def test_trace_physical_preview_does_not_require_uploaded_plan() -> None:
     request = inference_payload("physical_analytical")
-    request["workload"] = {"mode": "trace", "trace": {
-        "mode": "closed_loop", "session_rate": 1, "seed": 0,
-    }}
+    request["workload"] = {"mode": "trace", "session_rate": 1, "trace": {}}
     preview = TestClient(create_app()).post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
     assert preview.json()["runnable"] is True

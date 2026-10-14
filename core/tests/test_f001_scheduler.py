@@ -158,7 +158,7 @@ def test_compute_quota_allows_second_candidate_only_below_remaining_limit() -> N
 
 def test_head_in_empty_pool_aborts_only_if_budget_cannot_ever_fit() -> None:
     scheduler, cache = make(capacity=192)
-    scheduler.enqueue(request(0, prompt=128), 0)
+    scheduler.enqueue(request(0, prompt=129), 0)
     scheduler.enqueue(request(1, prompt=1), 0)
     batch = scheduler.select_prefill({})
     assert [entry.request.request_id for entry in batch.aborted] == [0]
@@ -169,10 +169,10 @@ def test_head_in_empty_pool_aborts_only_if_budget_cannot_ever_fit() -> None:
 
 def test_infeasible_restore_with_pinned_hit_does_not_stall_empty_pool() -> None:
     scheduler, cache = make(capacity=192)
-    item = request(0, maximum=10)
+    item = request(0, maximum=100)
     hold(cache, item)
     cache.finish(0)
-    scheduler.enqueue(item, 1, generated_tokens=2)
+    scheduler.enqueue(item, 1, generated_tokens=66)
     scheduler.enqueue(request(1, prompt=1), 1)
     batch = scheduler.select_prefill({})
     assert [entry.request.request_id for entry in batch.aborted] == [0]
@@ -193,11 +193,18 @@ def test_max_running_requests_is_residency_limit_not_prefill_batch_limit() -> No
     assert scheduler.num_waiting == 1
 
 
-def test_unexecutable_request_rejected_at_send_and_never_queued() -> None:
-    scheduler, _ = make()
-    assert not scheduler.enqueue(request(0, maximum=0), 7)
-    assert scheduler.num_waiting == 0
-    assert scheduler.select_prefill({}).admitted == ()
+@pytest.mark.parametrize("maximum", [100, 65_536])
+def test_empty_pool_reduces_future_budget_instead_of_rejecting_feasible_input(
+    maximum: int,
+) -> None:
+    scheduler, cache = make(capacity=192)
+    assert scheduler.enqueue(request(0, prompt=65, maximum=maximum), 7)
+    batch = scheduler.select_prefill({})
+    assert [entry.waiting.request.request_id for entry in batch.admitted] == [0]
+    assert not batch.aborted and scheduler.num_waiting == 0
+    assert batch.admitted[0].waiting.request.max_new_tokens == maximum
+    assert batch.admitted[0].required_pages == 2
+    assert cache.resident_pages == 0 and cache.snapshot().reserved_future_blocks == 0
 
 
 def test_prefetch_waiting_head_blocks_later_prefill_without_pinning() -> None:

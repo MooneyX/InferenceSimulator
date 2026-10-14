@@ -16,7 +16,6 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     TracePlan,
     TraceTurn,
-    TraceWorkloadConfig,
     WorkloadConfig,
     WorkloadPlan,
 )
@@ -30,17 +29,19 @@ def planned_client(plan: WorkloadPlan, engine: EngineConfig) -> Client:
 
 
 def make_client(think: float = 0.0) -> Client:
-    cfg = SyntheticWorkloadConfig(
-        num_requests=3,
+    workload = WorkloadConfig(
         session_rate=5,
-        prompt_len=FixedLength(value=8),
-        turn_increment_len=FixedLength(value=1),
-        output_len=FixedLength(value=4),
         seed=2,
-        session=SessionConfig(num_sessions=1, think_time_ms=think),
+        synthetic=SyntheticWorkloadConfig(
+            num_requests=3,
+            prompt_len=FixedLength(value=8),
+            turn_increment_len=FixedLength(value=1),
+            output_len=FixedLength(value=4),
+            session=SessionConfig(num_sessions=1, think_time_ms=think),
+        ),
     )
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
-    return Client(WorkloadConfig(synthetic=cfg), engine)
+    return Client(workload, engine)
 
 
 def test_child_waits_for_actual_parent_output() -> None:
@@ -134,21 +135,25 @@ def test_zero_think_time_and_reproducibility() -> None:
 
 def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=4)
-    cfg = SyntheticWorkloadConfig(
-        num_requests=3,
+    cfg = WorkloadConfig(
         session_rate=5,
-        prompt_len=FixedLength(value=3),
-        turn_increment_len=FixedLength(value=1),
-        output_len=FixedLength(value=3),
         seed=2,
-        session=SessionConfig(num_sessions=1),
+        synthetic=SyntheticWorkloadConfig(
+            num_requests=3,
+            prompt_len=FixedLength(value=3),
+            turn_increment_len=FixedLength(value=1),
+            output_len=FixedLength(value=3),
+            session=SessionConfig(num_sessions=1),
+        ),
     )
     base = build_synthetic_closed_loop_plan(cfg, engine)
     root_id = base.root_request_ids[0]
     child_id = base.children[root_id][0]
     grandchild_id = base.children[child_id][0]
     turns = dict(base.turns)
-    turns[child_id] = replace(turns[child_id], prompt_len=5, output_len=5, ideal_reuse_blocks=1)
+    turns[child_id] = replace(
+        turns[child_id], prompt_len=5, output_len=5, max_new_tokens=8, ideal_reuse_blocks=1,
+    )
     turns[grandchild_id] = replace(turns[grandchild_id], prompt_len=13, ideal_reuse_blocks=2)
     client = planned_client(WorkloadPlan(turns, base.root_request_ids, base.children), engine)
 
@@ -165,20 +170,18 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
 
 
 def synthetic_workload(mode: str) -> WorkloadConfig:
-    return WorkloadConfig(
-        synthetic=SyntheticWorkloadConfig.model_validate(
-            {
-                "num_requests": 4,
-                "arrival_mode": mode,
-                "seed": 42,
-                "arrival_rate" if mode == "open_loop" else "session_rate": 10,
-                "prompt_len": {"dist": "fixed", "value": 8},
-                "turn_increment_len": {"dist": "fixed", "value": 1},
-                "output_len": {"dist": "fixed", "value": 2},
-                "session": {} if mode == "open_loop" else {"num_sessions": 1},
-            }
-        )
-    )
+    return WorkloadConfig.model_validate({
+        "arrival_mode": mode,
+        "seed": 42,
+        "target_qps" if mode == "open_loop" else "session_rate": 10,
+        "synthetic": {
+            "num_requests": 4,
+            "prompt_len": {"dist": "fixed", "value": 8},
+            "turn_increment_len": {"dist": "fixed", "value": 1},
+            "output_len": {"dist": "fixed", "value": 2},
+            "session": {} if mode == "open_loop" else {"num_sessions": 1},
+        },
+    })
 
 
 def trace_plan(output: int = 2) -> TracePlan:
@@ -227,16 +230,10 @@ def test_four_modes_share_preparation_dispatch_and_lifecycle_contract(
     workload = (
         synthetic_workload(mode)
         if source == "synthetic"
-        else WorkloadConfig(
-            mode="trace",
-            trace=TraceWorkloadConfig.model_validate(
-                {
-                    "mode": mode,
-                    "session_rate": 10,
-                    "seed": 42,
-                }
-            ),
-        )
+        else WorkloadConfig.model_validate({
+            "mode": "trace", "arrival_mode": mode, "session_rate": 10,
+            "seed": 42, "trace": {},
+        })
     )
     client = Client(workload, engine, trace_plan=trace_plan() if source == "trace" else None)
     assert client.workload_mode == source and client.arrival_mode == mode
@@ -253,7 +250,7 @@ def test_four_modes_share_preparation_dispatch_and_lifecycle_contract(
     assert len(initial_plan.turns) == (0 if dynamic else 4 if source == "synthetic" else 3)
     if source == "synthetic" and mode == "closed_loop":
         assert workload.synthetic is not None
-        assert initial_plan == build_synthetic_closed_loop_plan(workload.synthetic, engine)
+        assert initial_plan == build_synthetic_closed_loop_plan(workload, engine)
     wakeups = client.initial_wakeups()
     assert len(wakeups) == (1 if mode == "closed_loop" else 4 if dynamic else 3)
     assert client.initial_wakeups() == wakeups
@@ -324,10 +321,9 @@ def test_preparation_rejects_trace_plan_for_wrong_workload_source(mode: str) -> 
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     with pytest.raises(ValueError, match="合成仿真不能提供 trace_plan"):
         Client(synthetic_workload(mode), engine, trace_plan=trace_plan())
-    workload = WorkloadConfig(
-        mode="trace",
-        trace=TraceWorkloadConfig.model_validate({"mode": mode, "session_rate": 10}),
-    )
+    workload = WorkloadConfig.model_validate({
+        "mode": "trace", "arrival_mode": mode, "session_rate": 10, "trace": {},
+    })
     with pytest.raises(ValueError, match="Trace 仿真须提供 trace_plan"):
         Client(workload, engine)
 
@@ -351,10 +347,9 @@ def test_trace_preparation_preserves_all_independent_roots(mode: str) -> None:
         ),
     )
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
-    workload = WorkloadConfig(
-        mode="trace",
-        trace=TraceWorkloadConfig.model_validate({"mode": mode, "session_rate": 10}),
-    )
+    workload = WorkloadConfig.model_validate({
+        "mode": "trace", "arrival_mode": mode, "session_rate": 10, "trace": {},
+    })
     client = Client(workload, engine, trace_plan=source)
     wakeups = client.initial_wakeups()
     assert [item.turn_id for item in wakeups] == (
@@ -371,15 +366,9 @@ def test_trace_preparation_preserves_all_independent_roots(mode: str) -> None:
 def test_trace_failure_skips_branches_only_when_dependency_gates_sending(mode: str) -> None:
     source = trace_plan(output=0)
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
-    workload = WorkloadConfig(
-        mode="trace",
-        trace=TraceWorkloadConfig.model_validate(
-            {
-                "mode": mode,
-                "session_rate": 10,
-            }
-        ),
-    )
+    workload = WorkloadConfig.model_validate({
+        "mode": "trace", "arrival_mode": mode, "session_rate": 10, "trace": {},
+    })
     client = Client(workload, engine, trace_plan=source)
     initial = client.initial_wakeups()
     root, output = client.on_wakeup(initial[0])

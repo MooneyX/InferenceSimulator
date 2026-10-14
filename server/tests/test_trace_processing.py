@@ -31,8 +31,8 @@ def sample() -> bytes:
 def config() -> dict:
     return {
         "num_instances": 1,
-        "workload": {"mode": "synthetic", "synthetic": {
-            "num_requests": 1, "session_rate": 1, "seed": 0,
+        "workload": {"mode": "synthetic", "session_rate": 1, "seed": 0, "synthetic": {
+            "num_requests": 1,
             "prompt_len": {"dist": "fixed", "value": 129},
             "turn_increment_len": {"dist": "fixed", "value": 1},
             "output_len": {"dist": "fixed", "value": 1},
@@ -110,21 +110,22 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert uploaded.status_code == 201
         plan_id = uploaded.json()["id"]
         request = config()
-        request["workload"] = {"mode": "trace", "trace": {
-            "plan_id": plan_id, "mode": "closed_loop", "session_rate": 1, "seed": 1,
-        }}
+        request["workload"] = {
+            "mode": "trace", "arrival_mode": "closed_loop", "session_rate": 1, "seed": 1,
+            "trace": {"plan_id": plan_id},
+        }
         result = client.post("/api/simulate", json=request)
         assert result.status_code == 200, result.text
         body = result.json()
         assert body["meta"]["num_completed"] == 2
         assert body["aborted_requests"][0]["reason"] == "invalid_trace_output"
         assert body["meta"]["config"]["workload"]["mode"] == "trace"
-        request["workload"]["trace"].update(mode="open_loop", target_qps=4)
+        request["workload"].update(arrival_mode="open_loop", target_qps=4)
         scaled = client.post("/api/simulate", json=request)
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["meta"]["num_requests"] == 3
-        request["workload"]["trace"]["mode"] = "closed_loop"
+        request["workload"]["arrival_mode"] = "closed_loop"
         invalid = client.post("/api/simulate", json=request)
         assert invalid.status_code == 422
 
@@ -144,9 +145,10 @@ def test_physical_plan_uses_parsed_capacity_and_timing() -> None:
     }
     with TestClient(create_app()) as client:
         plan = compile_plan_from_sample(client)
-        resolved["workload"] = {"mode": "trace", "trace": {
-            "plan_id": plan, "mode": "open_loop", "session_rate": 1, "seed": 2,
-        }}
+        resolved["workload"] = {
+            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "seed": 2,
+            "trace": {"plan_id": plan},
+        }
         preview = client.post("/api/resolve", json=resolved)
         response = client.post("/api/simulate", json=resolved)
         assert response.status_code == 200, response.text
@@ -156,12 +158,12 @@ def test_physical_plan_uses_parsed_capacity_and_timing() -> None:
         assert data["meta"]["num_requests"] == 3
         assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
         assert data["resolution"]["max_total_tokens"] != 2048
-        resolved["workload"]["trace"]["target_qps"] = 4
+        resolved["workload"]["target_qps"] = 4
         scaled = client.post("/api/simulate", json=resolved)
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["analysis"] is not None
-        resolved["workload"]["trace"].pop("target_qps")
+        resolved["workload"].pop("target_qps")
         empirical_timing = config()["inference"]["timing"]
         resolved["inference"]["timing"] = empirical_timing
         empirical = client.post("/api/simulate", json=resolved)

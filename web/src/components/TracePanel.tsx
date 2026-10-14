@@ -8,8 +8,8 @@ import "./TracePanel.css";
 
 export interface ReplaySelection {
   id: string;
-  mode: "open_loop" | "closed_loop";
-  rate: number;
+  arrivalMode: "open_loop" | "closed_loop";
+  sessionRate: number;
   seed: number;
   targetQps?: number;
 }
@@ -27,8 +27,8 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [planId, setPlanId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"open_loop" | "closed_loop">(initialReplay?.mode ?? "open_loop");
-  const [rate, setRate] = useState(initialReplay?.rate ?? 1);
+  const [mode, setMode] = useState<"open_loop" | "closed_loop">(initialReplay?.arrivalMode ?? "open_loop");
+  const [rate, setRate] = useState(initialReplay?.sessionRate ?? 1);
   const [scaleToTarget, setScaleToTarget] = useState(initialReplay?.targetQps !== undefined);
   const [targetQps, setTargetQps] = useState(initialReplay?.targetQps ?? 64);
   const [seed, setSeed] = useState(initialReplay?.seed ?? 0);
@@ -40,7 +40,7 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
     const scale = mode === "open_loop" && scaleToTarget;
     onChange(planId && Number.isFinite(rate) && rate > 0 && Number.isInteger(seed) && seed >= 0
       && (!scale || (Number.isFinite(targetQps) && targetQps > 0)) && !busy
-      ? { id: planId, mode, rate, seed, ...(scale ? { targetQps } : {}) } : null);
+      ? { id: planId, arrivalMode: mode, sessionRate: rate, seed, ...(scale ? { targetQps } : {}) } : null);
   }, [planId, mode, rate, seed, scaleToTarget, targetQps, busy, onChange]);
 
   useEffect(() => {

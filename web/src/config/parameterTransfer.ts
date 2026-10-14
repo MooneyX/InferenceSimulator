@@ -54,31 +54,31 @@ export function parseSimConfigJson(json: string): SimConfig {
 
   const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference"]);
   numericFields(root, "参数配置", ["num_instances"]);
-  const workload = objectWithKeys(root.workload, "workload", ["mode", "synthetic", "trace"], {
-    mode: "synthetic", synthetic: null, trace: null,
-  });
+  const workload: Record<string, unknown> = { mode: "synthetic", arrival_mode: "closed_loop", seed: 0,
+    ...physicalObject(root.workload, "workload", [], [
+      "mode", "arrival_mode", "seed", "session_rate", "target_qps", "synthetic", "trace",
+    ]) };
+  if (workload.arrival_mode !== "open_loop" && workload.arrival_mode !== "closed_loop") {
+    throw new Error("workload.arrival_mode 仅支持 open_loop 或 closed_loop");
+  }
+  numericFields(workload, "workload", ["seed"]);
+  for (const field of ["session_rate", "target_qps"]) {
+    if (workload[field] != null) numericFields(workload, "workload", [field]);
+  }
   if (workload.mode === "trace") {
     if (workload.synthetic != null) throw new Error("Trace 负载不能同时配置 workload.synthetic");
-    const trace = { seed: 0, ...physicalObject(workload.trace, "workload.trace", ["mode", "session_rate"], ["seed", "target_qps", "plan_id"]) } as Record<string, unknown>;
-    if (trace.mode !== "open_loop" && trace.mode !== "closed_loop") throw new Error("workload.trace.mode 仅支持 open_loop 或 closed_loop");
-    numericFields(trace, "workload.trace", ["session_rate", "seed"]);
-    if (trace.target_qps != null) numericFields(trace, "workload.trace", ["target_qps"]);
-    if (trace.mode === "closed_loop" && trace.target_qps != null) throw new Error("目标 QPS 仅适用于开环 trace 回放");
+    const trace = objectWithKeys(workload.trace ?? {}, "workload.trace", ["plan_id"], { plan_id: null });
     if (trace.plan_id != null && (typeof trace.plan_id !== "string" || trace.plan_id.length === 0)) {
       throw new Error("workload.trace.plan_id 必须是非空字符串或 null");
     }
-    root.workload = { mode: "trace", trace };
+    const { synthetic: _synthetic, ...traceWorkload } = workload;
+    root.workload = { ...traceWorkload, trace };
   } else if (workload.mode === "synthetic") {
     if (workload.trace != null) throw new Error("合成负载不能同时配置 workload.trace");
     const synthetic = objectWithKeys(workload.synthetic, "workload.synthetic", [
-      "num_requests", "arrival_mode", "prompt_len", "turn_increment_len", "output_len", "max_new_tokens", "seed", "arrival_rate", "session_rate", "session",
-    ], { arrival_mode: "closed_loop", max_new_tokens: 128, arrival_rate: null, session_rate: null, session: {} });
-    const arrivalMode = synthetic.arrival_mode;
-    if (arrivalMode !== "open_loop" && arrivalMode !== "closed_loop") throw new Error("workload.synthetic.arrival_mode 仅支持 open_loop 或 closed_loop");
-    numericFields(synthetic, "workload.synthetic", ["num_requests", "max_new_tokens", "seed", arrivalMode === "open_loop" ? "arrival_rate" : "session_rate"]);
-    if ((arrivalMode === "open_loop" ? synthetic.session_rate : synthetic.arrival_rate) != null) {
-      throw new Error("开环与闭环到达率不能混用");
-    }
+      "num_requests", "prompt_len", "turn_increment_len", "output_len", "session",
+    ], { session: {} });
+    numericFields(synthetic, "workload.synthetic", ["num_requests"]);
     lengthDistribution(synthetic.prompt_len, "workload.synthetic.prompt_len");
     lengthDistribution(synthetic.turn_increment_len, "workload.synthetic.turn_increment_len");
     lengthDistribution(synthetic.output_len, "workload.synthetic.output_len");
@@ -88,12 +88,10 @@ export function parseSimConfigJson(json: string): SimConfig {
     if (session.topology !== "linear") throw new Error("workload.synthetic.session.topology 仅支持 linear");
     numericFields(session, "workload.synthetic.session", ["think_time_ms"]);
     if (session.num_sessions != null) numericFields(session, "workload.synthetic.session", ["num_sessions"]);
-    if (arrivalMode === "open_loop" && (session.num_sessions != null || session.think_time_ms !== 0)) {
-      throw new Error("开环负载不使用会话数或思考时间");
-    }
-    root.workload = { mode: "synthetic", synthetic: arrivalMode === "closed_loop"
-      ? { ...synthetic, session: { ...session, num_sessions: session.num_sessions ?? synthetic.num_requests }, arrival_rate: undefined }
-      : { ...synthetic, session: undefined, session_rate: undefined } };
+    const { trace: _trace, ...syntheticWorkload } = workload;
+    root.workload = { ...syntheticWorkload, synthetic: { ...synthetic,
+      session: workload.arrival_mode === "open_loop" && !Object.hasOwn(workload.synthetic as object, "session")
+        ? undefined : session } };
   } else throw new Error("workload.mode 仅支持 synthetic 或 trace 模式");
 
   const scheduler = objectWithKeys(root.scheduler, "scheduler", ["max_running_requests", "max_prefill_tokens", "l3_prefetch_min_tokens", "pd_mutually_exclusive"], {
@@ -106,8 +104,8 @@ export function parseSimConfigJson(json: string): SimConfig {
   if (inferenceMode === "physical") {
     root.inference = validatePhysicalInference(root.inference);
   } else if (inferenceMode === "manual") {
-    const inference = objectWithKeys(root.inference, "inference", ["mode", "page_size", "kv", "timing"], { page_size: 64 });
-    numericFields(inference, "inference", ["page_size"]);
+    const inference = objectWithKeys(root.inference, "inference", ["mode", "page_size", "max_output_tokens", "kv", "timing"], { page_size: 64, max_output_tokens: 65_536 });
+    numericFields(inference, "inference", ["page_size", "max_output_tokens"]);
     const kv = objectWithKeys(inference.kv, "inference.kv", [
       "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms",
     ], { l2_capacity_tokens: 0, l3_capacity_tokens: 0, kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
@@ -180,10 +178,10 @@ function validateTiming(value: unknown, analyticalAllowed: boolean): TimingConfi
 }
 
 function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
-  const root = objectWithKeys(value, "inference", ["mode", "page_size", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
-    page_size: 64, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
+  const root = objectWithKeys(value, "inference", ["mode", "page_size", "max_output_tokens", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
+    page_size: 64, max_output_tokens: 65_536, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
   });
-  numericFields(root, "inference", ["page_size"]);
+  numericFields(root, "inference", ["page_size", "max_output_tokens"]);
   root.timing = validateTiming(root.timing, true);
   const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
     num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
@@ -368,7 +366,7 @@ export function serializeSimConfig(config: SimConfig): string {
   }
   if (config.inference.mode === "physical") validatePhysicalInference(config.inference);
   const reusable = config.workload.mode === "trace" && config.workload.trace
-    ? { ...config, workload: { mode: "trace", trace: { ...config.workload.trace, plan_id: null } } }
+    ? { ...config, workload: { ...config.workload, trace: { ...config.workload.trace, plan_id: null } } }
     : config;
   const json = JSON.stringify(reusable);
   parseSimConfigJson(json);

@@ -19,7 +19,6 @@ from simcore.schemas import (
     SessionConfig,
     SimConfig,
     SyntheticWorkloadConfig,
-    TraceWorkloadConfig,
     WorkloadConfig,
 )
 from simcore.workload import build_synthetic_closed_loop_plan
@@ -31,13 +30,13 @@ def config(think: float = 0) -> SimConfig:
     return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10,
+            seed=21,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=3,
-                session_rate=10,
                 prompt_len=FixedLength(value=4),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                seed=21,
                 session=SessionConfig(num_sessions=1, think_time_ms=think),
             )
         ),
@@ -55,12 +54,10 @@ def test_all_client_modes_use_send_events_with_time_and_request_id(
     workload = (
         synthetic_workload(mode)
         if source == "synthetic"
-        else WorkloadConfig(
-            mode="trace",
-            trace=TraceWorkloadConfig.model_validate(
-                {"mode": mode, "session_rate": 10, "seed": 42}
-            ),
-        )
+        else WorkloadConfig.model_validate({
+            "mode": "trace", "arrival_mode": mode, "session_rate": 10,
+            "seed": 42, "trace": {},
+        })
     )
     client = Client(
         workload, engine_config, trace_plan=trace_plan() if source == "trace" else None
@@ -104,7 +101,7 @@ def test_single_session_children_arrive_only_after_completion() -> None:
     records = first.requests
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_synthetic_closed_loop_plan(workload, prepare_runtime(cfg).engine)
+    plan = build_synthetic_closed_loop_plan(cfg.workload, prepare_runtime(cfg).engine)
     assert len(records) == 3
     for parent, child in pairwise(records):
         delay = plan.turns[child.id].think_time_ms
@@ -117,7 +114,7 @@ def test_zero_think_done_callback_send_step_order() -> None:
     cfg = config()
     workload = cfg.workload.synthetic
     assert workload is not None
-    plan = build_synthetic_closed_loop_plan(workload, prepare_runtime(cfg).engine)
+    plan = build_synthetic_closed_loop_plan(cfg.workload, prepare_runtime(cfg).engine)
     client = planned_client(plan, prepare_runtime(cfg).engine)
     from simcore.router import Router
 

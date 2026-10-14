@@ -17,14 +17,13 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
         "num_instances": 1,
         "workload": {
             "mode": "synthetic",
+            "session_rate": 30.0,
+            "seed": seed,
             "synthetic": {
                 "num_requests": num_requests,
-                "session_rate": 30.0,
                 "prompt_len": {"dist": "lognormal", "mean": 256.0, "sigma": 0.8},
                 "turn_increment_len": {"dist": "fixed", "value": 8},
                 "output_len": {"dist": "poisson", "mean": 40.0},
-                "max_new_tokens": 128,
-                "seed": seed,
             },
         },
         "scheduler": {"max_running_requests": 16},
@@ -51,14 +50,15 @@ def client() -> TestClient:
 class TestSuccess:
     def test_closed_loop_session_rate_and_request_qps(self, client: TestClient) -> None:
         payload = make_payload(num_requests=4)
-        payload["workload"]["synthetic"].update(
-            session_rate=2, session={"num_sessions": 2, "think_time_ms": 200}
-        )
+        payload["workload"]["session_rate"] = 2
+        payload["workload"]["synthetic"]["session"] = {
+            "num_sessions": 2, "think_time_ms": 200,
+        }
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         body = response.json()
-        assert body["meta"]["config"]["workload"]["synthetic"]["arrival_rate"] is None
-        assert body["meta"]["config"]["workload"]["synthetic"]["session_rate"] == 2
+        assert body["meta"]["config"]["workload"]["target_qps"] is None
+        assert body["meta"]["config"]["workload"]["session_rate"] == 2
         assert body["metrics"]["arrival_qps"] > 0
 
     def test_manual_fields_echo_and_counts(self, client: TestClient) -> None:
@@ -81,7 +81,7 @@ class TestSuccess:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 3}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
-        payload["workload"]["synthetic"]["max_new_tokens"] = 1
+        payload["inference"]["max_output_tokens"] = 1
         payload["scheduler"]["max_running_requests"] = 1
         payload["inference"]["page_size"] = 4
         payload["inference"]["kv"].update(
@@ -139,7 +139,8 @@ class TestSuccess:
             "allow_cross_session_shared_prefix"
             not in body["meta"]["config"]["workload"]["synthetic"]["session"]
         )
-        assert body["meta"]["config"]["workload"]["synthetic"]["arrival_mode"] == "closed_loop"
+        assert body["meta"]["config"]["workload"]["arrival_mode"] == "closed_loop"
+        assert body["meta"]["config"]["inference"]["max_output_tokens"] == 65536
         assert body["meta"]["num_requests"] == 100
         assert body["meta"]["wall_clock_ms"] >= 0
         assert body["meta"]["num_completed"] == len(body["requests"])
@@ -205,7 +206,7 @@ class TestSuccess:
         self, client: TestClient
     ) -> None:
         payload = make_payload(num_requests=2, budget=192)
-        payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 128}
+        payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 193}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
         payload["inference"]["page_size"] = 64
         response = client.post(URL, json=payload)
@@ -222,6 +223,32 @@ class TestSuccess:
 
 
 class TestErrors:
+    @pytest.mark.parametrize("branch,legacy,value", [
+        ("synthetic", "arrival_mode", "closed_loop"),
+        ("synthetic", "seed", 0),
+        ("synthetic", "session_rate", 1),
+        ("synthetic", "arrival_rate", 1),
+        ("synthetic", "max_new_tokens", 128),
+        ("trace", "mode", "open_loop"),
+        ("trace", "seed", 0),
+        ("trace", "session_rate", 1),
+        ("trace", "target_qps", 1),
+    ])
+    def test_old_nested_workload_fields_are_rejected(
+        self, client: TestClient, branch: str, legacy: str, value: object,
+    ) -> None:
+        payload = make_payload(num_requests=1)
+        if branch == "trace":
+            payload["workload"] = {"mode": "trace", "session_rate": 1, "trace": {}}
+        payload["workload"][branch][legacy] = value
+        response = client.post(URL, json=payload)
+        assert response.status_code == 422
+        assert any(
+            error["type"] == "extra_forbidden"
+            and error["loc"] == ["body", "workload", branch, legacy]
+            for error in response.json()["detail"]
+        )
+
     def test_instance_count_is_required(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         del payload["num_instances"]
@@ -334,9 +361,10 @@ class TestErrors:
         self, client: TestClient, plan_id: str | None,
     ) -> None:
         payload = make_payload()
-        payload["workload"] = {"mode": "trace", "trace": {
-            "mode": "open_loop", "session_rate": 1, "seed": 0, "plan_id": plan_id,
-        }}
+        payload["workload"] = {
+            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "seed": 0,
+            "trace": {"plan_id": plan_id},
+        }
         response = client.post(URL, json=payload)
         assert response.status_code == (422 if plan_id is None else 404)
         assert response.json()["detail"]
@@ -357,7 +385,7 @@ class TestErrors:
         ("path", "value"),
         [
             (("scheduler", "max_running_requests"), 0),
-            (("workload", "synthetic", "session_rate"), -1.0),
+            (("workload", "session_rate"), -1.0),
             (("workload", "synthetic", "prompt_len"), {"dist": "uniform", "value": 3}),
             (("scheduler", "unknown_field"), 1),
         ],

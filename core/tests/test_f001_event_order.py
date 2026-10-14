@@ -137,7 +137,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         ),
     )
     workload = WorkloadConfig(
-        mode="trace", trace=TraceWorkloadConfig(mode="closed_loop", session_rate=10)
+        mode="trace", session_rate=10, trace=TraceWorkloadConfig()
     )
     with patch("simcore.client.random.Random.expovariate", return_value=0.0):
         client = Client(workload, config, trace_plan=source)

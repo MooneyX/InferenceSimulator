@@ -8,15 +8,14 @@ const config: SimConfig = {
   num_instances: 1,
   workload: {
     mode: "synthetic",
+    arrival_mode: "open_loop",
+    target_qps: 2,
+    seed: 0,
     synthetic: {
       num_requests: 1,
-      arrival_rate: 2,
-      arrival_mode: "open_loop",
       prompt_len: { dist: "fixed", value: 16 },
       turn_increment_len: { dist: "fixed", value: 8 },
       output_len: { dist: "fixed", value: 8 },
-      max_new_tokens: 128,
-      seed: 42,
     },
   },
   scheduler: {
@@ -28,6 +27,7 @@ const config: SimConfig = {
   inference: {
     mode: "manual",
     page_size: 64,
+    max_output_tokens: 65_536,
     kv: {
       max_total_tokens: 4096,
       l2_capacity_tokens: 0,
@@ -260,17 +260,15 @@ describe("trace replay requests", () => {
   it("posts trace settings and the plan ID through the single simulation endpoint", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, result));
     vi.stubGlobal("fetch", fetchMock);
-    const traceConfig: SimConfig = { ...config, workload: { mode: "trace", trace: {
-      plan_id: "plan-1", mode: "open_loop", session_rate: 2, seed: 7, target_qps: 12,
-    } } };
+    const traceConfig: SimConfig = { ...config, workload: { mode: "trace", arrival_mode: "open_loop",
+      session_rate: 2, seed: 7, target_qps: 12, trace: { plan_id: "plan-1" } } };
     await simulate(traceConfig);
     expect(fetchMock).toHaveBeenLastCalledWith("/api/simulate", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(traceConfig),
     });
-    const closedLoopConfig: SimConfig = { ...traceConfig, workload: { mode: "trace", trace: {
-      plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 7,
-    } } };
+    const closedLoopConfig: SimConfig = { ...traceConfig, workload: { mode: "trace",
+      arrival_mode: "closed_loop", session_rate: 2, seed: 7, trace: { plan_id: "plan-1" } } };
     await simulate(closedLoopConfig);
     expect(fetchMock).toHaveBeenLastCalledWith("/api/simulate", {
       method: "POST", headers: { "Content-Type": "application/json" },

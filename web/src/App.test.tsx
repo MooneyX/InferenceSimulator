@@ -215,9 +215,8 @@ describe("App", () => {
 
   it("shows resolved capacity and cost after running an automatic trace plan", async () => {
     const traceResult = physicalResult();
-    traceResult.meta.config.workload = { mode: "trace", trace: {
-      plan_id: "plan-1", mode: "open_loop", session_rate: 1, seed: 0, target_qps: 9,
-    } };
+    traceResult.meta.config.workload = { mode: "trace", arrival_mode: "open_loop",
+      session_rate: 1, seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } };
     uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
     simulateMock.mockResolvedValue(traceResult);
     render(<App />);
@@ -233,8 +232,8 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
-      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "open_loop",
-        session_rate: 1, seed: 0, target_qps: 9 } },
+      workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1,
+        seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } },
       inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
     }));
     expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
@@ -324,7 +323,7 @@ describe("App", () => {
       meta: { ...result.meta, num_requests: 3, num_aborted: 1, num_skipped: 1 },
       aborted_requests: [{
         id: 1, instance_id: 0, arrival: 0, failed_at: 0,
-        reason: "input_exceeds_kv_capacity", generated_tokens: 0, retry_count: 0,
+        reason: "output_exceeds_engine_limit", generated_tokens: 65_536, retry_count: 0,
       }],
       skipped_requests: [{ id: 2, instance_id: 0, parent_request_id: 1, reason: "parent_not_completed" }],
     });
@@ -332,7 +331,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 1 · 跳过 1");
-    expect(screen.getByLabelText("失败请求原因")).toHaveTextContent("input_exceeds_kv_capacity");
+    expect(screen.getByLabelText("失败请求原因")).toHaveTextContent("output_exceeds_engine_limit");
+    expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("引擎输出上限：65,536 token");
     expect(screen.getByLabelText("跳过请求原因")).toHaveTextContent("parent_not_completed");
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
   });

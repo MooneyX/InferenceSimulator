@@ -142,6 +142,8 @@ export default function App() {
             <>
               <section className="simulation-status" aria-label="请求结果状态">
                 已完成 {result.meta.num_completed} · 失败 {result.meta.num_aborted} · 跳过 {result.meta.num_skipped}
+                <p>引擎输出上限：{(inference?.max_output_tokens ?? 65_536).toLocaleString()} token；
+                  每请求生成上限按实际输出长度自动向上取二次幂。</p>
                 {(result.aborted_requests?.length ?? 0) > 0 ? (
                   <ul aria-label="失败请求原因">
                     {result.aborted_requests?.map((item) => (
@@ -210,8 +212,8 @@ export default function App() {
               <MetricsPanel metrics={selectedInstance?.metrics ?? result.metrics}
                 wallClockMs={result.meta.wall_clock_ms}
                 peakAggregated={selectedInstanceId === null && result.instances.length > 1}
-                targetQps={selectedInstanceId === null ? result.meta.config.workload.synthetic?.arrival_rate ?? result.meta.config.workload.trace?.target_qps ?? undefined : undefined}
-                targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.synthetic?.session_rate ?? result.meta.config.workload.trace?.session_rate ?? undefined : undefined} />
+                targetQps={selectedInstanceId === null ? result.meta.config.workload.target_qps ?? undefined : undefined}
+                targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.session_rate ?? undefined : undefined} />
               <WarningsPanel warnings={result.warnings} />
               {(result.requests ?? []).some((item) => selectedInstanceId === null || item.instance_id === selectedInstanceId) ? (
                 <Suspense

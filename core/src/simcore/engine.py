@@ -185,19 +185,26 @@ class Engine:
         self._output_targets[request_id] = output_len
 
     def submit(self, request: InferenceRequest, now_ms: float) -> bool:  # 推理请求与发送时刻 → 是否成功入队
-        """发送时 M<1 直接失败；其他请求按 FCFS 入队。"""
+        """校验输出限制并按 FCFS 入队；不按 KV 余量截短实际输出目标。"""
         key = request.request_id
         if key in self._requests:
             raise ValueError(f"request_id 重复: {key}")
         output_len = self._output_targets.get(key)
         if output_len is None:
             raise ValueError("请求缺少引擎持有的输出目标")
-        if request.is_trace and (output_len == 0 or output_len > request.max_new_tokens):
+        if request.is_trace and output_len == 0:
             self._requests[key] = request
             self._arrival_times[key] = now_ms
-            self._abort(key, now_ms, "invalid_trace_output" if output_len == 0 else "output_exceeds_kv_capacity")
+            self._abort(key, now_ms, "invalid_trace_output")
             return False
-        if request.max_new_tokens > 0 and not 1 <= output_len <= request.max_new_tokens:
+        if output_len > self._engine_config.max_output_tokens:
+            self._requests[key] = request
+            self._arrival_times[key] = now_ms
+            self._abort(key, now_ms, "output_exceeds_engine_limit")
+            return False
+        if not 1 <= request.max_new_tokens <= self._engine_config.max_output_tokens:
+            raise ValueError("请求生成上限超出引擎输出限制")
+        if not 1 <= output_len <= request.max_new_tokens:
             raise ValueError("请求实际输出长度与可见上限不一致")
         self._requests[key] = request
         self._arrival_times[key] = now_ms
@@ -268,7 +275,7 @@ class Engine:
         now_ms: float,
         reason: Literal[
             "input_exceeds_kv_capacity", "decode_kv_exhausted",
-            "invalid_trace_output", "output_exceeds_kv_capacity",
+            "invalid_trace_output", "output_exceeds_engine_limit",
         ],
     ) -> None:  # 请求 ID、失败时刻和容量原因 → 登记中止记录；无返回值
         self._aborted[request_id] = AbortedRequest(

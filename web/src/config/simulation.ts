@@ -10,8 +10,10 @@ export type ConfigField =
   | "workload.mode"
   | "workload.synthetic"
   | "workload.synthetic.num_requests"
-  | "workload.synthetic.arrival_rate"
-  | "workload.synthetic.session_rate"
+  | "workload.arrival_mode"
+  | "workload.target_qps"
+  | "workload.session_rate"
+  | "workload.seed"
   | "workload.synthetic.session.num_sessions"
   | "workload.synthetic.session.think_time_ms"
   | "workload.synthetic.prompt_len.value"
@@ -23,12 +25,8 @@ export type ConfigField =
   | "workload.synthetic.output_len.value"
   | "workload.synthetic.output_len.mean"
   | "workload.synthetic.output_len.sigma"
-  | "workload.synthetic.seed"
-  | "workload.synthetic.max_new_tokens"
   | "workload.trace"
-  | "workload.trace.session_rate"
-  | "workload.trace.seed"
-  | "workload.trace.target_qps"
+  | "inference.max_output_tokens"
   | "scheduler.max_running_requests"
   | "scheduler.max_prefill_tokens"
   | "scheduler.l3_prefetch_min_tokens"
@@ -58,10 +56,11 @@ export function createDefaultSimConfig(): ManualSimConfig {
     num_instances: 1,
     workload: {
       mode: "synthetic",
+      arrival_mode: "open_loop",
+      target_qps: 64,
+      seed: 0,
       synthetic: {
         num_requests: 1000,
-        arrival_rate: 64,
-        arrival_mode: "open_loop",
         prompt_len: {
           dist: "poisson",
           mean: 2048,
@@ -74,8 +73,6 @@ export function createDefaultSimConfig(): ManualSimConfig {
           dist: "poisson",
           mean: 128,
         },
-        seed: 42,
-        max_new_tokens: 1024,
       },
     },
     scheduler: {
@@ -87,6 +84,7 @@ export function createDefaultSimConfig(): ManualSimConfig {
     inference: {
       mode: "manual",
       page_size: 64,
+      max_output_tokens: 65_536,
       kv: {
         max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
         kv_bytes_per_token: null,
@@ -107,6 +105,7 @@ export function createDefaultPhysicalSimConfig(): PhysicalSimConfig {
   const manual = createDefaultSimConfig();
   return { num_instances: manual.num_instances, workload: manual.workload, scheduler: manual.scheduler,
     inference: { mode: "physical", page_size: manual.inference.page_size,
+      max_output_tokens: manual.inference.max_output_tokens,
       model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
       tp_size: 1, ep_size: 1, timing: { mode: "analytical" } } };
 }
@@ -205,16 +204,22 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       "workload.synthetic.num_requests",
       synthetic.num_requests,
     );
-    if (synthetic.arrival_mode === "open_loop") {
-      validateFiniteNumber(errors, "workload.synthetic.arrival_rate", synthetic.arrival_rate ?? NaN, 0, true);
+    const session = synthetic.session;
+    if ((workload.arrival_mode ?? "closed_loop") === "open_loop") {
+      validateFiniteNumber(errors, "workload.target_qps", workload.target_qps ?? NaN, 0, true);
+      if (workload.session_rate != null) errors.push({ field: "workload.session_rate", message: "合成开环不能设置会话投放频率" });
+      if (session?.num_sessions != null) errors.push({ field: "workload.synthetic.session.num_sessions", message: "开环负载不能设置会话数量" });
+      if ((session?.think_time_ms ?? 0) !== 0) errors.push({ field: "workload.synthetic.session.think_time_ms", message: "开环负载的思考时间必须为 0" });
     } else {
-      const session = synthetic.session;
-      validateFiniteNumber(errors, "workload.synthetic.session_rate", synthetic.session_rate ?? NaN, 0, true);
-      validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", session?.num_sessions ?? NaN);
-      if (session?.num_sessions != null && session.num_sessions > synthetic.num_requests) {
-        errors.push({ field: "workload.synthetic.session.num_sessions", message: "会话数量不能超过请求数量" });
+      validateFiniteNumber(errors, "workload.session_rate", workload.session_rate ?? NaN, 0, true);
+      if (workload.target_qps != null) errors.push({ field: "workload.target_qps", message: "闭环负载不能设置目标 QPS" });
+      if (session?.num_sessions != null) {
+        validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", session.num_sessions);
+        if (session.num_sessions > synthetic.num_requests) {
+          errors.push({ field: "workload.synthetic.session.num_sessions", message: "会话数量不能超过请求数量" });
+        }
       }
-      validateFiniteNumber(errors, "workload.synthetic.session.think_time_ms", session?.think_time_ms ?? NaN, 0);
+      validateFiniteNumber(errors, "workload.synthetic.session.think_time_ms", session?.think_time_ms ?? 0, 0);
     }
     if (!synthetic.turn_increment_len) {
       errors.push({ field: "workload.synthetic", message: "必须设置子轮新增内容长度" });
@@ -231,31 +236,24 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       "workload.synthetic.output_len",
       synthetic.output_len,
     );
-    validatePositiveInteger(errors, "workload.synthetic.max_new_tokens", synthetic.max_new_tokens);
-
-    if (!Number.isInteger(synthetic.seed) || synthetic.seed < 0) {
-      errors.push({
-        field: "workload.synthetic.seed",
-        message: "必须是大于或等于 0 的整数",
-      });
-    }
   }
 
   if (workload.mode === "trace") {
-    const trace = workload.trace;
-    if (!trace) errors.push({ field: "workload.trace", message: "trace 模式必须提供回放配置" });
-    else {
-      validateFiniteNumber(errors, "workload.trace.session_rate", trace.session_rate, 0, true);
-      if (!Number.isInteger(trace.seed) || trace.seed < 0) errors.push({ field: "workload.trace.seed", message: "必须是大于或等于 0 的整数" });
-      if (trace.target_qps != null) validateFiniteNumber(errors, "workload.trace.target_qps", trace.target_qps, 0, true);
+    validateFiniteNumber(errors, "workload.session_rate", workload.session_rate ?? NaN, 0, true);
+    if (workload.target_qps != null) {
+      if ((workload.arrival_mode ?? "closed_loop") === "closed_loop") errors.push({ field: "workload.target_qps", message: "目标 QPS 仅适用于开环 trace 回放" });
+      else validateFiniteNumber(errors, "workload.target_qps", workload.target_qps, 0, true);
     }
   }
+  const seed = workload.seed ?? 0;
+  if (!Number.isInteger(seed) || seed < 0) errors.push({ field: "workload.seed", message: "必须是大于或等于 0 的整数" });
   validatePositiveInteger(errors, "scheduler.max_running_requests", scheduler.max_running_requests);
   validatePositiveInteger(errors, "scheduler.max_prefill_tokens", scheduler.max_prefill_tokens);
   if (!Number.isInteger(scheduler.l3_prefetch_min_tokens) || scheduler.l3_prefetch_min_tokens < 0) {
     errors.push({ field: "scheduler.l3_prefetch_min_tokens", message: "必须是大于或等于 0 的整数" });
   }
   validatePositiveInteger(errors, "inference.page_size", inference.page_size);
+  validatePositiveInteger(errors, "inference.max_output_tokens", inference.max_output_tokens ?? 65_536);
   if (typeof scheduler.pd_mutually_exclusive !== "boolean") {
     errors.push({ field: "scheduler.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
   }

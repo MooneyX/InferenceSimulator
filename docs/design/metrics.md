@@ -8,7 +8,7 @@
 
 - 每请求 `TTFT = prefill_end - arrival`，返回均值、P50、P99。分位数先升序排序，再在位置 `(n-1)*q` 的两侧样本上线性插值。
 - 每个 `output_len > 1` 请求的 `TPOT = (finish-prefill_end)/(output_len-1)`；全场 TPOT 是这些请求的算术平均。只有单 token 输出时返回 `null`。
-- 有成功请求时 `makespan = 最晚成功完成时刻 - 最早已发送请求到达时刻`（含失败请求的到达），`throughput = completed_requests/(makespan/1000)`；`makespan=0` 时吞吐为 `null`。无成功请求时 makespan 为 0，TTFT 均值/P50/P99、TPOT、吞吐均为 `null`。吞吐是实测完成速率，**不是**目标到达率 `arrival_rate`。
+- 有成功请求时 `makespan = 最晚成功完成时刻 - 最早已发送请求到达时刻`（含失败请求的到达），`throughput = completed_requests/(makespan/1000)`；`makespan=0` 时吞吐为 `null`。无成功请求时 makespan 为 0，TTFT 均值/P50/P99、TPOT、吞吐均为 `null`。吞吐是实测完成速率，**不是**目标到达率 `workload.target_qps`。
 
 开环模式的 `arrival_qps` 是已投放 N 个请求（包括发送后失败者）的 `(N-1)*1000/(最后投放时刻-首次投放时刻)`；泊松到达下它通常不等于配置的期望速率 q。N=1 或首末时刻相同时为 `null`。闭环模式同样报告已发送请求（不含因父轮失败而跳过的后代）的首末到达观测 QPS；它不是 `session_rate`，也不保证达到任何目标请求 QPS。`num_sessions` 为创建的根会话数，`root_request_ratio=num_sessions/N`，两者计入发送后失败的根。`mean_prompt_tokens`、`mean_output_tokens` 则只对已完成请求统计；全失败时为 `null`。目标 QPS、发送 QPS 与完成吞吐的时间分母不同，不可混用。
 

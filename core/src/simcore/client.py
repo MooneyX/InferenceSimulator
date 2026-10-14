@@ -11,20 +11,18 @@ from simcore.schemas import (
     ClientWakeup,
     EngineConfig,
     InferenceRequest,
-    LengthDist,
     RequestCompletion,
     SkippedRequest,
     SyntheticWorkloadConfig,
     TracePlan,
-    TraceWorkloadConfig,
     TurnPlan,
     WorkloadConfig,
     WorkloadMode,
     WorkloadPlan,
 )
 from simcore.workload import (
-    _visible_limit,
     build_synthetic_closed_loop_plan,
+    request_output_limit,
     sample_length,
 )
 
@@ -51,31 +49,29 @@ class Client:
         self, workload: WorkloadConfig, *, trace_plan: TracePlan | None = None
     ) -> None:
         """统一准备四种负载的计划或动态生成状态；请求仍在发送时构造。"""
+        self._workload_cfg = workload
         self._workload_mode = workload.mode
-        self._arrival_mode: Literal["closed_loop", "open_loop"]
+        self._arrival_mode = workload.arrival_mode
         if workload.mode == "trace":
-            replay = cast(TraceWorkloadConfig, workload.trace)
             if trace_plan is None:
                 raise ValueError("Trace 仿真须提供 trace_plan 请求计划")
-            self._arrival_mode = replay.mode
             if self.arrival_mode == "closed_loop":
                 self._completed: set[int] = set()
-            self._prepare_trace(trace_plan, replay)
+            self._prepare_trace(trace_plan, workload)
         else:
             if trace_plan is not None:
                 raise ValueError("合成仿真不能提供 trace_plan 请求计划")
-            self._synthetic = cast(SyntheticWorkloadConfig, workload.synthetic)
-            self._arrival_mode = self._synthetic.arrival_mode
+            self._synthetic_cfg = cast(SyntheticWorkloadConfig, workload.synthetic)
             self._finished: dict[int, tuple[InferenceRequest, int]] = {}
             if self.arrival_mode == "closed_loop":
-                self._plan = build_synthetic_closed_loop_plan(self._synthetic, self.engine)
+                self._plan = build_synthetic_closed_loop_plan(workload, self.engine)
             else:
-                self._roots_rng = random.Random(stable_derive(self._synthetic.seed, "root-length"))
+                self._roots_rng = random.Random(stable_derive(workload.seed, "root-length"))
                 self._increments_rng = random.Random(
-                    stable_derive(self._synthetic.seed, "turn-increment")
+                    stable_derive(workload.seed, "turn-increment")
                 )
                 self._outputs_rng = random.Random(
-                    stable_derive(self._synthetic.seed, "output-length")
+                    stable_derive(workload.seed, "output-length")
                 )
                 self._ready: list[tuple[float, int, int]] = []
                 self._turns: dict[int, TurnPlan] = {}
@@ -109,25 +105,27 @@ class Client:
             ),
         )
 
-    def _prepare_trace(self, source: TracePlan, replay: TraceWorkloadConfig) -> None:
+    def _prepare_trace(
+        self, source: TracePlan, workload: WorkloadConfig
+    ) -> None:
         if source.block_size != self.engine.page_size:
             raise ValueError("trace 块大小必须与引擎 page_size 一致")
         self._trace_turns = {item.request_id: item for item in source.requests}
         seen = Counter(
             (item.session_id, block) for item in source.requests for block in item.hash_ids
         )
-        rng = random.Random(replay.seed)
+        rng = random.Random(workload.seed)
         starts: list[float] = []
         clock = 0.0
         for _ in source.sessions:
-            clock += rng.expovariate(replay.session_rate / 1000)
+            clock += rng.expovariate(cast(float, workload.session_rate) / 1000)
             starts.append(clock)
         arrivals = [starts[item.session_id] + item.arrival_offset_ms for item in source.requests]
-        if replay.target_qps is not None:
+        if workload.target_qps is not None:
             if len(arrivals) < 2 or max(arrivals) == min(arrivals):
                 raise ValueError("目标 QPS 至少需要两个到达时刻不同的请求")
             first = min(arrivals)
-            scale = (len(arrivals) - 1) * 1000 / (replay.target_qps * (max(arrivals) - first))
+            scale = (len(arrivals) - 1) * 1000 / (workload.target_qps * (max(arrivals) - first))
             if not math.isfinite(scale) or scale <= 0:
                 raise ValueError("目标 QPS 超出当前时间精度可表示的范围")
             arrivals = [first + (arrival - first) * scale for arrival in arrivals]
@@ -164,9 +162,7 @@ class Client:
                 think_time_ms=item.think_time_ms,
                 prompt_len=item.prompt_len,
                 output_len=item.output_len,
-                max_new_tokens=_visible_limit(
-                    item.prompt_len, max(1, item.output_len), self.engine
-                ),
+                max_new_tokens=request_output_limit(item.output_len, self.engine.max_output_tokens),
                 ideal_reuse_blocks=reusable,
             )
         total = sum(item.prompt_len for item in source.requests)
@@ -185,11 +181,11 @@ class Client:
         if self.workload_mode == "trace":
             return self._trace_wakeups
         if self.arrival_mode == "open_loop":
-            rng = random.Random(stable_derive(self._synthetic.seed, "open-loop-arrival"))
-            rate_per_ms = cast(float, self._synthetic.arrival_rate) / 1000.0
+            rng = random.Random(stable_derive(self._workload_cfg.seed, "open-loop-arrival"))
+            rate_per_ms = cast(float, self._workload_cfg.target_qps) / 1000.0
             clock = 0.0
             wakeups = []
-            for index in range(self._synthetic.num_requests):
+            for index in range(self._synthetic_cfg.num_requests):
                 clock += rng.expovariate(rate_per_ms)
                 wakeups.append(ClientWakeup(index, index, clock))
             return tuple(wakeups)
@@ -208,7 +204,7 @@ class Client:
             _, session_id, parent_id = heapq.heappop(self._ready)
             parent = self._turns[parent_id]
             increment = sample_length(
-                cast(LengthDist, self._synthetic.turn_increment_len), self._increments_rng
+                self._synthetic_cfg.turn_increment_len, self._increments_rng
             )
             prompt_len = parent.prompt_len + parent.output_len + increment
             inherited = min(
@@ -219,11 +215,11 @@ class Client:
         else:
             session_id = key
             parent_id = None
-            prompt_len = sample_length(self._synthetic.prompt_len, self._roots_rng)
+            prompt_len = sample_length(self._synthetic_cfg.prompt_len, self._roots_rng)
             inherited = 0
             self._roots.append(key)
-        maximum = _visible_limit(prompt_len, self._synthetic.max_new_tokens, self.engine)
-        output = min(sample_length(self._synthetic.output_len, self._outputs_rng), maximum)
+        output = sample_length(self._synthetic_cfg.output_len, self._outputs_rng)
+        maximum = request_output_limit(output, self.engine.max_output_tokens)
         turn = TurnPlan(
             key,
             session_id,

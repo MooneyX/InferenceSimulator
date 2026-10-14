@@ -22,14 +22,13 @@ def config(
     return manual_config(
         num_instances=instances,
         workload=WorkloadConfig(
+            session_rate=100,
+            seed=5,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=requests,
-                session_rate=100,
                 prompt_len=FixedLength(value=prompt),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                max_new_tokens=2,
-                seed=5,
                 session=SessionConfig(num_sessions=sessions),
             )
         ),

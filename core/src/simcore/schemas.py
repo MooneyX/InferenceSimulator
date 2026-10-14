@@ -4,7 +4,7 @@
 不 import 任何其他 simcore 模块，也不做任何 IO。
 
 时间单位约定：
-- 配置中的 ``arrival_rate`` 单位为 请求/秒（贴合用户直觉）。
+- ``target_qps`` 单位为请求/秒；``session_rate`` 单位为会话/秒。
 - 其余一切时间量（仿真时钟、区间端点、性能模型系数与指标）单位均为 **毫秒 (ms)**。
 """
 
@@ -134,67 +134,41 @@ class SessionConfig(_Frozen):
 
 
 class SyntheticWorkloadConfig(_Frozen):
-    """合成负载：开环按请求速率、闭环按新会话速率投放。"""
+    """合成负载的请求数量、长度分布与会话内容配置。"""
 
     num_requests: int = Field(ge=1, description="全部轮次请求数")
-    arrival_rate: float | None = Field(
-        default=None, gt=0, allow_inf_nan=False, description="开环目标请求 QPS"
-    )
-    session_rate: float | None = Field(
-        default=None, gt=0, allow_inf_nan=False, description="闭环新会话投放频率（会话/秒）"
-    )
-    arrival_mode: Literal["closed_loop", "open_loop"] = "closed_loop"
     prompt_len: LengthDist
-    turn_increment_len: LengthDist | None = None
+    turn_increment_len: LengthDist
     output_len: LengthDist
-    max_new_tokens: int = Field(default=128, ge=1, description="每个请求可见的生成上限")
-    seed: int = Field(ge=0, description="随机种子；同种子必须逐字节可复现")
     session: SessionConfig = Field(default_factory=SessionConfig)
 
     @model_validator(mode="after")
-    def _resolve_session(self) -> Self:  # 当前负载配置 → 校验开/闭环并补全会话数，返回配置自身
-        if self.arrival_mode == "open_loop":
-            if self.arrival_rate is None or self.session_rate is not None:
-                raise ValueError("开环负载必须仅提供请求到达率 arrival_rate")
-            if self.turn_increment_len is None:
-                raise ValueError("开环负载必须提供每轮新增长度分布 turn_increment_len")
-            if self.session.num_sessions is not None or self.session.think_time_ms != 0:
-                raise ValueError("开环负载不使用会话数或思考时间")
-            return self
-        if self.session_rate is None or self.arrival_rate is not None:
-            raise ValueError("闭环负载必须仅提供新会话投放频率 session_rate")
-        if self.turn_increment_len is None:
-            raise ValueError("闭环负载必须提供每轮新增长度分布 turn_increment_len")
+    def _check_session_count(self) -> Self:
         count = self.session.num_sessions
-        if count is None:
-            object.__setattr__(
-                self, "session", self.session.model_copy(update={"num_sessions": self.num_requests})
-            )
-        elif count > self.num_requests:
+        if count is not None and count > self.num_requests:
             raise ValueError("num_sessions 不得大于 num_requests")
         return self
 
 
 class TraceWorkloadConfig(_Frozen):
-    """计划资源引用与回放设置；计划内容由调用方独立提供。"""
+    """计划资源引用；计划内容由调用方独立提供。"""
 
-    mode: Literal["open_loop", "closed_loop"]
-    session_rate: float = Field(gt=0, allow_inf_nan=False)
-    seed: int = Field(default=0, ge=0)
-    target_qps: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     plan_id: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def _check_target_qps(self) -> Self:
-        if self.mode != "open_loop" and self.target_qps is not None:
-            raise ValueError("目标 QPS 仅适用于开环 trace 回放")
-        return self
 
 
 class WorkloadConfig(_Frozen):
-    """互斥的合成负载或 Trace 回放配置。"""
+    """统一的投放设置与互斥的合成负载或 Trace 资源配置。"""
 
     mode: WorkloadMode = "synthetic"
+    arrival_mode: Literal["closed_loop", "open_loop"] = "closed_loop"
+    seed: int = Field(default=0, ge=0, description="负载随机种子")
+    session_rate: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False, description="新会话投放频率（会话/秒）"
+    )
+    target_qps: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False,
+        description="开环目标发送 QPS；合成采样泊松间隔，Trace 缩放原时间线",
+    )
     synthetic: SyntheticWorkloadConfig | None = None
     trace: TraceWorkloadConfig | None = None
 
@@ -205,11 +179,34 @@ class WorkloadConfig(_Frozen):
                 raise ValueError("workload.mode='synthetic' 时必须提供 workload.synthetic")
             if self.trace is not None:
                 raise ValueError("合成负载不能同时配置 workload.trace")
+            synthetic_cfg = self.synthetic
+            if self.arrival_mode == "open_loop":
+                if self.target_qps is None or self.session_rate is not None:
+                    raise ValueError("合成开环负载必须仅提供目标发送速率 target_qps")
+                if (
+                    synthetic_cfg.session.num_sessions is not None
+                    or synthetic_cfg.session.think_time_ms != 0
+                ):
+                    raise ValueError("开环负载不使用会话数或思考时间")
+            else:
+                if self.session_rate is None or self.target_qps is not None:
+                    raise ValueError("闭环负载必须仅提供新会话投放频率 session_rate")
+                if synthetic_cfg.session.num_sessions is None:
+                    session = synthetic_cfg.session.model_copy(
+                        update={"num_sessions": synthetic_cfg.num_requests}
+                    )
+                    object.__setattr__(
+                        self, "synthetic", synthetic_cfg.model_copy(update={"session": session})
+                    )
         else:
             if self.trace is None:
                 raise ValueError("workload.mode='trace' 时必须提供 workload.trace")
             if self.synthetic is not None:
                 raise ValueError("Trace 负载不能同时配置 workload.synthetic")
+            if self.session_rate is None:
+                raise ValueError("Trace 负载必须提供新会话投放频率 session_rate")
+            if self.arrival_mode == "closed_loop" and self.target_qps is not None:
+                raise ValueError("目标 QPS 仅适用于开环 trace 回放")
         return self
 
 
@@ -218,6 +215,7 @@ class EngineConfig(_Frozen):
 
     max_running_requests: int = Field(ge=1, description="同时驻留的运行请求数上限")
     max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
+    max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
     max_prefill_tokens: int = Field(default=16_384, ge=1, description="单次 Prefill 的新计算额度")
     page_size: int = Field(default=64, ge=1, description="每个 KV 页的 token 数")
     l2_capacity_tokens: int = Field(default=0, ge=0, description="L2 KV 的 token 容量；0 表示关闭")
@@ -318,6 +316,7 @@ class ManualInferenceConfig(_Frozen):
 
     mode: Literal["manual"] = "manual"
     page_size: int = Field(default=64, ge=1)
+    max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
     kv: ManualKVConfig
     timing: EmpiricalTimingConfig
 
@@ -517,6 +516,7 @@ class PhysicalInferenceConfig(_Frozen):
 
     mode: Literal["physical"] = "physical"
     page_size: int = Field(default=64, ge=1)
+    max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
     model: ModelSpec
     hardware: HardwareSpec
     storage: StorageSpec
@@ -785,7 +785,7 @@ class AbortedRequest(_Record):
     failed_at: float = Field(ge=0)
     reason: Literal[
         "input_exceeds_kv_capacity", "decode_kv_exhausted",
-        "invalid_trace_output", "output_exceeds_kv_capacity",
+        "invalid_trace_output", "output_exceeds_engine_limit",
     ]
     generated_tokens: int = Field(ge=0)
     retry_count: int = Field(ge=0)

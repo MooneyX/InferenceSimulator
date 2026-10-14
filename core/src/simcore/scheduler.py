@@ -214,9 +214,12 @@ class F001Scheduler:
                     cache.plan(planned_promotions, planned_new_pages)
                 except CacheCapacityError:
                     capacity_ok = False
+            future_ok = proposed_total <= cache.available_tokens or not (
+                running or selected or restored or restore_only
+            )
             if (
                 proposed_current > cache.available_tokens
-                or proposed_total > cache.available_tokens
+                or not future_ok
                 or not compute_ok
                 or not capacity_ok
             ):
@@ -227,7 +230,7 @@ class F001Scheduler:
                     and not restored
                     and not restore_only
                     and (
-                        (target + block_size - 1) // block_size * block_size + block_size + future
+                        (target + block_size - 1) // block_size * block_size + block_size
                         > self._engine.max_total_tokens
                     )
                 ):

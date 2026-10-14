@@ -34,14 +34,14 @@ describe("SimulationForm", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
-      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 0 } },
+      workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 2, seed: 0, trace: { plan_id: "plan-1" } },
       inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
     }));
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     expect(screen.getByText(/计划已校验/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
-      workload: { mode: "trace", trace: { plan_id: "plan-1", mode: "closed_loop", session_rate: 2, seed: 0 } },
+      workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 2, seed: 0, trace: { plan_id: "plan-1" } },
       inference: expect.objectContaining({ mode: "manual" }),
     }));
     expect(onSubmit).toHaveBeenCalledTimes(2);
@@ -66,7 +66,7 @@ describe("SimulationForm", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onReplay).toHaveBeenCalledWith(expect.objectContaining({ workload: { mode: "trace",
-      trace: { plan_id: "plan-1", mode: "open_loop", session_rate: 1, seed: 0, target_qps: 7.5 } } }));
+      arrival_mode: "open_loop", session_rate: 1, seed: 0, target_qps: 7.5, trace: { plan_id: "plan-1" } } }));
   });
 
   it("exports trace parameters without a plan and requires reupload after import", async () => {
@@ -83,9 +83,8 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("会话/秒"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
-    expect(JSON.parse(exported).workload).toEqual({ mode: "trace", trace: {
-      mode: "closed_loop", session_rate: 3, seed: 0, plan_id: null,
-    } });
+    expect(JSON.parse(exported).workload).toEqual({ mode: "trace", arrival_mode: "closed_loop",
+      session_rate: 3, seed: 0, trace: { plan_id: null } });
     expect(exported).not.toContain("plan-1");
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
@@ -112,8 +111,8 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      workload: expect.objectContaining({ synthetic: expect.objectContaining({ arrival_mode: "open_loop",
-        turn_increment_len: { dist: "poisson", mean: 256 } }) }),
+      workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,
+        synthetic: expect.objectContaining({ turn_increment_len: { dist: "poisson", mean: 256 } }) }),
       inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" },
         storage: expect.objectContaining({ l2_available_gb: 2048, l3_available_gb: 40_000,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
@@ -130,14 +129,16 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("负载模式")).toHaveValue("synthetic");
     expect(screen.getByLabelText("请求数量")).toHaveValue(1000);
     expect(screen.getByLabelText("目标发送 QPS（请求/秒，泊松到达）")).toHaveValue(64);
-    expect(screen.getByLabelText("随机种子")).toHaveValue(42);
+    expect(screen.getByLabelText("随机种子")).toHaveValue(0);
     const promptGroup = screen.getByRole("group", { name: "新会话根输入长度" });
     expect(within(promptGroup).getByLabelText("分布类型")).toHaveValue("poisson");
     expect(within(promptGroup).getByLabelText("平均长度（token）")).toHaveValue(2048);
     expect(within(screen.getByRole("group", { name: "子轮新增内容长度" }))
       .getByLabelText("平均长度（token）")).toHaveValue(256);
     expect(screen.queryByLabelText("允许跨会话共享公共前缀")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("每请求生成上限（token）")).toHaveValue(1024);
+    expect(screen.queryByLabelText("每请求生成上限（token）")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("引擎输出上限（token）")).toHaveValue(65_536);
+    expect(screen.getByText(/每请求生成上限由实际输出长度向上取二次幂自动确定/)).toBeInTheDocument();
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
     expect(screen.getByLabelText("L1 KV 总容量（token）")).toHaveValue(65_536);
     expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(0);
@@ -150,16 +151,42 @@ describe("SimulationForm", () => {
     expect(screen.getByText(/1024 页/)).toBeInTheDocument();
   });
 
+  it("keeps independent engine output limits and never submits a synthetic request limit", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("引擎输出上限（token）"), { target: { value: "512" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.lastCall![0].inference).toMatchObject({ mode: "physical", max_output_tokens: 512 });
+    expect(onSubmit.mock.lastCall![0].workload.synthetic).not.toHaveProperty("max_new_tokens");
+    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
+    expect(screen.getByLabelText("引擎输出上限（token）")).toHaveValue(65_536);
+    fireEvent.change(screen.getByLabelText("引擎输出上限（token）"), { target: { value: "256" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.lastCall![0].inference).toMatchObject({ mode: "manual", max_output_tokens: 256 });
+    fireEvent.click(screen.getByRole("radio", { name: /自动解析/ }));
+    expect(screen.getByLabelText("引擎输出上限（token）")).toHaveValue(512);
+  });
+
+  it("allows clearing a closed-loop session count to use the request count default", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.lastCall![0].workload.synthetic.session.num_sessions).toBeNull();
+    expect(screen.getByLabelText("会话数量（根请求数）")).not.toHaveAttribute("aria-invalid");
+  });
+
   it("uses the selected closed_loop workload in automatic resolution too", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      workload: expect.objectContaining({ synthetic: expect.objectContaining({
-        arrival_mode: "closed_loop", session_rate: 1.28,
-        session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
-      }) }),
+      workload: expect.objectContaining({ arrival_mode: "closed_loop", session_rate: 1.28,
+        synthetic: expect.objectContaining({
+          session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
+        }) }),
       inference: expect.objectContaining({ mode: "physical" }),
     }));
   });
@@ -180,11 +207,11 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("轮次间平均思考时间（ms，指数分布）"),
       { target: { value: "200" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    const submitted = onSubmit.mock.calls[0][0].workload.synthetic;
+    const submitted = onSubmit.mock.calls[0][0].workload;
     expect(submitted).toMatchObject({ arrival_mode: "closed_loop", session_rate: 3,
-      turn_increment_len: { dist: "poisson", mean: 48 },
-      session: { num_sessions: 5, think_time_ms: 200, topology: "linear" } });
-    expect(submitted).not.toHaveProperty("arrival_rate");
+      synthetic: { turn_increment_len: { dist: "poisson", mean: 48 },
+        session: { num_sessions: 5, think_time_ms: 200, topology: "linear" } } });
+    expect(submitted).not.toHaveProperty("target_qps");
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "open_loop" } });
     expect(screen.getByLabelText("目标发送 QPS（请求/秒，泊松到达）")).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "子轮新增内容长度" }))
@@ -216,30 +243,7 @@ describe("SimulationForm", () => {
 
     fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
 
-    expect(onSubmit).toHaveBeenCalledWith({
-      num_instances: 1,
-      workload: {
-        mode: "synthetic",
-        synthetic: {
-          num_requests: 1000,
-          arrival_rate: 64,
-          arrival_mode: "open_loop",
-          prompt_len: { dist: "poisson", mean: 2048 },
-          turn_increment_len: { dist: "poisson", mean: 256 },
-          output_len: { dist: "poisson", mean: 128 },
-          max_new_tokens: 1024,
-          seed: 42,
-        },
-      },
-      scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
-        l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
-      inference: { mode: "manual", page_size: 64,
-        kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
-          kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
-          l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0 },
-        timing: { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 },
-      },
-    });
+    expect(onSubmit).toHaveBeenCalledWith(createDefaultSimConfig());
     expect(onSubmit.mock.calls[0][0].workload.synthetic).not.toHaveProperty("session");
   });
 
@@ -268,9 +272,9 @@ describe("SimulationForm", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit.mock.calls[0][0]).toMatchObject({
       workload: {
+        arrival_mode: "open_loop",
         synthetic: {
           num_requests: 25,
-          arrival_mode: "open_loop",
           prompt_len: { dist: "fixed", value: 256 },
           turn_increment_len: { dist: "poisson", mean: 64 },
         },
@@ -293,7 +297,7 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("每页 token 数"), {
       target: { value: "4" },
     });
-    fireEvent.change(screen.getByLabelText("每请求生成上限（token）"), {
+    fireEvent.change(screen.getByLabelText("引擎输出上限（token）"), {
       target: { value: "12" },
     });
     fireEvent.click(screen.getByLabelText(/Prefill \/ Decode 分步执行/));
@@ -305,12 +309,11 @@ describe("SimulationForm", () => {
       workload: {
         synthetic: {
           num_requests: 20,
-          max_new_tokens: 12,
           turn_increment_len: { dist: "fixed", value: 20 },
         },
       },
       scheduler: { pd_mutually_exclusive: false },
-      inference: { mode: "manual", page_size: 4, kv: { max_total_tokens: 128 } },
+      inference: { mode: "manual", page_size: 4, max_output_tokens: 12, kv: { max_total_tokens: 128 } },
     });
   });
 
@@ -349,7 +352,7 @@ describe("SimulationForm", () => {
     ["L3 KV 容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
     ["L3 异步预取最小长度（token，0 为不设阈值）", "-1", "必须是大于或等于 0 的整数"],
     ["每页 token 数", "0", "必须是大于或等于 1 的整数"],
-    ["每请求生成上限（token）", "0", "必须是大于或等于 1 的整数"],
+    ["引擎输出上限（token）", "0", "必须是大于或等于 1 的整数"],
   ])("blocks invalid %s with an accessible field error", (label, value, message) => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
@@ -392,8 +395,8 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
 
     const json = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
-    expect(JSON.parse(json)).toMatchObject({ workload: { synthetic: {
-      num_requests: 25, arrival_mode: "open_loop", turn_increment_len: { dist: "poisson", mean: 256 },
+    expect(JSON.parse(json)).toMatchObject({ workload: { arrival_mode: "open_loop", synthetic: {
+      num_requests: 25, turn_increment_len: { dist: "poisson", mean: 256 },
     } } });
     expect(JSON.parse(json)).not.toHaveProperty("metrics");
     expect(writeText).toHaveBeenCalledWith(json);

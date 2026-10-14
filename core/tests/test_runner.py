@@ -28,13 +28,13 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
     return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=30.0,
+            seed=seed,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
-                session_rate=30.0,
                 prompt_len=LognormalLength(mean=256.0, sigma=0.8),
                 turn_increment_len=FixedLength(value=8),
                 output_len=PoissonLength(mean=40.0),
-                seed=seed,
             )
         ),
         engine=EngineConfig(max_running_requests=16, max_total_tokens=budget, page_size=1),
@@ -66,14 +66,14 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=10,
+            seed=42,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=5,
-                arrival_rate=10,
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-                seed=42,
             )
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
@@ -100,14 +100,14 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=31.25,
+            seed=42,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=2,
-                arrival_rate=31.25,
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=1),
-                seed=42,
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
@@ -125,14 +125,14 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=10,
+            seed=42,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=4,
-                arrival_rate=10,
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-                seed=42,
             )
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
@@ -152,14 +152,14 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=10,
+            seed=1,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=3,
-                arrival_rate=10,
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=40),
                 output_len=FixedLength(value=2),
-                seed=1,
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
@@ -182,14 +182,14 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=10,
+            seed=1,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=1,
-                arrival_rate=10,
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=1),
-                seed=1,
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
@@ -204,14 +204,14 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
     config = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=10,
+            seed=1,
             synthetic=SyntheticWorkloadConfig(
-                arrival_mode="open_loop",
                 num_requests=2,
-                arrival_rate=10,
                 prompt_len=FixedLength(value=128),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-                seed=1,
             )
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
@@ -274,13 +274,13 @@ class TestEndToEnd:
         config = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=10,
+                seed=2,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    session_rate=10,
                     prompt_len=FixedLength(value=16),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
-                    seed=2,
                     session=SessionConfig(num_sessions=1),
                 )
             ),
@@ -312,13 +312,13 @@ class TestEndToEnd:
         config = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=10,
+                seed=2,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    session_rate=10,
                     prompt_len=FixedLength(value=16),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
-                    seed=2,
                     session=SessionConfig(num_sessions=1),
                 )
             ),
@@ -327,7 +327,7 @@ class TestEndToEnd:
         )
         synthetic = config.workload.synthetic
         assert synthetic is not None
-        plan = build_synthetic_closed_loop_plan(synthetic, prepare_runtime(config).engine)
+        plan = build_synthetic_closed_loop_plan(config.workload, prepare_runtime(config).engine)
         result = simulate(config)
         metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
@@ -340,13 +340,12 @@ class TestEndToEnd:
         cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=10,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=2,
-                    session_rate=10,
-                    prompt_len=FixedLength(value=128),
+                    prompt_len=FixedLength(value=193),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
-                    seed=0,
                 )
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
@@ -362,14 +361,12 @@ class TestEndToEnd:
         cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=1,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
-                    session_rate=1,
                     prompt_len=FixedLength(value=3),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
-                    max_new_tokens=1,
-                    seed=0,
                 )
             ),
             engine=EngineConfig(
@@ -400,13 +397,12 @@ class TestEndToEnd:
         cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=2,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=3,
-                    session_rate=2,
                     prompt_len=FixedLength(value=128),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
-                    seed=0,
                     session=SessionConfig(num_sessions=1),
                 )
             ),
@@ -429,7 +425,7 @@ class TestEndToEnd:
 class TestTraceSeam:
     def test_trace_workload_requires_explicit_plan(self) -> None:
         workload = WorkloadConfig.model_validate({
-            "mode": "trace", "trace": {"mode": "open_loop", "session_rate": 1},
+            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "trace": {},
         })
         cfg = make_config().model_copy(update={"workload": workload})
         with pytest.raises(ValueError, match="plan|计划"):
@@ -455,13 +451,13 @@ class TestSmallCases:
         cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=1.0,
+                seed=7,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=3,
-                    session_rate=1.0,
                     prompt_len=FixedLength(value=10),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=2),
-                    seed=7,
                     session=SessionConfig(num_sessions=1, think_time_ms=think_time_ms),
                 )
             ),
@@ -471,7 +467,7 @@ class TestSmallCases:
         result = simulate(cfg)
         synthetic = cfg.workload.synthetic
         assert synthetic is not None
-        plan = build_synthetic_closed_loop_plan(synthetic, prepare_runtime(cfg).engine)
+        plan = build_synthetic_closed_loop_plan(cfg.workload, prepare_runtime(cfg).engine)
         assert len(result.requests) == 3
         assert result.metrics.arrival_qps == pytest.approx(
             2000 / (result.requests[-1].arrival - result.requests[0].arrival)
@@ -490,13 +486,12 @@ class TestSmallCases:
         cfg = manual_config(
             num_instances=1,
             workload=WorkloadConfig(
+                session_rate=1.0,
                 synthetic=SyntheticWorkloadConfig(
                     num_requests=1,
-                    session_rate=1.0,
                     prompt_len=FixedLength(value=5),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=3),
-                    seed=0,
                 )
             ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),

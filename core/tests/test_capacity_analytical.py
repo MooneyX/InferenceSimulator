@@ -46,14 +46,12 @@ def example_request() -> SimConfig:
     return SimConfig(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=1,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=1,
-                session_rate=1,
                 prompt_len=FixedLength(value=4),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                max_new_tokens=2,
-                seed=0,
             )
         ),
         scheduler=SchedulerConfig(max_running_requests=1),
@@ -89,6 +87,23 @@ def example_request() -> SimConfig:
             ),
         ),
     )
+
+
+@pytest.mark.parametrize("cap", [1, 64, 100, 65_536])
+def test_physical_output_limit_preserves_explicit_value_in_runtime(cap: int) -> None:
+    original = example_request()
+    assert physical(original).max_output_tokens == 65_536
+    config = update_inference(original, update={"max_output_tokens": cap})
+    assert prepare_runtime(config).engine.max_output_tokens == cap
+    assert SimConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize("invalid", [0, -1, 1.5, None])
+def test_physical_output_limit_rejects_invalid_values(invalid: object) -> None:
+    payload = example_request().model_dump()
+    payload["inference"]["max_output_tokens"] = invalid
+    with pytest.raises(ValidationError, match="max_output_tokens"):
+        SimConfig.model_validate(payload)
 
 
 def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:

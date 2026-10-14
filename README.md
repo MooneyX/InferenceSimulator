@@ -58,7 +58,7 @@ npm run dev
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"num_instances":1,"workload":{"mode":"synthetic","synthetic":{"num_requests":1000,"arrival_rate":50.0,"arrival_mode":"open_loop","prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128},"seed":0}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"mode":"manual","page_size":64,"kv":{"max_total_tokens":65536},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
+$body = '{"num_instances":1,"workload":{"mode":"synthetic","arrival_mode":"open_loop","target_qps":50.0,"seed":0,"synthetic":{"num_requests":1000,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128}}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"mode":"manual","page_size":64,"kv":{"max_total_tokens":65536},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
@@ -76,7 +76,7 @@ uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --output
 uv run python -m simserver.trace_processing refs/cc-traces/traces.jsonl --sessions "002001296e8a8c38ad9d7cc436d691afc602" --output trace-plan.json
 ```
 
-本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式；开环还可勾选「按目标 QPS 等比例缩放到达间隔」，填写目标请求/秒。缩放保留原始突发与空闲比例，并不保证均匀投放或完成吞吐。手动配置使用填写的容量和四系数，自动解析根据模型/硬件计算容量，并支持解析或经验计时及已有的 TP/EP 约束。trace 原始模型字段不参与计算；参数 JSON 与 API 使用同一 `SimConfig` 结构，Trace 设置位于 `workload.trace`（`mode`、`session_rate`、`seed`、可选 `target_qps` 与 `plan_id`）。`plan_id` 是服务进程临时资源引用；参数导出将其清为 `null`，保留回放设置。导入后需重新上传独立请求计划资源并更新 ID，不能复用旧临时引用。本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
+本地摘要/计划与服务端共用同一处理器。计划保留输入块身份、请求长度、原始偏移和同分组时间推断的父子边；回放时设置会话/秒、随机种子及开环或闭环模式；开环还可勾选「按目标 QPS 等比例缩放到达间隔」，填写目标请求/秒。缩放保留原始突发与空闲比例，并不保证均匀投放或完成吞吐。手动配置使用填写的容量和四系数，自动解析根据模型/硬件计算容量，并支持解析或经验计时及已有的 TP/EP 约束。trace 原始模型字段不参与计算；参数 JSON 与 API 使用同一 `SimConfig` 结构，Trace 与合成共用 `workload` 中的 `arrival_mode`、`session_rate`、`seed` 和 `target_qps`；`workload.trace` 只保存可选 `plan_id`。`plan_id` 是服务进程临时资源引用；参数导出将其清为 `null`，保留回放设置。导入后需重新上传独立请求计划资源并更新 ID，不能复用旧临时引用。本地数据集保持 Git 忽略。文件限制和临时任务生命周期见 [服务层契约](docs/design/api.md#trace-文件与计划接口)。
 
 ## 同步前端类型
 
@@ -100,11 +100,11 @@ result = simulate(
             "num_instances": 1,
             "workload": {
                 "mode": "synthetic",
+                "arrival_mode": "open_loop",
+                "target_qps": 50.0,
+                "seed": 0,
                 "synthetic": {
                     "num_requests": 1000,
-                    "arrival_rate": 50.0,
-                    "arrival_mode": "open_loop",
-                    "seed": 0,
                     "prompt_len": {"dist": "lognormal", "mean": 512, "sigma": 1.0},
                     "turn_increment_len": {"dist": "poisson", "mean": 128},
                     "output_len": {"dist": "poisson", "mean": 128},
@@ -135,4 +135,4 @@ print(result.metrics)
 
 `simulate` 始终返回单个 `SimResult`；经验计时的 `result.analysis` 为 `None`。物理模式直接在同一个 `SimConfig.inference` 中传入 `mode="physical"`、`page_size`、完整 `model` / `hardware` / `storage`、`tp_size`、`ep_size` 和 `timing`；解析计时为 `{"mode":"analytical"}`，经验计时为带四系数的 `{"mode":"empirical", ...}`。可先用同一个配置调用 `POST /api/resolve` 预览 `ResolutionReport`，但运行不接收或复用预览报告，仍只提交原始 `SimConfig`。
 
-Trace 回放将负载设为 `{"mode":"trace","trace":{"mode":"open_loop","session_rate":1,"seed":0}}`，再调用 `simulate(config, trace_plan=plan)`，其中 `plan` 是 `TracePlan`。可选 `target_qps` 仅适用于开环；回放设置属于配置，`trace_plan` 仅是资源注入。内核不读取文件或服务端 `plan_id`；服务层根据 `workload.trace.plan_id` 获取计划后调用同一入口。Trace 请求长度、块身份和依赖语义不变。
+Trace 回放将负载设为 `{"mode":"trace","arrival_mode":"open_loop","session_rate":1,"seed":0,"trace":{}}`，再调用 `simulate(config, trace_plan=plan)`，其中 `plan` 是 `TracePlan`。可选 `target_qps` 仅适用于开环；回放设置属于配置，`trace_plan` 仅是资源注入。内核不读取文件或服务端 `plan_id`；服务层根据 `workload.trace.plan_id` 获取计划后调用同一入口。Trace 请求长度、块身份和依赖语义不变。合成与 Trace 共用 `inference.max_output_tokens`（手动/物理默认均为 65536）；客户端的每请求 `max_new_tokens` 是 `max(1,output_len)` 向上取二次幂后以该上限封顶的值，不是用户负载字段。采样/原始输出不按 KV 容量或生成上限截短；超过引擎上限返回请求级 `output_exceeds_engine_limit`，Trace 零输出仍为 `invalid_trace_output`。

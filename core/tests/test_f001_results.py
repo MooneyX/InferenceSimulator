@@ -35,13 +35,13 @@ def config() -> SimConfig:
     return manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10,
+            seed=7,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=4,
-                session_rate=10,
                 prompt_len=FixedLength(value=5),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=1),
-                seed=7,
                 session=SessionConfig(num_sessions=2),
             )
         ),
@@ -63,14 +63,14 @@ def mixed_plan() -> WorkloadPlan:
     turns = {
         0: TurnPlan(0, 0, None, 0, None, 4, 1, 2, 0),
         1: TurnPlan(1, 0, 0, None, 0, 5, 1, 2, 1),
-        2: TurnPlan(2, 1, None, 0, None, 12, 0, 0, 0),
-        3: TurnPlan(3, 1, 2, None, 0, 5, 0, 0, 0),
+        2: TurnPlan(2, 1, None, 0, None, 17, 1, 1, 0),
+        3: TurnPlan(3, 1, 2, None, 0, 5, 1, 1, 0),
     }
     return WorkloadPlan(
         turns,
         (2, 0),
         {0: (1,), 2: (3,)},
-        constructed_ideal_prefix_hit_rate=4 / 26,
+        constructed_ideal_prefix_hit_rate=4 / 31,
     )
 
 
@@ -93,7 +93,7 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     aborted = result.aborted_requests[0]
     assert (aborted.arrival, aborted.failed_at, aborted.reason, aborted.generated_tokens) == (
         0,
-        0,
+        4,
         "input_exceeds_kv_capacity",
         0,
     )
@@ -126,13 +126,13 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
     settings = manual_config(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=10,
+            seed=7,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=1,
-                session_rate=10,
                 prompt_len=FixedLength(value=4),
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
-                seed=7,
             )
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=16, page_size=4),

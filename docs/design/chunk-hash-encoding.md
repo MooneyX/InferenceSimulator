@@ -18,7 +18,7 @@ hash 对内核其余部分保持不透明字符串；禁止按 session ID、请�
 
 ## 数据契约
 
-`TurnPlan` 保存输入长度、采样后截断的目标输出长度、可见生成上限与理想继承块数；客户端在投放时将目标输出长度单独交给引擎，调度器不读取它。`InferenceRequest` 携带 `prompt_len`、`max_new_tokens`、`inherited_prefix_ids`（仅继承的完整页 ID）及请求身份，不携带目标 `output_len` 或整条 `input_chunk_ids`。`RequestCompletion` 携带请求 ID、完成时间和实际 `generated_tokens`。新页始终通过 `logical_chunk_id(request_id, index, inherited_prefix_ids)` 按需推导，无需物化整条身份序列。
+`TurnPlan` 保存输入长度、未截短的采样输出长度与理想继承块数，不保存生成上限；客户端在投放时按输出长度向上取二次幂并以 `inference.max_output_tokens` 封顶得到每请求可见上限，将实际输出长度单独交给引擎，调度器不读取它。`InferenceRequest` 携带 `prompt_len`、`max_new_tokens`、`inherited_prefix_ids`（仅继承的完整页 ID）及请求身份，不携带目标 `output_len` 或整条 `input_chunk_ids`。`RequestCompletion` 携带请求 ID、完成时间和实际 `generated_tokens`。新页始终通过 `logical_chunk_id(request_id, index, inherited_prefix_ids)` 按需推导，无需物化整条身份序列。
 
 - 记 `P=prompt_len`、实际生成数 `O=generated_tokens`、`B=page_size`。首次 Prefill 只建立 `P` 个 KV token 并采样第一个输出；每次后续 Decode 才建立上一输出 token。完成时建立长度 **`K=P+O-1`**，完整可继承页数为 `floor(K/B)`；逻辑 KV 总占页数为 `ceil(K/B)`，不足一页的私有尾页只占一页并在完成时回收。子轮最多继承 `min(floor((P_parent+O_parent-1)/B), floor((P_child-1)/B))` 页。
 - 例如 `B=4, P=3, O=3`：Prefill 时尚无完整输入页；第一次 Decode 建立输出的第一个 token，形成序号 0 的完整页；第二次 Decode 后 `K=5`，剩余 1 token 是私有尾页。第三个（最后采样的）输出 token 不建立 KV。完成时才发布 Decode 形成的完整页，然后回收尾页。

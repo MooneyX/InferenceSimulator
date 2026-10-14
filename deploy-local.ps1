@@ -113,8 +113,8 @@ try {
     Wait-ForUrl 'http://127.0.0.1:5173/'
     $body = @{
         num_instances = 1
-        workload = @{ mode = 'synthetic'; synthetic = @{
-            num_requests = 2; session_rate = 50.0; seed = 0
+        workload = @{ mode = 'synthetic'; session_rate = 50.0; seed = 0; synthetic = @{
+            num_requests = 2
             prompt_len = @{ dist = 'lognormal'; mean = 16; sigma = 1.0 }
             turn_increment_len = @{ dist = 'fixed'; value = 4 }
             output_len = @{ dist = 'poisson'; mean = 4 }

@@ -20,10 +20,11 @@ from simcore.schemas import (
     PoissonLength,
     SyntheticWorkloadConfig,
     TurnPlan,
+    WorkloadConfig,
     WorkloadPlan,
 )
 
-__all__ = ["build_synthetic_closed_loop_plan", "sample_length"]
+__all__ = ["build_synthetic_closed_loop_plan", "request_output_limit", "sample_length"]
 
 _MS_PER_SECOND = 1000.0
 
@@ -89,28 +90,26 @@ def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:  # 大泊松�
             return k
 
 
-def _visible_limit(prompt_len: int, configured_limit: int, engine: EngineConfig) -> int:  # 输入长度、输出上限与页容量 → 可见生成 token 上限
-    # 输入向上取整占页后再留一页，避免输出挤占最后的 KV 空间。
-    prompt_pages = (prompt_len + engine.page_size - 1) // engine.page_size
-    return max(
-        0, min(configured_limit, engine.max_total_tokens - (prompt_pages + 1) * engine.page_size)
-    )
+def request_output_limit(output_len: int, engine_limit: int) -> int:
+    """按已知输出向上取二次幂并受引擎硬上限约束；超限目标由引擎报告失败。"""
+    return min(1 << (max(1, output_len) - 1).bit_length(), engine_limit)
 
 
 def build_synthetic_closed_loop_plan(
-    cfg: SyntheticWorkloadConfig, engine: EngineConfig
+    workload: WorkloadConfig, engine: EngineConfig
 ) -> WorkloadPlan:
-    """合成闭环预采样根输入、子轮增量与截断输出；父轮完成后才实际发送子轮。"""
+    """预采样合成闭环输入、增量与原始输出；父轮完成后才实际发送子轮。"""
+    synthetic_cfg = cast(SyntheticWorkloadConfig, workload.synthetic)
     block_size = engine.page_size
-    sessions = cast(int, cfg.session.num_sessions)
-    n = cfg.num_requests
-    topology_rng = random.Random(stable_derive(cfg.seed, "topology"))
-    arrival_rng = random.Random(stable_derive(cfg.seed, "root-arrival"))
-    roots_rng = random.Random(stable_derive(cfg.seed, "root-length"))
-    increments_rng = random.Random(stable_derive(cfg.seed, "turn-increment"))
-    output_rng = random.Random(stable_derive(cfg.seed, "output-length"))
-    increment_dist = cast(LengthDist, cfg.turn_increment_len)
-    think_time_rng = random.Random(stable_derive(cfg.seed, "think-time"))
+    sessions = cast(int, synthetic_cfg.session.num_sessions)
+    n = synthetic_cfg.num_requests
+    topology_rng = random.Random(stable_derive(workload.seed, "topology"))
+    arrival_rng = random.Random(stable_derive(workload.seed, "root-arrival"))
+    roots_rng = random.Random(stable_derive(workload.seed, "root-length"))
+    increments_rng = random.Random(stable_derive(workload.seed, "turn-increment"))
+    output_rng = random.Random(stable_derive(workload.seed, "output-length"))
+    increment_dist = synthetic_cfg.turn_increment_len
+    think_time_rng = random.Random(stable_derive(workload.seed, "think-time"))
     counts = [n // sessions] * sessions  # 各会话轮次数；余数随机分配以免偏向前面的会话
     shuffled = list(range(sessions))
     topology_rng.shuffle(shuffled)
@@ -121,14 +120,14 @@ def build_synthetic_closed_loop_plan(
     children: dict[int, tuple[int, ...]] = {}
     clock = 0.0
     # 闭环根会话按独立的会话到达率采样，与子轮完成时刻解耦。
-    rate_per_ms = cast(float, cfg.session_rate) / _MS_PER_SECOND
+    rate_per_ms = cast(float, workload.session_rate) / _MS_PER_SECOND
     request_id = 0
     for session_id, count in enumerate(counts):
         clock += arrival_rng.expovariate(rate_per_ms)
         parent_id: int | None = None
         for index in range(count):
             if parent_id is None:
-                prompt_len = sample_length(cfg.prompt_len, roots_rng)
+                prompt_len = sample_length(synthetic_cfg.prompt_len, roots_rng)
                 inherited = 0
             else:
                 parent = turns[parent_id]
@@ -142,13 +141,13 @@ def build_synthetic_closed_loop_plan(
                     )
                     if parent.output_len > 0 else 0
                 )
-            sampled_output_len = sample_length(cfg.output_len, output_rng)
-            max_new_tokens = _visible_limit(prompt_len, cfg.max_new_tokens, engine)
+            sampled_output_len = sample_length(synthetic_cfg.output_len, output_rng)
+            max_new_tokens = request_output_limit(sampled_output_len, engine.max_output_tokens)
             think_time_ms = None
             if parent_id is not None:
                 think_time_ms = (
-                    think_time_rng.expovariate(1.0 / cfg.session.think_time_ms)
-                    if cfg.session.think_time_ms > 0
+                    think_time_rng.expovariate(1.0 / synthetic_cfg.session.think_time_ms)
+                    if synthetic_cfg.session.think_time_ms > 0
                     else 0.0
                 )
             turn = TurnPlan(
@@ -158,7 +157,7 @@ def build_synthetic_closed_loop_plan(
                 root_arrival_time_ms=clock if index == 0 else None,
                 think_time_ms=think_time_ms,
                 prompt_len=prompt_len,
-                output_len=min(sampled_output_len, max_new_tokens),
+                output_len=sampled_output_len,
                 max_new_tokens=max_new_tokens,
                 ideal_reuse_blocks=inherited,
             )

@@ -18,9 +18,10 @@ from simcore.schemas import (
     RequestRecord,
     SyntheticWorkloadConfig,
     TurnPlan,
+    WorkloadConfig,
     WorkloadPlan,
 )
-from simcore.workload import _visible_limit, build_synthetic_closed_loop_plan
+from simcore.workload import build_synthetic_closed_loop_plan, request_output_limit
 from test_client import planned_client
 from test_schemas import runtime_config
 
@@ -51,10 +52,10 @@ def run(
     for arrival in arrivals:
         if arrival.request_id in turns:
             raise ValueError("重复的请求 ID")
-        maximum = _visible_limit(arrival.prompt_len, arrival.max_new_tokens, config)
+        maximum = request_output_limit(arrival.output_len, config.max_output_tokens)
         turns[arrival.request_id] = TurnPlan(
             arrival.request_id, arrival.request_id, None, arrival.sim_time, None,
-            arrival.prompt_len, min(arrival.output_len, maximum), maximum, 0,
+            arrival.prompt_len, arrival.output_len, maximum, 0,
         )
     plan = WorkloadPlan(turns, tuple(turns), {})
     return Coordinator(
@@ -214,13 +215,15 @@ class TestEdgeCases:
 
 
 def synthetic_run(seed: int = 7, **engine: int) -> EngineRun:
-    workload = SyntheticWorkloadConfig(
-        num_requests=300,
+    workload = WorkloadConfig(
         session_rate=40.0,
-        prompt_len=LognormalLength(mean=200.0, sigma=1.0),
-        turn_increment_len=LognormalLength(mean=16.0, sigma=1.0),
-        output_len=PoissonLength(mean=30.0),
         seed=seed,
+        synthetic=SyntheticWorkloadConfig(
+            num_requests=300,
+            prompt_len=LognormalLength(mean=200.0, sigma=1.0),
+            turn_increment_len=LognormalLength(mean=16.0, sigma=1.0),
+            output_len=PoissonLength(mean=30.0),
+        ),
     )
     cfg = EngineConfig.model_validate(
         {

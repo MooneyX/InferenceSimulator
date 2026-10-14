@@ -50,13 +50,13 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
     return SimConfig(
         num_instances=1,
         workload=WorkloadConfig(
+            session_rate=50.0,
+            seed=seed,
             synthetic=SyntheticWorkloadConfig(
                 num_requests=num_requests,
-                session_rate=50.0,
                 prompt_len=LognormalLength(mean=512.0, sigma=1.0),
                 turn_increment_len=LognormalLength(mean=16.0, sigma=1.0),
                 output_len=PoissonLength(mean=128.0),
-                seed=seed,
             )
         ),
         scheduler=SchedulerConfig(max_running_requests=32, pd_mutually_exclusive=exclusive),

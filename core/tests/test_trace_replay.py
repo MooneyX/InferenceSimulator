@@ -29,19 +29,18 @@ from simcore.schemas import (
 def config(
     *, capacity: int = 2048, mode: Literal["open_loop", "closed_loop"] = "open_loop",
     session_rate: float = 1, seed: int = 7, target_qps: float | None = None,
+    max_output_tokens: int = 65_536,
 ) -> SimConfig:
     return SimConfig(
         num_instances=2,
         workload=WorkloadConfig(
-            mode="trace",
-            trace=TraceWorkloadConfig(
-                mode=mode, session_rate=session_rate, seed=seed,
-                target_qps=target_qps, plan_id="test-plan",
-            ),
+            mode="trace", arrival_mode=mode, session_rate=session_rate, seed=seed,
+            target_qps=target_qps, trace=TraceWorkloadConfig(plan_id="test-plan"),
         ),
         scheduler=SchedulerConfig(max_running_requests=4),
         inference=ManualInferenceConfig(
             page_size=64,
+            max_output_tokens=max_output_tokens,
             kv=ManualKVConfig(max_total_tokens=capacity),
             timing=EmpiricalTimingConfig(
                 prefill_c1=0.01, prefill_c2=0, decode_d1=0.01, decode_d2=0,
@@ -150,8 +149,35 @@ def test_trace_zero_output_aborts_and_skips_only_closed_loop_descendants() -> No
 
 
 def test_trace_never_truncates_output_for_capacity() -> None:
-    result = simulate(config(capacity=256), trace_plan=plan(output=200))
-    assert result.aborted_requests[0].reason == "output_exceeds_kv_capacity"
+    source = plan(output=200)
+    result = simulate(config(capacity=256), trace_plan=source)
+    assert source.requests[0].output_len == 200
+    assert result.aborted_requests[0].reason == "decode_kv_exhausted"
+    assert result.aborted_requests[0].generated_tokens == 128
+    assert result.aborted_requests[1].reason == "input_exceeds_kv_capacity"
+    assert result.meta.num_aborted == 2 and result.meta.num_skipped == 0
+
+
+@pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
+@pytest.mark.parametrize("cap", [64, 100])
+def test_trace_output_exceeding_engine_limit_aborts_at_arrival(
+    mode: Literal["open_loop", "closed_loop"], cap: int,
+) -> None:
+    source = plan(output=cap + 1)
+    result = simulate(config(mode=mode, max_output_tokens=cap), trace_plan=source)
+    failure = result.aborted_requests[0]
+    assert failure.reason == "output_exceeds_engine_limit"
+    assert failure.failed_at == failure.arrival and failure.generated_tokens == 0
+    assert source.requests[0].output_len == cap + 1
+    assert result.meta.num_completed == (1 if mode == "open_loop" else 0)
+    assert [item.id for item in result.skipped_requests] == ([] if mode == "open_loop" else [1])
+
+
+@pytest.mark.parametrize("cap", [64, 100])
+def test_trace_output_at_engine_cap_is_preserved(cap: int) -> None:
+    result = simulate(config(max_output_tokens=cap), trace_plan=plan(output=cap))
+    assert result.meta.num_completed == 2
+    assert result.requests[0].output_len == cap
 
 
 def test_equal_raw_block_ids_do_not_share_kv_across_sessions() -> None:
@@ -272,9 +298,12 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
     assert original.workload.mode == "trace"
 
 
-def test_trace_workload_is_frozen_and_has_default_seed_and_target_qps() -> None:
-    trace = TraceWorkloadConfig(mode="open_loop", session_rate=1)
-    assert trace.seed == 0
-    assert trace.target_qps is None
+def test_trace_workload_parent_is_frozen_and_has_default_seed_and_target_qps() -> None:
+    workload = WorkloadConfig(mode="trace", session_rate=1, trace=TraceWorkloadConfig())
+    assert workload.seed == 0 and workload.target_qps is None
+    assert workload.arrival_mode == "closed_loop"
+    assert workload.trace is not None and workload.trace.model_dump() == {"plan_id": None}
     with pytest.raises(ValidationError, match="frozen"):
-        trace.__setattr__("mode", "closed_loop")
+        workload.__setattr__("arrival_mode", "open_loop")
+    with pytest.raises(ValidationError, match="frozen"):
+        workload.trace.__setattr__("plan_id", "changed")

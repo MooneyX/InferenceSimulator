@@ -13,8 +13,9 @@ from simcore.schemas import (
     PoissonLength,
     SessionConfig,
     SyntheticWorkloadConfig,
+    WorkloadConfig,
 )
-from simcore.workload import build_synthetic_closed_loop_plan, sample_length
+from simcore.workload import build_synthetic_closed_loop_plan, request_output_limit, sample_length
 
 
 class TestSampleLength:
@@ -85,14 +86,16 @@ class TestSampleLength:
         assert len(set(samples)) > 50
 
     def test_high_mean_prompt_plan_uses_actual_requested_length(self) -> None:
-        config = SyntheticWorkloadConfig(
-            num_requests=1000,
+        config = WorkloadConfig(
             session_rate=20.48,
-            prompt_len=PoissonLength(mean=32768),
-            turn_increment_len=PoissonLength(mean=256),
-            output_len=PoissonLength(mean=128),
             seed=42,
-            session=SessionConfig(num_sessions=20, think_time_ms=10000),
+            synthetic=SyntheticWorkloadConfig(
+                num_requests=1000,
+                prompt_len=PoissonLength(mean=32768),
+                turn_increment_len=PoissonLength(mean=256),
+                output_len=PoissonLength(mean=128),
+                session=SessionConfig(num_sessions=20, think_time_ms=10000),
+            ),
         )
         engine = EngineConfig(max_running_requests=32, max_total_tokens=4_000_000, page_size=64)
         plan = build_synthetic_closed_loop_plan(config, engine)
@@ -105,3 +108,15 @@ class TestSampleLength:
                 assert turn.prompt_len > parent.prompt_len + parent.output_len
         assert plan.constructed_ideal_prefix_hit_rate > 0.9
         assert build_synthetic_closed_loop_plan(config, engine) == plan
+
+
+@pytest.mark.parametrize("output,cap,expected", [
+    (0, 65_536, 1), (1, 65_536, 1), (2, 65_536, 2),
+    (3, 65_536, 4), (64, 65_536, 64), (65, 65_536, 128),
+    (128, 65_536, 128), (129, 65_536, 256),
+    (65, 100, 100), (99, 100, 100), (100, 100, 100),
+    (101, 100, 100), (64, 64, 64), (65, 64, 64),
+    (65_536, 65_536, 65_536), (65_537, 65_536, 65_536),
+])
+def test_request_output_limit_rounds_up_then_caps(output: int, cap: int, expected: int) -> None:
+    assert request_output_limit(output, cap) == expected

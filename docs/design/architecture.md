@@ -23,7 +23,7 @@ perf_model   性能模型：步长纯函数（依赖 schemas）
 kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU、传输占位与完成迁入（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
 engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
-events       客户端发送/回调、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
+events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
 router       根请求轮询、子请求严格继承父实例的路由策略（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）

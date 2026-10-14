@@ -7,7 +7,7 @@ from simcore.client import Client
 from simcore.engine import Engine, EngineRun
 from simcore.events import Event, EventFactory, EventKind
 from simcore.router import Router
-from simcore.schemas import ClientWakeup, InferenceRequest, RequestCompletion
+from simcore.schemas import ClientWakeup, InferenceRequest
 
 __all__ = ["Coordinator"]
 
@@ -27,7 +27,6 @@ class Coordinator:
         self._factory = EventFactory()
         self._heap: list[Event] = []
         self._wakeups: dict[int, ClientWakeup] = {}
-        self._completions: dict[int, RequestCompletion] = {}
         self._step_pending = [False] * len(self.engines)
         self._busy_until = [float("-inf")] * len(self.engines)
         self._transfer_owners: dict[int, tuple[int, int]] = {}
@@ -93,12 +92,8 @@ class Coordinator:
                 instance_id = self.router.instance_of(event.ref)
                 engine = self.engines[instance_id]
                 completion = engine.complete(now_ms, event.ref)
-                self._completions[event.ref] = completion
-                heapq.heappush(self._heap, self._factory.client_completion(now_ms, event.ref))
-                self._schedule_step(instance_id, now_ms) # 可能冗余
-            elif event.kind is EventKind.CLIENT_COMPLETION:
-                completion = self._completions.pop(event.ref)
                 self._enqueue_wakeups(self.client.on_request_completed(completion))
+                self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)
                 self.engines[instance_id].on_l3_lookup(event.ref, now_ms)

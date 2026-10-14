@@ -52,14 +52,28 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
 
 def test_parent_done_callback_precedes_sends_including_immediate_children() -> None:
     coordinator, engine = make_run(make_plan())
+    order = Mock()
     with (
+        patch.object(engine, "complete", wraps=engine.complete) as completions,
         patch.object(
             coordinator.client, "on_request_completed",
             wraps=coordinator.client.on_request_completed,
         ) as callbacks,
         patch.object(engine, "submit", wraps=engine.submit) as submissions,
     ):
+        order.attach_mock(completions, "complete")
+        order.attach_mock(callbacks, "callback")
+        order.attach_mock(submissions, "send")
         run = coordinator.run()[0]
+    assert [
+        (call[0], call.args[1] if call[0] == "complete" else call.args[0].request_id)
+        for call in order.mock_calls[:9]
+    ] == [
+        ("send", 0), ("send", 1),
+        ("complete", 0), ("callback", 0),
+        ("complete", 1), ("callback", 1),
+        ("send", 2), ("send", 3), ("send", 4),
+    ]
     assert [
         call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 8
     ] == [2, 3, 4]

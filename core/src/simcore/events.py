@@ -5,7 +5,7 @@
 
 同刻全序（可复现性的前提）：``(time, kind, ref, seq)``。
 
-- ``kind`` 优先级：步末发布、请求结算及客户端回调先于传输完成，
+- ``kind`` 优先级：步末发布、请求结算先于传输完成；客户端在每个请求结算后立即回调。
   传输完成先于本时刻的发送，所有发送先于新引擎步。
   四种客户端模式的所有发送同级，同刻按请求 ID 排序。
 - ``ref`` 在同类事件内排序（请求、实例或传输 ID）；``seq`` 打破同引用的平局。
@@ -24,12 +24,11 @@ class EventKind(IntEnum):
 
     STEP_DONE = 0
     REQUEST_DONE = 1
-    CLIENT_COMPLETION = 2
-    L3_LOOKUP_DONE = 3
-    L3_L2_DONE = 4
-    L2_L1_DONE = 5
-    CLIENT_SEND = 6
-    ENGINE_STEP = 7
+    L3_LOOKUP_DONE = 2
+    L3_L2_DONE = 3
+    L2_L1_DONE = 4
+    CLIENT_SEND = 5
+    ENGINE_STEP = 6
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -41,7 +40,7 @@ class Event:
     Attributes:
         time: 事件触发时刻（ms）。
         kind: 事件类别。
-        ref: 发送及完成/回调为 request_id；引擎步为 instance_id。
+        ref: 发送及请求完成为 request_id；引擎步为 instance_id。
         seq: 创建序号，由 ``EventFactory`` 分配。
     """
 
@@ -63,9 +62,6 @@ class EventFactory:
         seq = self._next_seq
         self._next_seq = seq + 1
         return Event(time, kind, ref, seq)
-
-    def client_completion(self, time: float, request_id: int) -> Event:  # 完成时刻与请求 ID → 客户端回调事件
-        return self._make(time, EventKind.CLIENT_COMPLETION, request_id)
 
     def client_send(self, time: float, request_id: int) -> Event:  # 时刻与请求 ID → 发送事件
         return self._make(time, EventKind.CLIENT_SEND, request_id)

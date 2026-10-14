@@ -16,20 +16,18 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻先发布与回调，再传输和客户端发送，最后步进。"""
+        """同刻先发布与请求结算，再传输和客户端发送，最后步进。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         send = f.client_send(5.0, 1)
         done = f.request_done(5.0, 2)
         end = f.step_done(5.0, 0)
-        callback = f.client_completion(5.0, 2)
         lookup = f.l3_lookup_done(5.0, 1)
         l3_l2 = f.l3_l2_done(5.0, 3)
         l2_l1 = f.l2_l1_done(5.0, 4)
-        assert sorted([step, send, done, end, callback, lookup, l3_l2, l2_l1]) == [
+        assert sorted([step, send, done, end, lookup, l3_l2, l2_l1]) == [
             end,
             done,
-            callback,
             lookup,
             l3_l2,
             l2_l1,
@@ -37,14 +35,13 @@ class TestOrdering:
             step,
         ]
 
-    def test_client_callbacks_precede_sends_ordered_by_turn_id(self) -> None:
+    def test_request_completions_precede_sends_ordered_by_turn_id(self) -> None:
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         child = f.client_send(5.0, 4)
         send = f.client_send(5.0, 3)
-        callback = f.client_completion(5.0, 2)
         done = f.request_done(5.0, 2)
-        assert sorted((step, send, child, callback, done)) == [done, callback, send, child, step]
+        assert sorted((step, send, child, done)) == [done, send, child, step]
 
     def test_same_time_same_kind_by_request_id_then_creation(self) -> None:
         f = EventFactory()
@@ -77,12 +74,15 @@ class TestOrdering:
             assert [heapq.heappop(heap) for _ in range(len(heap))] == expected
 
     def test_kind_priority_values(self) -> None:
-        assert (
-            EventKind.REQUEST_DONE
-            < EventKind.CLIENT_COMPLETION
-            < EventKind.CLIENT_SEND
-            < EventKind.ENGINE_STEP
-        )
+        assert list(EventKind) == [
+            EventKind.STEP_DONE,
+            EventKind.REQUEST_DONE,
+            EventKind.L3_LOOKUP_DONE,
+            EventKind.L3_L2_DONE,
+            EventKind.L2_L1_DONE,
+            EventKind.CLIENT_SEND,
+            EventKind.ENGINE_STEP,
+        ]
 
 
 class TestEventFactory:

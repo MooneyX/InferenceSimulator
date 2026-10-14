@@ -83,13 +83,13 @@ class Coordinator:
         while self._heap:
             event = heapq.heappop(self._heap)
             now_ms = event.time
-            if event.kind is EventKind.STEP_DONE:
+            if event.kind is EventKind.STEP_DONE: # 引擎步完成
                 instance_id = event.ref
-                for request_id in self.engines[instance_id].finish_step(now_ms): #finish_step提交本步的prefill计算过程中产生的新的KV块
+                for request_id in self.engines[instance_id].finish_step(now_ms): # finish_step提交本步的prefill计算过程中产生的新的KV块, 返回本步中完成的请求id
                     heapq.heappush(self._heap, self._factory.request_done(now_ms, request_id))
-                self._drain_engine_events(instance_id)
-                self._schedule_step(instance_id, now_ms)
-            elif event.kind is EventKind.REQUEST_DONE:
+                self._drain_engine_events(instance_id) # 将本实例中产生的事件压入全局事件堆中
+                self._schedule_step(instance_id, now_ms) # 一次引擎步完成, 规划下一个引擎步
+            elif event.kind is EventKind.REQUEST_DONE: # 某个请求完成
                 instance_id = self.router.instance_of(event.ref)
                 engine = self.engines[instance_id]
                 completion = engine.complete(now_ms, event.ref)

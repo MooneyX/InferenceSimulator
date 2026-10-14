@@ -107,7 +107,7 @@ class Client:
 
     def _prepare_trace(
         self, source: TracePlan, workload: WorkloadConfig
-    ) -> None:
+    ) -> None: #将trace转化为请求计划
         if source.block_size != self.engine.page_size:
             raise ValueError("trace 块大小必须与引擎 page_size 一致")
         self._trace_turns = {item.request_id: item for item in source.requests}

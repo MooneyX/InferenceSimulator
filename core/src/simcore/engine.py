@@ -575,7 +575,7 @@ class Engine:
         for key, generated in withdrawn:
             self._prefix_scheduler.requeue(self._requests[key], end, generated)
         if not withdrawn:
-            self._prefix_scheduler.advance_ratio(
+            _ = self._prefix_scheduler.advance_ratio(
                 {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},
                 decoded=bool(decode_ids),
             )
@@ -591,7 +591,7 @@ class Engine:
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
         if not self.has_work and not self._pending_done:
-            self._prefix_scheduler.advance_ratio({}, idle=True)
+            _ = self._prefix_scheduler.advance_ratio({}, idle=True)
         return RequestCompletion(request_id, now_ms, self._output_targets[request_id])
 
     # ------------------------------------------------------------ 结算

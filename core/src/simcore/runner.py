@@ -41,10 +41,7 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
     started_at = perf_counter()
     client = Client(config.workload, engine_config, trace_plan=trace_plan)
     runs = Coordinator(
-        tuple(
-            Engine(runtime, output_targets={})
-            for _ in range(config.num_instances)
-        ),
+        tuple(Engine(runtime) for _ in range(config.num_instances)),
         client,
         Router(config.num_instances, session_affinity=trace_plan is not None),
     ).run()

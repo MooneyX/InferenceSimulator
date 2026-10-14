@@ -11,7 +11,6 @@ from simcore.schemas import (
     ClientWakeup,
     EngineConfig,
     FixedLength,
-    RequestCompletion,
     SessionConfig,
     SyntheticWorkloadConfig,
     TracePlan,
@@ -55,28 +54,28 @@ def test_child_waits_for_actual_parent_output() -> None:
         EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2),
     )
     wakeup = client.initial_wakeups()[0]
-    parent, _ = client.on_wakeup(wakeup)
+    parent = client.on_wakeup(wakeup)
     child_id = client.plan.children[parent.request_id][0]
     with pytest.raises(ValueError, match="未就绪"):
         client.on_wakeup(wakeup)
     with pytest.raises(ValueError, match="未发送"):
-        client.on_request_completed(RequestCompletion(child_id, 29, 4))
-    (next_wakeup,) = client.on_request_completed(RequestCompletion(parent.request_id, 30, 4))
+        client.on_request_completed(child_id, 29)
+    (next_wakeup,) = client.on_request_completed(parent.request_id, 30)
     assert next_wakeup.turn_id == child_id
     sampled_delay = client.plan.turns[child_id].think_time_ms
     assert sampled_delay is not None
     assert next_wakeup.send_time_ms == 30 + sampled_delay
     assert next_wakeup.send_time_ms > 30
-    child, _ = client.on_wakeup(next_wakeup)
+    child = client.on_wakeup(next_wakeup)
     inherited = client.plan.turns[child_id].ideal_reuse_blocks
     assert parent.inherited_prefix_ids == ()
     assert child.inherited_prefix_ids == tuple(
         encode(parent.request_id, i) for i in range(inherited)
     )
     assert not hasattr(child, "input_chunk_ids")
-    assert not hasattr(child, "output_len")
+    assert child.output_len == client.plan.turns[child_id].output_len
     with pytest.raises(ValueError, match="未发送"):
-        client.on_request_completed(RequestCompletion(parent.request_id, 31, 4))
+        client.on_request_completed(parent.request_id, 31)
 
 
 def test_child_without_reuse_still_waits_for_parent_completion() -> None:
@@ -93,8 +92,8 @@ def test_child_without_reuse_still_waits_for_parent_completion() -> None:
     child = turns[child_id]
     with pytest.raises(ValueError, match="父请求完成"):
         client.on_wakeup(ClientWakeup(child.session_id, child_id, 0))
-    wakeup = client.on_request_completed(RequestCompletion(parent_id, 30, 4))[0]
-    assert client.on_wakeup(wakeup)[0].parent_request_id == parent_id
+    wakeup = client.on_request_completed(parent_id, 30)[0]
+    assert client.on_wakeup(wakeup).parent_request_id == parent_id
 
 
 def test_root_wakeup_uses_planned_time() -> None:
@@ -102,7 +101,7 @@ def test_root_wakeup_uses_planned_time() -> None:
     wakeup = client.initial_wakeups()[0]
     with pytest.raises(ValueError, match="发送时间与计划不符"):
         client.on_wakeup(replace(wakeup, send_time_ms=wakeup.send_time_ms + 1))
-    assert client.on_wakeup(wakeup)[0].request_id == wakeup.turn_id
+    assert client.on_wakeup(wakeup).request_id == wakeup.turn_id
 
 
 def test_last_sampled_token_does_not_create_inheritable_page() -> None:
@@ -110,13 +109,14 @@ def test_last_sampled_token_does_not_create_inheritable_page() -> None:
     parent_id = base.plan.root_request_ids[0]
     child_id = base.plan.children[parent_id][0]
     turns = dict(base.plan.turns)
+    turns[parent_id] = replace(turns[parent_id], output_len=1, max_new_tokens=1)
     turns[child_id] = replace(turns[child_id], prompt_len=12, ideal_reuse_blocks=5)
     client = planned_client(
         WorkloadPlan(turns, base.plan.root_request_ids, base.plan.children),
         EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2),
     )
     client.on_wakeup(client.initial_wakeups()[0])
-    child_wakeup = client.on_request_completed(RequestCompletion(parent_id, 10, 1))[0]
+    child_wakeup = client.on_request_completed(parent_id, 10)[0]
     with pytest.raises(ValueError, match="完整块上下文"):
         client.on_wakeup(child_wakeup)
 
@@ -125,10 +125,10 @@ def test_zero_think_time_and_reproducibility() -> None:
     def sequence() -> tuple[tuple[str, ...], tuple[str, ...]]:
         client = make_client()
         wakeup = client.initial_wakeups()[0]
-        parent, _ = client.on_wakeup(wakeup)
-        child_wakeup = client.on_request_completed(RequestCompletion(parent.request_id, 12, 4))[0]
+        parent = client.on_wakeup(wakeup)
+        child_wakeup = client.on_request_completed(parent.request_id, 12)[0]
         assert child_wakeup.send_time_ms == 12
-        return parent.inherited_prefix_ids, client.on_wakeup(child_wakeup)[0].inherited_prefix_ids
+        return parent.inherited_prefix_ids, client.on_wakeup(child_wakeup).inherited_prefix_ids
 
     assert sequence() == sequence()
 
@@ -157,13 +157,13 @@ def test_partial_input_filled_by_output_and_ancestor_ids_are_copied() -> None:
     turns[grandchild_id] = replace(turns[grandchild_id], prompt_len=13, ideal_reuse_blocks=2)
     client = planned_client(WorkloadPlan(turns, base.root_request_ids, base.children), engine)
 
-    root, _ = client.on_wakeup(client.initial_wakeups()[0])
+    root = client.on_wakeup(client.initial_wakeups()[0])
     assert root.inherited_prefix_ids == ()
-    child_wakeup = client.on_request_completed(RequestCompletion(root_id, 10, 3))[0]
-    child, _ = client.on_wakeup(child_wakeup)
+    child_wakeup = client.on_request_completed(root_id, 10)[0]
+    child = client.on_wakeup(child_wakeup)
     assert child.inherited_prefix_ids == (encode(root_id, 0),)
-    grandchild_wakeup = client.on_request_completed(RequestCompletion(child_id, 20, 5))[0]
-    grandchild, _ = client.on_wakeup(grandchild_wakeup)
+    grandchild_wakeup = client.on_request_completed(child_id, 20)[0]
+    grandchild = client.on_wakeup(grandchild_wakeup)
     assert grandchild.inherited_prefix_ids == (encode(root_id, 0), encode(child_id, 1))
     assert not hasattr(grandchild, "input_chunk_ids")
     assert grandchild_id == grandchild.request_id
@@ -255,11 +255,11 @@ def test_four_modes_share_preparation_dispatch_and_lifecycle_contract(
     assert len(wakeups) == (1 if mode == "closed_loop" else 4 if dynamic else 3)
     assert client.initial_wakeups() == wakeups
     assert client.plan == initial_plan
-    request, output = client.on_wakeup(wakeups[0])
+    request = client.on_wakeup(wakeups[0])
     assert request.is_trace == (source == "trace")
-    assert output == 2 and not hasattr(request, "output_len")
+    assert request.output_len == 2
     assert request.trace_hash_ids == ((0, 1) if source == "trace" else ())
-    assert client.on_request_completed(RequestCompletion(request.request_id, 100, output)) == (
+    assert client.on_request_completed(request.request_id, 100) == (
         ()
         if mode == "open_loop"
         else tuple(
@@ -287,18 +287,18 @@ def test_synthetic_open_loop_completion_enables_next_send_and_failure_keeps_cloc
         client._outputs_rng.getstate(),
     ) == length_states
     assert client.plan.turns == {}
-    first, output = client.on_wakeup(wakeups[0])
-    assert client.on_request_completed(RequestCompletion(first.request_id, 1, output)) == ()
+    first = client.on_wakeup(wakeups[0])
+    assert client.on_request_completed(first.request_id, 1) == ()
     assert len(client.plan.turns) == 1
     assert len(client._ready) == 1
-    child, _ = client.on_wakeup(wakeups[1])
+    child = client.on_wakeup(wakeups[1])
     assert child.parent_request_id == first.request_id
     assert child.prompt_len == 11
     assert child.inherited_prefix_ids == tuple(
         encode(first.request_id, index) for index in range(4)
     )
     assert client.on_request_aborted(child.request_id) == ()
-    later, _ = client.on_wakeup(wakeups[2])
+    later = client.on_wakeup(wakeups[2])
     assert later.parent_request_id is None and later.request_id == 2
     assert len(client.plan.turns) == 3 and client.plan.root_request_ids == (0, 2)
     assert not hasattr(client, "_next_id")
@@ -308,12 +308,12 @@ def test_synthetic_open_loop_ready_queue_tie_breaks_by_session() -> None:
     engine = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     client = Client(synthetic_workload("open_loop"), engine)
     wakeups = client.initial_wakeups()
-    first, output0 = client.on_wakeup(wakeups[0])
-    second, output1 = client.on_wakeup(wakeups[1])
-    client.on_request_completed(RequestCompletion(second.request_id, 100, output1))
-    client.on_request_completed(RequestCompletion(first.request_id, 100, output0))
-    assert client.on_wakeup(wakeups[2])[0].parent_request_id == first.request_id
-    assert client.on_wakeup(wakeups[3])[0].parent_request_id == second.request_id
+    first = client.on_wakeup(wakeups[0])
+    second = client.on_wakeup(wakeups[1])
+    client.on_request_completed(second.request_id, 100)
+    client.on_request_completed(first.request_id, 100)
+    assert client.on_wakeup(wakeups[2]).parent_request_id == first.request_id
+    assert client.on_wakeup(wakeups[3]).parent_request_id == second.request_id
 
 
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
@@ -357,9 +357,9 @@ def test_trace_preparation_preserves_all_independent_roots(mode: str) -> None:
     )
     assert wakeups[-1].send_time_ms - wakeups[0].send_time_ms == pytest.approx(40)
     assert client.plan.children == {0: (1, 2)}
-    request, output = client.on_wakeup(wakeups[-1])
+    request = client.on_wakeup(wakeups[-1])
     assert request.parent_request_id is None
-    assert request.trace_hash_ids == (0, 1) and output == 2
+    assert request.trace_hash_ids == (0, 1) and request.output_len == 2
 
 
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
@@ -371,22 +371,22 @@ def test_trace_failure_skips_branches_only_when_dependency_gates_sending(mode: s
     })
     client = Client(workload, engine, trace_plan=source)
     initial = client.initial_wakeups()
-    root, output = client.on_wakeup(initial[0])
-    assert output == 0
+    root = client.on_wakeup(initial[0])
+    assert root.output_len == 0
     skipped = client.on_request_aborted(root.request_id)
     if mode == "closed_loop":
         assert [(item.id, item.parent_request_id) for item in skipped] == [(1, 0), (2, 0)]
         assert len(initial) == 1
     else:
         assert skipped == ()
-        child, output = client.on_wakeup(initial[1])
-        assert child.parent_request_id == root.request_id and output == 1
+        child = client.on_wakeup(initial[1])
+        assert child.parent_request_id == root.request_id and child.output_len == 1
         assert child.trace_hash_ids == (0, 1, 2)
 
 
 def test_synthetic_abort_returns_all_unsent_descendants_in_id_order() -> None:
     client = make_client()
-    root, _ = client.on_wakeup(client.initial_wakeups()[0])
+    root = client.on_wakeup(client.initial_wakeups()[0])
     assert [
         (item.id, item.parent_request_id) for item in client.on_request_aborted(root.request_id)
     ] == [

@@ -44,9 +44,7 @@ def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinato
         decode_d1=0,
         decode_d2=0,
     )
-    engine = Engine(
-        runtime_config(config, perf), output_targets={key: item.output_len for key, item in plan.turns.items()}
-    )
+    engine = Engine(runtime_config(config, perf))
     return Coordinator((engine,), planned_client(plan, config), Router(1)), engine
 
 
@@ -66,7 +64,12 @@ def test_parent_done_callback_precedes_sends_including_immediate_children() -> N
         order.attach_mock(submissions, "send")
         run = coordinator.run()[0]
     assert [
-        (call[0], call.args[1] if call[0] == "complete" else call.args[0].request_id)
+        (
+            call[0],
+            call.args[1] if call[0] == "complete"
+            else call.args[0] if call[0] == "callback"
+            else call.args[0].request_id,
+        )
         for call in order.mock_calls[:9]
     ] == [
         ("send", 0), ("send", 1),
@@ -78,9 +81,7 @@ def test_parent_done_callback_precedes_sends_including_immediate_children() -> N
         call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 8
     ] == [2, 3, 4]
     assert [
-        call.args[0].request_id
-        for call in callbacks.call_args_list
-        if call.args[0].finish_time_ms == 8
+        call.args[0] for call in callbacks.call_args_list if call.args[1] == 8
     ] == [0, 1]
     assert [run.records[key].prefill_start for key in (2, 3, 4)] == [8, 8, 8]
     assert run.records[3].actual_hit_tokens == run.records[4].actual_hit_tokens == 4
@@ -155,13 +156,13 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     )
     with patch("simcore.client.random.Random.expovariate", return_value=0.0):
         client = Client(workload, config, trace_plan=source)
-    engine = Engine(runtime_config(config, perf), output_targets={})
+    engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     seeds = (
-        InferenceRequest(90, 0, None, 4, 1, (), 0, trace_hash_ids=(20,), is_trace=True),
-        InferenceRequest(91, 0, None, 4, 1, (), 0, trace_hash_ids=(10,), is_trace=True),
-        InferenceRequest(92, 92, None, 64, 1, (), 0),
-        InferenceRequest(93, 93, None, l2_pages * 4, 1, (), 0),
+        InferenceRequest(90, 0, None, 4, 1, 1, (), 0, trace_hash_ids=(20,), is_trace=True),
+        InferenceRequest(91, 0, None, 4, 1, 1, (), 0, trace_hash_ids=(10,), is_trace=True),
+        InferenceRequest(92, 92, None, 64, 1, 1, (), 0),
+        InferenceRequest(93, 93, None, l2_pages * 4, 1, 1, (), 0),
     )
     for seed in seeds:
         cache.pin(seed, 0)
@@ -230,7 +231,7 @@ def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> Non
         root_request_ids=(0, 2, 3),
         children={0: (1,)},
     )
-    engine = Engine(runtime_config(config, perf), output_targets={key: 1 for key in plan.turns})
+    engine = Engine(runtime_config(config, perf))
     if load_fails:
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
@@ -278,7 +279,7 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         root_request_ids=(0, 2, 3, 4),
         children={0: (1,)},
     )
-    engine = Engine(runtime_config(config, perf), output_targets={key: 1 for key in plan.turns})
+    engine = Engine(runtime_config(config, perf))
     if prefetch_fails:
         with patch.object(
             engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
@@ -305,8 +306,8 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={0: 2})
-    item = InferenceRequest(0, 0, None, 4, 2, (), 0)
+    engine = Engine(runtime_config(config, perf))
+    item = InferenceRequest(0, 0, None, 4, 2, 2, (), 0)
     engine.submit(item, 0)
     engine._prefix_scheduler.select_prefill({})
     cache = engine._prefix_cache
@@ -314,7 +315,7 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
     cache.extend(0, 4)
     cache.publish(0)
     cache.withdraw(0)
-    filler = InferenceRequest(99, 99, None, 16, 1, (), 0)
+    filler = InferenceRequest(99, 99, None, 16, 1, 1, (), 0)
     cache.pin(filler, 0)
     cache.admit(99)
     cache.extend(99, 16)
@@ -345,15 +346,15 @@ def test_partial_load_failure_waits_for_inflight_page_then_recomputes() -> None:
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={1: 1})
+    engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
-    parent = InferenceRequest(0, 0, None, 8, 1, (), 0)
+    parent = InferenceRequest(0, 0, None, 8, 1, 1, (), 0)
     cache.pin(parent, 0)
     cache.admit(0)
     cache.extend(0, 8)
     cache.publish(0)
     cache.finish(0)
-    filler = InferenceRequest(99, 99, None, 20, 1, (), 0)
+    filler = InferenceRequest(99, 99, None, 20, 1, 1, (), 0)
     cache.pin(filler, 0)
     cache.admit(99)
     cache.extend(99, 20)
@@ -363,7 +364,7 @@ def test_partial_load_failure_waits_for_inflight_page_then_recomputes() -> None:
     first_page, second_page = cache.page(first), cache.page(second)
     assert first_page is not None and second_page is not None
     assert first_page.tier == second_page.tier == "L2"
-    child = InferenceRequest(1, 0, 0, 9, 1, (first, second), 2)
+    child = InferenceRequest(1, 0, 0, 9, 1, 1, (first, second), 2)
     engine.submit(child, 1)
     reserve = cache.reserve_transfer
     attempts = 0
@@ -407,7 +408,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
         root_request_ids=(0, 1),
         children={},
     )
-    engine = ObservingEngine(runtime_config(config, perf), output_targets={0: 1, 1: 1})
+    engine = ObservingEngine(runtime_config(config, perf))
     run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
     assert engine._prefix_cache.page("chunk:0:0") is not None
@@ -427,9 +428,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     plan = make_plan(ordinary_at=0)
     config = EngineConfig(max_running_requests=5, max_total_tokens=128, page_size=4)
     zero = PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0)
-    engine = Engine(
-        runtime_config(config, zero), output_targets={key: item.output_len for key, item in plan.turns.items()}
-    )
+    engine = Engine(runtime_config(config, zero))
     coordinator = CheckedCoordinator((engine,), planned_client(plan, config), Router(1))
     run = coordinator.run()[0]
     assert coordinator.max_pending == 1
@@ -438,7 +437,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     assert run.records[3].arrival == run.records[0].finish == 0
     assert run.records[4].arrival == run.records[1].finish == 0
     repeated = CheckedCoordinator(
-        (Engine(runtime_config(config, zero), output_targets={}),),
+        (Engine(runtime_config(config, zero)),),
         planned_client(plan, config), Router(1),
     ).run()[0]
     assert run == repeated

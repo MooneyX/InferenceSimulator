@@ -11,7 +11,6 @@ from simcore.schemas import (
     ClientWakeup,
     EngineConfig,
     InferenceRequest,
-    RequestCompletion,
     SkippedRequest,
     SyntheticWorkloadConfig,
     TracePlan,
@@ -234,7 +233,7 @@ class Client:
         self._turns[key] = turn
         return turn
 
-    def on_wakeup(self, wakeup: ClientWakeup) -> tuple[InferenceRequest, int]:
+    def on_wakeup(self, wakeup: ClientWakeup) -> InferenceRequest:
         if wakeup.turn_id in self._sent:
             raise ValueError("轮次未就绪、重复发送或发送时间不符")
         dynamic = self._dynamic_requests
@@ -276,6 +275,7 @@ class Client:
             parent_request_id=turn.parent_request_id,
             prompt_len=turn.prompt_len,
             max_new_tokens=turn.max_new_tokens,
+            output_len=turn.output_len,
             inherited_prefix_ids=head,
             ideal_reuse_blocks=turn.ideal_reuse_blocks,
             trace_hash_ids=hashes,
@@ -283,24 +283,21 @@ class Client:
         )
         self._sent.add(turn.request_id)
         self._inflight[turn.request_id] = request
-        return request, turn.output_len
+        return request
 
-    def on_request_completed(self, completion: RequestCompletion) -> tuple[ClientWakeup, ...]:
-        request = self._inflight.get(completion.request_id)
+    def on_request_completed(self, request_id: int, now_ms: float) -> tuple[ClientWakeup, ...]:
+        """成功完成即达到请求的 output_len；据此结算并安排后续轮次。"""
+        request = self._inflight.get(request_id)
         if request is None:
             raise ValueError("完成了未发送或已完成的请求")
-        if not 1 <= completion.generated_tokens <= request.max_new_tokens:
-            raise ValueError("完成的生成数超出请求可见上限")
-        del self._inflight[completion.request_id]
+        del self._inflight[request_id]
         if self.workload_mode == "synthetic":
-            self._finished[request.request_id] = (
+            self._finished[request_id] = (
                 request,
-                request.prompt_len + completion.generated_tokens - 1,
+                request.prompt_len + request.output_len - 1,
             )
             if self.arrival_mode == "open_loop":
-                heapq.heappush(
-                    self._ready, (completion.finish_time_ms, request.session_id, request.request_id)
-                )
+                heapq.heappush(self._ready, (now_ms, request.session_id, request_id))
         elif self.arrival_mode == "closed_loop":
             self._completed.add(request.request_id)
         if self.arrival_mode == "open_loop":
@@ -310,7 +307,7 @@ class Client:
             child = self._plan.turns[child_id]
             if child.think_time_ms is None and self.workload_mode == "synthetic":
                 raise ValueError("子轮次缺少 think time")
-            time = completion.finish_time_ms + (child.think_time_ms or 0)
+            time = now_ms + (child.think_time_ms or 0)
             wakeups.append(ClientWakeup(child.session_id, child_id, time))
         return tuple(wakeups)
 

@@ -14,11 +14,11 @@
 
 ## 有限会话闭环模式（`arrival_mode="closed_loop"`）
 
-`build_synthetic_closed_loop_plan` 消费 `WorkloadConfig` 与页大小，一次性生成不可变 `WorkloadPlan`，不访问 Engine 或 KV cache，不按引擎输出上限或 KV 容量改写计划。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录输入长度、未截短的目标 `output_len` 和 `ideal_reuse_blocks`，不记录生成上限、不预生成块 ID。
+`build_synthetic_closed_loop_plan` 消费 `WorkloadConfig` 与页大小，一次性生成不可变 `WorkloadPlan`，不访问 Engine 或 KV cache，不按引擎输出上限或 KV 容量改写计划。`num_requests=N` 是所有轮次数，`num_sessions=S` 是根轮次数，要求 `1 <= S <= N`。每个 session 至少一个根，首期为线性父子链：先给每个 session 分配 `floor(N/S)` 轮，多出的 `N % S` 轮按拓扑随机流的稳定顺序分配。根记录 `root_arrival_time_ms`，子轮次只记录父请求与 `think_time_ms`，不预先计算其到达时刻。`TurnPlan` 记录输入长度、未截短的目标 `output_len`、由目标推导的生成上限 `max_new_tokens` 和 `ideal_reuse_blocks`，不预生成块 ID。
 
 闭环不配置目标请求 QPS；`session_rate` 直接设定根会话的泊松到达频率（会话/秒），首根同样采样指数间隔，不固定在时刻 0。子轮须等父轮实际完成后，再经过独立采样的平均思考间隔投放；实际请求 QPS 由所有已发送轮次的首末时间计算，而非由会话速率推导。`S=N` 时每个会话仅有一个根请求。根到达、根输入、子轮新增内容、输出、拓扑及思考时间分别由 `stable_derive(seed, domain)` 派生独立随机流，保持相同配置与种子的计划可复现。`session.think_time_ms` 是子轮思考时间的指数分布均值（毫秒），每个子轮独立采样一次；设为 `0` 时始终无等待。根轮不采样思考时间，子轮实际到达仍由父轮完成时刻决定。
 
-`prompt_len`（仅根轮）、`turn_increment_len`（仅子轮）和 `output_len` 均使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。每个子轮的计划输入 `P_child=P_parent+O_parent+sample(turn_increment_len)`，其中 `O_parent` 是父轮未截短的采样输出目标；不截断或摘要超长上下文。合成采样输出与 Trace 原始输出均视为已发生结果，不按生成上限或 KV 容量改写。发送时客户端计算可见上限 `M=min(next_power_of_two(max(1,O)), inference.max_output_tokens)`，引擎持有真实 `O`，调度器只看到 `M`。例如 `O=40` 时取 `M=64`，若引擎上限为 50 则取 `M=50`；二次幂取整不改变输出目标。正输出超过引擎上限的请求返回 `output_exceeds_engine_limit`，输入或后续生成 KV 不足分别按准入/Decode 阶段失败；失败父轮的闭环后代标记跳过。Trace 回放向统一 `simulate` 入口注入 `TracePlan` 资源，回放设置来自 `SimConfig.workload`，不使用合成长度分布。
+`prompt_len`（仅根轮）、`turn_increment_len`（仅子轮）和 `output_len` 均使用 fixed、poisson 或 lognormal 长度分布，采样结果至少为 1 token；lognormal 配置中的 `mean` 表示原分布期望值。每个子轮的计划输入 `P_child=P_parent+O_parent+sample(turn_increment_len)`，其中 `O_parent` 是父轮未截短的采样输出目标；不截断或摘要超长上下文。合成采样输出与 Trace 原始输出均视为已发生结果，不按生成上限或 KV 容量改写。客户端构造轮次时计算生成上限 `M=min(next_power_of_two(max(1,O)), inference.max_output_tokens)`，发送请求同时携带 `O` 与 `M`。调度器虽能读取 `O`，当前仍只依据 `M`、已生成进度、输入长及 KV 状态做决策，不使用真实输出长度；预知输出长度的调度方案及对比暂不实现。例如 `O=40` 时取 `M=64`，若引擎上限为 50 则取 `M=50`；二次幂取整不改变输出目标。正输出超过引擎上限的请求返回 `output_exceeds_engine_limit`，输入或后续生成 KV 不足分别按准入/Decode 阶段失败；失败父轮的闭环后代标记跳过。Trace 回放向统一 `simulate` 入口注入 `TracePlan` 资源，回放设置来自 `SimConfig.workload`，不使用合成长度分布。
 
 ## Trace 请求计划回放
 
@@ -41,6 +41,6 @@ constructed_ideal_prefix_hit_rate = B*sum(K_i)/sum(P_i)
 
 ## 客户端的发送契约
 
-单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，协调器统一将初始投放和完成回调产生的子轮唤醒安排为 `ClientSend(时间戳, 请求 ID)`。所有投放均调用 `on_wakeup()`，客户端内部按模式读取计划，或在合成开环发送时选择会话并动态采样请求内容；预排时间和请求 ID 不会提前构造完整请求。该方法返回 `(InferenceRequest, output_len)`，实际输出目标单独交给引擎，不放进请求。合成模式仅在发送时构造 `InferenceRequest`：根据完成父轮保存的请求身份和已建立长度，按需推导前 `ideal_reuse_blocks` 个**完整**页 ID 并传递为 `inherited_prefix_ids`；其余页 ID 由引擎按当前请求 ID 与页序号生成，不发送整条 `input_chunk_ids`。请求携带 `max_new_tokens`，不携带实际输出目标或未来到达时间。
+单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，协调器统一将初始投放和完成回调产生的子轮唤醒安排为 `ClientSend(时间戳, 请求 ID)`。所有投放均调用 `on_wakeup()`，客户端内部按模式读取计划，或在合成开环发送时选择会话并动态采样请求内容；预排时间和请求 ID 不会提前构造完整请求。该方法仅返回 `InferenceRequest`，实际输出目标 `output_len` 与生成上限一起绑定到不可变请求。合成模式仅在发送时构造 `InferenceRequest`：根据完成父轮保存的请求身份和已建立长度，按需推导前 `ideal_reuse_blocks` 个**完整**页 ID 并传递为 `inherited_prefix_ids`；其余页 ID 由引擎按当前请求 ID 与页序号生成，不发送整条 `input_chunk_ids`。请求携带 `max_new_tokens` 与 `output_len`，不携带未来到达时间。
 
-`on_request_completed(RequestCompletion)` 统一结算在途请求。合成模式保存父轮请求身份与已建立长度 `prompt_len+generated_tokens-1`，Trace 只保存完成 ID，不重构原始块身份。闭环返回子轮 `finish_time_ms+think_time_ms` 的唤醒；合成开环只把会话放入待续堆，Trace 开环不改变固定时间线，两者均返回空元组。`on_request_aborted` 在闭环递归返回未发送后代的 `SkippedRequest`，开环返回空元组且不取消后续投放。客户端不预存未来完整请求、不调用真实 `sleep()`、不自行维护事件堆；协调器不按具体客户端类分派。
+`on_request_completed(request_id, now_ms)` 统一结算在途请求，成功完成意味着生成数恰好为发送请求的 `output_len`。合成模式保存父轮请求身份与已建立长度 `prompt_len+output_len-1`，Trace 只保存完成 ID，不重构原始块身份。闭环返回子轮 `now_ms+think_time_ms` 的唤醒；合成开环只把会话放入待续堆，Trace 开环不改变固定时间线，两者均返回空元组。`on_request_aborted` 在闭环递归返回未发送后代的 `SkippedRequest`，开环返回空元组且不取消后续投放。客户端不预存未来完整请求、不调用真实 `sleep()`、不自行维护事件堆；协调器不按具体客户端类分派。

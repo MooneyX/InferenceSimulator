@@ -3,7 +3,6 @@
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
-from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
@@ -24,7 +23,6 @@ from simcore.schemas import (
     AnalyticalSummary,
     Arrival,
     InferenceRequest,
-    RequestCompletion,
     RequestRecord,
     SkippedRequest,
 )
@@ -75,17 +73,11 @@ class _TransferTask:
 class Engine:
     """维护即时请求与调度/KV 状态，不预存未来请求或持有事件队列。"""
 
-    def __init__(
-        self,
-        runtime: RuntimeConfig,
-        *,
-        output_targets: Mapping[int, int],
-    ) -> None:
+    def __init__(self, runtime: RuntimeConfig) -> None:
         engine, perf = runtime.engine, runtime.perf_model
         self._links = runtime.links
         self._analytical = runtime.analytical
         self._analysis = AnalyticalSummary() if runtime.analytical is not None else None
-        self._output_targets = dict(output_targets)
         self._engine_config = engine
         self._perf = perf
         self._prefix_cache = TieredKVCache(
@@ -180,18 +172,12 @@ class Engine:
         self._scheduled_events.append((end, kind, transfer_id))
         return transfer_id
 
-    def register_output_target(self, request_id: int, output_len: int) -> None:  # 请求 ID 与实际输出长度 → 记录引擎私有目标；无返回值
-        """动态投放前注册引擎私有的输出目标。"""
-        self._output_targets[request_id] = output_len
-
     def submit(self, request: InferenceRequest, now_ms: float) -> bool:  # 推理请求与发送时刻 → 是否成功入队
         """校验输出限制并按 FCFS 入队；不按 KV 余量截短实际输出目标。"""
         key = request.request_id
         if key in self._requests:
             raise ValueError(f"request_id 重复: {key}")
-        output_len = self._output_targets.get(key)
-        if output_len is None:
-            raise ValueError("请求缺少引擎持有的输出目标")
+        output_len = request.output_len
         if request.is_trace and output_len == 0:
             self._requests[key] = request
             self._arrival_times[key] = now_ms
@@ -524,7 +510,7 @@ class Engine:
             previous = running[key].generated_tokens
             cache.extend(key, cache.state(key).k + 1)
             self._running[key] = previous + 1
-            if self._running[key] == self._output_targets[key]:
+            if self._running[key] == self._requests[key].output_len:
                 finished.append(key)
         for candidate in selection.admitted:
             item = candidate.waiting
@@ -539,7 +525,7 @@ class Engine:
                 self._prefill_start[key] = now_ms
                 self._prefill_end[key] = end
                 self._running[key] = 1  # 首个输出在 Prefill 步完成时已生成
-                if self._output_targets[key] == 1:
+                if self._requests[key].output_len == 1:
                     finished.append(key)
             if key not in self._admission_stats:
                 self._admission_stats[key] = (candidate.reused_tokens, candidate.reused_tokens)
@@ -582,8 +568,8 @@ class Engine:
         self._num_steps += 1
         return duration, tuple(finished)
 
-    def complete(self, now_ms: float, request_id: int) -> RequestCompletion:  # Done 时刻与请求 ID → 释放 KV 并返回完成消息
-        """在 Done 事件时释放 KV，只返回请求身份和完成时间。"""
+    def complete(self, now_ms: float, request_id: int) -> None:  # Done 时刻与 ID → 结算
+        """在 Done 事件时发布剩余完整页、释放 KV 并记录完成时间。"""
         expected = self._pending_done.get(request_id)
         if expected is None or now_ms != expected:
             raise ValueError(f"请求 {request_id} 未待结算或完成时刻不符")
@@ -592,7 +578,6 @@ class Engine:
         self._finish[request_id] = now_ms
         if not self.has_work and not self._pending_done:
             _ = self._prefix_scheduler.advance_ratio({}, idle=True)
-        return RequestCompletion(request_id, now_ms, self._output_targets[request_id])
 
     # ------------------------------------------------------------ 结算
 

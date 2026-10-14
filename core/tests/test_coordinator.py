@@ -65,7 +65,6 @@ def test_all_client_modes_use_send_events_with_time_and_request_id(
     initial = client.initial_wakeups()
     engine = Engine(
         runtime_config(engine_config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)),
-        output_targets={},
     )
     with (
         patch.object(
@@ -119,7 +118,7 @@ def test_zero_think_done_callback_send_step_order() -> None:
     from simcore.router import Router
 
     run = Coordinator(
-        (Engine(prepare_runtime(cfg), output_targets={}),),
+        (Engine(prepare_runtime(cfg)),),
         client,
         Router(1),
     ).run()[0]

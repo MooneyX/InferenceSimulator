@@ -62,7 +62,7 @@ class AdmissionBatch:
 
 
 class F001Scheduler:
-    """按当前 KV 状态逐队头准入；预算只估算未来页，不预分配。"""
+    """按当前 KV 状态逐队头准入；只用生成上限与进度估算，不以 output_len 调度。"""
 
     def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:

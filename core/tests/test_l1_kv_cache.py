@@ -14,6 +14,7 @@ def request(request_id: int, prompt_len: int, inherited: tuple[str, ...] = ()) -
         parent_request_id=None,
         prompt_len=prompt_len,
         max_new_tokens=128,
+        output_len=128,
         inherited_prefix_ids=inherited,
         ideal_reuse_blocks=len(inherited),
     )

@@ -4,7 +4,7 @@
 
 ## 请求与两种执行模式
 
-- 已发送请求按 `(发送时刻, 请求 ID)` 排队。`Engine` 持有实际输出目标 `O`，调度器只看到输入长 `P`、可见生成上限 `M` 和已生成数 `g`，不预知未来输出。合成采样或 Trace 原始输出 `O` 都视为已发生的结果，不按 KV 容量或生成上限截短；客户端在发送时构造 `M=min(next_power_of_two(max(1,O)), inference.max_output_tokens)`，并单独向引擎提交 `O`。正输出超过引擎上限时记请求级 `output_exceeds_engine_limit`；Trace 零输出仍为 `invalid_trace_output`，两者不拒绝整场仿真。
+- 已发送请求按 `(发送时刻, 请求 ID)` 排队。`InferenceRequest` 携带实际输出目标 `O=output_len`；引擎与调度器持有同一请求，但当前调度只能依据输入长 `P`、生成上限 `M`、已生成数 `g` 和 KV 状态，不以 `O` 作为选批、预算或回撤依据。预知输出长度的调度方案及对比暂不实现。合成采样或 Trace 原始输出 `O` 都视为已发生的结果，不按 KV 容量或生成上限截短；客户端在发送时构造 `M=min(next_power_of_two(max(1,O)), inference.max_output_tokens)`，并将 `O` 与 `M` 一起放入请求提交。正输出超过引擎上限时记请求级 `output_exceeds_engine_limit`；Trace 零输出仍为 `invalid_trace_output`，两者不拒绝整场仿真。
 - `pd_mutually_exclusive=true`（默认）就绪准入批次的 Prefill 和只恢复项优先于 Decode；设为 `false` 时，在选定准入批次后准备步首已有请求的 Decode，可产生 `MIXED`；新准入或恢复的请求不参加本步 Decode。GPU 工作量只有 `PREFILL`、`DECODE`、`MIXED`；L3 查询、预取和 L2 回载由独立异步事件推进，不生成纯 `RESTORE` GPU 步。两模式等待回载时均可推进已有请求的 Decode；本步刚准入或恢复的请求不参与本步 Decode，恢复准入不采样新 token。两模式共用 FCFS、KV 分配、回撤及结果规则。正常执行统一经 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete`，没有公共 `Engine.step` 同步入口。计时见 [perf-model.md](perf-model.md)。
 - 首次 Prefill 一步算完尚未命中的输入，步末采样首 token；`O=1` 时直接完成。之后每个 Decode 步建立上次采样的一个输出 token 的 KV，再采样下一 token。因此生成 `O` 个输出时只建立 `P+O-1` 个 KV token；首次 `prefill_start/end` 与首 token 时刻在回撤重算后保持不变。完成请求在同刻的 `RequestDone` 事件才真正发布剩余完整页并释放 KV。
 

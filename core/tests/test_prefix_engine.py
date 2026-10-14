@@ -20,15 +20,19 @@ PERF = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
 
 
 def request(
-    key: int, prompt: int, maximum: int = 1, inherited: tuple[str, ...] = ()
+    key: int,
+    prompt: int,
+    maximum: int = 1,
+    output: int = 1,
+    inherited: tuple[str, ...] = (),
 ) -> InferenceRequest:
-    return InferenceRequest(key, key, None, prompt, maximum, inherited, len(inherited))
+    return InferenceRequest(key, key, None, prompt, maximum, output, inherited, len(inherited))
 
 
 def test_parent_output_full_page_reused_only_after_completion() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
-    engine = Engine(runtime_config(config, PERF), output_targets={0: 2, 1: 1})
-    engine.submit(request(0, 2, maximum=2), 0)
+    engine = Engine(runtime_config(config, PERF))
+    engine.submit(request(0, 2, maximum=2, output=2), 0)
     assert engine.start_step(0, 0) == (2, ())
     assert engine._prefix_cache.page(encode(0, 0)) is None
     assert engine.finish_step(2) == ()
@@ -48,7 +52,7 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
 
 def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> None:
     config = EngineConfig(max_running_requests=3, max_total_tokens=32, page_size=2)
-    engine = Engine(runtime_config(config, PERF), output_targets={0: 1, 1: 1, 2: 1})
+    engine = Engine(runtime_config(config, PERF))
     identity = (encode(99, 0),)
     engine.submit(request(0, 3, inherited=identity), 0)
     engine.submit(request(1, 3, inherited=identity), 0)
@@ -85,9 +89,9 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
     )
     plan = WorkloadPlan({7: root, 8: child}, (7,), {7: (8,)})
     client = planned_client(plan, config)
-    engine = Engine(runtime_config(config, PERF), output_targets={7: output, 8: 1})
-    parent, output = client.on_wakeup(client.initial_wakeups()[0])
-    assert output == root.output_len
+    engine = Engine(runtime_config(config, PERF))
+    parent = client.on_wakeup(client.initial_wakeups()[0])
+    assert parent.output_len == root.output_len == output
     assert parent.inherited_prefix_ids == ()
     engine.submit(parent, 0)
     now = 0.0
@@ -105,8 +109,8 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 32
         if produced < output:
             assert engine._prefix_cache.page(encode(7, k // 4)) is None or state.f > k // 4 * 4
-    completion = engine.complete(now, 7)
-    successor, _ = client.on_wakeup(client.on_request_completed(completion)[0])
+    engine.complete(now, 7)
+    successor = client.on_wakeup(client.on_request_completed(7, now)[0])
     assert successor.inherited_prefix_ids == tuple(encode(7, i) for i in range(blocks))
     for index in range(blocks):
         page = engine._prefix_cache.page(encode(7, index))
@@ -115,7 +119,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
 
 def test_distinct_roots_do_not_share_input_pages() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
-    engine = Engine(runtime_config(config, PERF), output_targets={0: 1, 1: 1})
+    engine = Engine(runtime_config(config, PERF))
     engine.submit(request(0, 2), 0)
     assert engine.start_step(0, 0) == (2, (0,))
     assert engine.finish_step(2) == (0,)

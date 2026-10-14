@@ -28,9 +28,14 @@ def make(
 
 
 def request(
-    key: int, *, prompt: int = 64, maximum: int = 1, inherited: tuple[str, ...] = ()
+    key: int,
+    *,
+    prompt: int = 64,
+    maximum: int = 1,
+    output: int = 1,
+    inherited: tuple[str, ...] = (),
 ) -> InferenceRequest:
-    return InferenceRequest(key, 0, None, prompt, maximum, inherited, len(inherited))
+    return InferenceRequest(key, 0, None, prompt, maximum, output, inherited, len(inherited))
 
 
 def hold(cache: TieredKVCache, item: InferenceRequest, length: int | None = None) -> None:
@@ -41,6 +46,26 @@ def hold(cache: TieredKVCache, item: InferenceRequest, length: int | None = None
     cache.publish(item.request_id)
     if length is not None and length > item.prompt_len:
         cache.extend(item.request_id, length)
+
+
+@pytest.mark.parametrize("running_output", [2, 32])
+@pytest.mark.parametrize("waiting_output", [2, 32])
+def test_output_length_does_not_affect_current_budget_or_batch(
+    running_output: int, waiting_output: int
+) -> None:
+    scheduler, cache = make(capacity=72, page_size=4)
+    active = request(0, prompt=8, maximum=32, output=running_output)
+    hold(cache, active)
+    running = {0: RunningRequest(active, 1)}
+    assert scheduler.advance_ratio(running, withdrew=True) == pytest.approx(21 / 33)
+    scheduler.enqueue(request(1, prompt=4, maximum=32, output=waiting_output), 1)
+    scheduler.enqueue(request(2, prompt=4, maximum=8, output=2), 1)
+    batch = scheduler.select_prefill(running)
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1]
+    assert batch.admitted[0].required_pages == 1
+    assert not batch.restored and not batch.aborted and not batch.restore_only
+    assert scheduler.head_request_id == 2 and scheduler.num_waiting == 1
+    assert cache.resident_pages == 2 and cache.free_pages == 16
 
 
 def test_first_candidate_can_exceed_compute_quota_but_second_cannot() -> None:

@@ -30,7 +30,7 @@ PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=5, decode_d2=1)
 
 
 def make_engine(
-    targets: dict[int, int], *, exclusive: bool = True, page_size: int = 4, capacity: int = 128
+    *, exclusive: bool = True, page_size: int = 4, capacity: int = 128
 ) -> Engine:
     config = EngineConfig(
         max_running_requests=4,
@@ -38,18 +38,19 @@ def make_engine(
         page_size=page_size,
         pd_mutually_exclusive=exclusive,
     )
-    return Engine(runtime_config(config, PERF), output_targets=targets)
+    return Engine(runtime_config(config, PERF))
 
 
 def request(
-    key: int, *, prompt: int = 4, maximum: int = 2, inherited: tuple[str, ...] = ()
+    key: int, *, prompt: int = 4, maximum: int = 2, output: int = 2,
+    inherited: tuple[str, ...] = (),
 ) -> InferenceRequest:
-    return InferenceRequest(key, 0, None, prompt, maximum, inherited, len(inherited))
+    return InferenceRequest(key, 0, None, prompt, maximum, output, inherited, len(inherited))
 
 
 def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
-    engine = make_engine({0: 3}, page_size=64, capacity=512)
-    engine.submit(request(0, prompt=65, maximum=100), 0)
+    engine = make_engine(page_size=64, capacity=512)
+    engine.submit(request(0, prompt=65, maximum=100, output=3), 0)
     started = engine.start_step(0, 0)
     assert started == (65, ())
     assert engine._prefix_cache.page(encode(0, 0)) is None
@@ -77,8 +78,8 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
 
 
 def test_output_len_one_finishes_at_prefill_end_and_reclaims_partial_page() -> None:
-    engine = make_engine({0: 1}, page_size=64, capacity=256)
-    engine.submit(request(0, prompt=63), 0)
+    engine = make_engine(page_size=64, capacity=256)
+    engine.submit(request(0, prompt=63, output=1), 0)
     assert engine.start_step(0, 0) == (63, (0,))
     assert engine.finish_step(63) == (0,)
     assert engine._prefix_cache.state(0).k == 63
@@ -93,8 +94,8 @@ def test_output_len_one_finishes_at_prefill_end_and_reclaims_partial_page() -> N
 def test_short_output_with_large_request_limit_is_not_permanently_rejected(
     exclusive: bool, output: int,
 ) -> None:
-    engine = make_engine({0: output}, exclusive=exclusive, page_size=64, capacity=192)
-    engine.submit(request(0, prompt=65, maximum=65_536), 0)
+    engine = make_engine(exclusive=exclusive, page_size=64, capacity=192)
+    engine.submit(request(0, prompt=65, maximum=65_536, output=output), 0)
     now = 0.0
     for step in range(output):
         started = engine.start_step(now, step)
@@ -109,7 +110,7 @@ def test_short_output_with_large_request_limit_is_not_permanently_rejected(
 
 
 def test_decode_full_page_remains_private_until_request_completion() -> None:
-    engine = make_engine({0: 2}, page_size=64, capacity=256)
+    engine = make_engine(page_size=64, capacity=256)
     engine.submit(request(0, prompt=63), 0)
     assert engine.start_step(0, 0) == (63, ())
     assert engine.finish_step(63) == ()
@@ -125,7 +126,7 @@ def test_decode_full_page_remains_private_until_request_completion() -> None:
 
 
 def test_exclusive_mode_prefills_next_arrival_without_decoding_existing_request() -> None:
-    engine = make_engine({0: 2, 1: 2})
+    engine = make_engine()
     engine.submit(request(0), 0)
     assert engine.start_step(0, 0) == (4, ())
     assert engine.finish_step(4) == ()
@@ -143,7 +144,7 @@ def test_exclusive_mode_prefills_next_arrival_without_decoding_existing_request(
 
 
 def test_fused_mode_only_decodes_request_running_at_step_start() -> None:
-    engine = make_engine({0: 2, 1: 2}, exclusive=False)
+    engine = make_engine(exclusive=False)
     engine.submit(request(0), 0)
     assert engine.start_step(0, 0) == (4, ())
     assert engine.finish_step(4) == ()
@@ -161,10 +162,10 @@ def test_fused_mode_only_decodes_request_running_at_step_start() -> None:
 
 
 def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> None:
-    engine = make_engine({1: 1, 2: 1}, page_size=64, capacity=512)
+    engine = make_engine(page_size=64, capacity=512)
     shared = (encode(0, 0),)
-    engine.submit(request(1, prompt=65, maximum=1, inherited=shared), 0)
-    engine.submit(request(2, prompt=65, maximum=1, inherited=shared), 0)
+    engine.submit(request(1, prompt=65, maximum=1, output=1, inherited=shared), 0)
+    engine.submit(request(2, prompt=65, maximum=1, output=1, inherited=shared), 0)
     assert engine.start_step(0, 0) == (130, (1, 2))
     assert engine._prefix_cache.page(shared[0]) is None
     assert engine._prefix_cache.resident_pages == 4
@@ -183,12 +184,12 @@ def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> Non
 def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
     cfg = EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64)
     perf = PerfModelConfig(prefill_c1=0, prefill_c2=1, decode_d1=0, decode_d2=0)
-    engine = Engine(runtime_config(cfg, perf), output_targets={0: 1, 1: 1})
-    engine.submit(request(0, prompt=64, maximum=1), 0)
+    engine = Engine(runtime_config(cfg, perf))
+    engine.submit(request(0, prompt=64, maximum=1, output=1), 0)
     assert engine.start_step(0, 0) == (4096, (0,))
     assert engine.finish_step(4096) == (0,)
     engine.complete(4096, 0)
-    engine.submit(request(1, prompt=65, maximum=1, inherited=(encode(0, 0),)), 4096)
+    engine.submit(request(1, prompt=65, maximum=1, output=1, inherited=(encode(0, 0),)), 4096)
     assert engine.start_step(4096, 1) == (129, (1,))
     assert engine.finish_step(4225) == (1,)
     assert engine._admission_stats[1] == (64, 64)
@@ -201,11 +202,11 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
     zero = PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0)
     plan = WorkloadPlan({0: TurnPlan(0, 0, None, 1, None, 5, 3, 3, 0)}, (0,), {})
     first = Coordinator(
-        (Engine(runtime_config(cfg, zero), output_targets={}),),
+        (Engine(runtime_config(cfg, zero)),),
         planned_client(plan, cfg), Router(1),
     ).run()[0]
     second = Coordinator(
-        (Engine(runtime_config(cfg, zero), output_targets={}),),
+        (Engine(runtime_config(cfg, zero)),),
         planned_client(plan, cfg), Router(1),
     ).run()[0]
     assert first.num_engine_steps == 3
@@ -243,7 +244,7 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
 
 
 def test_empty_step_is_rejected_without_advancing_clock() -> None:
-    engine = make_engine({})
+    engine = make_engine()
     with pytest.raises(RuntimeError, match="没有可执行"):
         engine.start_step(0, 0)
     assert engine.num_steps == 0
@@ -264,7 +265,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={1: 1, 2: 1})
+    engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = request(0, prompt=4)
     cache.pin(parent, 0)
@@ -282,7 +283,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     demoted = cache.page(shared)
     assert demoted is not None and demoted.tier == "L2"
     for key in (1, 2):
-        engine.submit(request(key, prompt=5, maximum=1, inherited=(shared,)), 0)
+        engine.submit(request(key, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     assert engine.start_step(0, 0) is None
     assert engine.num_steps == 0
     events = engine.drain_events()
@@ -322,7 +323,7 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={0: 2})
+    engine = Engine(runtime_config(config, perf))
     item = request(0, prompt=4, maximum=2)
     engine.submit(item, 0)
     assert engine.start_step(0, 0) == (4, ())
@@ -375,7 +376,7 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={0: 2, 1: 2})
+    engine = Engine(runtime_config(config, perf))
     item = request(0, prompt=4, maximum=2)
     active = request(1, prompt=4, maximum=2)
     engine.submit(item, 0)
@@ -436,7 +437,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
         l2_latency_ms=3,
         l3_latency_ms=5,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={1: 1})
+    engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 16), (98, 4)):
         seed = request(key, prompt=size)
@@ -450,7 +451,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     demoted_page = cache.page(shared)
     assert demoted_page is not None and demoted_page.tier == "L3"
     assert cache.free_pages == 1
-    engine.submit(request(1, prompt=5, maximum=1, inherited=(shared,)), 0)
+    engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     lookup_events = engine.drain_events()
     assert lookup_events == ((0, EventKind.L3_LOOKUP_DONE, 1),)
     engine.on_l3_lookup(1, 0)
@@ -492,7 +493,7 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
     )
-    engine = Engine(runtime_config(config, perf), output_targets={1: 1, 2: 1})
+    engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 36)):
         seed = request(key, prompt=size)
@@ -504,12 +505,13 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
     shared = encode(0, 0)
     demoted_page = cache.page(shared)
     assert demoted_page is not None and demoted_page.tier == "L2"
-    engine.submit(request(1, prompt=5, maximum=1, inherited=(shared,)), 0)
+    engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     engine.submit(
         request(
             2,
             prompt=9,
             maximum=1,
+            output=1,
             inherited=(encode(77, 0), shared),
         ),
         0,
@@ -566,11 +568,11 @@ def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -
         1: TurnPlan(1, 1, None, 5, None, 4, 2, 2, 0),
     }, (0, 1), {})
     old = Coordinator(
-        (Engine(runtime_config(legacy, PERF), output_targets={}),),
+        (Engine(runtime_config(legacy, PERF)),),
         planned_client(plan, legacy), Router(1),
     ).run()[0]
     new = Coordinator(
-        (Engine(runtime_config(explicitly_disabled, extra_perf), output_targets={}),),
+        (Engine(runtime_config(explicitly_disabled, extra_perf)),),
         planned_client(plan, explicitly_disabled), Router(1),
     ).run()[0]
     assert old == new

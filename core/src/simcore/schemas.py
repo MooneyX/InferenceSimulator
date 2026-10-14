@@ -36,7 +36,6 @@ __all__ = [
     "PerfModelConfig",
     "PoissonLength",
     "RankCapacityReport",
-    "RequestCompletion",
     "RequestRecord",
     "AnalyticalTimingConfig",
     "EmpiricalTimingConfig",
@@ -697,17 +696,11 @@ class InferenceRequest:
     parent_request_id: int | None
     prompt_len: int
     max_new_tokens: int
+    output_len: int
     inherited_prefix_ids: tuple[str, ...]
     ideal_reuse_blocks: int
     trace_hash_ids: tuple[int, ...] = ()
     is_trace: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class RequestCompletion:
-    request_id: int
-    finish_time_ms: float
-    generated_tokens: int
 
 
 @dataclass(frozen=True, slots=True)

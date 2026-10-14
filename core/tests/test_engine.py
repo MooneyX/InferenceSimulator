@@ -59,7 +59,7 @@ def run(
         )
     plan = WorkloadPlan(turns, tuple(turns), {})
     return Coordinator(
-        (Engine(runtime_config(config, perf), output_targets={}),),
+        (Engine(runtime_config(config, perf)),),
         planned_client(plan, config), Router(1),
     ).run()[0]
 
@@ -69,10 +69,10 @@ def interval(r: RequestRecord) -> tuple[float, float, float, float]:
 
 
 class TestImmediateEngine:
-    def test_submit_step_and_completion_return_finish_time(self) -> None:
+    def test_submit_step_and_complete_updates_record(self) -> None:
         config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
-        request = InferenceRequest(7, 7, None, 5, 1, (), 0)
-        engine = Engine(runtime_config(config, SIMPLE), output_targets={7: 1})
+        request = InferenceRequest(7, 7, None, 5, 1, 1, (), 0)
+        engine = Engine(runtime_config(config, SIMPLE))
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
         assert not hasattr(engine, "step")
@@ -85,12 +85,30 @@ class TestImmediateEngine:
         assert not engine.has_work
         assert engine._prefix_cache.page("chunk:7:0") is None
         assert engine.finish_step(8.0) == (7,)
-        completion = engine.complete(8.0, 7)
-        assert completion.request_id == request.request_id
-        assert completion.finish_time_ms == 8.0
+        engine.complete(8.0, 7)
         with pytest.raises(ValueError, match="未待结算"):
             engine.complete(8.0, 7)
         assert interval(engine.finalize().records[0]) == (3.0, 3.0, 8.0, 8.0)
+
+    @pytest.mark.parametrize("maximum", [4, 8])
+    def test_direct_submit_uses_actual_output_length_without_registration(
+        self, maximum: int
+    ) -> None:
+        config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
+        request = InferenceRequest(7, 7, None, 5, maximum, 3, (), 0)
+        engine = Engine(runtime_config(config, SIMPLE))
+        engine.submit(request, 3.0)
+        assert engine.start_step(3.0, 0) == (5.0, ())
+        assert engine.finish_step(8.0) == ()
+        assert engine.start_step(8.0, 1) == (10.0, ())
+        assert engine.finish_step(18.0) == ()
+        assert engine.start_step(18.0, 2) == (10.0, (7,))
+        assert engine.finish_step(28.0) == (7,)
+        engine.complete(28.0, 7)
+        result = engine.finalize()
+        assert interval(result.records[0]) == (3.0, 3.0, 8.0, 28.0)
+        assert result.records[0].output_len == request.output_len == 3
+        assert result.num_engine_steps == 3
 
 
 class TestHandComputed:
@@ -240,7 +258,7 @@ def synthetic_run(seed: int = 7, **engine: int) -> EngineRun:
     from simcore.router import Router
 
     return Coordinator(
-        (Engine(runtime_config(cfg, perf), output_targets={}),),
+        (Engine(runtime_config(cfg, perf)),),
         client,
         Router(1),
     ).run()[0]

@@ -56,7 +56,7 @@ def test_direct_engine_rejects_missing_transfer_config() -> None:
     )
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
     with pytest.raises(ValueError, match="kv_bytes_per_token"):
-        Engine(runtime_config(engine, perf), output_targets={})
+        Engine(runtime_config(engine, perf))
 
 
 def mixed_plan() -> WorkloadPlan:
@@ -184,8 +184,8 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     """组件故障注入：重算后以外部占用触发失败，验证结果汇总不丢重算成本。"""
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
-    engine = Engine(runtime_config(cfg, perf), output_targets={0: 3})
-    req = InferenceRequest(0, 0, None, 3, 3, (), 0)
+    engine = Engine(runtime_config(cfg, perf))
+    req = InferenceRequest(0, 0, None, 3, 3, 3, (), 0)
     engine.submit(req, 0)
     assert engine.start_step(0, 0) == (3, ())
     assert engine.finish_step(3) == ()
@@ -199,7 +199,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     assert engine.start_step(3, 2) == (4, ())
     assert engine.finish_step(7) == ()
     assert engine._replayed_tokens[0] == 4
-    holder = InferenceRequest(99, 0, None, 8, 1, (), 0)
+    holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0)
     engine._prefix_cache.pin(holder, 0)
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)

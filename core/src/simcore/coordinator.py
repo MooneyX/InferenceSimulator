@@ -68,10 +68,9 @@ class Coordinator:
                 raise ValueError(f"未知的引擎事件类型: {kind}")
             heapq.heappush(self._heap, event)
 
-    def _submit(self, request: InferenceRequest, output_len: int, now_ms: float) -> None:  # 请求、实际输出长度和时刻 → 选路并投放副本；无返回值
+    def _submit(self, request: InferenceRequest, now_ms: float) -> None:  # 请求与时刻 → 选路并投放
         instance_id = self.router.select(request)
         engine = self.engines[instance_id]
-        engine.register_output_target(request.request_id, output_len)
         accepted = engine.submit(request, now_ms)
         self._process_aborts(instance_id)
         self._drain_engine_events(instance_id)
@@ -91,8 +90,10 @@ class Coordinator:
             elif event.kind is EventKind.REQUEST_DONE: # 某个请求完成
                 instance_id = self.router.instance_of(event.ref)
                 engine = self.engines[instance_id]
-                completion = engine.complete(now_ms, event.ref)
-                self._enqueue_wakeups(self.client.on_request_completed(completion))
+                engine.complete(now_ms, event.ref)
+                self._enqueue_wakeups(
+                    self.client.on_request_completed(event.ref, now_ms)
+                )
                 self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)
@@ -106,8 +107,8 @@ class Coordinator:
                 self._schedule_step(instance_id, now_ms)
             elif event.kind is EventKind.CLIENT_SEND:
                 wakeup = self._wakeups.pop(event.ref)
-                request, output_len = self.client.on_wakeup(wakeup)
-                self._submit(request, output_len, now_ms)
+                request = self.client.on_wakeup(wakeup)
+                self._submit(request, now_ms)
             elif event.kind is EventKind.ENGINE_STEP:
                 instance_id = event.ref
                 engine = self.engines[instance_id]

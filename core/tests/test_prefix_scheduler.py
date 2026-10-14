@@ -15,7 +15,7 @@ def setup(capacity: int = 80) -> tuple[F001Scheduler, TieredKVCache]:
 def request(
     key: int, *, prompt: int = 5, maximum: int = 1, inherited: tuple[str, ...] = ()
 ) -> InferenceRequest:
-    return InferenceRequest(key, key, None, prompt, maximum, inherited, len(inherited))
+    return InferenceRequest(key, key, None, prompt, maximum, 1, inherited, len(inherited))
 
 
 def test_same_batch_new_pages_not_visible_until_publication() -> None:

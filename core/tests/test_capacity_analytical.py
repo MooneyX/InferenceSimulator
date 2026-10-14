@@ -1502,9 +1502,9 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     runtime = prepare_runtime(config)
     # 组件测试只缩小运行容量；物理解析报告与原始配置保持不变。
     runtime = replace(runtime, engine=runtime.engine.model_copy(update={"max_total_tokens": 128}))
-    engine = Engine(runtime, output_targets={0: 2, 1: 2})
-    request0 = InferenceRequest(0, 0, None, 4, 2, (), 0)
-    request1 = InferenceRequest(1, 1, None, 4, 2, (), 0)
+    engine = Engine(runtime)
+    request0 = InferenceRequest(0, 0, None, 4, 2, 2, (), 0)
+    request1 = InferenceRequest(1, 1, None, 4, 2, 2, (), 0)
     engine.submit(request0, 0)
     first = engine.start_step(0, 0)
     assert first is not None
@@ -1586,10 +1586,10 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         storage.l3_latency_ms
         + runtime.engine.page_size / cast(float, resolved.capacity.l3_to_l2_tokens_per_ms)
     )
-    engine = Engine(runtime, output_targets={})
+    engine = Engine(runtime)
     cache = engine._prefix_cache
     for key in range(3):
-        parent = InferenceRequest(key, key, None, 4, 1, (), 0)
+        parent = InferenceRequest(key, key, None, 4, 1, 1, (), 0)
         cache.pin(parent, 0)
         cache.admit(key)
         cache.extend(key, 4)

@@ -351,10 +351,10 @@ class TieredKVCache:
             if page.tier != "L1" and not page.ref_count:
                 raise ValueError("待提升的低层页必须先 pin")
         target = self._tiers[reserve_tier]
-        if reserve_pages <= target.capacity - target.resident and all(
-            self._entries[chunk_id].tier == "L1" for chunk_id in needed
+        if reserve_pages <= target.capacity - target.resident and all( # 空闲页数量满足要求
+            self._entries[chunk_id].tier == "L1" for chunk_id in needed # 所有需要提升的页都在L1
         ):
-            return [], ()
+            return [], () # 不需要进行迁移
 
         counts = {tier: state.resident for tier, state in self._tiers.items()}  # 试算期间各层预计驻留页数
         changed: dict[str, CacheEntry | None] = {}  # 页 ID → 试算覆盖状态；None 表示将被删除

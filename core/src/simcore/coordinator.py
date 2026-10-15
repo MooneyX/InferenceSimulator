@@ -90,10 +90,10 @@ class Coordinator:
             elif event.kind is EventKind.REQUEST_DONE: # 某个请求完成
                 instance_id = self.router.instance_of(event.ref)
                 engine = self.engines[instance_id]
-                engine.complete(now_ms, event.ref)
+                engine.complete(now_ms, event.ref) # 释放KV资源
                 self._enqueue_wakeups(
                     self.client.on_request_completed(event.ref, now_ms)
-                )
+                ) # 生成新的发送事件
                 self._schedule_step(instance_id, now_ms) # 可能冗余
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)

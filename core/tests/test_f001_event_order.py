@@ -124,7 +124,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         l2_to_l1_bandwidth_bytes_per_ms=4, l3_to_l2_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3, l3_latency_ms=5, l3_lookup_latency_ms=lookup_ms,
     )
-    send_ms = lookup_ms + 1
+    send_ms = 1
     source = TracePlan(
         sessions=("competition",), block_size=4,
         requests=(
@@ -184,12 +184,12 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         order.attach_mock(lookups, "lookup")
         run = Coordinator((engine,), client, Router(1, session_affinity=True)).run()[0]
     assert [call.args[0].request_id for call in submissions.call_args_list] == [0, 1, 2, 3, 4]
-    assert [(call.args[0], call.args[1]) for call in lookups.call_args_list[:3]] == [
-        (0, lookup_ms), (1, send_ms + lookup_ms), (2, send_ms + lookup_ms),
+    assert [(call.args[0], call.args[1]) for call in lookups.call_args_list[:2]] == [
+        (1, send_ms + lookup_ms), (2, send_ms + lookup_ms),
     ]
-    assert [call[0] for call in order.mock_calls[:6]] == (
-        ["send", "lookup", "send", "lookup", "send", "lookup"] if lookup_ms == 0
-        else ["send", "lookup", "send", "send", "lookup", "lookup"]
+    assert [call[0] for call in order.mock_calls[:5]] == (
+        ["send", "send", "lookup", "send", "lookup"] if lookup_ms == 0
+        else ["send", "send", "send", "lookup", "lookup"]
     )
     assert [call.args for call in reserves.call_args_list if call.args[1] == "L2"] == [
         ("trace:0:20", "L2"), ("trace:0:10", "L2"),

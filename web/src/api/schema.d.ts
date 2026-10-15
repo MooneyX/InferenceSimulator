@@ -30,7 +30,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 预览物理推理配置的单实例容量与运行可行性 */
+        /** 预览单实例 L1/L2、全场共享 L3 容量与运行可行性 */
         post: operations["resolve_endpoint_api_resolve_post"];
         delete?: never;
         options?: never;
@@ -571,11 +571,6 @@ export interface components {
              * @default 0
              */
             l2_capacity_tokens: number;
-            /**
-             * L3 Capacity Tokens
-             * @default 0
-             */
-            l3_capacity_tokens: number;
             /** Kv Bytes Per Token */
             kv_bytes_per_token?: number | null;
             /** L2 To L1 Bandwidth Bytes Per Ms */
@@ -592,11 +587,25 @@ export interface components {
              * @default 0
              */
             l3_latency_ms: number;
+        };
+        /** ManualL3Config */
+        ManualL3Config: {
             /**
-             * L3 Lookup Latency Ms
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            mode: "manual";
+            /**
+             * Capacity Tokens
+             * @description 全场共享 L3 token 总容量；0 表示关闭
              * @default 0
              */
-            l3_lookup_latency_ms: number;
+            capacity_tokens: number;
+            /**
+             * Lookup Latency Ms
+             * @default 0
+             */
+            lookup_latency_ms: number;
         };
         /**
          * Metrics
@@ -824,37 +833,37 @@ export interface components {
              * L3 Evictions
              * @default 0
              */
-            l3_evictions: number;
+            l3_evictions: number | null;
             /**
              * L3 Peak Resident Blocks
              * @default 0
              */
-            l3_peak_resident_blocks: number;
+            l3_peak_resident_blocks: number | null;
             /**
              * L3 Capacity Blocks
              * @default 0
              */
-            l3_capacity_blocks: number;
+            l3_capacity_blocks: number | null;
             /**
              * L3 Resident Blocks
              * @default 0
              */
-            l3_resident_blocks: number;
+            l3_resident_blocks: number | null;
             /**
              * L3 Active Blocks
              * @default 0
              */
-            l3_active_blocks: number;
+            l3_active_blocks: number | null;
             /**
              * L3 Evictable Blocks
              * @default 0
              */
-            l3_evictable_blocks: number;
+            l3_evictable_blocks: number | null;
             /**
              * L3 Free Blocks
              * @default 0
              */
-            l3_free_blocks: number;
+            l3_free_blocks: number | null;
         };
         /**
          * ModelSpec
@@ -993,6 +1002,25 @@ export interface components {
              * @default 1
              */
             ep_size: number;
+        };
+        /** PhysicalL3Config */
+        PhysicalL3Config: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            mode: "physical";
+            /**
+             * Available Gb
+             * @description 全场共享 L3 十进制 GB 总容量；0 表示关闭
+             * @default 0
+             */
+            available_gb: number;
+            /**
+             * Lookup Latency Ms
+             * @default 0
+             */
+            lookup_latency_ms: number;
         };
         /** PlanReceipt */
         PlanReceipt: {
@@ -1253,7 +1281,7 @@ export interface components {
         };
         /**
          * SimConfig
-         * @description 唯一仿真输入；负载、调度和推理规格各自只有一个来源。
+         * @description 唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。
          */
         SimConfig: {
             workload: components["schemas"]["WorkloadConfig"];
@@ -1262,9 +1290,11 @@ export interface components {
             inference: components["schemas"]["ManualInferenceConfig"] | components["schemas"]["PhysicalInferenceConfig"];
             /**
              * Num Instances
-             * @description 独占相同单实例配置的推理副本数量
+             * @description 同构推理副本数量；各自独占 L1/L2，共享 L3
              */
             num_instances: number;
+            /** Shared L3 */
+            shared_l3?: (components["schemas"]["ManualL3Config"] | components["schemas"]["PhysicalL3Config"]) | null;
         };
         /**
          * SimMeta
@@ -1347,7 +1377,7 @@ export interface components {
         };
         /**
          * StorageSpec
-         * @description GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。
+         * @description 单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。
          */
         StorageSpec: {
             /** L1 Available Gb */
@@ -1357,11 +1387,6 @@ export interface components {
              * @default 0
              */
             l2_available_gb: number;
-            /**
-             * L3 Available Gb
-             * @default 0
-             */
-            l3_available_gb: number;
             /**
              * Runtime Reserve Bytes
              * @default 0
@@ -1381,11 +1406,6 @@ export interface components {
              * @default 0
              */
             l3_latency_ms: number;
-            /**
-             * L3 Lookup Latency Ms
-             * @default 0
-             */
-            l3_lookup_latency_ms: number;
         };
         /**
          * SyntheticWorkloadConfig

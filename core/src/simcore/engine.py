@@ -9,7 +9,7 @@ from typing import Literal
 
 from simcore.analytical import step_cost
 from simcore.events import EventKind
-from simcore.kv_cache import CacheCapacityError, L1Snapshot, TieredKVCache, TierSnapshot
+from simcore.kv_cache import CacheCapacityError, CachePool, L1Snapshot, TieredKVCache, TierSnapshot
 from simcore.perf_model import (
     DecodeWork,
     PrefillWork,
@@ -73,7 +73,9 @@ class _TransferTask:
 class Engine:
     """维护即时请求与调度/KV 状态，不预存未来请求或持有事件队列。"""
 
-    def __init__(self, runtime: RuntimeConfig) -> None:
+    def __init__(
+        self, runtime: RuntimeConfig, *, shared_l3: CachePool | None = None, instance_id: int = 0
+    ) -> None:
         engine, perf = runtime.engine, runtime.perf_model
         self._links = runtime.links
         self._analytical = runtime.analytical
@@ -85,10 +87,14 @@ class Engine:
             engine.page_size,
             engine.l2_capacity_tokens,
             engine.l3_capacity_tokens,
+            shared_l3=shared_l3,
+            pool_id_base=instance_id * 2,
         )
         self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
-        self._admission_tiers: dict[int, tuple[int, int, int]] = {}  # 请求 ID → 首次准入时 L1/L2/L3 命中 token 数
+        self._admission_tiers: dict[
+            int, tuple[int, int, int]
+        ] = {}  # 请求 ID → 首次准入时 L1/L2/L3 命中 token 数
         self._restore_bytes = 0
         self._restore_time_ms = 0.0
         self._requests: dict[int, InferenceRequest] = {}
@@ -142,7 +148,11 @@ class Engine:
             and head not in self._prefetch_waiting
         )
 
-    def drain_events(self) -> tuple[tuple[float, EventKind, int], ...]:  # 待派发事件列表 → 时刻、类型、引用元组并清空队列
+    def drain_events(
+        self,
+    ) -> tuple[
+        tuple[float, EventKind, int], ...
+    ]:  # 待派发事件列表 → 时刻、类型、引用元组并清空队列
         events = tuple(self._scheduled_events)
         self._scheduled_events.clear()
         return events
@@ -164,15 +174,15 @@ class Engine:
         self._link_free[destination] = end
         transfer_id = self._next_transfer_id
         self._next_transfer_id += 1
-        self._transfers[transfer_id] = _TransferTask(
-            chunk_id, {request_id}, service_ms
-        )
+        self._transfers[transfer_id] = _TransferTask(chunk_id, {request_id}, service_ms)
         self._transfer_by_chunk[chunk_id] = transfer_id
         kind = EventKind.L3_L2_DONE if destination == "L2" else EventKind.L2_L1_DONE
         self._scheduled_events.append((end, kind, transfer_id))
         return transfer_id
 
-    def submit(self, request: InferenceRequest, now_ms: float) -> bool:  # 推理请求与发送时刻 → 是否成功入队
+    def submit(
+        self, request: InferenceRequest, now_ms: float
+    ) -> bool:  # 推理请求与发送时刻 → 是否成功入队
         """校验输出限制并按 FCFS 入队；不按 KV 余量截短实际输出目标。"""
         key = request.request_id
         if key in self._requests:
@@ -205,22 +215,22 @@ class Engine:
             max_new_tokens=request.max_new_tokens,
         )
         if self._engine_config.l3_capacity_tokens:
-            self._lookup_waiting.add(key)
-            self._scheduled_events.append(
-                (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, key)
-            )
+            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+            if len(local) < (request.prompt_len - 1) // self._prefix_cache.page_size:
+                self._lookup_waiting.add(key)
+                self._scheduled_events.append(
+                    (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, key)
+                )
         return True
 
-    def on_l3_lookup(self, request_id: int, now_ms: float) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取；无返回值
+    def on_l3_lookup(
+        self, request_id: int, now_ms: float
+    ) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取；无返回值
         self._lookup_waiting.remove(request_id)
         request = self._requests[request_id]
-        sources = self._prefix_cache.probe(request, request.prompt_len)
-        start = next((i for i, (_, tier) in enumerate(sources) if tier == "L3"), len(sources))
-        remote: list[str] = []
-        for chunk_id, tier in sources[start:]:
-            if tier != "L3":
-                break
-            remote.append(chunk_id)
+        local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+        sources = self._prefix_cache.probe(request, request.prompt_len, start_index=len(local))
+        remote = [chunk_id for chunk_id, tier in sources if tier == "L3"]
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
             return
         pending: set[int] = set()
@@ -232,7 +242,9 @@ class Engine:
         if pending:
             self._prefetch_waiting[request_id] = pending
 
-    def on_transfer_done(self, kind: EventKind, transfer_id: int, now_ms: float) -> None:  # 传输事件、任务 ID 和时刻 → 结算回载并唤醒等待；无返回值
+    def on_transfer_done(
+        self, kind: EventKind, transfer_id: int, now_ms: float
+    ) -> None:  # 传输事件、任务 ID 和时刻 → 结算回载并唤醒等待；无返回值
         task = self._transfers.pop(transfer_id, None)
         if task is None:
             return
@@ -259,8 +271,10 @@ class Engine:
         request_id: int,
         now_ms: float,
         reason: Literal[
-            "input_exceeds_kv_capacity", "decode_kv_exhausted",
-            "invalid_trace_output", "output_exceeds_engine_limit",
+            "input_exceeds_kv_capacity",
+            "decode_kv_exhausted",
+            "invalid_trace_output",
+            "output_exceeds_engine_limit",
         ],
     ) -> None:  # 请求 ID、失败时刻和容量原因 → 登记中止记录；无返回值
         self._aborted[request_id] = AbortedRequest(
@@ -279,13 +293,17 @@ class Engine:
         self._recent_aborts.clear()
         return result
 
-    def register_skipped(self, skipped: tuple[SkippedRequest, ...]) -> None:  # 未发送子轮记录 → 登记跳过请求；无返回值
+    def register_skipped(
+        self, skipped: tuple[SkippedRequest, ...]
+    ) -> None:  # 未发送子轮记录 → 登记跳过请求；无返回值
         for item in skipped:
             self._skipped[item.id] = item
 
     def _prepare_decode(
         self, running: dict[int, RunningRequest], now_ms: float
-    ) -> tuple[dict[int, RunningRequest], tuple[tuple[int, int], ...]]:  # 运行请求与时刻 → 可解码请求及回撤的 ID/进度
+    ) -> tuple[
+        dict[int, RunningRequest], tuple[tuple[int, int], ...]
+    ]:  # 运行请求与时刻 → 可解码请求及回撤的 ID/进度
         """先驱逐，再按 g、负输入长、ID 回撤；单请求仍无法进展则终止。"""
         remaining = dict(running)
         withdrawn: list[tuple[int, int]] = []
@@ -319,7 +337,9 @@ class Engine:
                 del remaining[key]
         return remaining, tuple(withdrawn)
 
-    def start_step(self, now_ms: float, step_index: int) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
+    def start_step(
+        self, now_ms: float, step_index: int
+    ) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
         """回载未就绪时仍可处理已有请求的 Decode；就绪后再执行准入批次。"""
         selection = self._pending_selection
         if selection is not None and self._pending_loads:
@@ -383,7 +403,9 @@ class Engine:
                 return None
         return self._execute_step(now_ms, step_index, selection)
 
-    def finish_step(self, now_ms: float) -> tuple[int, ...]:  # GPU 步完成时刻 → 发布前缀并返回已完成请求 ID
+    def finish_step(
+        self, now_ms: float
+    ) -> tuple[int, ...]:  # GPU 步完成时刻 → 发布前缀并返回已完成请求 ID
         """仅在模拟的 GPU 步完成时公开本步产生的共享前缀。"""
         if self._pending_publish:
             self._prefix_cache.publish_batch(self._pending_publish)

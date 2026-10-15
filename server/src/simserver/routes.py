@@ -76,7 +76,7 @@ def presets_endpoint() -> PresetCatalog:
 @router.post(
     "/resolve",
     response_model=ResolutionReport,
-    summary="预览物理推理配置的单实例容量与运行可行性",
+    summary="预览单实例 L1/L2、全场共享 L3 容量与运行可行性",
     responses={
         status.HTTP_422_UNPROCESSABLE_CONTENT: _SIMULATION_ERRORS[
             status.HTTP_422_UNPROCESSABLE_CONTENT

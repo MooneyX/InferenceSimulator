@@ -21,11 +21,11 @@ describe("createDefaultSimConfig", () => {
       },
       scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
         l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
+      shared_l3: { mode: "manual", capacity_tokens: 0, lookup_latency_ms: 0 },
       inference: { mode: "manual", page_size: 64, max_output_tokens: 65_536,
-        kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+        kv: { max_total_tokens: 65_536, l2_capacity_tokens: 0,
           kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
-          l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0,
-          l3_lookup_latency_ms: 0 },
+          l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0 },
         timing: { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 },
       },
     });
@@ -166,18 +166,18 @@ describe("validateSimConfig", () => {
   it("requires whole-page L2/L3 capacities and L2 before L3", () => {
     const config = createDefaultSimConfig();
     config.inference.kv.l2_capacity_tokens = 65;
-    config.inference.kv.l3_capacity_tokens = 130;
+    config.shared_l3!.capacity_tokens = 130;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
+      "shared_l3.capacity_tokens",
       "inference.kv.l2_capacity_tokens",
-      "inference.kv.l3_capacity_tokens",
       "inference.kv.kv_bytes_per_token",
       "inference.kv.l2_to_l1_bandwidth_bytes_per_ms",
       "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
     config.inference.kv.l2_capacity_tokens = 0;
-    config.inference.kv.l3_capacity_tokens = 128;
+    config.shared_l3!.capacity_tokens = 128;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
-      "inference.kv.l3_capacity_tokens",
+      "shared_l3.capacity_tokens",
       "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
   });
@@ -192,14 +192,14 @@ describe("validateSimConfig", () => {
     config.inference.kv.kv_bytes_per_token = 4096;
     config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 1024;
     expect(validateSimConfig(config)).toEqual([]);
-    config.inference.kv.l3_capacity_tokens = 64;
+    config.shared_l3!.capacity_tokens = 64;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "inference.kv.l3_to_l2_bandwidth_bytes_per_ms",
     ]);
     config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms = 128;
     config.inference.kv.l2_latency_ms = 0.5;
     config.inference.kv.l3_latency_ms = 1;
-    config.inference.kv.l3_lookup_latency_ms = 2.5;
+    config.shared_l3!.lookup_latency_ms = 2.5;
     config.scheduler.l3_prefetch_min_tokens = 0;
     expect(validateSimConfig(config)).toEqual([]);
     config.inference.kv.kv_bytes_per_token = 1.5;
@@ -251,7 +251,7 @@ describe("validateSimConfig", () => {
     config.inference.timing.prefill_c2 = Number.POSITIVE_INFINITY;
     config.inference.timing.decode_d1 = -1;
     config.inference.timing.decode_d2 = Number.NaN;
-    config.inference.kv.l3_lookup_latency_ms = -1;
+    config.shared_l3!.lookup_latency_ms = -1;
 
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
       "workload.synthetic.num_requests",
@@ -267,8 +267,8 @@ describe("validateSimConfig", () => {
       "inference.timing.prefill_c2",
       "inference.timing.decode_d1",
       "inference.timing.decode_d2",
+      "shared_l3.lookup_latency_ms",
       "inference.kv.max_total_tokens",
-      "inference.kv.l3_lookup_latency_ms",
     ]);
   });
 

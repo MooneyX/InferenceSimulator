@@ -1,6 +1,6 @@
 # 合成负载的完整块身份
 
-本文只定义当前合成负载的完整块 ID。它是供缓存判等的不透明结构化字符串，**不是真实 token 内容的哈希**；仅在单场唯一请求 ID、独立 cache、同 session 父子继承的范围内有效。计划只保存长度、拓扑和理想继承量；请求不物化 token ID 序列。计划与客户端接口见 [workload.md](workload.md)，物理缓存规则见 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+本文只定义当前合成负载的完整块 ID。它是供缓存判等的不透明结构化字符串，**不是真实 token 内容的哈希**；仅在单场唯一请求 ID、本场缓存池、同 session 父子继承的范围内有效。计划只保存长度、拓扑和理想继承量；请求不物化 token ID 序列。计划与客户端接口见 [workload.md](workload.md)，物理缓存规则见 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
 
 ## 编码格式
 
@@ -12,7 +12,7 @@ chunk:{request_id}:{block_index}
 - `block_index`：块在该请求连续逻辑上下文（input + output）中的 0 基序号；完整块 i 覆盖 token 区间 `[i*B, (i+1)*B)`，输出不从块 0 重新编号。输入尾部的不足块可以由输出补齐；最终仍不足 `B` 的尾块保留有效 token 数和物理占用，但不生成可缓存 ID，也不进入 `hash_index`。
 - 子轮次的前 `K_i` 个完整继承块（全部可继承完整页）**整体拷贝父请求的字符串**，不以子请求 ID 重新编码；从块 `K_i` 起按子请求 ID 和对应块序号编码。即使父块本身继承自更早的祖先，也继续拷贝其原字符串。父请求未填满的尾块不继承；不同请求的新块不会相等，继承块则刻意相等。
 - 不支持跨 session 公共前缀：不同根请求的新块 ID 相互隔离，只有同 session 的父子轮次显式继承完整块 ID；配置中不提供跨 session 共享开关，未知字段由 schema 校验拒绝。如需重新支持，应另行定义相应身份来源与理想命中规则。
-- `namespace` 不进入编码：单场内模型/tokenizer/salt 等维度固定，隔离边界由独立 cache 实例承载。未来多场或多 namespace 共享同一 cache 时，必须给身份增加隔离域，不能直接复用上述格式。
+- `namespace` 不进入编码：单场内模型/tokenizer/salt 等维度固定，隔离边界由每场重新创建的缓存池承载。未来多场或多 namespace 共享同一 cache 时，必须给身份增加隔离域，不能直接复用上述格式。
 
 hash 对内核其余部分保持不透明字符串；禁止按 session ID、请求 ID、长度或命中率直接判定 cache hit——请求 ID 只用于新块身份**生成**，命中**判定**仍只能经 `hash_index` 判等。
 

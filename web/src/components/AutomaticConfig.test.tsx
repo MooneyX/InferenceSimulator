@@ -64,6 +64,19 @@ describe("AutomaticConfig", () => {
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
+  it("invalidates a capacity preview when the shared L3 budget changes", async () => {
+    const config = createDefaultPhysicalSimConfig();
+    const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("全场共享 L3"));
+    const changed = { ...config, shared_l3: { mode: "physical" as const, available_gb: 1000, lookup_latency_ms: 1 } };
+    rerender(<AutomaticConfig config={changed} onInferenceChange={vi.fn()} disabled={false} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
+    await waitFor(() => expect(resolveConfig).toHaveBeenLastCalledWith(changed));
+    await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
+  });
+
   it("matches complete Qwen defaults independently of API object key order", async () => {
     const qwen = JSON.parse(JSON.stringify(initialModel)) as typeof initialModel;
     qwen.attention_groups = qwen.attention_groups!.map((group) =>
@@ -525,11 +538,7 @@ describe("AutomaticConfig", () => {
     expect(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）")).toHaveValue(0.01);
     expect(screen.getByLabelText("EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）")).toHaveValue(0.02);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(288);
-    expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(0);
-    fireEvent.change(screen.getByLabelText("L3 查找延迟（ms）"), { target: { value: "1.5" } });
-    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
-      storage: { ...config.inference.storage, l3_lookup_latency_ms: 1.5 } });
-    refresh();
+    expect(screen.queryByLabelText("L3 查找延迟（ms）")).not.toBeInTheDocument();
     expect(screen.getByText(/2,250 TFLOPS 稠密 BF16\/FP16 算力/)).toBeInTheDocument();
     expect(screen.getByText(/8,000 GB\/s HBM 带宽/)).toBeInTheDocument();
     expect(screen.getByText(/1,800 GB\/s 单卡 NVLink 双向标称带宽/)).toBeInTheDocument();
@@ -564,7 +573,7 @@ describe("AutomaticConfig", () => {
       storage: { ...config.inference.storage, runtime_reserve_bytes: 2_000_000_000 } });
     refresh();
     expect(config.inference.model).toEqual(expect.objectContaining({ moe_layers: 94, hidden_size: 2048 }));
-    expect(config.inference.storage.l3_lookup_latency_ms).toBe(1.5);
+    expect(config.shared_l3?.lookup_latency_ms).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(resolveConfig).toHaveBeenCalledWith(config));
   });

@@ -18,10 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 __all__ = [
     "AbortedRequest",
     "AnalyticalSummary",
+    "AnalyticalTimingConfig",
     "Arrival",
     "AttentionGroup",
     "CapacityReport",
     "ClientWakeup",
+    "EmpiricalTimingConfig",
     "EngineConfig",
     "FixedLength",
     "HardwareSpec",
@@ -30,22 +32,21 @@ __all__ = [
     "InstanceResult",
     "LengthDist",
     "LognormalLength",
+    "ManualInferenceConfig",
+    "ManualKVConfig",
+    "ManualL3Config",
     "Metrics",
     "ModelSpec",
     "NormSpec",
     "PerfModelConfig",
+    "PhysicalInferenceConfig",
+    "PhysicalL3Config",
     "PoissonLength",
     "RankCapacityReport",
     "RequestRecord",
-    "AnalyticalTimingConfig",
-    "EmpiricalTimingConfig",
-    "ManualInferenceConfig",
-    "ManualKVConfig",
-    "PhysicalInferenceConfig",
     "ResolutionReport",
-    "SchedulerConfig",
-    "TraceWorkloadConfig",
     "RouterSpec",
+    "SchedulerConfig",
     "SessionConfig",
     "SimConfig",
     "SimMeta",
@@ -55,6 +56,7 @@ __all__ = [
     "SyntheticWorkloadConfig",
     "TracePlan",
     "TraceTurn",
+    "TraceWorkloadConfig",
     "TurnPlan",
     "WorkloadConfig",
     "WorkloadMode",
@@ -210,7 +212,7 @@ class WorkloadConfig(_Frozen):
 
 
 class EngineConfig(_Frozen):
-    """单实例 KV 池配置；页数仅由 token 容量和页大小推导。"""
+    """实例运行规格；L1/L2 独占，L3 容量反映全场共享池。"""
 
     max_running_requests: int = Field(ge=1, description="同时驻留的运行请求数上限")
     max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
@@ -301,13 +303,11 @@ class ManualKVConfig(_Frozen):
 
     max_total_tokens: int = Field(ge=1)
     l2_capacity_tokens: int = Field(default=0, ge=0)
-    l3_capacity_tokens: int = Field(default=0, ge=0)
     kv_bytes_per_token: int | None = Field(default=None, gt=0)
     l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class ManualInferenceConfig(_Frozen):
@@ -324,11 +324,8 @@ class ManualInferenceConfig(_Frozen):
         kv = self.kv
         if kv.max_total_tokens < self.page_size or kv.max_total_tokens % self.page_size:
             raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
-        for tier in ("l2", "l3"):
-            if getattr(kv, f"{tier}_capacity_tokens") % self.page_size:
-                raise ValueError(f"{tier}_capacity_tokens 必须是 page_size 的整数倍")
-        if kv.l3_capacity_tokens and not kv.l2_capacity_tokens:
-            raise ValueError("l3_capacity_tokens > 0 要求 l2_capacity_tokens > 0")
+        if kv.l2_capacity_tokens % self.page_size:
+            raise ValueError("l2_capacity_tokens 必须是 page_size 的整数倍")
         if kv.l2_capacity_tokens and (
             kv.kv_bytes_per_token is None or kv.l2_to_l1_bandwidth_bytes_per_ms is None
         ):
@@ -336,8 +333,6 @@ class ManualInferenceConfig(_Frozen):
                 "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 "
                 "l2_to_l1_bandwidth_bytes_per_ms 为正"
             )
-        if kv.l3_capacity_tokens and kv.l3_to_l2_bandwidth_bytes_per_ms is None:
-            raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
         return self
 
 
@@ -497,17 +492,15 @@ class HardwareSpec(_Frozen):
 
 
 class StorageSpec(_Frozen):
-    """GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。"""
+    """单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。"""
 
     l1_available_gb: float = Field(gt=0, allow_inf_nan=False)
     l2_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    l3_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     runtime_reserve_bytes: int = Field(default=0, ge=0)
     l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class PhysicalInferenceConfig(_Frozen):
@@ -526,15 +519,54 @@ class PhysicalInferenceConfig(_Frozen):
     ep_size: int = Field(default=1, ge=1)
 
 
+class ManualL3Config(_Frozen):
+    mode: Literal["manual"] = "manual"
+    capacity_tokens: int = Field(
+        default=0, ge=0, description="全场共享 L3 token 总容量；0 表示关闭"
+    )
+    lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
+class PhysicalL3Config(_Frozen):
+    mode: Literal["physical"] = "physical"
+    available_gb: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="全场共享 L3 十进制 GB 总容量；0 表示关闭",
+    )
+    lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+
 class SimConfig(_Frozen):
-    """唯一仿真输入；负载、调度和推理规格各自只有一个来源。"""
+    """唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。"""
 
     workload: WorkloadConfig
     scheduler: SchedulerConfig
     inference: Annotated[
         ManualInferenceConfig | PhysicalInferenceConfig, Field(discriminator="mode")
     ]
-    num_instances: int = Field(ge=1, description="独占相同单实例配置的推理副本数量")
+    num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1/L2，共享 L3")
+    shared_l3: Annotated[ManualL3Config | PhysicalL3Config, Field(discriminator="mode")] | None = (
+        None
+    )
+
+    @model_validator(mode="after")
+    def _check_shared_l3(self) -> Self:
+        l3 = self.shared_l3
+        if l3 is None:
+            return self
+        if l3.mode != self.inference.mode:
+            raise ValueError("shared_l3.mode 必须与 inference.mode 一致")
+        if isinstance(l3, ManualL3Config) and isinstance(self.inference, ManualInferenceConfig):
+            if l3.capacity_tokens % self.inference.page_size:
+                raise ValueError("shared_l3.capacity_tokens 必须是 page_size 的整数倍")
+            if l3.capacity_tokens:
+                if not self.inference.kv.l2_capacity_tokens:
+                    raise ValueError("启用共享 L3 前必须先启用 L2")
+                if self.inference.kv.l3_to_l2_bandwidth_bytes_per_ms is None:
+                    raise ValueError("启用共享 L3 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
+        return self
 
 
 class RankCapacityReport(_Record):
@@ -752,7 +784,9 @@ class RequestRecord(_Record):
     l3_hit_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _check_ordering(self) -> Self:  # 当前请求区间与分层命中记录 → 校验时序和 token 守恒，返回自身
+    def _check_ordering(
+        self,
+    ) -> Self:  # 当前请求区间与分层命中记录 → 校验时序和 token 守恒，返回自身
         if not (self.arrival <= self.prefill_start <= self.prefill_end <= self.finish):
             raise ValueError(
                 "区间端点必须单调不减: "
@@ -777,8 +811,10 @@ class AbortedRequest(_Record):
     arrival: float = Field(ge=0)
     failed_at: float = Field(ge=0)
     reason: Literal[
-        "input_exceeds_kv_capacity", "decode_kv_exhausted",
-        "invalid_trace_output", "output_exceeds_engine_limit",
+        "input_exceeds_kv_capacity",
+        "decode_kv_exhausted",
+        "invalid_trace_output",
+        "output_exceeds_engine_limit",
     ]
     generated_tokens: int = Field(ge=0)
     retry_count: int = Field(ge=0)
@@ -861,16 +897,18 @@ class Metrics(_Record):
     l2_active_blocks: int = Field(default=0, ge=0)
     l2_evictable_blocks: int = Field(default=0, ge=0)
     l2_free_blocks: int = Field(default=0, ge=0)
-    l3_evictions: int = Field(default=0, ge=0)
-    l3_peak_resident_blocks: int = Field(default=0, ge=0)
-    l3_capacity_blocks: int = Field(default=0, ge=0)
-    l3_resident_blocks: int = Field(default=0, ge=0)
-    l3_active_blocks: int = Field(default=0, ge=0)
-    l3_evictable_blocks: int = Field(default=0, ge=0)
-    l3_free_blocks: int = Field(default=0, ge=0)
+    l3_evictions: int | None = Field(default=0, ge=0)
+    l3_peak_resident_blocks: int | None = Field(default=0, ge=0)
+    l3_capacity_blocks: int | None = Field(default=0, ge=0)
+    l3_resident_blocks: int | None = Field(default=0, ge=0)
+    l3_active_blocks: int | None = Field(default=0, ge=0)
+    l3_evictable_blocks: int | None = Field(default=0, ge=0)
+    l3_free_blocks: int | None = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _check_cache_conservation(self) -> Self:  # 当前全场指标 → 校验各层物理页和命中 token 守恒，返回自身
+    def _check_cache_conservation(
+        self,
+    ) -> Self:  # 当前全场指标 → 校验各层物理页和命中 token 守恒，返回自身
         if not (  # 输入 token 分为命中与重算；物理页分为驻留与空闲
             self.actual_hit_tokens <= self.ideal_hit_tokens <= self.total_input_tokens
             and self.actual_prefill_tokens + self.actual_hit_tokens == self.total_input_tokens
@@ -890,7 +928,18 @@ class Metrics(_Record):
             evictable = getattr(self, f"{tier}_evictable_blocks")
             free = getattr(self, f"{tier}_free_blocks")
             peak = getattr(self, f"{tier}_peak_resident_blocks")
-            if (
+            values = (
+                capacity,
+                resident,
+                active,
+                evictable,
+                free,
+                peak,
+                getattr(self, f"{tier}_evictions"),
+            )
+            if tier == "l3" and all(value is None for value in values):
+                continue
+            if any(value is None for value in values) or (
                 free + resident != capacity
                 or active + evictable != resident
                 or not (resident <= peak <= capacity)
@@ -949,7 +998,9 @@ class SimResult(_Record):
     analysis: AnalyticalSummary | None = None
 
     @model_validator(mode="after")
-    def _check_result_counts(self) -> Self:  # 当前完整结果 → 校验实例计数、互斥状态和指标定义，返回自身
+    def _check_result_counts(
+        self,
+    ) -> Self:  # 当前完整结果 → 校验实例计数、互斥状态和指标定义，返回自身
         if (
             [item.instance_id for item in self.instances]
             != list(range(self.meta.config.num_instances))

@@ -10,7 +10,7 @@ from simcore.capacity import prepare_runtime
 from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
-from simcore.kv_cache import L1Snapshot, TierSnapshot
+from simcore.kv_cache import CachePool, L1Snapshot, TierSnapshot
 from simcore.metrics import compute_metrics
 from simcore.router import Router
 from simcore.schemas import (
@@ -40,8 +40,17 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
     engine_config = runtime.engine
     started_at = perf_counter()
     client = Client(config.workload, engine_config, trace_plan=trace_plan)
+    shared_l3 = CachePool(
+        "L3",
+        config.num_instances * 2,
+        engine_config.l3_capacity_tokens // engine_config.page_size,
+        engine_config.page_size,
+    )
     runs = Coordinator(
-        tuple(Engine(runtime) for _ in range(config.num_instances)),
+        tuple(
+            Engine(runtime, shared_l3=shared_l3, instance_id=index)
+            for index in range(config.num_instances)
+        ),
         client,
         Router(config.num_instances, session_affinity=trace_plan is not None),
     ).run()
@@ -106,7 +115,7 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
             ),
             wall_clock_ms=wall_clock_ms,
         ),
-        metrics=_summarize(runs, plan, config),
+        metrics=_summarize(runs, plan, config, shared_l3.snapshot()),
         instances=instances,
         requests=records,
         aborted_requests=aborted,
@@ -129,8 +138,13 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
     return result
 
 
-def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfig) -> Metrics:  # 实例结果、负载计划与配置 → 合并后的指标
-    """按全场实际到达窗口重新计算时延；末态缓存按独占实例求和。"""
+def _summarize(
+    runs: tuple[EngineRun, ...],
+    plan: WorkloadPlan,
+    config: SimConfig,
+    shared_l3: TierSnapshot | None = None,
+) -> Metrics:
+    """本地池按实例求和；共享池只在全场统计一次。"""
     records = [record for run in runs for record in run.records]
     sent_arrivals = [item.arrival for run in runs for item in run.records] + [
         item.arrival for run in runs for item in run.aborted_requests
@@ -141,23 +155,20 @@ def _summarize(runs: tuple[EngineRun, ...], plan: WorkloadPlan, config: SimConfi
             for item in fields(L1Snapshot)
         }
     )
-    tiers = [
-        TierSnapshot(
-            **{
-                item.name: sum(getattr(getattr(run, tier), item.name) for run in runs)
-                for item in fields(TierSnapshot)
-            }
-        )
-        for tier in ("l2_snapshot", "l3_snapshot")
-    ]
+    l2 = TierSnapshot(
+        **{
+            item.name: sum(getattr(run.l2_snapshot, item.name) for run in runs)
+            for item in fields(TierSnapshot)
+        }
+    )
     return compute_metrics(
         records,
         plan=plan,
         page_size=config.inference.page_size,
         workload_mode=config.workload.mode,
         cache_snapshot=l1,
-        l2_snapshot=tiers[0],
-        l3_snapshot=tiers[1],
+        l2_snapshot=l2,
+        l3_snapshot=shared_l3,
         l1_evictions=sum(run.l1_evictions for run in runs),
         # 各实例峰值发生时刻可能不同；该字段是各实例峰值之和（容量规划上界）。
         l1_peak_resident_blocks=sum(run.l1_peak_resident_blocks for run in runs),

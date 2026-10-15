@@ -26,7 +26,7 @@
     },
     "/api/resolve": {
       "post": {
-        "summary": "预览物理推理配置的单实例容量与运行可行性",
+        "summary": "预览单实例 L1/L2、全场共享 L3 容量与运行可行性",
         "operationId": "resolve_endpoint_api_resolve_post",
         "requestBody": {
           "content": {
@@ -1215,12 +1215,6 @@
             "title": "L2 Capacity Tokens",
             "default": 0
           },
-          "l3_capacity_tokens": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "L3 Capacity Tokens",
-            "default": 0
-          },
           "kv_bytes_per_token": {
             "anyOf": [
               {
@@ -1268,12 +1262,6 @@
             "minimum": 0.0,
             "title": "L3 Latency Ms",
             "default": 0.0
-          },
-          "l3_lookup_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Lookup Latency Ms",
-            "default": 0.0
           }
         },
         "additionalProperties": false,
@@ -1283,6 +1271,32 @@
         ],
         "title": "ManualKVConfig",
         "description": "手动指定 KV 容量和每条上行链路的参数。"
+      },
+      "ManualL3Config": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "manual",
+            "title": "Mode",
+            "default": "manual"
+          },
+          "capacity_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Capacity Tokens",
+            "description": "全场共享 L3 token 总容量；0 表示关闭",
+            "default": 0
+          },
+          "lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Lookup Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ManualL3Config"
       },
       "Metrics": {
         "properties": {
@@ -1640,44 +1654,93 @@
             "default": 0
           },
           "l3_evictions": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Evictions",
             "default": 0
           },
           "l3_peak_resident_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Peak Resident Blocks",
             "default": 0
           },
           "l3_capacity_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Capacity Blocks",
             "default": 0
           },
           "l3_resident_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Resident Blocks",
             "default": 0
           },
           "l3_active_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Active Blocks",
             "default": 0
           },
           "l3_evictable_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Evictable Blocks",
             "default": 0
           },
           "l3_free_blocks": {
-            "type": "integer",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "L3 Free Blocks",
             "default": 0
           }
@@ -1992,6 +2055,32 @@
         ],
         "title": "PhysicalInferenceConfig",
         "description": "物理实例：共用模型和硬件解析容量及 GPU 计时规格。"
+      },
+      "PhysicalL3Config": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "physical",
+            "title": "Mode",
+            "default": "physical"
+          },
+          "available_gb": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Available Gb",
+            "description": "全场共享 L3 十进制 GB 总容量；0 表示关闭",
+            "default": 0.0
+          },
+          "lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Lookup Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PhysicalL3Config"
       },
       "PlanReceipt": {
         "properties": {
@@ -2542,7 +2631,32 @@
             "type": "integer",
             "minimum": 1.0,
             "title": "Num Instances",
-            "description": "独占相同单实例配置的推理副本数量"
+            "description": "同构推理副本数量；各自独占 L1/L2，共享 L3"
+          },
+          "shared_l3": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ManualL3Config"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PhysicalL3Config"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "mode",
+                  "mapping": {
+                    "manual": "#/components/schemas/ManualL3Config",
+                    "physical": "#/components/schemas/PhysicalL3Config"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared L3"
           }
         },
         "additionalProperties": false,
@@ -2554,7 +2668,7 @@
           "num_instances"
         ],
         "title": "SimConfig",
-        "description": "唯一仿真输入；负载、调度和推理规格各自只有一个来源。"
+        "description": "唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。"
       },
       "SimMeta": {
         "properties": {
@@ -2744,12 +2858,6 @@
             "title": "L2 Available Gb",
             "default": 0.0
           },
-          "l3_available_gb": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Available Gb",
-            "default": 0.0
-          },
           "runtime_reserve_bytes": {
             "type": "integer",
             "minimum": 0.0,
@@ -2791,12 +2899,6 @@
             "minimum": 0.0,
             "title": "L3 Latency Ms",
             "default": 0.0
-          },
-          "l3_lookup_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Lookup Latency Ms",
-            "default": 0.0
           }
         },
         "additionalProperties": false,
@@ -2805,7 +2907,7 @@
           "l1_available_gb"
         ],
         "title": "StorageSpec",
-        "description": "GB 为十进制；L1 可用预算包括驻留权重，L2/L3 仅放 KV。"
+        "description": "单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。"
       },
       "SyntheticWorkloadConfig": {
         "properties": {

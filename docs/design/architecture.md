@@ -20,7 +20,7 @@ prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部
 workload     build_synthetic_closed_loop_plan 规划合成闭环长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
 client       Client：_prepare_workload 统一负载准备，on_wakeup 统一请求构造与投放（依赖 schemas、workload、prefix_hash）
 perf_model   性能模型：步长纯函数（依赖 schemas）
-kv_cache     TieredKVCache：唯一索引、分层容量、稳定 LRU、传输占位与完成迁入（依赖 schemas）
+kv_cache     CachePool：逐池页索引、容量、稳定 LRU；TieredKVCache：请求状态、连续匹配与跨池操作（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
 engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
@@ -34,7 +34,7 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 `runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
 
-- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference` 组成。`inference.mode=manual` 使用显式 KV 容量与经验计时；`physical` 使用模型/硬件/存储推导容量，并选择经验或解析计时。
+- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference` 和可选 `shared_l3` 组成。`inference.mode=manual` 使用显式 KV 容量与经验计时；`physical` 使用模型/硬件/存储推导容量，并选择经验或解析计时。
 - `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload` 公共层；`workload.trace` 只保存可选 `plan_id`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
 - 始终返回单个 `SimResult`，其中 `resolution`、`analysis` 可为空；经验计时的 `analysis` 为 `None`。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
 - 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
@@ -72,7 +72,8 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 协作者注入：
 
-- `TieredKVCache`：由 `engine` 构造并持有唯一所有权，注入 `F001Scheduler`。调度器调用 `probe` / `pin` / `cancel_pin` 保护连续队头，以 `plan` 预检包含提升需求的分层预算，但不提交同步提升。引擎通过 `reserve_transfer` 保护来源并占用目的容量，传输完成事件通过 `complete_transfer` 迁入；`ensure_free` 保留同步驱逐/降级腾位。在执行和完成边界调用 `admit` / `extend` / `publish_batch` / `finish` / `withdraw` / `snapshot`，完整页 ID 的唯一索引、各层 LRU 及迁移计数均由缓存维护。
+- `TieredKVCache`：由 `engine` 独占并注入 `F001Scheduler`，管理请求 `K/F`、私有页和候选引用；`probe` / `pin` / `cancel_pin` / `plan` 组织连续匹配与无副作用预算，`admit` / `extend` / `publish_batch` / `finish` / `withdraw` 管理请求生命周期。
+- `CachePool`：逐池拥有页索引、容量、LRU 和保护状态。每实例独占 L1/L2；`runner` 每场创建一个 L3 并以 `Engine(runtime, shared_l3=..., instance_id=...)` 注入所有实例，编号在本场唯一。共享 L3 是明确的可变协作者例外，不放进不可变 `RuntimeConfig`，不跨运行复用。上行传输由 `reserve_transfer` / `complete_transfer` 保护来源并完成目标占位；L3 回载保留来源副本。共享池统计由 `runner` 只读取一次。
 
 调度事件仅用于推进仿真，不保存逐步诊断日志。`EngineRun` 只携带正常汇总使用的请求记录、分层快照与整体计数；`compute_metrics` 必须接收完整计划、三级快照和实际发送统计。
 

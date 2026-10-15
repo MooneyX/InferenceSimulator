@@ -5,13 +5,13 @@ import { initialHardware, initialModel, initialStorage, createDefaultSimConfig, 
 import { parseSimConfigJson, serializeSimConfig } from "./parameterTransfer";
 
 function parsePhysicalJson(json: string): PhysicalInferenceConfig {
-  const config = parseSimConfigJson(JSON.stringify({ ...createDefaultPhysicalSimConfig(), inference: JSON.parse(json) }));
+  const config = parseSimConfigJson(JSON.stringify({ ...createDefaultPhysicalSimConfig(), shared_l3: null, inference: JSON.parse(json) }));
   if (config.inference.mode !== "physical") throw new Error("预期物理配置");
   return config.inference;
 }
 
 function serializePhysical(inference: PhysicalInferenceConfig): string {
-  const json = serializeSimConfig({ ...createDefaultPhysicalSimConfig(), inference });
+  const json = serializeSimConfig({ ...createDefaultPhysicalSimConfig(), shared_l3: null, inference });
   return JSON.stringify(JSON.parse(json).inference);
 }
 
@@ -34,7 +34,7 @@ describe("parameter JSON transfer", () => {
     }));
     expect(config.scheduler).toEqual({ max_running_requests: 2, max_prefill_tokens: 16_384, l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true });
     expect(config.inference).toMatchObject({ mode: "manual", page_size: 64,
-      kv: { max_total_tokens: 128, l2_capacity_tokens: 0, l3_capacity_tokens: 0, l3_lookup_latency_ms: 0 },
+      kv: { max_total_tokens: 128, l2_capacity_tokens: 0 },
       timing: { mode: "empirical", prefill_c2: 0 } });
     expect(config.workload).toMatchObject({ mode: "synthetic", arrival_mode: "closed_loop", seed: 0, session_rate: 1 });
     expect(config.inference).toHaveProperty("max_output_tokens", 65_536);
@@ -60,7 +60,7 @@ describe("parameter JSON transfer", () => {
     }));
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" }, model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
-      hardware: { gpu_count: 1, kernel_overhead_ms: 0 }, storage: { l2_available_gb: 0, l3_available_gb: 0 } });
+      hardware: { gpu_count: 1, kernel_overhead_ms: 0 }, storage: { l2_available_gb: 0 } });
     expect(config.workload).toMatchObject({ seed: 0, target_qps: null, trace: { plan_id: null } });
   });
 
@@ -416,7 +416,7 @@ describe("parameter JSON transfer", () => {
         head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
       hardware: { name: "GPU", gpu_count: 1, memory_bytes_per_gpu: 1000000,
         effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
-      storage: { l1_available_gb: 0.001, l2_available_gb: 0, l3_available_gb: 0 },
+      storage: { l1_available_gb: 0.001, l2_available_gb: 0 },
     };
     expect(parsePhysicalJson(JSON.stringify(request)).ep_size).toBe(1);
     expect(() => parsePhysicalJson(JSON.stringify({ ...request, ep_size: 0 })))
@@ -465,21 +465,20 @@ describe("parameter JSON transfer", () => {
   it("round-trips a three-tier config including link speeds and latency", () => {
     const config = createDefaultSimConfig();
     config.inference.kv.l2_capacity_tokens = 128;
-    config.inference.kv.l3_capacity_tokens = 64;
+    config.shared_l3!.capacity_tokens = 64;
     config.inference.kv.kv_bytes_per_token = 2048;
     config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 100;
     config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms = 50;
     config.inference.kv.l2_latency_ms = 1;
     config.inference.kv.l3_latency_ms = 2;
-    config.inference.kv.l3_lookup_latency_ms = 0.75;
+    config.shared_l3!.lookup_latency_ms = 0.75;
     config.scheduler.l3_prefetch_min_tokens = 0;
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
   });
 
   it("accepts defaults but rejects extra and mistyped KV3 fields", () => {
     const base = createDefaultSimConfig();
-    const { l3_capacity_tokens: _omitted, ...missing } = base.inference.kv;
-    const { l3_lookup_latency_ms: _noLookup, ...withoutLookup } = base.inference.kv;
+    const { shared_l3: _omitted, ...withoutL3 } = base;
     for (const [kv, message] of [
       [{ ...base.inference.kv, unknown_link: 1 }, "不支持的参数：inference.kv.unknown_link"],
       [{ ...base.inference.kv, kv_bytes_per_token: "2048" }, "inference.kv.kv_bytes_per_token 必须是数值或 null"],
@@ -490,8 +489,9 @@ describe("parameter JSON transfer", () => {
     }
     const { l3_prefetch_min_tokens: _noThreshold, ...withoutThreshold } = base.scheduler;
     expect(parseSimConfigJson(JSON.stringify({ ...base, scheduler: withoutThreshold })).scheduler.l3_prefetch_min_tokens).toBe(256);
-    expect(parseSimConfigJson(JSON.stringify({ ...base, inference: { ...base.inference, kv: missing } })).inference).toMatchObject({ kv: { l3_capacity_tokens: 0 } });
-    expect(parseSimConfigJson(JSON.stringify({ ...base, inference: { ...base.inference, kv: withoutLookup } })).inference).toMatchObject({ kv: { l3_lookup_latency_ms: 0 } });
+    expect(parseSimConfigJson(JSON.stringify(withoutL3)).shared_l3).toBeNull();
+    expect(parseSimConfigJson(JSON.stringify({ ...base, shared_l3: { mode: "manual" } })).shared_l3)
+      .toEqual({ mode: "manual", capacity_tokens: 0, lookup_latency_ms: 0 });
     expect(() => parseSimConfigJson(JSON.stringify({ ...base, scheduler: { ...base.scheduler, l3_prefetch_min_tokens: -1 } })))
       .toThrow("scheduler.l3_prefetch_min_tokens");
   });
@@ -507,7 +507,7 @@ describe("parameter JSON transfer", () => {
     config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = Number.POSITIVE_INFINITY;
     expect(() => serializeSimConfig(config)).toThrow("l2_to_l1_bandwidth_bytes_per_ms");
     config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = null;
-    config.inference.kv.l3_lookup_latency_ms = Number.NaN;
-    expect(() => serializeSimConfig(config)).toThrow("l3_lookup_latency_ms");
+    config.shared_l3!.lookup_latency_ms = Number.NaN;
+    expect(() => serializeSimConfig(config)).toThrow("shared_l3.lookup_latency_ms");
   });
 });

@@ -52,7 +52,14 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("JSON 格式不正确");
   }
 
-  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference"]);
+  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference", "shared_l3"], { shared_l3: null });
+  if (root.shared_l3 != null) {
+    const mode = (root.shared_l3 as Record<string, unknown>).mode;
+    if (mode !== "manual" && mode !== "physical") throw new Error("shared_l3.mode 仅支持 manual 或 physical");
+    const capacity = mode === "manual" ? "capacity_tokens" : "available_gb";
+    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["mode", capacity, "lookup_latency_ms"], { [capacity]: 0, lookup_latency_ms: 0 });
+    numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", [capacity, "lookup_latency_ms"]);
+  }
   numericFields(root, "参数配置", ["num_instances"]);
   const workload: Record<string, unknown> = { mode: "synthetic", arrival_mode: "closed_loop", seed: 0,
     ...physicalObject(root.workload, "workload", [], [
@@ -107,10 +114,10 @@ export function parseSimConfigJson(json: string): SimConfig {
     const inference = objectWithKeys(root.inference, "inference", ["mode", "page_size", "max_output_tokens", "kv", "timing"], { page_size: 64, max_output_tokens: 65_536 });
     numericFields(inference, "inference", ["page_size", "max_output_tokens"]);
     const kv = objectWithKeys(inference.kv, "inference.kv", [
-      "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms",
-    ], { l2_capacity_tokens: 0, l3_capacity_tokens: 0, kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
-      l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0 });
-    numericFields(kv, "inference.kv", ["max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]);
+      "max_total_tokens", "l2_capacity_tokens", "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms", "l2_latency_ms", "l3_latency_ms",
+    ], { l2_capacity_tokens: 0, kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
+      l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0 });
+    numericFields(kv, "inference.kv", ["max_total_tokens", "l2_capacity_tokens", "l2_latency_ms", "l3_latency_ms"]);
     for (const key of ["kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms"]) {
       if (kv[key] !== null && typeof kv[key] !== "number") throw new Error(`inference.kv.${key} 必须是数值或 null`);
     }
@@ -194,10 +201,10 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
     "kernel_overhead_ms"]) } as Record<string, unknown>;
-  const storage = { l2_available_gb: 0, l3_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: 0,
-    l3_latency_ms: 0, l3_lookup_latency_ms: 0, ...physicalObject(root.storage, "storage", ["l1_available_gb"],
-    ["l2_available_gb", "l3_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
-      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"]) } as Record<string, unknown>;
+  const storage = { l2_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: 0,
+    l3_latency_ms: 0, ...physicalObject(root.storage, "storage", ["l1_available_gb"],
+    ["l2_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
+      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
   root.model = model;
   root.hardware = hardware;
   root.storage = storage;
@@ -328,8 +335,7 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
   }
   physicalNumber(hardware, "hardware", "kernel_overhead_ms", 0);
   physicalNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
-  for (const key of ["l2_available_gb", "l3_available_gb", "l2_latency_ms", "l3_latency_ms",
-    "l3_lookup_latency_ms"] as const) {
+  for (const key of ["l2_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
     physicalNumber(storage, "storage", key, 0);
   }
   physicalNumber(storage, "storage", "runtime_reserve_bytes", 0, true);

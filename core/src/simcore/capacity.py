@@ -214,7 +214,11 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = _bytes_from_gb(storage.l1_available_gb)
     l2 = _bytes_from_gb(storage.l2_available_gb)
-    l3 = _bytes_from_gb(storage.l3_available_gb)
+    shared = config.shared_l3
+    l3 = (
+        _bytes_from_gb(shared.available_gb)
+        if shared is not None and shared.mode == "physical" else 0
+    )
     if l1 > hardware.memory_bytes_per_gpu:
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
@@ -310,6 +314,8 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     """运行前解析一次容量、GPU 计时与每页链路成本，不改写输入。"""
     inference = config.inference
     scheduler = config.scheduler
+    shared = config.shared_l3
+    lookup_latency = shared.lookup_latency_ms if shared is not None else 0.0
     if isinstance(inference, ManualInferenceConfig):
         kv, timing = inference.kv, inference.timing
         engine = EngineConfig(
@@ -321,7 +327,9 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             max_output_tokens=inference.max_output_tokens,
             max_total_tokens=kv.max_total_tokens,
             l2_capacity_tokens=kv.l2_capacity_tokens,
-            l3_capacity_tokens=kv.l3_capacity_tokens,
+            l3_capacity_tokens=(
+                shared.capacity_tokens if shared is not None and shared.mode == "manual" else 0
+            ),
         )
         perf = PerfModelConfig(
             prefill_c1=timing.prefill_c1,
@@ -333,7 +341,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             l3_to_l2_bandwidth_bytes_per_ms=kv.l3_to_l2_bandwidth_bytes_per_ms,
             l2_latency_ms=kv.l2_latency_ms,
             l3_latency_ms=kv.l3_latency_ms,
-            l3_lookup_latency_ms=kv.l3_lookup_latency_ms,
+            l3_lookup_latency_ms=lookup_latency,
         )
         return runtime_from_components(engine, perf)
 
@@ -372,7 +380,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
         ),
         l2_latency_ms=storage.l2_latency_ms,
         l3_latency_ms=storage.l3_latency_ms,
-        l3_lookup_latency_ms=storage.l3_lookup_latency_ms,
+        l3_lookup_latency_ms=lookup_latency,
     )
     capacity = report.capacity
     l2 = (

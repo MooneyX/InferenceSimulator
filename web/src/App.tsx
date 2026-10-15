@@ -167,7 +167,7 @@ export default function App() {
                 <p>每 token KV {resolution.capacity.kv_bytes_per_token.toLocaleString()} bytes ·
                   L1 {resolution.max_total_tokens.toLocaleString()} token ·
                   L2 {resolution.l2_capacity_tokens.toLocaleString()} token ·
-                  L3 {resolution.l3_capacity_tokens.toLocaleString()} token</p>
+                  全场共享 L3 {resolution.l3_capacity_tokens.toLocaleString()} token</p>
                 {(resolution.capacity.rank_reports ?? []).length > 0 &&
                   <div aria-label="逐卡容量账单">
                     {(resolution.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>

@@ -31,13 +31,11 @@ const config: SimConfig = {
     kv: {
       max_total_tokens: 4096,
       l2_capacity_tokens: 0,
-      l3_capacity_tokens: 0,
       kv_bytes_per_token: null,
       l2_to_l1_bandwidth_bytes_per_ms: null,
       l3_to_l2_bandwidth_bytes_per_ms: null,
       l2_latency_ms: 0,
       l3_latency_ms: 0,
-      l3_lookup_latency_ms: 0,
     },
     timing: {
       mode: "empirical",

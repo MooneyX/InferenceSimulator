@@ -5,7 +5,12 @@
 唯一外部配置为 `SimConfig`；手动/物理推理配置与合成/Trace 负载可独立组合，不再使用单独的解析请求或 Trace 仿真包装体。
 
 ```yaml
-num_instances: int             # 必填，正整数；其余参数描述每实例独占配置
+num_instances: int             # 必填，正整数；每实例独占 L1/L2，共享 L3
+shared_l3:                     # 可选，null 或容量 0 表示关闭；全场最多一个池
+  mode: manual | physical      # 必须与 inference.mode 一致
+  capacity_tokens: int         # 仅 manual，非负整页容量，全场只计一次
+  available_gb: float          # 仅 physical，非负十进制 GB 总预算
+  lookup_latency_ms: float     # 默认 0，非负
 workload:
   mode: synthetic | trace      # 默认 synthetic
   arrival_mode: closed_loop | open_loop  # 默认 closed_loop；网页显式 open_loop
@@ -36,13 +41,11 @@ inference:                     # 按 mode 判别，两个分支共用唯一 page
   kv:
     max_total_tokens: int      # 必填，实际 L1 KV token 容量
     l2_capacity_tokens: int    # 默认 0，关闭 L2；须为整页倍数
-    l3_capacity_tokens: int    # 默认 0，关闭 L3；须为整页倍数，要求 L2>0
     kv_bytes_per_token: int | null # 默认 null；启用 L2 时为正整数
     l2_to_l1_bandwidth_bytes_per_ms: float | null # 启用 L2 时为正
     l3_to_l2_bandwidth_bytes_per_ms: float | null # 启用 L3 时为正
     l2_latency_ms: float       # 默认 0，非负
     l3_latency_ms: float       # 默认 0，非负
-    l3_lookup_latency_ms: float # 默认 0，非负
   timing:
     mode: empirical            # manual 只支持经验计时
     prefill_c1: float
@@ -51,7 +54,7 @@ inference:                     # 按 mode 判别，两个分支共用唯一 page
     decode_d2: float
 ```
 
-`inference.mode=physical` 不接收手填 `kv`，而是接收完整 `model: ModelSpec`、`hardware: HardwareSpec`、`storage: StorageSpec`、`tp_size`、`ep_size` 和 `timing`。解析计时只传 `{"mode":"analytical"}`；经验计时传 `{"mode":"empirical","prefill_c1":...,"prefill_c2":...,"decode_d1":...,"decode_d2":...}`。两种推理分支都从 `inference.page_size` 读取唯一页大小。
+`inference.mode=physical` 不接收手填 `kv`，而是接收完整 `model: ModelSpec`、`hardware: HardwareSpec`、`storage: StorageSpec`、`tp_size`、`ep_size` 和 `timing`。解析计时只传 `{"mode":"analytical"}`；经验计时传 `{"mode":"empirical","prefill_c1":...,"prefill_c2":...,"decode_d1":...,"decode_d2":...}`。两种推理分支都从 `inference.page_size` 读取唯一页大小。L3 容量及查询延迟只接受顶层 `shared_l3`；旧 `inference.kv.l3_capacity_tokens/l3_lookup_latency_ms` 与 `inference.storage.l3_available_gb/l3_lookup_latency_ms` 被删除，提交旧字段返回 422，不保留兼容入口。
 
 ### LengthDist（长度分布，可判别联合）
 
@@ -72,7 +75,7 @@ sigma: float    # 仅 lognormal：形状参数，越大尾越长
 POST /api/simulate
 ```
 
-- 请求必须包含 `num_instances >= 1`；`scheduler` / `inference` 表示单实例配置，物理模式的 `inference.hardware.gpu_count` 也表示每实例卡数，总卡数为两者相乘。所有实例独占硬件与 KV。
+- 请求必须包含 `num_instances >= 1`；`scheduler` / `inference` 表示单实例配置，物理模式的 `inference.hardware.gpu_count` 也表示每实例卡数，总卡数为两者相乘。所有实例独占硬件和 L1/L2；`shared_l3` 为全场总预算，L3→L2 链路仍为每实例接入成本，暂不模拟存储端总吞吐竞争。
 - 同步执行整场仿真，无任务 ID、无持久化。
 - 成功响应即使存在请求级失败仍为 200；三个结果列表均按请求 ID 升序，数量之和等于计划请求总数：
 
@@ -123,7 +126,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 ## 自动解析与 TP/EP 容量预览
 
 - `GET /api/presets` 仅返回 `models` 和 `hardware` 目录，不返回搭配场景列表。模型包含 Qwen3-8B、Qwen3-235B-A22B 和固定修订的 HY4-Preview 主干参考结构以及 B300 单卡显存、互联带宽标称值；不提供已测有效算力或模型修订认证，目录条目不等于已验证部署。B300 的 1800 GB/s 是单卡双向标称值；页面以 600 GB/s 作为未经校准的单 rank 有效带宽试算值，非实测值。
-- `POST /api/resolve` 接受与运行完全相同的 `SimConfig`，返回 `ResolutionReport`，不产生另一套可提交的配置。物理模式的 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size` 均位于 `inference`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；支持全注意力 GQA/MQA、按层数组合的 GQA/MLA/MLA+DSA BF16/FP16 粗估，以及以完整组件配置表示的 HY4-Preview 参考预设，参数可修改，不以名称或修订号锁定结构，容量和性能均复用通用路径。组数不限但层数之和须等于模型层数；组只描述注意力，FFN/MoE 按全模型独立配置，不支持需逐层顺序或可变页成本的注意力。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2/L3 输入为**整组**仅放 KV 的物理容量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；可用 `norms`、`router`、`ihc` 和注意力组辅助字段配置 BF16/FP16/FP32 权重，类型及形状决定逻辑参数数，精度与放置决定驻留字节。辅助容量配置不扩展性能算子模型，未建模权重仍不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
+- `POST /api/resolve` 接受与运行完全相同的 `SimConfig`，返回 `ResolutionReport`，不产生另一套可提交的配置。物理模式的 `ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size` 均位于 `inference`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；支持全注意力 GQA/MQA、按层数组合的 GQA/MLA/MLA+DSA BF16/FP16 粗估，以及以完整组件配置表示的 HY4-Preview 参考预设，参数可修改，不以名称或修订号锁定结构，容量和性能均复用通用路径。组数不限但层数之和须等于模型层数；组只描述注意力，FFN/MoE 按全模型独立配置，不支持需逐层顺序或可变页成本的注意力。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2 输入为**单实例整组**仅放 KV 的预算；L3 输入为顶层 `shared_l3.available_gb` 的**全场总预算**。两者均按一个 TP 组保存一份逻辑页的字节数换算，L3 不乘实例数量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；可用 `norms`、`router`、`ihc` 和注意力组辅助字段配置 BF16/FP16/FP32 权重，类型及形状决定逻辑参数数，精度与放置决定驻留字节。辅助容量配置不扩展性能算子模型，未建模权重仍不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；齐备且为解析计时时才可运行。
 - `ResolutionReport` 包含 `capacity: CapacityReport`、`max_total_tokens`、`l2_capacity_tokens`、`l3_capacity_tokens`、`runnable` 与可空 `reason`；报告只描述容量与可运行性，不替换原输入，不可作为 `simulate` 的参数。
 - `POST /api/simulate` 在内核内一次性准备物理运行规格后执行；支持 Dense TP 与平均负载 MoE/EP 的解析计时，缺通信参数返回 422，TP/EP>1 经验四系数模式返回 501。成功返回单个 `SimResult`：`resolution` 给出逐 rank 容量与运行容量，`analysis` 分列 TP 同步、EP dispatch/combine 的时间与逻辑流量；这些费用已计入 `device_ms`，KV 恢复时间独立。422 `detail` 可为字段错误列表或业务错误字符串，OpenAPI 同时登记两种格式。前端不复用上次容量预览的 token 数作为运行配置；结构估算参数和权重占用未经部署核验，旧配置 JSON 结构会被拒绝。
 - 合成/Trace 负载与手动/物理配置均使用唯一 `/api/simulate`。四系数仅在 `inference.timing.mode=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。

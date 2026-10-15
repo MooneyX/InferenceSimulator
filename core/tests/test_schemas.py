@@ -59,7 +59,10 @@ def manual_config(
     max_output_tokens = engine_data.pop("max_output_tokens")
     scheduler = {name: engine_data.pop(name) for name in scheduler_fields}
     timing = {name: perf_data.pop(name) for name in timing_fields}
+    shared_l3 = {"mode": "manual", "capacity_tokens": engine_data.pop("l3_capacity_tokens"),
+                 "lookup_latency_ms": perf_data.pop("l3_lookup_latency_ms")}
     return SimConfig.model_validate({
+        "shared_l3": shared_l3,
         "num_instances": num_instances,
         "workload": workload,
         "scheduler": scheduler,
@@ -483,7 +486,7 @@ class TestConfigValidation:
         from simcore.capacity import prepare_runtime
 
         config = make_config()
-        assert set(config.model_dump()) == {"num_instances", "workload", "scheduler", "inference"}
+        assert set(config.model_dump()) == {"num_instances", "workload", "scheduler", "inference", "shared_l3"}
         assert not hasattr(config, "engine") and not hasattr(config, "perf_model")
         engine = prepare_runtime(config).engine
         assert (engine.page_size, engine.capacity_pages) == (64, 64)
@@ -544,10 +547,9 @@ class TestConfigValidation:
             inference.timing.prefill_c2
             == inference.kv.l2_latency_ms
             == inference.kv.l3_latency_ms
-            == inference.kv.l3_lookup_latency_ms
             == 0.0
         )
-        assert StorageSpec(l1_available_gb=1).l3_lookup_latency_ms == 0.0
+        assert make_config().shared_l3.lookup_latency_ms == 0.0
         assert inference.kv.kv_bytes_per_token is None
         assert inference.kv.l2_to_l1_bandwidth_bytes_per_ms is None
         assert inference.kv.l3_to_l2_bandwidth_bytes_per_ms is None
@@ -599,7 +601,7 @@ class TestConfigValidation:
         payload = make_config().model_dump()
         payload["inference"]["kv"]["l2_capacity_tokens"] = 64
         if tier == "l3":
-            payload["inference"]["kv"]["l3_capacity_tokens"] = 128
+            payload["shared_l3"]["capacity_tokens"] = 128
         payload["inference"]["kv"].update(perf_updates)
         with pytest.raises(ValidationError, match=missing):
             SimConfig.model_validate(payload)
@@ -617,9 +619,9 @@ class TestConfigValidation:
     def test_enabled_tiers_roundtrip_and_disabled_tiers_need_no_bandwidth(self) -> None:
         payload = make_config().model_dump()
         kv = payload["inference"]["kv"]
+        payload["shared_l3"]["capacity_tokens"] = 128
         kv.update(
             l2_capacity_tokens=64,
-            l3_capacity_tokens=128,
             kv_bytes_per_token=16,
             l2_to_l1_bandwidth_bytes_per_ms=128,
             l3_to_l2_bandwidth_bytes_per_ms=64,
@@ -628,9 +630,9 @@ class TestConfigValidation:
         )
         config = SimConfig.model_validate(payload)
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
+        payload["shared_l3"]["capacity_tokens"] = 0
         kv.update(
             l2_capacity_tokens=0,
-            l3_capacity_tokens=0,
             kv_bytes_per_token=None,
             l2_to_l1_bandwidth_bytes_per_ms=None,
             l3_to_l2_bandwidth_bytes_per_ms=None,
@@ -751,6 +753,7 @@ class TestConfigValidation:
 
     def test_physical_analytical_timing_requires_no_empirical_coefficients(self) -> None:
         payload = make_config().model_dump()
+        payload["shared_l3"] = None
         payload["inference"] = {
             "mode": "physical", "page_size": 4,
             "model": {
@@ -789,8 +792,9 @@ class TestConfigValidation:
         from simcore.capacity import prepare_runtime
 
         payload = make_config().model_dump()
+        payload["shared_l3"]["capacity_tokens"] = 128
         payload["inference"]["kv"].update(
-            l2_capacity_tokens=64, l3_capacity_tokens=128,
+            l2_capacity_tokens=64,
             kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=128,
             l3_to_l2_bandwidth_bytes_per_ms=64, l2_latency_ms=0.5, l3_latency_ms=1.5,
         )

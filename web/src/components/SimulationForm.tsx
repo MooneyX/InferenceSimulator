@@ -85,8 +85,10 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
   const config: ManualSimConfig | PhysicalSimConfig = mode === "automatic" ? automaticConfig : manualConfig;
   function setConfig(next: SimConfig) {
-    if (next.inference.mode === "manual") setManualConfig({ ...next, inference: next.inference });
-    else setAutomaticConfig({ ...next, inference: { ...next.inference, timing: next.inference.timing ?? { mode: "analytical" } } });
+    if (next.inference.mode === "manual") setManualConfig({ ...next, inference: next.inference,
+      shared_l3: next.shared_l3?.mode === "manual" ? next.shared_l3 : null });
+    else setAutomaticConfig({ ...next, shared_l3: next.shared_l3?.mode === "physical" ? next.shared_l3 : null,
+      inference: { ...next.inference, timing: next.inference.timing ?? { mode: "analytical" } } });
   }
   const { model, hardware, tp_size: tpSize, ep_size: epSize } = automaticConfig.inference;
   const timing = config.inference.timing.mode;
@@ -184,11 +186,13 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
       if (imported.inference.mode === "physical") {
         const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
         setAutomaticConfig({ ...imported, inference,
+          shared_l3: imported.shared_l3?.mode === "physical" ? imported.shared_l3 : null,
           workload: imported.workload.mode === "trace" ? automaticConfig.workload : imported.workload });
         if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
         setMode("automatic");
       } else {
         setManualConfig({ ...imported, inference: imported.inference,
+          shared_l3: imported.shared_l3?.mode === "manual" ? imported.shared_l3 : null,
           workload: imported.workload.mode === "trace" ? manualConfig.workload : imported.workload });
         setMode("manual");
       }
@@ -434,21 +438,55 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
       {mode === "automatic" && <AutomaticConfig config={{ ...automaticConfig, workload: submissionConfig.workload }}
         onInferenceChange={(inference) => setAutomaticConfig((current) => ({ ...current, inference }))} disabled={disabled} />}
 
+      <section className="form-section" aria-labelledby="shared-l3-heading">
+        <div className="section-heading"><div>
+          <p className="section-kicker">Shared cache</p><h2 id="shared-l3-heading">共享 L3</h2>
+        </div><p>所有实例共享总容量，不乘实例数量；0 表示关闭。带宽按每实例接入链路计算，不模拟存储端总吞吐竞争。</p></div>
+        <div className="form-grid">
+          {config.inference.mode === "manual" ? <NumberField id="shared-l3-capacity"
+            name="shared_l3.capacity_tokens" label="共享 L3 总容量（token，0 为关闭）" integer
+            value={config.shared_l3?.mode === "manual" ? config.shared_l3.capacity_tokens ?? 0 : 0}
+            error={errorByField.get("shared_l3.capacity_tokens")}
+            onChange={(value) => setConfig({ ...config, shared_l3: { mode: "manual", capacity_tokens: value,
+              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} /> : <NumberField
+            id="shared-l3-capacity" name="shared_l3.available_gb" label="共享 L3 总容量（TB，仅 KV，0 为关闭）"
+            value={config.shared_l3?.mode === "physical" ? (config.shared_l3.available_gb ?? 0) / 1000 : 0}
+            error={errorByField.get("shared_l3.available_gb")}
+            onChange={(value) => setConfig({ ...config, shared_l3: { mode: "physical", available_gb: value * 1000,
+              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} />}
+          <NumberField id="shared-l3-lookup" name="shared_l3.lookup_latency_ms" label="L3 查找延迟（ms）"
+            value={config.shared_l3?.lookup_latency_ms ?? 0} error={errorByField.get("shared_l3.lookup_latency_ms")}
+            onChange={(value) => setConfig({ ...config, shared_l3: config.shared_l3
+              ? { ...config.shared_l3, lookup_latency_ms: value }
+              : config.inference.mode === "manual" ? { mode: "manual", capacity_tokens: 0, lookup_latency_ms: value }
+                : { mode: "physical", available_gb: 0, lookup_latency_ms: value } })} />
+          {config.inference.mode === "manual" && config.shared_l3?.mode === "manual" && (config.shared_l3.capacity_tokens ?? 0) > 0 && <>
+            <NumberField id="l3-bandwidth" name="inference.kv.l3_to_l2_bandwidth_bytes_per_ms"
+              label="每实例 L3 → L2 带宽（字节/ms）" value={config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms ?? NaN}
+              error={errorByField.get("inference.kv.l3_to_l2_bandwidth_bytes_per_ms")}
+              onChange={(value) => updateKv({ l3_to_l2_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value })} />
+            <NumberField id="l3-latency" name="inference.kv.l3_latency_ms" label="每实例 L3 链路固定延迟（ms）"
+              value={config.inference.kv.l3_latency_ms ?? 0} error={errorByField.get("inference.kv.l3_latency_ms")}
+              onChange={(value) => updateKv({ l3_latency_ms: value })} />
+          </>}
+        </div>
+      </section>
+
       <section className="form-section" aria-labelledby="engine-heading">
         <div className="section-heading">
           <div>
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>{workloadMode === "trace" ? "每实例独占 KV · 同原会话的分支共享实例"
-            : "每实例独占 KV · 根请求轮询 · 子请求严格继承父实例"}</p>
+          <p>{workloadMode === "trace" ? "每实例独占 L1/L2 · 全场共享 L3 · 同原会话的分支共享实例"
+            : "每实例独占 L1/L2 · 全场共享 L3 · 根请求轮询 · 子请求严格继承父实例"}</p>
         </div>
 
         <div className="form-grid">
           <NumberField
             id="num-instances"
             name="num_instances"
-            label="推理实例数量（每实例独占相同配置）"
+            label="推理实例数量（L1/L2 独占，L3 共享）"
             value={config.num_instances}
             integer
             min={1}
@@ -475,7 +513,6 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           {config.inference.mode === "manual" && ([
             ["max_total_tokens", "L1 KV 总容量（token）"],
             ["l2_capacity_tokens", "L2 KV 容量（token，0 为关闭）"],
-            ["l3_capacity_tokens", "L3 KV 容量（token，0 为关闭）"],
           ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
             name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field]}
             integer min={field === "max_total_tokens" ? 1 : 0}
@@ -566,11 +603,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
               ["kv_bytes_per_token", "KV 每 token 字节数"],
               ["l2_to_l1_bandwidth_bytes_per_ms", "L2 → L1 带宽（字节/ms）"],
               ["l2_latency_ms", "L2 链路固定延迟（ms）"],
-              ...(config.inference.kv.l3_capacity_tokens > 0 ? [
-                ["l3_to_l2_bandwidth_bytes_per_ms", "L3 → L2 带宽（字节/ms）"],
-                ["l3_latency_ms", "L3 链路固定延迟（ms）"],
-                ["l3_lookup_latency_ms", "L3 查找延迟（ms）"],
-              ] as const : []),
+
             ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
               name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field] ?? NaN}
               integer={field === "kv_bytes_per_token"} min={field === "kv_bytes_per_token" ? 1 : 0}

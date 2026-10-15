@@ -110,6 +110,23 @@ describe("MetricsPanel", () => {
     expect(metricValue("L3 驱逐")).toHaveTextContent("1 次");
   });
 
+  it("hides shared pool state for an instance but retains its L3 hits", () => {
+    render(<MetricsPanel wallClockMs={42.5} metrics={{ ...metrics,
+      l3_capacity_blocks: null, l3_resident_blocks: null, l3_active_blocks: null,
+      l3_evictable_blocks: null, l3_free_blocks: null, l3_peak_resident_blocks: null,
+      l3_evictions: null, l3_hit_tokens: 20,
+    }} />);
+    expect(screen.queryByText("L3 容量")).not.toBeInTheDocument();
+    expect(screen.queryByText("L3 峰值驻留")).not.toBeInTheDocument();
+    expect(metricValue("L3 命中")).toHaveTextContent("20 token");
+  });
+
+  it("uses the actual shared peak even in aggregate mode", () => {
+    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} peakAggregated />);
+    expect(screen.getByText("L3 峰值驻留").closest(".metric-card"))
+      .toHaveTextContent("全场共享 L3 的实际驻留峰值");
+  });
+
   it("shows observed request QPS without an input request-QPS target in closed_loop mode", () => {
     render(<MetricsPanel metrics={metrics} wallClockMs={42.5} targetSessionRate={1.28} />);
     expect(metricValue("新会话投放频率")).toHaveTextContent("1.28 会话/秒");

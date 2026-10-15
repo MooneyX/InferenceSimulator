@@ -1,9 +1,13 @@
 import type { LengthDistribution, ManualInferenceConfig, PhysicalInferenceConfig, SimConfig } from "../api/types";
 
-export type ManualSimConfig = SimConfig & { inference: ManualInferenceConfig };
-export type PhysicalSimConfig = SimConfig & { inference: PhysicalInferenceConfig & {
-  timing: NonNullable<PhysicalInferenceConfig["timing"]>;
-} };
+export type ManualSimConfig = SimConfig & {
+  shared_l3: Extract<NonNullable<SimConfig["shared_l3"]>, { mode: "manual" }> | null;
+  inference: ManualInferenceConfig;
+};
+export type PhysicalSimConfig = SimConfig & {
+  shared_l3: Extract<NonNullable<SimConfig["shared_l3"]>, { mode: "physical" }> | null;
+  inference: PhysicalInferenceConfig & { timing: NonNullable<PhysicalInferenceConfig["timing"]> };
+};
 
 export type ConfigField =
   | "num_instances"
@@ -34,13 +38,15 @@ export type ConfigField =
   | "inference.page_size"
   | "inference.kv.max_total_tokens"
   | "inference.kv.l2_capacity_tokens"
-  | "inference.kv.l3_capacity_tokens"
+  | "shared_l3.capacity_tokens"
+  | "shared_l3.available_gb"
+  | "shared_l3.lookup_latency_ms"
   | "inference.kv.kv_bytes_per_token"
   | "inference.kv.l2_to_l1_bandwidth_bytes_per_ms"
   | "inference.kv.l3_to_l2_bandwidth_bytes_per_ms"
   | "inference.kv.l2_latency_ms"
   | "inference.kv.l3_latency_ms"
-  | "inference.kv.l3_lookup_latency_ms"
+
   | "inference.timing.prefill_c1"
   | "inference.timing.prefill_c2"
   | "inference.timing.decode_d1"
@@ -54,6 +60,7 @@ export interface ConfigValidationError {
 export function createDefaultSimConfig(): ManualSimConfig {
   return {
     num_instances: 1,
+    shared_l3: { mode: "manual", capacity_tokens: 0, lookup_latency_ms: 0 },
     workload: {
       mode: "synthetic",
       arrival_mode: "open_loop",
@@ -86,11 +93,11 @@ export function createDefaultSimConfig(): ManualSimConfig {
       page_size: 64,
       max_output_tokens: 65_536,
       kv: {
-        max_total_tokens: 65_536, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
+        max_total_tokens: 65_536, l2_capacity_tokens: 0,
         kv_bytes_per_token: null,
         l2_to_l1_bandwidth_bytes_per_ms: null,
         l3_to_l2_bandwidth_bytes_per_ms: null,
-        l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
+        l2_latency_ms: 0, l3_latency_ms: 0,
       },
       timing: createDefaultEmpiricalTiming(),
     },
@@ -104,6 +111,7 @@ export function createDefaultEmpiricalTiming(): ManualInferenceConfig["timing"] 
 export function createDefaultPhysicalSimConfig(): PhysicalSimConfig {
   const manual = createDefaultSimConfig();
   return { num_instances: manual.num_instances, workload: manual.workload, scheduler: manual.scheduler,
+    shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0 },
     inference: { mode: "physical", page_size: manual.inference.page_size,
       max_output_tokens: manual.inference.max_output_tokens,
       model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
@@ -134,9 +142,9 @@ export const initialHardware: PhysicalInferenceConfig["hardware"] = {
   collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0,
 };
 export const initialStorage: PhysicalInferenceConfig["storage"] = {
-  l1_available_gb: 200, l2_available_gb: 2048, l3_available_gb: 40_000,
+  l1_available_gb: 200, l2_available_gb: 2048,
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
-  l2_latency_ms: 0, l3_latency_ms: 0, l3_lookup_latency_ms: 0,
+  l2_latency_ms: 0, l3_latency_ms: 0,
 };
 
 function validateFiniteNumber(
@@ -263,6 +271,24 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       validateFiniteNumber(errors, `inference.timing.${field}`, timing[field], 0);
     }
   }
+  const shared = config.shared_l3;
+  if (shared != null) {
+    if (shared.mode !== inference.mode) errors.push({ field: "shared_l3.capacity_tokens", message: "共享 L3 配置方式须与推理配置一致" });
+    validateFiniteNumber(errors, "shared_l3.lookup_latency_ms", shared.lookup_latency_ms ?? 0, 0);
+    if (shared.mode === "physical") {
+      validateFiniteNumber(errors, "shared_l3.available_gb", shared.available_gb ?? 0, 0);
+      if (inference.mode === "physical" && (shared.available_gb ?? 0) > 0 &&
+          (!(inference.storage.l2_available_gb! > 0) || !(inference.storage.l3_to_l2_gb_s! > 0))) {
+        errors.push({ field: "shared_l3.available_gb", message: "启用共享 L3 须有 L2 和正的 L3 → L2 带宽" });
+      }
+    } else {
+      const capacity = shared.capacity_tokens ?? 0;
+      if (!Number.isInteger(capacity) || capacity < 0 ||
+          (inference.page_size > 0 && capacity % inference.page_size !== 0)) {
+        errors.push({ field: "shared_l3.capacity_tokens", message: "容量必须是页大小的非负整数倍；0 表示关闭" });
+      }
+    }
+  }
   if (inference.mode === "physical") return errors;
   const { kv, page_size: pageSize } = inference;
   validatePositiveInteger(errors, "inference.kv.max_total_tokens", kv.max_total_tokens);
@@ -271,16 +297,13 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       (kv.max_total_tokens < pageSize || kv.max_total_tokens % pageSize !== 0)) {
     errors.push({ field: "inference.kv.max_total_tokens", message: "KV token 容量须至少为一页，且必须是页大小的整数倍" });
   }
-  for (const tier of ["l2", "l3"] as const) {
-    const capacity = kv[`${tier}_capacity_tokens`];
-    if (!Number.isInteger(capacity) || capacity < 0 ||
-        (Number.isInteger(pageSize) && pageSize > 0 && capacity % pageSize !== 0)) {
-      errors.push({ field: `inference.kv.${tier}_capacity_tokens`, message: "容量必须是页大小的非负整数倍；0 表示关闭该层" });
-    }
+  const capacity = kv.l2_capacity_tokens;
+  if (!Number.isInteger(capacity) || capacity < 0 || (pageSize > 0 && capacity % pageSize !== 0)) {
+    errors.push({ field: "inference.kv.l2_capacity_tokens", message: "容量必须是页大小的非负整数倍；0 表示关闭该层" });
   }
   const l2Enabled = kv.l2_capacity_tokens > 0;
-  const l3Enabled = kv.l3_capacity_tokens > 0;
-  if (l3Enabled && !l2Enabled) errors.push({ field: "inference.kv.l3_capacity_tokens", message: "启用 L3 前必须先启用 L2" });
+  const l3Enabled = shared?.mode === "manual" && (shared.capacity_tokens ?? 0) > 0;
+  if (l3Enabled && !l2Enabled) errors.push({ field: "shared_l3.capacity_tokens", message: "启用 L3 前必须先启用 L2" });
   if (kv.kv_bytes_per_token == null) {
     if (l2Enabled) errors.push({ field: "inference.kv.kv_bytes_per_token", message: "启用 L2 时必须填写正整数" });
   } else validatePositiveInteger(errors, "inference.kv.kv_bytes_per_token", kv.kv_bytes_per_token);
@@ -292,7 +315,7 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
       if (required) errors.push({ field, message: "启用该层时必须填写大于 0 的带宽" });
     } else validateFiniteNumber(errors, field, value, 0, true);
   }
-  for (const field of ["l2_latency_ms", "l3_latency_ms", "l3_lookup_latency_ms"] as const) {
+  for (const field of ["l2_latency_ms", "l3_latency_ms"] as const) {
     validateFiniteNumber(errors, `inference.kv.${field}`, kv[field], 0);
   }
 

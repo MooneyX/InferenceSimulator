@@ -106,7 +106,7 @@ describe("SimulationForm", () => {
     expect(modes[1]).toHaveAttribute("value", "manual");
     expect(screen.getByRole("group", { name: "自动解析参数" })).toBeInTheDocument();
     expect(screen.getByLabelText("L2 可用容量（GB，仅 KV）")).toHaveValue(2048);
-    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(40);
+    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(40);
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
@@ -114,8 +114,9 @@ describe("SimulationForm", () => {
       workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,
         synthetic: expect.objectContaining({ turn_increment_len: { dist: "poisson", mean: 256 } }) }),
       inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" },
-        storage: expect.objectContaining({ l2_available_gb: 2048, l3_available_gb: 40_000,
+        storage: expect.objectContaining({ l2_available_gb: 2048,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
+      shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0 },
     }));
   });
 
@@ -142,7 +143,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
     expect(screen.getByLabelText("L1 KV 总容量（token）")).toHaveValue(65_536);
     expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(0);
-    expect(screen.getByLabelText("L3 KV 容量（token，0 为关闭）")).toHaveValue(0);
+    expect(screen.getByLabelText("共享 L3 总容量（token，0 为关闭）")).toHaveValue(0);
     expect(screen.queryByLabelText("L2 → L1 带宽（字节/ms）")).not.toBeInTheDocument();
     expect(screen.getByLabelText("单次 Prefill 额度（token）")).toHaveValue(16_384);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(256);
@@ -323,24 +324,25 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("L2 KV 容量（token，0 为关闭）"), { target: { value: "128" } });
     expect(screen.getByLabelText("KV 每 token 字节数")).toBeInTheDocument();
-    expect(screen.queryByLabelText("L3 → L2 带宽（字节/ms）")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("L3 KV 容量（token，0 为关闭）"), { target: { value: "64" } });
+    expect(screen.queryByLabelText("每实例 L3 → L2 带宽（字节/ms）")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("共享 L3 总容量（token，0 为关闭）"), { target: { value: "64" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByLabelText("KV 每 token 字节数")).toHaveAttribute("aria-invalid", "true");
     fireEvent.change(screen.getByLabelText("KV 每 token 字节数"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("L2 → L1 带宽（字节/ms）"), { target: { value: "1024" } });
-    fireEvent.change(screen.getByLabelText("L3 → L2 带宽（字节/ms）"), { target: { value: "512" } });
-    fireEvent.change(screen.getByLabelText("L3 链路固定延迟（ms）"), { target: { value: "1.5" } });
+    fireEvent.change(screen.getByLabelText("每实例 L3 → L2 带宽（字节/ms）"), { target: { value: "512" } });
+    fireEvent.change(screen.getByLabelText("每实例 L3 链路固定延迟（ms）"), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText("L3 查找延迟（ms）"), { target: { value: "0.75" } });
     fireEvent.change(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 0 }),
+      shared_l3: { mode: "manual", capacity_tokens: 64, lookup_latency_ms: 0.75 },
       inference: expect.objectContaining({ mode: "manual", kv: expect.objectContaining({
-        l2_capacity_tokens: 128, l3_capacity_tokens: 64, kv_bytes_per_token: 4096,
+        l2_capacity_tokens: 128, kv_bytes_per_token: 4096,
         l2_to_l1_bandwidth_bytes_per_ms: 1024, l3_to_l2_bandwidth_bytes_per_ms: 512,
-        l3_latency_ms: 1.5, l3_lookup_latency_ms: 0.75,
+        l3_latency_ms: 1.5,
       }) }),
     }));
   });
@@ -349,7 +351,7 @@ describe("SimulationForm", () => {
     ["目标发送 QPS（请求/秒，泊松到达）", "0", "必须是大于 0 的有限数值"],
     ["L1 KV 总容量（token）", "130", "必须是页大小的整数倍"],
     ["L2 KV 容量（token，0 为关闭）", "65", "容量必须是页大小的非负整数倍"],
-    ["L3 KV 容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
+    ["共享 L3 总容量（token，0 为关闭）", "64", "启用 L3 前必须先启用 L2"],
     ["L3 异步预取最小长度（token，0 为不设阈值）", "-1", "必须是大于或等于 0 的整数"],
     ["每页 token 数", "0", "必须是大于或等于 1 的整数"],
     ["引擎输出上限（token）", "0", "必须是大于或等于 1 的整数"],
@@ -423,14 +425,14 @@ describe("SimulationForm", () => {
     config.workload.synthetic!.output_len = { dist: "lognormal", mean: 50, sigma: 2 };
     config.inference.page_size = 128;
     config.inference.kv.l2_capacity_tokens = 256;
-    config.inference.kv.l3_capacity_tokens = 128;
+    config.shared_l3!.capacity_tokens = 128;
     config.scheduler.l3_prefetch_min_tokens = 512;
     config.inference.kv.kv_bytes_per_token = 2048;
     config.inference.kv.l2_to_l1_bandwidth_bytes_per_ms = 1024;
     config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms = 512;
     config.inference.kv.l2_latency_ms = 1;
     config.inference.kv.l3_latency_ms = 2;
-    config.inference.kv.l3_lookup_latency_ms = 3;
+    config.shared_l3!.lookup_latency_ms = 3;
     config.inference.timing.prefill_c1 = 0.1;
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
 
@@ -446,13 +448,13 @@ describe("SimulationForm", () => {
       .toHaveValue(2);
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(128);
     expect(screen.getByLabelText("L2 KV 容量（token，0 为关闭）")).toHaveValue(256);
-    expect(screen.getByLabelText("L3 KV 容量（token，0 为关闭）")).toHaveValue(128);
+    expect(screen.getByLabelText("共享 L3 总容量（token，0 为关闭）")).toHaveValue(128);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(512);
     expect(screen.getByLabelText("KV 每 token 字节数")).toHaveValue(2048);
     expect(screen.getByLabelText("L2 → L1 带宽（字节/ms）")).toHaveValue(1024);
-    expect(screen.getByLabelText("L3 → L2 带宽（字节/ms）")).toHaveValue(512);
+    expect(screen.getByLabelText("每实例 L3 → L2 带宽（字节/ms）")).toHaveValue(512);
     expect(screen.getByLabelText("L2 链路固定延迟（ms）")).toHaveValue(1);
-    expect(screen.getByLabelText("L3 链路固定延迟（ms）")).toHaveValue(2);
+    expect(screen.getByLabelText("每实例 L3 链路固定延迟（ms）")).toHaveValue(2);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(3);
     expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.1);
     expect(onSubmit).not.toHaveBeenCalled();
@@ -467,17 +469,18 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
-    fireEvent.change(screen.getByLabelText("L3 可用容量（TB，仅 KV）"), { target: { value: "1.5" } });
+    fireEvent.change(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）"), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText("L3 查找延迟（ms）"), { target: { value: "2.5" } });
     fireEvent.change(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）"), { target: { value: "1024" } });
-    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(1.5);
+    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(1.5);
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
       workload: { synthetic: { num_requests: 20 } }, scheduler: { l3_prefetch_min_tokens: 1024 },
       inference: { mode: "physical", timing: { mode: "empirical" }, model: { hidden_size: 2048 },
-        hardware: { memory_bytes_per_gpu: 300_000_000_000 }, storage: { l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 } },
+        hardware: { memory_bytes_per_gpu: 300_000_000_000 } },
+      shared_l3: { mode: "physical", available_gb: 1500, lookup_latency_ms: 2.5 },
     });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
@@ -487,7 +490,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
     expect(screen.getByLabelText("隐藏维度")).toHaveValue(2048);
     expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
-    expect(screen.getByLabelText("L3 可用容量（TB，仅 KV）")).toHaveValue(1.5);
+    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(1.5);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(2.5);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(1024);
     expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
@@ -497,7 +500,8 @@ describe("SimulationForm", () => {
       inference: expect.objectContaining({ timing: expect.objectContaining({ mode: "empirical" }),
         model: expect.objectContaining({ hidden_size: 2048 }),
         hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
-        storage: expect.objectContaining({ l3_available_gb: 1500, l3_lookup_latency_ms: 2.5 }) }),
+        storage: expect.objectContaining({ l2_available_gb: 2048 }) }),
+      shared_l3: { mode: "physical", available_gb: 1500, lookup_latency_ms: 2.5 },
     }));
   });
 

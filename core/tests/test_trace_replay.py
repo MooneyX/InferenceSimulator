@@ -17,6 +17,7 @@ from simcore.schemas import (
     ManualKVConfig,
     ModelSpec,
     PhysicalInferenceConfig,
+    PhysicalL3Config,
     SchedulerConfig,
     StorageSpec,
     TracePlan,
@@ -219,6 +220,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
 ) -> None:
     manual = config(capacity=64, mode=mode)
     original = manual.model_copy(update={
+        "shared_l3": PhysicalL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
         "inference": PhysicalInferenceConfig(
             page_size=64,
             model=ModelSpec(
@@ -231,9 +233,9 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
             ),
             storage=StorageSpec(
                 l1_available_gb=0.0001, l2_available_gb=0.000008192,
-                l3_available_gb=0.000004096, runtime_reserve_bytes=1000,
+                runtime_reserve_bytes=1000,
                 l2_to_l1_gb_s=0.001, l3_to_l2_gb_s=0.002,
-                l2_latency_ms=3, l3_latency_ms=4, l3_lookup_latency_ms=1.25,
+                l2_latency_ms=3, l3_latency_ms=4,
             ),
             timing=(manual.inference.timing if timing == "empirical"
                     else AnalyticalTimingConfig()),

@@ -170,7 +170,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
-    fireEvent.change(screen.getByLabelText("推理实例数量（每实例独占相同配置）"),
+    fireEvent.change(screen.getByLabelText("推理实例数量（L1/L2 独占，L3 共享）"),
       { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({ num_instances: 2 }));
@@ -253,7 +253,7 @@ describe("App", () => {
     const summary = screen.getByLabelText("解析配置与成本");
     expect(summary).toHaveTextContent("自动解析");
     expect(summary).toHaveTextContent("模型 Qwen/Qwen3-8B");
-    expect(summary).toHaveTextContent("L1 4,096 token · L2 8,192 token · L3 16,384 token");
+    expect(summary).toHaveTextContent("L1 4,096 token · L2 8,192 token · 全场共享 L3 16,384 token");
   });
 
   it("shows TP communication inside the existing resolved result card", async () => {

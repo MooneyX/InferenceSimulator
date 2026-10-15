@@ -25,6 +25,7 @@ from simcore.schemas import (
     ModelSpec,
     NormSpec,
     PhysicalInferenceConfig,
+    PhysicalL3Config,
     RouterSpec,
     SchedulerConfig,
     SimConfig,
@@ -38,13 +39,21 @@ def physical(config: SimConfig) -> PhysicalInferenceConfig:
     return cast(PhysicalInferenceConfig, config.inference)
 
 
-def update_inference(config: SimConfig, *, update: dict[str, object]) -> SimConfig:
-    return config.model_copy(update={"inference": physical(config).model_copy(update=update)})
+def update_inference(config: SimConfig, *, update: dict[str, object],
+                     l3_gb: float | None = None) -> SimConfig:
+    inference = physical(config).model_copy(update=update)
+    shared = config.shared_l3
+    if l3_gb is not None:
+        shared = PhysicalL3Config(available_gb=l3_gb, lookup_latency_ms=1.25)
+    elif "storage" in update:
+        shared = None
+    return config.model_copy(update={"inference": inference, "shared_l3": shared})
 
 
 def example_request() -> SimConfig:
     return SimConfig(
         num_instances=1,
+        shared_l3={"mode": "physical", "available_gb": 0.000000256, "lookup_latency_ms": 1.25},
         workload=WorkloadConfig(
             session_rate=1,
             synthetic=SyntheticWorkloadConfig(
@@ -77,13 +86,11 @@ def example_request() -> SimConfig:
             storage=StorageSpec(
                 l1_available_gb=0.001,
                 l2_available_gb=0.000000512,
-                l3_available_gb=0.000000256,
                 runtime_reserve_bytes=1000,
                 l2_to_l1_gb_s=0.001,
                 l3_to_l2_gb_s=0.002,
                 l2_latency_ms=3,
                 l3_latency_ms=4,
-                l3_lookup_latency_ms=1.25,
             ),
         ),
     )
@@ -121,7 +128,7 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
         "attention_layout": "grouped", "attention_groups": [mla, dsa],
     })
     simple_storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0, "l3_available_gb": 0,
+        "l2_available_gb": 0,
     })
     resolved = resolve_config(update_inference(request, update={
         "model": model, "storage": simple_storage,
@@ -166,7 +173,7 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
         > step_cost(long, one, physical(request).hardware).flops
     )
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0, "l3_available_gb": 0,
+        "l2_available_gb": 0,
     })
     assert resolve_config(update_inference(request, update={
         "model": two, "storage": storage,
@@ -199,7 +206,7 @@ def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -
         "collective_latency_ms": 0.01,
     })
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0.001, "l3_available_gb": 0,
+        "l2_available_gb": 0.001,
     })
     request = update_inference(request, update={
         "model": model, "hardware": hardware, "storage": storage, "tp_size": 2,
@@ -240,7 +247,7 @@ def hy4_request() -> SimConfig:
         "ep_communication_latency_ms": 0.02,
     })
     storage = physical(request).storage.model_copy(update={
-        "l1_available_gb": 260, "l2_available_gb": 0, "l3_available_gb": 0,
+        "l1_available_gb": 260, "l2_available_gb": 0,
     })
     return update_inference(request, update={
         "model": model, "hardware": hardware, "storage": storage,
@@ -299,9 +306,8 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
     storage = physical(request).storage.model_copy(update={
         "l1_available_gb": 2000,
         "l2_available_gb": 10 if hierarchical else 0,
-        "l3_available_gb": 10 if hierarchical else 0,
     })
-    request = update_inference(request, update={
+    request = update_inference(request, l3_gb=10 if hierarchical else 0, update={
         "hardware": hardware, "storage": storage, "tp_size": tp_size, "ep_size": tp_size,
     })
     resolved = resolve_config(request)
@@ -566,7 +572,7 @@ def auxiliary_weight_request(tp_size: int) -> SimConfig:
             "collective_latency_ms": 0.01, "ep_communication_latency_ms": 0.02,
         }),
         "storage": physical(request).storage.model_copy(update={
-            "l2_available_gb": 0.001, "l3_available_gb": 0.001,
+            "l2_available_gb": 0.001,
         }),
     })
 
@@ -790,7 +796,7 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
     assert cost.duration_ms - base.duration_ms == pytest.approx(2 * local_gate / 1e6)
     assert cost.communication_bytes == base.communication_bytes
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0, "l3_available_gb": 0,
+        "l2_available_gb": 0,
     })
     base_capacity = resolve_config(
         update_inference(request,
@@ -884,7 +890,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
         if name not in {"duration_ms", "flops", "hbm_bytes", "compute_ms", "memory_ms"}:
             assert getattr(cost, name) == value
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0, "l3_available_gb": 0,
+        "l2_available_gb": 0,
     })
     base_capacity = resolve_config(
         update_inference(request,
@@ -1000,6 +1006,20 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     assert runtime.engine.l3_prefetch_min_tokens == 256
 
 
+@pytest.mark.parametrize("instances", [1, 4])
+def test_physical_shared_l3_budget_does_not_scale_with_instances(instances: int) -> None:
+    original = example_request()
+    config = original.model_copy(update={"num_instances": instances})
+    preview = resolve_config(config)
+    assert preview == resolve_config(original)
+    result = simulate(config)
+    assert result.resolution == preview
+    assert result.metrics.l1_capacity_blocks == instances * preview.capacity.l1_capacity_pages
+    assert result.metrics.l2_capacity_blocks == instances * preview.capacity.l2_capacity_pages
+    assert result.metrics.l3_capacity_blocks == preview.capacity.l3_capacity_pages
+    assert all(item.metrics.l3_capacity_blocks is None for item in result.instances)
+
+
 def test_qwen3_8b_single_b300_capacity_example() -> None:
     request = example_request()
     qwen = ModelSpec(
@@ -1026,7 +1046,6 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
                     update={
                         "l1_available_gb": 200,
                         "l2_available_gb": 0,
-                        "l3_available_gb": 0,
                         "l2_to_l1_gb_s": None,
                         "l3_to_l2_gb_s": None,
                     }
@@ -1101,11 +1120,10 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
         update={
             "l1_available_gb": 20,
             "l2_available_gb": 1,
-            "l3_available_gb": 0.5,
         }
     )
     result = resolve_config(
-        update_inference(request,
+        update_inference(request, l3_gb=0.5,
             update={
                 "model": model,
                 "hardware": hardware,
@@ -1171,7 +1189,6 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
         update={
             "l1_available_gb": 50,
             "l2_available_gb": 1,
-            "l3_available_gb": 0,
         }
     )
     tp = update_inference(request,
@@ -1220,7 +1237,7 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
         }
     )
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0, "l3_available_gb": 0,
+        "l2_available_gb": 0,
     })
     request = update_inference(request, update={
         "tp_size": 4,
@@ -1270,7 +1287,6 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
         update={
             "l1_available_gb": 0.00001,
             "l2_available_gb": 0,
-            "l3_available_gb": 0,
             "runtime_reserve_bytes": 0,
         }
     )
@@ -1436,7 +1452,6 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
     storage = physical(base).storage.model_copy(
         update={
             "l2_available_gb": 0,
-            "l3_available_gb": 0,
         }
     )
     request = update_inference(base,
@@ -1554,9 +1569,9 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         "collective_latency_ms": 0.1, "ep_communication_latency_ms": 0.2,
     })
     storage = physical(request).storage.model_copy(update={
-        "l2_available_gb": 0.001, "l3_available_gb": 0.001,
+        "l2_available_gb": 0.001,
     })
-    config = update_inference(request, update={
+    config = update_inference(request, l3_gb=0.001, update={
         "model": model, "hardware": hardware, "storage": storage,
         "tp_size": tp_size, "ep_size": tp_size,
     })
@@ -1717,7 +1732,6 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
         update={
             "l1_available_gb": 0.0002,
             "l2_available_gb": 0,
-            "l3_available_gb": 0,
         }
     )
     request = update_inference(base,

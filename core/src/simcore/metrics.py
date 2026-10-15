@@ -11,6 +11,7 @@
 
 import math
 from collections.abc import Sequence
+from typing import Any
 
 from simcore.kv_cache import L1Snapshot, TierSnapshot
 from simcore.schemas import Metrics, RequestRecord, WorkloadMode, WorkloadPlan
@@ -54,7 +55,7 @@ def compute_metrics(
     workload_mode: WorkloadMode,
     cache_snapshot: L1Snapshot,
     l2_snapshot: TierSnapshot,
-    l3_snapshot: TierSnapshot,
+    l3_snapshot: TierSnapshot | None,
     l1_evictions: int,
     l1_peak_resident_blocks: int,
     promotions: int,
@@ -82,6 +83,11 @@ def compute_metrics(
         and latest_sent_arrival > earliest_sent_arrival else None
     )
     peak_resident = max(l1_peak_resident_blocks, cache_snapshot.resident_blocks)
+    l3_fields: dict[str, Any] = {
+        f"l3_{name}": getattr(l3_snapshot, name) if l3_snapshot is not None else None
+        for name in ("evictions", "peak_resident_blocks", "capacity_blocks", "resident_blocks",
+                     "active_blocks", "evictable_blocks", "free_blocks")
+    }
     if not records:
         return Metrics(
             ttft_mean=None,
@@ -115,13 +121,7 @@ def compute_metrics(
             l2_active_blocks=l2_snapshot.active_blocks,
             l2_evictable_blocks=l2_snapshot.evictable_blocks,
             l2_free_blocks=l2_snapshot.free_blocks,
-            l3_evictions=l3_snapshot.evictions,
-            l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks,
-            l3_capacity_blocks=l3_snapshot.capacity_blocks,
-            l3_resident_blocks=l3_snapshot.resident_blocks,
-            l3_active_blocks=l3_snapshot.active_blocks,
-            l3_evictable_blocks=l3_snapshot.evictable_blocks,
-            l3_free_blocks=l3_snapshot.free_blocks,
+            **l3_fields,
         )
 
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
@@ -207,11 +207,5 @@ def compute_metrics(
         l2_active_blocks=l2_snapshot.active_blocks,
         l2_evictable_blocks=l2_snapshot.evictable_blocks,
         l2_free_blocks=l2_snapshot.free_blocks,
-        l3_evictions=l3_snapshot.evictions,
-        l3_peak_resident_blocks=l3_snapshot.peak_resident_blocks,
-        l3_capacity_blocks=l3_snapshot.capacity_blocks,
-        l3_resident_blocks=l3_snapshot.resident_blocks,
-        l3_active_blocks=l3_snapshot.active_blocks,
-        l3_evictable_blocks=l3_snapshot.evictable_blocks,
-        l3_free_blocks=l3_snapshot.free_blocks,
+        **l3_fields,
     )

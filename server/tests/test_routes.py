@@ -84,8 +84,9 @@ class TestSuccess:
         payload["inference"]["max_output_tokens"] = 1
         payload["scheduler"]["max_running_requests"] = 1
         payload["inference"]["page_size"] = 4
+        payload["shared_l3"] = {"mode": "manual", "capacity_tokens": 8}
         payload["inference"]["kv"].update(
-            max_total_tokens=12, l2_capacity_tokens=4, l3_capacity_tokens=8,
+            max_total_tokens=12, l2_capacity_tokens=4,
             kv_bytes_per_token=16,
             l2_to_l1_bandwidth_bytes_per_ms=64,
             l3_to_l2_bandwidth_bytes_per_ms=32,
@@ -95,7 +96,7 @@ class TestSuccess:
         result = SimResult.model_validate_json(response.content)
         assert result.meta.num_completed == 1
         assert result.meta.config.inference.kv.l2_capacity_tokens == 4
-        assert result.meta.config.inference.kv.l3_capacity_tokens == 8
+        assert result.meta.config.shared_l3.capacity_tokens == 8
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
@@ -269,7 +270,7 @@ class TestErrors:
         ("engine_updates", "perf_updates", "message"),
         [
             ({"l2_capacity_tokens": 3}, {}, "l2_capacity_tokens"),
-            ({"l3_capacity_tokens": 2}, {}, "l3_capacity_tokens"),
+            ({"l3_capacity_tokens": 2}, {}, "L2"),
             ({"l2_capacity_tokens": 2}, {}, "kv_bytes_per_token"),
             (
                 {"l2_capacity_tokens": 2},
@@ -292,7 +293,10 @@ class TestErrors:
     ) -> None:
         payload = make_payload(num_requests=1)
         payload["inference"]["page_size"] = 2
-        payload["inference"]["kv"].update(engine_updates)
+        local_updates = dict(engine_updates)
+        if "l3_capacity_tokens" in local_updates:
+            payload["shared_l3"] = {"mode": "manual", "capacity_tokens": local_updates.pop("l3_capacity_tokens")}
+        payload["inference"]["kv"].update(local_updates)
         payload["inference"]["kv"].update(perf_updates)
         response = client.post(URL, json=payload)
         assert response.status_code == 422

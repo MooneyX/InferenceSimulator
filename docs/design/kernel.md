@@ -1,6 +1,6 @@
 # 当前引擎与调度
 
-每个 Engine 独占一套分层 L1/L2/L3 KV 缓存，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。根请求轮询分配，子请求严格送回父轮实例，过载也不改道；缓存亲和不保证实际命中。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。根请求轮询分配，子请求严格送回父轮实例，过载也不改道；缓存亲和不保证实际命中。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
 
 ## 请求与两种执行模式
 

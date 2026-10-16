@@ -14,7 +14,7 @@ from simserver import create_app
 def payload() -> dict[str, Any]:
     return {
         "num_instances": 1,
-        "shared_l3": {"mode": "physical", "available_gb": 0.000000256},
+        "shared_l3": {"available_gb": 0.000000256},
         "workload": {
             "mode": "synthetic",
             "session_rate": 1,
@@ -28,7 +28,7 @@ def payload() -> dict[str, Any]:
         },
         "scheduler": {"max_running_requests": 1},
         "inference": {
-            "mode": "physical", "page_size": 4, "tp_size": 1, "ep_size": 1,
+            "page_size": 4, "tp_size": 1, "ep_size": 1,
             "model": {
                 "name": "toy", "num_layers": 2, "hidden_size": 16,
                 "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
@@ -48,7 +48,7 @@ def payload() -> dict[str, Any]:
     }
 
 
-def inference_payload(mode: str) -> dict[str, Any]:
+def inference_payload(timing_mode: str) -> dict[str, Any]:
     request = payload()
     request["shared_l3"] = None
     request["inference"]["page_size"] = 64
@@ -57,7 +57,7 @@ def inference_payload(mode: str) -> dict[str, Any]:
         "decode_d1": 0.01, "decode_d2": 0,
     }
     request["inference"]["storage"].update(l2_available_gb=0)
-    if mode == "physical_empirical":
+    if timing_mode == "empirical":
         request["inference"]["timing"] = timing
     return request
 
@@ -80,13 +80,13 @@ def attach_trace(
     }
 
 
-@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
-def test_physical_timing_modes_use_one_run_contract(
-    inference_mode: str, workload_mode: str,
+def test_timing_modes_use_one_run_contract(
+    timing_mode: str, workload_mode: str,
 ) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(inference_mode)
+        request = inference_payload(timing_mode)
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode)
         response = client.post("/api/simulate", json=request)
@@ -95,7 +95,7 @@ def test_physical_timing_modes_use_one_run_contract(
         assert result.meta.config == SimConfig.model_validate(request)
         assert result.meta.num_completed == (1 if workload_mode == "synthetic" else 2)
         assert result.resolution is not None
-        assert (result.analysis is not None) == (inference_mode == "physical_analytical")
+        assert (result.analysis is not None) == (timing_mode == "analytical")
         preview = client.post("/api/resolve", json=request)
         assert preview.status_code == 200, preview.text
         assert result.resolution.model_dump(mode="json") == preview.json()
@@ -104,13 +104,13 @@ def test_physical_timing_modes_use_one_run_contract(
         assert repeated.text == result.model_dump_json()
 
 
-@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
 def test_engine_output_limit_is_request_failure_in_every_mode(
-    inference_mode: str, workload_mode: str,
+    timing_mode: str, workload_mode: str,
 ) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(inference_mode)
+        request = inference_payload(timing_mode)
         request["inference"]["max_output_tokens"] = 1
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode, output_len=2)
@@ -128,14 +128,14 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
             assert result.requests[0].output_len == 1
 
 
-@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
 @pytest.mark.parametrize("error,status", [(ValueError("invalid"), 422), (NotImplementedError("unsupported"), 501)])
 def test_unified_run_maps_kernel_errors_for_every_mode(
-    inference_mode: str, workload_mode: str, error: Exception, status: int,
+    timing_mode: str, workload_mode: str, error: Exception, status: int,
 ) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(inference_mode)
+        request = inference_payload(timing_mode)
         if workload_mode == "trace":
             attach_trace(client, request)
         with patch("simserver.routes.simulate", side_effect=error):
@@ -144,8 +144,8 @@ def test_unified_run_maps_kernel_errors_for_every_mode(
         assert response.json() == {"detail": str(error)}
 
 
-def test_trace_physical_preview_does_not_require_uploaded_plan() -> None:
-    request = inference_payload("physical_analytical")
+def test_trace_preview_does_not_require_uploaded_plan() -> None:
+    request = inference_payload("analytical")
     request["workload"] = {"mode": "trace", "session_rate": 1, "trace": {}}
     preview = TestClient(create_app()).post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text

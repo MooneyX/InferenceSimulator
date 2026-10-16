@@ -21,13 +21,13 @@ from simcore.schemas import (
     FixedLength,
     HardwareSpec,
     IHCSpec,
+    InferenceConfig,
     InferenceRequest,
     ModelSpec,
     NormSpec,
-    PhysicalInferenceConfig,
-    PhysicalL3Config,
     RouterSpec,
     SchedulerConfig,
+    SharedL3Config,
     SimConfig,
     StorageSpec,
     SyntheticWorkloadConfig,
@@ -35,16 +35,16 @@ from simcore.schemas import (
 )
 
 
-def physical(config: SimConfig) -> PhysicalInferenceConfig:
-    return cast(PhysicalInferenceConfig, config.inference)
+def inference_config(config: SimConfig) -> InferenceConfig:
+    return config.inference
 
 
 def update_inference(config: SimConfig, *, update: dict[str, object],
                      l3_gb: float | None = None) -> SimConfig:
-    inference = physical(config).model_copy(update=update)
+    inference = inference_config(config).model_copy(update=update)
     shared = config.shared_l3
     if l3_gb is not None:
-        shared = PhysicalL3Config(available_gb=l3_gb, lookup_latency_ms=1.25)
+        shared = SharedL3Config(available_gb=l3_gb, lookup_latency_ms=1.25)
     elif "storage" in update:
         shared = None
     return config.model_copy(update={"inference": inference, "shared_l3": shared})
@@ -53,7 +53,7 @@ def update_inference(config: SimConfig, *, update: dict[str, object],
 def example_request() -> SimConfig:
     return SimConfig(
         num_instances=1,
-        shared_l3={"mode": "physical", "available_gb": 0.000000256, "lookup_latency_ms": 1.25},
+        shared_l3=SharedL3Config(available_gb=0.000000256, lookup_latency_ms=1.25),
         workload=WorkloadConfig(
             session_rate=1,
             synthetic=SyntheticWorkloadConfig(
@@ -64,7 +64,7 @@ def example_request() -> SimConfig:
             )
         ),
         scheduler=SchedulerConfig(max_running_requests=1),
-        inference=PhysicalInferenceConfig(
+        inference=InferenceConfig(
             page_size=4,
             timing=AnalyticalTimingConfig(),
             model=ModelSpec(
@@ -99,7 +99,7 @@ def example_request() -> SimConfig:
 @pytest.mark.parametrize("cap", [1, 64, 100, 65_536])
 def test_physical_output_limit_preserves_explicit_value_in_runtime(cap: int) -> None:
     original = example_request()
-    assert physical(original).max_output_tokens == 65_536
+    assert inference_config(original).max_output_tokens == 65_536
     config = update_inference(original, update={"max_output_tokens": cap})
     assert prepare_runtime(config).engine.max_output_tokens == cap
     assert SimConfig.model_validate_json(config.model_dump_json()) == config
@@ -124,10 +124,10 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
         q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
         topk=4, index_heads=2, index_dim=128, full_indexer_layers=1,
     )
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "attention_layout": "grouped", "attention_groups": [mla, dsa],
     })
-    simple_storage = physical(request).storage.model_copy(update={
+    simple_storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0,
     })
     resolved = resolve_config(update_inference(request, update={
@@ -136,10 +136,10 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
     assert resolved.capacity.kv_bytes_per_token == (4 + 2) * 2 * 2 + 132
     assert resolved.capacity.estimated_total_parameters > 0
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
-    cost = step_cost(workload, model, physical(request).hardware)
+    cost = step_cost(workload, model, inference_config(request).hardware)
     assert cost.flops > 0 and cost.duration_ms > 0
     gqa = AttentionGroup(kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8)
-    grouped = physical(request).model.model_copy(update={
+    grouped = inference_config(request).model.model_copy(update={
         "attention_layout": "grouped", "attention_groups": [gqa],
     })
     assert (
@@ -147,8 +147,8 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
         == resolve_config(request).capacity
     )
     assert (
-        step_cost(workload, grouped, physical(request).hardware)
-        == step_cost(workload, physical(request).model, physical(request).hardware)
+        step_cost(workload, grouped, inference_config(request).hardware)
+        == step_cost(workload, inference_config(request).model, inference_config(request).hardware)
     )
 
 
@@ -160,19 +160,19 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
         topk=4, index_heads=2, index_dim=128, full_indexer_layers=1,
     )
     two_full = group.model_copy(update={"full_indexer_layers": 2})
-    one = physical(request).model.model_copy(update={
+    one = inference_config(request).model.model_copy(update={
         "attention_layout": "grouped", "attention_groups": [group],
     })
-    two = physical(request).model.model_copy(update={
+    two = inference_config(request).model.model_copy(update={
         "attention_layout": "grouped", "attention_groups": [two_full],
     })
     short = StepWorkload("DECODE", (), (DecodeWork(1, 10),), 0, 1)
     long = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
     assert (
-        step_cost(long, two, physical(request).hardware).flops
-        > step_cost(long, one, physical(request).hardware).flops
+        step_cost(long, two, inference_config(request).hardware).flops
+        > step_cost(long, one, inference_config(request).hardware).flops
     )
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0,
     })
     assert resolve_config(update_inference(request, update={
@@ -184,8 +184,8 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
     )
     # 超过 top-k 后，随上下文增长的 FLOPs 来自 full 索引器，非共享层主注意力。
     delta = (
-        step_cost(long, one, physical(request).hardware).flops
-        - step_cost(short, one, physical(request).hardware).flops
+        step_cost(long, one, inference_config(request).hardware).flops
+        - step_cost(short, one, inference_config(request).hardware).flops
     )
     assert delta == pytest.approx(2 * 2 * 128 * 90)
 
@@ -198,14 +198,14 @@ def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -
                        q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8,
                        topk=4, index_heads=2, index_dim=128, full_indexer_layers=1),
     ]
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "attention_layout": "grouped", "attention_groups": groups,
     })
-    hardware = physical(request).hardware.model_copy(update={
+    hardware = inference_config(request).hardware.model_copy(update={
         "gpu_count": 2, "effective_interconnect_gb_s": 100,
         "collective_latency_ms": 0.01,
     })
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0.001,
     })
     request = update_inference(request, update={
@@ -241,12 +241,12 @@ def hy4_request() -> SimConfig:
             output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
         )],
     )
-    hardware = physical(request).hardware.model_copy(update={
+    hardware = inference_config(request).hardware.model_copy(update={
         "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
         "effective_interconnect_gb_s": 600, "collective_latency_ms": 0.01,
         "ep_communication_latency_ms": 0.02,
     })
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l1_available_gb": 260, "l2_available_gb": 0,
     })
     return update_inference(request, update={
@@ -273,7 +273,7 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
     )
     assert resolved.max_total_tokens == rank.l1_capacity_pages * 4
     request = hy4_request()
-    storage = physical(request).storage.model_copy(update={"l2_available_gb": 10})
+    storage = inference_config(request).storage.model_copy(update={"l2_available_gb": 10})
     tiered = resolve_config(update_inference(request, update={"storage": storage}))
     assert tiered.capacity.rank_reports[0].kv_bytes_per_token == 78 * (512 + 64) * 2 + 78 * 132
     runtime = prepare_runtime(update_inference(request, update={"storage": storage}))
@@ -300,10 +300,10 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
     tp_size: int, hierarchical: bool,
 ) -> None:
     request = hy4_request()
-    hardware = physical(request).hardware.model_copy(update={
+    hardware = inference_config(request).hardware.model_copy(update={
         "gpu_count": tp_size, "memory_bytes_per_gpu": 3_000_000_000_000,
     })
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l1_available_gb": 2000,
         "l2_available_gb": 10 if hierarchical else 0,
     })
@@ -311,7 +311,7 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
         "hardware": hardware, "storage": storage, "tp_size": tp_size, "ep_size": tp_size,
     })
     resolved = resolve_config(request)
-    custom = ModelSpec.model_validate(physical(request).model.model_dump() | {
+    custom = ModelSpec.model_validate(inference_config(request).model.model_dump() | {
         "name": "custom", "revision": None, "attention_layout": "grouped",
     })
     grouped = resolve_config(update_inference(request, update={"model": custom}))
@@ -331,7 +331,7 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
         assert resolved.l3_capacity_tokens == capacity.l3_capacity_pages * 4
     else:
         assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == 0
-    groups = physical(request).model.attention_groups
+    groups = inference_config(request).model.attention_groups
     assert groups is not None and groups[0].full_indexer_layers == 21
 
 
@@ -339,10 +339,10 @@ def test_hy4_dsa_index_reuse_and_sparse_attention_workload() -> None:
     request = hy4_request()
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 100_000),), 0, 1)
     short = StepWorkload("DECODE", (), (DecodeWork(1, 1_000),), 0, 1)
-    long_cost = step_cost(workload, physical(request).model, physical(request).hardware, 8, 8)
-    short_cost = step_cost(short, physical(request).model, physical(request).hardware, 8, 8)
+    long_cost = step_cost(workload, inference_config(request).model, inference_config(request).hardware, 8, 8)
+    short_cost = step_cost(short, inference_config(request).model, inference_config(request).hardware, 8, 8)
     near = StepWorkload("DECODE", (), (DecodeWork(1, 90_000),), 0, 1)
-    near_cost = step_cost(near, physical(request).model, physical(request).hardware, 8, 8)
+    near_cost = step_cost(near, inference_config(request).model, inference_config(request).hardware, 8, 8)
     # 主注意力已经达到 2048 上限，继续增长的只有 21 个 full 索引器的扫描。
     assert long_cost.flops - near_cost.flops == pytest.approx(21 * 2 * 32 * 128 * 10_000)
     assert long_cost.hbm_bytes - near_cost.hbm_bytes == pytest.approx(21 * 132 * 10_000)
@@ -474,11 +474,11 @@ def test_hy4_generic_cost_preserves_original_step_cost(
     communication_ms: float,
 ) -> None:
     request = hy4_request()
-    hardware = physical(request).hardware.model_copy(update={"kernel_overhead_ms": 0.03})
+    hardware = inference_config(request).hardware.model_copy(update={"kernel_overhead_ms": 0.03})
     prefill = (PrefillWork(1, reused, new, reused + new),) if new else ()
     decode = (DecodeWork(2, context),) if context is not None else ()
     workload = StepWorkload(phase, prefill, decode, 0, len(prefill) + len(decode))
-    cost = step_cost(workload, physical(request).model, hardware, 8, 8)
+    cost = step_cost(workload, inference_config(request).model, hardware, 8, 8)
     assert asdict(cost) == pytest.approx(
         {
             "duration_ms": duration,
@@ -499,7 +499,7 @@ def test_hy4_generic_cost_preserves_original_step_cost(
         }
     )
     custom = ModelSpec.model_validate(
-        physical(request).model.model_dump()
+        inference_config(request).model.model_dump()
         | {
             "name": "custom",
             "revision": None,
@@ -511,7 +511,7 @@ def test_hy4_generic_cost_preserves_original_step_cost(
 
 def test_hy4_parameters_are_editable_and_empty_steps_are_rejected() -> None:
     request = hy4_request()
-    payload = physical(request).model.model_dump()
+    payload = inference_config(request).model.model_dump()
     with pytest.raises(ValidationError, match="必须提供注意力组"):
         ModelSpec.model_validate(payload | {"attention_groups": None})
     updates: tuple[dict[str, object], ...] = (
@@ -551,7 +551,7 @@ def test_hy4_parameters_are_editable_and_empty_steps_are_rejected() -> None:
 
 def auxiliary_weight_request(tp_size: int) -> SimConfig:
     request = example_request()
-    model = ModelSpec.model_validate(physical(request).model.model_dump() | {
+    model = ModelSpec.model_validate(inference_config(request).model.model_dump() | {
         "num_layers": 4, "num_attention_heads": 4, "num_kv_heads": 2,
         "moe_layers": 2, "num_experts": 4, "experts_per_token": 2,
         "expert_intermediate_size": 8, "attention_layout": "grouped",
@@ -567,11 +567,11 @@ def auxiliary_weight_request(tp_size: int) -> SimConfig:
     })
     return update_inference(request, update={
         "model": model, "tp_size": tp_size, "ep_size": tp_size,
-        "hardware": physical(request).hardware.model_copy(update={
+        "hardware": inference_config(request).hardware.model_copy(update={
             "gpu_count": tp_size, "effective_interconnect_gb_s": 100,
             "collective_latency_ms": 0.01, "ep_communication_latency_ms": 0.02,
         }),
-        "storage": physical(request).storage.model_copy(update={
+        "storage": inference_config(request).storage.model_copy(update={
             "l2_available_gb": 0.001,
         }),
     })
@@ -589,7 +589,7 @@ def assert_auxiliary_weight_delta(
     assert capacity.estimated_expert_parameters == original.estimated_expert_parameters
     assert capacity.weights_resident_bytes - original.weights_resident_bytes == (
         replicated_bytes + sharded_bytes
-    ) * physical(request).tp_size
+    ) * inference_config(request).tp_size
     for rank, base_rank in zip(capacity.rank_reports, original.rank_reports, strict=True):
         assert (
             rank.replicated_weights_bytes - base_rank.replicated_weights_bytes == replicated_bytes
@@ -608,7 +608,7 @@ def assert_auxiliary_weight_delta(
         prepare_runtime(request).perf_model
     )
     workload = StepWorkload("MIXED", (PrefillWork(1, 3, 2, 5),), (DecodeWork(2, 10),), 0, 2)
-    inference = physical(request)
+    inference = inference_config(request)
     assert step_cost(workload, model, inference.hardware, inference.tp_size, inference.ep_size) == (
         step_cost(
             workload, inference.model, inference.hardware, inference.tp_size, inference.ep_size,
@@ -631,9 +631,9 @@ def test_block_and_final_norm_capacity_follows_explicit_spec(
 ) -> None:
     request = auxiliary_weight_request(tp_size)
     request = update_inference(request, update={
-        "model": physical(request).model.model_copy(update={"norms": NormSpec(kind="none")}),
+        "model": inference_config(request).model.model_copy(update={"norms": NormSpec(kind="none")}),
     })
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "norms": NormSpec(kind=kind, block_per_layer=blocks, final_norm=final, dtype=dtype),
     })
     assert_auxiliary_weight_delta(request, model, parameters, parameters * bytes_per_parameter)
@@ -647,23 +647,23 @@ def test_qk_norm_uses_head_or_low_rank_width_and_is_replicated(
     dtype: AuxWeightDtype | None, bytes_per_parameter: int,
 ) -> None:
     request = auxiliary_weight_request(tp_size)
-    original_groups = physical(request).model.attention_groups
+    original_groups = inference_config(request).model.attention_groups
     assert original_groups is not None
     groups = list(original_groups)
     groups[group_index] = groups[group_index].model_copy(update={"qk_norm": False})
     request = update_inference(request, update={
-        "model": physical(request).model.model_copy(update={"attention_groups": groups}),
+        "model": inference_config(request).model.model_copy(update={"attention_groups": groups}),
     })
     enabled = list(groups)
     enabled[group_index] = groups[group_index].model_copy(update={
         "qk_norm": True, "norm_dtype": dtype,
     })
-    model = physical(request).model.model_copy(update={"attention_groups": enabled})
+    model = inference_config(request).model.model_copy(update={"attention_groups": enabled})
     assert_auxiliary_weight_delta(request, model, parameters, parameters * bytes_per_parameter)
     disabled = list(groups)
     disabled[group_index] = groups[group_index].model_copy(update={"norm_dtype": dtype})
     assert_auxiliary_weight_delta(
-        request, physical(request).model.model_copy(update={"attention_groups": disabled}), 0, 0,
+        request, inference_config(request).model.model_copy(update={"attention_groups": disabled}), 0, 0,
     )
 
 
@@ -673,9 +673,9 @@ def test_attention_sink_is_sharded_by_each_groups_heads(
     tp_size: int, dtype: AuxWeightDtype, bytes_per_parameter: int,
 ) -> None:
     request = auxiliary_weight_request(tp_size)
-    groups = physical(request).model.attention_groups
+    groups = inference_config(request).model.attention_groups
     assert groups is not None
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "attention_groups": [
             group.model_copy(update={"sink_dtype": dtype})
             for group in groups
@@ -696,20 +696,20 @@ def test_index_norm_counts_only_full_indexer_layers(
     dtype: AuxWeightDtype | None, parameters_per_layer: int, bytes_per_parameter: int,
 ) -> None:
     request = auxiliary_weight_request(tp_size)
-    original_groups = physical(request).model.attention_groups
+    original_groups = inference_config(request).model.attention_groups
     assert original_groups is not None
     groups = list(original_groups)
     groups[2] = groups[2].model_copy(update={
         "index_norm": "none", "full_indexer_layers": full_layers,
     })
     request = update_inference(request, update={
-        "model": physical(request).model.model_copy(update={"attention_groups": groups}),
+        "model": inference_config(request).model.model_copy(update={"attention_groups": groups}),
     })
     normalized = list(groups)
     normalized[2] = groups[2].model_copy(update={"index_norm": kind, "index_norm_dtype": dtype})
     parameters = full_layers * parameters_per_layer
     assert_auxiliary_weight_delta(
-        request, physical(request).model.model_copy(update={"attention_groups": normalized}),
+        request, inference_config(request).model.model_copy(update={"attention_groups": normalized}),
         parameters, parameters * bytes_per_parameter,
     )
 
@@ -725,7 +725,7 @@ def test_router_dtype_replaces_matrix_bytes_and_adds_correction_once(
     correction_dtype: AuxWeightDtype, matrix_bytes: int, correction_bytes: int,
 ) -> None:
     request = auxiliary_weight_request(tp_size)
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "router": RouterSpec(dtype=dtype, correction_bias=correction,
                              correction_dtype=correction_dtype),
     })
@@ -742,7 +742,7 @@ def test_ihc_counts_two_sites_per_layer_and_final_head_as_fp32_copies(
     tp_size: int, mult: int, parameters: int,
 ) -> None:
     request = auxiliary_weight_request(tp_size)
-    model = physical(request).model.model_copy(update={"ihc": IHCSpec(mult=mult)})
+    model = inference_config(request).model.model_copy(update={"ihc": IHCSpec(mult=mult)})
     assert_auxiliary_weight_delta(request, model, parameters, parameters * 4)
     disabled = model.model_copy(update={"ihc": None})
     assert resolve_config(update_inference(request, update={"model": disabled})).capacity == (
@@ -770,7 +770,7 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
         topk=4 if kind == "mla_dsa" else None,
         full_indexer_layers=1 if kind == "mla_dsa" else None,
     )
-    model = physical(request).model.model_copy(
+    model = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
             "attention_groups": [group],
@@ -779,7 +779,7 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
     gated = model.model_copy(
         update={"attention_groups": [group.model_copy(update={"output_gate": True})]}
     )
-    hardware = physical(request).hardware.model_copy(
+    hardware = inference_config(request).hardware.model_copy(
         update={
             "gpu_count": tp_size,
             "effective_interconnect_gb_s": 100,
@@ -795,7 +795,7 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
     assert cost.hbm_bytes - base.hbm_bytes == pytest.approx(2 * local_gate)
     assert cost.duration_ms - base.duration_ms == pytest.approx(2 * local_gate / 1e6)
     assert cost.communication_bytes == base.communication_bytes
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0,
     })
     base_capacity = resolve_config(
@@ -848,7 +848,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
     tp_size: int, grouped: bool,
 ) -> None:
     request = example_request()
-    model = physical(request).model.model_copy(
+    model = inference_config(request).model.model_copy(
         update={
             "moe_layers": 1,
             "num_experts": 4,
@@ -870,7 +870,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
     shared = model.model_copy(
         update={"num_shared_experts": 2, "shared_expert_intermediate_size": 8}
     )
-    hardware = physical(request).hardware.model_copy(
+    hardware = inference_config(request).hardware.model_copy(
         update={
             "gpu_count": tp_size,
             "effective_interconnect_gb_s": 100,
@@ -889,7 +889,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
     for name, value in asdict(base).items():
         if name not in {"duration_ms", "flops", "hbm_bytes", "compute_ms", "memory_ms"}:
             assert getattr(cost, name) == value
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0,
     })
     base_capacity = resolve_config(
@@ -964,13 +964,13 @@ def test_dsa_charges_int32_candidate_reads_in_each_attention_layer() -> None:
         topk=10,
         full_indexer_layers=1,
     )
-    model = physical(request).model.model_copy(
+    model = inference_config(request).model.model_copy(
         update={"attention_layout": "grouped", "attention_groups": [mla]}
     )
     sparse = model.model_copy(update={"attention_groups": [dsa]})
     workload = StepWorkload("MIXED", (PrefillWork(1, 1, 2, 3),), (DecodeWork(2, 4),), 0, 2)
-    base = step_cost(workload, model, physical(request).hardware)
-    cost = step_cost(workload, sparse, physical(request).hardware)
+    base = step_cost(workload, model, inference_config(request).hardware)
+    cost = step_cost(workload, sparse, inference_config(request).hardware)
     pairs = 2 + 3 + 4
     index_weights = 2 * 128 * 4 + 16 * (128 + 2)
     index_hbm = 2 * index_weights + 132 * (3 + 4 + 3)
@@ -1036,13 +1036,13 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
         update_inference(request,
             update={
                 "model": qwen,
-                "hardware": physical(request).hardware.model_copy(
+                "hardware": inference_config(request).hardware.model_copy(
                     update={
                         "name": "NVIDIA B300",
                         "memory_bytes_per_gpu": 288_000_000_000,
                     }
                 ),
-                "storage": physical(request).storage.model_copy(
+                "storage": inference_config(request).storage.model_copy(
                     update={
                         "l1_available_gb": 200,
                         "l2_available_gb": 0,
@@ -1067,19 +1067,19 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
     with pytest.raises(ValueError, match="TP 数"):
         resolve_config(
             update_inference(original,
-                update={"hardware": physical(original).hardware.model_copy(update={"gpu_count": 8})}
+                update={"hardware": inference_config(original).hardware.model_copy(update={"gpu_count": 8})}
             )
         )
     with pytest.raises(ValueError, match="MoE"):
         resolve_config(
             update_inference(original,
-                update={"model": physical(original).model.model_copy(update={"moe_layers": 1})}
+                update={"model": inference_config(original).model.model_copy(update={"moe_layers": 1})}
             )
         )
     with pytest.raises(ValueError, match="L2"):
         resolve_config(
             update_inference(original,
-                update={"storage": physical(original).storage.model_copy(update={
+                update={"storage": inference_config(original).storage.model_copy(update={
                     "l2_to_l1_gb_s": None,
                 })}
             )
@@ -1088,7 +1088,7 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
         resolve_config(
             update_inference(original,
                 update={
-                    "storage": physical(original).storage.model_copy(update={
+                    "storage": inference_config(original).storage.model_copy(update={
                         "l1_available_gb": 0.000001,
                     })
                 }
@@ -1108,7 +1108,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
         ffn_intermediate_size=12288,
         vocab_size=151936,
     )
-    hardware = physical(request).hardware.model_copy(
+    hardware = inference_config(request).hardware.model_copy(
         update={
             "gpu_count": 4,
             "memory_bytes_per_gpu": 288_000_000_000,
@@ -1116,7 +1116,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
             "collective_latency_ms": 0.1,
         }
     )
-    storage = physical(request).storage.model_copy(
+    storage = inference_config(request).storage.model_copy(
         update={
             "l1_available_gb": 20,
             "l2_available_gb": 1,
@@ -1177,7 +1177,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
         ffn_intermediate_size=12288,
         vocab_size=151936,
     )
-    hardware = physical(request).hardware.model_copy(
+    hardware = inference_config(request).hardware.model_copy(
         update={
             "gpu_count": 8,
             "memory_bytes_per_gpu": 288_000_000_000,
@@ -1185,7 +1185,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
             "collective_latency_ms": 0.1,
         }
     )
-    storage = physical(request).storage.model_copy(
+    storage = inference_config(request).storage.model_copy(
         update={
             "l1_available_gb": 50,
             "l2_available_gb": 1,
@@ -1229,14 +1229,14 @@ def test_tp_preview_rejects_incomplete_placement_and_gpu_mismatch() -> None:
     request = example_request()
     with pytest.raises(ValueError, match="TP 数"):
         resolve_config(update_inference(request, update={"tp_size": 4}))
-    hardware = physical(request).hardware.model_copy(update={"gpu_count": 4})
-    valid_model = physical(request).model.model_copy(
+    hardware = inference_config(request).hardware.model_copy(update={"gpu_count": 4})
+    valid_model = inference_config(request).model.model_copy(
         update={
             "vocab_size": 16,
             "num_attention_heads": 4,
         }
     )
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0,
     })
     request = update_inference(request, update={
@@ -1282,8 +1282,8 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
         experts_per_token=2,
         vocab_size=16,
     )
-    hardware = physical(base).hardware.model_copy(update={"gpu_count": 2})
-    storage = physical(base).storage.model_copy(
+    hardware = inference_config(base).hardware.model_copy(update={"gpu_count": 2})
+    storage = inference_config(base).storage.model_copy(
         update={
             "l1_available_gb": 0.00001,
             "l2_available_gb": 0,
@@ -1300,7 +1300,7 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
         }
     )
     preview = resolve_config(request)
-    assert physical(request).ep_size == physical(request).tp_size == 2
+    assert inference_config(request).ep_size == inference_config(request).tp_size == 2
     assert not preview.runnable
     assert preview.capacity.kv_bytes_per_token == 128
     assert (
@@ -1334,7 +1334,7 @@ def test_moe_preview_rejects_inconsistent_layout(
     updates: dict[str, object], reason: str,
 ) -> None:
     base = example_request()
-    model = physical(base).model.model_copy(
+    model = inference_config(base).model.model_copy(
         update={
             "vocab_size": 16,
             "moe_layers": 1,
@@ -1349,7 +1349,7 @@ def test_moe_preview_rejects_inconsistent_layout(
             "model": model,
             "ep_size": updates.get("ep_size", 2),
             "tp_size": 2,
-            "hardware": physical(base).hardware.model_copy(update={"gpu_count": 2}),
+            "hardware": inference_config(base).hardware.model_copy(update={"gpu_count": 2}),
         }
     )
     with pytest.raises(ValueError, match=reason):
@@ -1432,7 +1432,7 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
 
 def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> None:
     base = example_request()
-    model = physical(base).model.model_copy(
+    model = inference_config(base).model.model_copy(
         update={
             "vocab_size": 16,
             "moe_layers": 1,
@@ -1441,7 +1441,7 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
             "expert_intermediate_size": 8,
         }
     )
-    hardware = physical(base).hardware.model_copy(
+    hardware = inference_config(base).hardware.model_copy(
         update={
             "gpu_count": 2,
             "effective_interconnect_gb_s": 1,
@@ -1449,7 +1449,7 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
             "ep_communication_latency_ms": 0.7,
         }
     )
-    storage = physical(base).storage.model_copy(
+    storage = inference_config(base).storage.model_copy(
         update={
             "l2_available_gb": 0,
         }
@@ -1560,15 +1560,15 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
 @pytest.mark.parametrize("tp_size", [1, 2])
 def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: int) -> None:
     request = example_request()
-    model = physical(request).model.model_copy(update={
+    model = inference_config(request).model.model_copy(update={
         "moe_layers": 1, "num_experts": 4, "experts_per_token": 2,
         "expert_intermediate_size": 8,
     })
-    hardware = physical(request).hardware.model_copy(update={
+    hardware = inference_config(request).hardware.model_copy(update={
         "gpu_count": tp_size, "effective_interconnect_gb_s": 100,
         "collective_latency_ms": 0.1, "ep_communication_latency_ms": 0.2,
     })
-    storage = physical(request).storage.model_copy(update={
+    storage = inference_config(request).storage.model_copy(update={
         "l2_available_gb": 0.001,
     })
     config = update_inference(request, l3_gb=0.001, update={
@@ -1586,8 +1586,8 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     assert runtime.resolution == resolve_config(config)
     assert runtime.links == prepare_runtime(config).links
     page_bytes = runtime.engine.page_size * resolved.capacity.kv_bytes_per_token
-    l2_service = physical(request).storage.l2_latency_ms + page_bytes / 1000
-    l3_service = physical(request).storage.l3_latency_ms + page_bytes / 2000
+    l2_service = inference_config(request).storage.l2_latency_ms + page_bytes / 1000
+    l3_service = inference_config(request).storage.l3_latency_ms + page_bytes / 2000
     expected_ms = 2 * l2_service + l3_service
     l2_link, l3_link = runtime.links.l2_to_l1, runtime.links.l3_to_l2
     assert l2_link is not None and l3_link is not None
@@ -1716,19 +1716,19 @@ def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
 
 def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> None:
     base = example_request()
-    model = physical(base).model.model_copy(
+    model = inference_config(base).model.model_copy(
         update={
             "vocab_size": 16,
         }
     )
-    hardware = physical(base).hardware.model_copy(
+    hardware = inference_config(base).hardware.model_copy(
         update={
             "gpu_count": 2,
             "effective_interconnect_gb_s": 1e-6,
             "collective_latency_ms": 0.1,
         }
     )
-    storage = physical(base).storage.model_copy(
+    storage = inference_config(base).storage.model_copy(
         update={
             "l1_available_gb": 0.0002,
             "l2_available_gb": 0,

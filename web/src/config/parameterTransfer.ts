@@ -1,4 +1,4 @@
-import type { PhysicalInferenceConfig, SimConfig, TimingConfig } from "../api/types";
+import type { InferenceConfig, SimConfig, TimingConfig } from "../api/types";
 import { validateSimConfig } from "./simulation";
 
 function objectWithKeys(value: unknown, path: string, keys: readonly string[], defaults: Record<string, unknown> = {}): Record<string, unknown> {
@@ -54,14 +54,12 @@ export function parseSimConfigJson(json: string): SimConfig {
 
   const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference", "shared_l3"], { shared_l3: null });
   if (root.shared_l3 != null) {
-    const mode = (root.shared_l3 as Record<string, unknown>).mode;
-    if (mode !== "physical") throw new Error("shared_l3.mode 仅支持 physical");
-    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["mode", "available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: 0 });
+    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: 0 });
     numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", ["available_gb", "lookup_latency_ms"]);
   }
   numericFields(root, "参数配置", ["num_instances"]);
   const workload: Record<string, unknown> = { mode: "synthetic", arrival_mode: "closed_loop", seed: 0,
-    ...physicalObject(root.workload, "workload", [], [
+    ...configObject(root.workload, "workload", [], [
       "mode", "arrival_mode", "seed", "session_rate", "target_qps", "synthetic", "trace",
     ]) };
   if (workload.arrival_mode !== "open_loop" && workload.arrival_mode !== "closed_loop") {
@@ -106,9 +104,7 @@ export function parseSimConfigJson(json: string): SimConfig {
   numericFields(scheduler, "scheduler", ["max_running_requests", "max_prefill_tokens", "l3_prefetch_min_tokens"]);
   if (typeof scheduler.pd_mutually_exclusive !== "boolean") throw new Error("scheduler.pd_mutually_exclusive 必须是布尔值");
   root.scheduler = scheduler;
-  const inferenceMode = (root.inference as Record<string, unknown> | null)?.mode;
-  if (inferenceMode !== "physical") throw new Error("inference.mode 仅支持 physical");
-  root.inference = validatePhysicalInference(root.inference);
+  root.inference = validateInference(root.inference);
 
   const config = root as SimConfig;
   const error = validateSimConfig(config)[0];
@@ -118,7 +114,7 @@ export function parseSimConfigJson(json: string): SimConfig {
   return config;
 }
 
-function physicalObject(value: unknown, path: string, required: string[], optional: string[]): Record<string, unknown> {
+function configObject(value: unknown, path: string, required: string[], optional: string[]): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${path} 必须为 JSON 对象`);
   }
@@ -134,7 +130,7 @@ function physicalObject(value: unknown, path: string, required: string[], option
   return record;
 }
 
-function physicalNumber(record: Record<string, unknown>, path: string, key: string,
+function configNumber(record: Record<string, unknown>, path: string, key: string,
   minimum: number, integer = false, nullable = false): void {
   const value = record[key];
   if (value === undefined || (nullable && value === null)) return;
@@ -144,13 +140,13 @@ function physicalNumber(record: Record<string, unknown>, path: string, key: stri
   }
 }
 
-function physicalBoolean(record: Record<string, unknown>, path: string, key: string): void {
+function configBoolean(record: Record<string, unknown>, path: string, key: string): void {
   if (record[key] !== undefined && typeof record[key] !== "boolean") {
     throw new Error(`${path}.${key} 必须是布尔值`);
   }
 }
 
-function physicalDtype(record: Record<string, unknown>, path: string, key: string, nullable = true): void {
+function configDtype(record: Record<string, unknown>, path: string, key: string, nullable = true): void {
   const value = record[key];
   if (value === undefined || (nullable && value === null)) return;
   if (!["bf16", "fp16", "fp32"].includes(value as string)) {
@@ -169,25 +165,25 @@ function validateTiming(value: unknown): TimingConfig {
   } else throw new Error("inference.timing.mode 不支持该计时模式");
 }
 
-function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
-  const root = objectWithKeys(value, "inference", ["mode", "page_size", "max_output_tokens", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
+function validateInference(value: unknown): InferenceConfig {
+  const root = objectWithKeys(value, "inference", ["page_size", "max_output_tokens", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
     page_size: 64, max_output_tokens: 65_536, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
   });
   numericFields(root, "inference", ["page_size", "max_output_tokens"]);
   root.timing = validateTiming(root.timing);
   const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
     num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
-    ...physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
+    ...configObject(root.model, "model", ["name", "num_layers", "hidden_size",
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
       "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
       "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]) } as Record<string, unknown>;
-  const hardware = { gpu_count: 1, kernel_overhead_ms: 0, ...physicalObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
+  const hardware = { gpu_count: 1, kernel_overhead_ms: 0, ...configObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
     "kernel_overhead_ms"]) } as Record<string, unknown>;
   const storage = { l2_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: 0,
-    l3_latency_ms: 0, ...physicalObject(root.storage, "storage", ["l1_available_gb"],
+    l3_latency_ms: 0, ...configObject(root.storage, "storage", ["l1_available_gb"],
     ["l2_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
       "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
   root.model = model;
@@ -209,36 +205,36 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
     }
   }
   if (model.norms !== undefined) {
-    const norms = physicalObject(model.norms, "model.norms", [], ["kind", "block_per_layer", "final_norm", "dtype"]);
+    const norms = configObject(model.norms, "model.norms", [], ["kind", "block_per_layer", "final_norm", "dtype"]);
     if (norms.kind !== undefined && !["none", "rms", "layer"].includes(norms.kind as string)) {
       throw new Error("model.norms.kind 仅支持 none/rms/layer");
     }
-    physicalNumber(norms, "model.norms", "block_per_layer", 0, true);
-    physicalBoolean(norms, "model.norms", "final_norm");
-    physicalDtype(norms, "model.norms", "dtype");
+    configNumber(norms, "model.norms", "block_per_layer", 0, true);
+    configBoolean(norms, "model.norms", "final_norm");
+    configDtype(norms, "model.norms", "dtype");
   }
   if (model.router !== undefined) {
-    const router = physicalObject(model.router, "model.router", [], ["dtype", "correction_bias", "correction_dtype"]);
-    physicalDtype(router, "model.router", "dtype");
-    physicalBoolean(router, "model.router", "correction_bias");
-    physicalDtype(router, "model.router", "correction_dtype", false);
+    const router = configObject(model.router, "model.router", [], ["dtype", "correction_bias", "correction_dtype"]);
+    configDtype(router, "model.router", "dtype");
+    configBoolean(router, "model.router", "correction_bias");
+    configDtype(router, "model.router", "correction_dtype", false);
     if (Number(model.moe_layers ?? 0) === 0 && (router.dtype != null ||
         (router.correction_bias ?? false) !== false || (router.correction_dtype ?? "fp32") !== "fp32")) {
       throw new Error("Router 辅助配置需要 MoE 层");
     }
   }
   if (model.ihc !== undefined && model.ihc !== null) {
-    const ihc = physicalObject(model.ihc, "model.ihc", ["mult"], ["dtype"]);
-    physicalNumber(ihc, "model.ihc", "mult", 1, true);
-    physicalDtype(ihc, "model.ihc", "dtype", false);
+    const ihc = configObject(model.ihc, "model.ihc", ["mult"], ["dtype"]);
+    configNumber(ihc, "model.ihc", "mult", 1, true);
+    configDtype(ihc, "model.ihc", "dtype", false);
   }
   for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
-    "head_dim", "ffn_intermediate_size", "vocab_size"] as const) physicalNumber(model, "model", key, 1, true);
+    "head_dim", "ffn_intermediate_size", "vocab_size"] as const) configNumber(model, "model", key, 1, true);
   for (const key of ["moe_layers", "num_experts", "experts_per_token", "num_shared_experts"] as const) {
-    physicalNumber(model, "model", key, 0, true);
+    configNumber(model, "model", key, 0, true);
   }
-  physicalNumber(model, "model", "expert_intermediate_size", 1, true, true);
-  physicalNumber(model, "model", "shared_expert_intermediate_size", 1, true, true);
+  configNumber(model, "model", "expert_intermediate_size", 1, true, true);
+  configNumber(model, "model", "shared_expert_intermediate_size", 1, true, true);
   if (Number(model.num_shared_experts ?? 0) > 0) {
     if (!Number(model.moe_layers ?? 0) || model.shared_expert_intermediate_size == null) {
       throw new Error("启用共享专家需要 MoE 层及 model.shared_expert_intermediate_size");
@@ -268,10 +264,10 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
     let layers = 0;
     for (const [index, raw] of model.attention_groups.entries()) {
       const path = `model.attention_groups[${index}]`;
-      const group = physicalObject(raw, path, ["kind", "layers", "num_attention_heads"],
+      const group = configObject(raw, path, ["kind", "layers", "num_attention_heads"],
         [...fields, "output_gate", "qk_norm", "norm_dtype", "index_norm", "index_norm_dtype", "sink_dtype"]);
-      physicalBoolean(group, path, "qk_norm");
-      for (const field of ["norm_dtype", "index_norm_dtype", "sink_dtype"]) physicalDtype(group, path, field);
+      configBoolean(group, path, "qk_norm");
+      for (const field of ["norm_dtype", "index_norm_dtype", "sink_dtype"]) configDtype(group, path, field);
       if (group.index_norm !== undefined && !["none", "rms", "layer"].includes(group.index_norm as string)) {
         throw new Error(`${path}.index_norm 仅支持 none/rms/layer`);
       }
@@ -286,8 +282,8 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
         throw new Error(`${path}.output_gate 仅支持 MLA/DSA`);
       }
       for (const field of ["layers", "num_attention_heads"])
-        physicalNumber(group, path, field, 1, true);
-      for (const field of fields) physicalNumber(group, path, field, 1, true, true);
+        configNumber(group, path, field, 1, true);
+      for (const field of fields) configNumber(group, path, field, 1, true, true);
       const present = (field: string) => group[field] != null;
       const mla = ["q_rank", "kv_rank", "rope_dim", "nope_dim", "value_dim"];
       const dsa = ["index_heads", "index_dim", "topk", "full_indexer_layers"];
@@ -307,25 +303,25 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
     if (layers !== Number(model.num_layers)) throw new Error("注意力组层数之和必须等于模型总层数");
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {
-    physicalNumber(hardware, "hardware", key, 1, true);
+    configNumber(hardware, "hardware", key, 1, true);
   }
   for (const key of ["effective_fp16_tflops", "effective_hbm_gb_s"] as const) {
-    physicalNumber(hardware, "hardware", key, Number.MIN_VALUE);
+    configNumber(hardware, "hardware", key, Number.MIN_VALUE);
   }
   for (const key of ["effective_fp8_tflops", "effective_interconnect_gb_s"] as const) {
-    physicalNumber(hardware, "hardware", key, Number.MIN_VALUE, false, true);
+    configNumber(hardware, "hardware", key, Number.MIN_VALUE, false, true);
   }
   for (const key of ["collective_latency_ms", "ep_communication_latency_ms"] as const) {
-    physicalNumber(hardware, "hardware", key, 0, false, true);
+    configNumber(hardware, "hardware", key, 0, false, true);
   }
-  physicalNumber(hardware, "hardware", "kernel_overhead_ms", 0);
-  physicalNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
+  configNumber(hardware, "hardware", "kernel_overhead_ms", 0);
+  configNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
   for (const key of ["l2_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
-    physicalNumber(storage, "storage", key, 0);
+    configNumber(storage, "storage", key, 0);
   }
-  physicalNumber(storage, "storage", "runtime_reserve_bytes", 0, true);
+  configNumber(storage, "storage", "runtime_reserve_bytes", 0, true);
   for (const key of ["l2_to_l1_gb_s", "l3_to_l2_gb_s"] as const) {
-    physicalNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
+    configNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
   }
 
   for (const field of ["tp_size", "ep_size"] as const) {
@@ -347,7 +343,7 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
              Number(model.experts_per_token ?? 0) > 0 || model.expert_intermediate_size != null) {
     throw new Error("Dense 模型不能设置 EP 或 MoE 专家参数");
   }
-  return root as PhysicalInferenceConfig;
+  return root as InferenceConfig;
 }
 
 export function serializeSimConfig(config: SimConfig): string {
@@ -355,7 +351,7 @@ export function serializeSimConfig(config: SimConfig): string {
   if (error) {
     throw new Error(`${error.field}：${error.message}`);
   }
-  validatePhysicalInference(config.inference);
+  validateInference(config.inference);
   const reusable = config.workload.mode === "trace" && config.workload.trace
     ? { ...config, workload: { ...config.workload, trace: { ...config.workload.trace, plan_id: null } } }
     : config;

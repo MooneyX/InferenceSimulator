@@ -14,7 +14,8 @@ test("runs 10 requests through the unified simulation endpoint", async ({ page }
   expect(response.status()).toBe(200);
   const config = response.request().postDataJSON();
   expect(config.workload.synthetic.num_requests).toBe(10);
-  expect(config.inference.mode).toBe("physical");
+  expect(config.inference).not.toHaveProperty("mode");
+  expect(config.shared_l3).not.toHaveProperty("mode");
   expect(config.inference.timing).toEqual({ mode: "analytical" });
   expect(config).toHaveProperty("scheduler.max_running_requests");
   expect(config).not.toHaveProperty("engine");
@@ -60,7 +61,7 @@ test("runs and renders a 1,000-request simulation", async ({ page }) => {
   const response = await responsePromise;
   expect(response.status()).toBe(200);
   const submittedConfig = response.request().postDataJSON();
-  expect(submittedConfig.inference.mode).toBe("physical");
+  expect(submittedConfig.inference).not.toHaveProperty("mode");
   expect(submittedConfig).toHaveProperty("scheduler.pd_mutually_exclusive");
   expect(submittedConfig).not.toHaveProperty("engine");
   expect(submittedConfig).not.toHaveProperty("perf_model");
@@ -139,7 +140,7 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   const response = await responsePromise;
   expect(response.status()).toBe(200);
   const submittedConfig = response.request().postDataJSON();
-  expect(submittedConfig.inference.mode).toBe("physical");
+  expect(submittedConfig.inference).not.toHaveProperty("mode");
   expect(submittedConfig).not.toHaveProperty("config");
   const submitted = submittedConfig.inference.model;
   expect(submitted.hidden_size).toBe(4096);

@@ -24,7 +24,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
-from test_schemas import physical_config, runtime_config
+from test_schemas import resolved_config, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=5, decode_d2=1)
 
@@ -216,7 +216,7 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
 
 
 def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,

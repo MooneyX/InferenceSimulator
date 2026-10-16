@@ -13,13 +13,13 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
-from test_schemas import physical_config
+from test_schemas import resolved_config
 
 
 def config(
     *, instances: int = 2, requests: int = 4, sessions: int = 2, capacity: int = 64, prompt: int = 4
 ) -> SimConfig:
-    return physical_config(
+    return resolved_config(
         num_instances=instances,
         workload=WorkloadConfig(
             session_rate=100,

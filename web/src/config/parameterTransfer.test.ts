@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { PhysicalInferenceConfig } from "../api/types";
+import type { InferenceConfig } from "../api/types";
 import { initialHardware, initialModel, initialStorage, createDefaultSimConfig } from "./simulation";
 import { parseSimConfigJson, serializeSimConfig } from "./parameterTransfer";
 
-function parsePhysicalJson(json: string): PhysicalInferenceConfig {
+function parseInferenceJson(json: string): InferenceConfig {
   const config = parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), shared_l3: null, inference: JSON.parse(json) }));
-  if (config.inference.mode !== "physical") throw new Error("预期物理配置");
   return config.inference;
 }
 
-function serializePhysical(inference: PhysicalInferenceConfig): string {
+function serializeInference(inference: InferenceConfig): string {
   const json = serializeSimConfig({ ...createDefaultSimConfig(), shared_l3: null, inference });
   return JSON.stringify(JSON.parse(json).inference);
 }
@@ -23,17 +22,17 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), engine: {} }))).toThrow("不支持的参数：engine");
   });
 
-  it("imports physical empirical settings using schema defaults", () => {
+  it("imports empirical timing settings using schema defaults", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1,
       workload: { session_rate: 1, synthetic: { num_requests: 3,
         prompt_len: { dist: "fixed", value: 64 }, turn_increment_len: { dist: "fixed", value: 16 },
         output_len: { dist: "fixed", value: 8 } } },
       scheduler: { max_running_requests: 2 },
-      inference: { mode: "physical", model: initialModel, hardware: initialHardware, storage: initialStorage,
+      inference: { model: initialModel, hardware: initialHardware, storage: initialStorage,
         timing: { mode: "empirical", prefill_c1: 1, decode_d1: 2, decode_d2: 0.1 } },
     }));
     expect(config.scheduler).toEqual({ max_running_requests: 2, max_prefill_tokens: 16_384, l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true });
-    expect(config.inference).toMatchObject({ mode: "physical", page_size: 64, tp_size: 1, ep_size: 1,
+    expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
       timing: { mode: "empirical", prefill_c2: 0 } });
     expect(config.inference).not.toHaveProperty("kv");
     expect(config.workload).toMatchObject({ mode: "synthetic", arrival_mode: "closed_loop", seed: 0, session_rate: 1 });
@@ -50,10 +49,10 @@ describe("parameter JSON transfer", () => {
       .toThrow("缺少参数：workload.synthetic.output_len");
   });
 
-  it("imports physical defaults and a trace with nullable QPS without a reusable plan", () => {
+  it("imports inference defaults and a trace with nullable QPS without a reusable plan", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1, scheduler: { max_running_requests: 2 },
       workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1, target_qps: null, trace: {} },
-      inference: { mode: "physical", model: { name: "toy", num_layers: 1, hidden_size: 16,
+      inference: { model: { name: "toy", num_layers: 1, hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
         hardware: { name: "GPU", memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
         storage: { l1_available_gb: 0.001 } },
@@ -88,7 +87,7 @@ describe("parameter JSON transfer", () => {
   });
 
   it.each(["bf16", "fp16", "fp32"] as const)("round-trips complete auxiliary weight settings in %s", (dtype) => {
-    const request: PhysicalInferenceConfig = {
+    const request: InferenceConfig = {
       ...createDefaultSimConfig().inference, model: { ...initialModel, name: "custom", num_layers: 2,
         moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
         norms: { kind: "layer", block_per_layer: 3, final_norm: false, dtype },
@@ -101,18 +100,18 @@ describe("parameter JSON transfer", () => {
           qk_norm: false, norm_dtype: dtype, index_norm: "rms", index_norm_dtype: dtype, sink_dtype: dtype,
         }] }, hardware: initialHardware, storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
     };
-    expect(parsePhysicalJson(serializePhysical(request))).toEqual(request);
-    const disabled: PhysicalInferenceConfig = { ...request, model: { ...request.model,
+    expect(parseInferenceJson(serializeInference(request))).toEqual(request);
+    const disabled: InferenceConfig = { ...request, model: { ...request.model,
       norms: { kind: "none", block_per_layer: 0, final_norm: false, dtype: null },
       router: { dtype: null, correction_bias: false, correction_dtype: "fp32" }, ihc: null,
       attention_groups: [{ ...request.model.attention_groups![0], qk_norm: true,
         norm_dtype: null, index_norm: "none", index_norm_dtype: null, sink_dtype: null }],
     } };
-    expect(parsePhysicalJson(serializePhysical(disabled))).toEqual(disabled);
+    expect(parseInferenceJson(serializeInference(disabled))).toEqual(disabled);
   });
 
   it("rejects invalid auxiliary settings on import and export", () => {
-    const base: PhysicalInferenceConfig = { ...createDefaultSimConfig().inference, model: { ...initialModel,
+    const base: InferenceConfig = { ...createDefaultSimConfig().inference, model: { ...initialModel,
       attention_layout: "grouped", attention_groups: [{ kind: "gqa", layers: initialModel.num_layers,
         num_attention_heads: 32, num_kv_heads: 8, head_dim: 128, output_gate: false,
         qk_norm: true, index_norm: "layer" }],
@@ -140,9 +139,9 @@ describe("parameter JSON transfer", () => {
       [{ ihc: { mult: 4, extra: 1 } }, "model.ihc.extra"],
     ] as const;
     for (const [patch, message] of invalid) {
-      const request = { ...base, model: { ...base.model, ...patch } } as unknown as PhysicalInferenceConfig;
-      expect(() => parsePhysicalJson(JSON.stringify(request))).toThrow(message);
-      expect(() => serializePhysical(request)).toThrow(message);
+      const request = { ...base, model: { ...base.model, ...patch } } as unknown as InferenceConfig;
+      expect(() => parseInferenceJson(JSON.stringify(request))).toThrow(message);
+      expect(() => serializeInference(request)).toThrow(message);
     }
     for (const [patch, message] of [
       [{ qk_norm: null }, "qk_norm"], [{ norm_dtype: "fp8" }, "norm_dtype"],
@@ -152,19 +151,19 @@ describe("parameter JSON transfer", () => {
     ] as const) {
       const request = { ...base, model: { ...base.model,
         attention_groups: [{ ...base.model.attention_groups![0], ...patch }],
-      } } as unknown as PhysicalInferenceConfig;
-      expect(() => parsePhysicalJson(JSON.stringify(request))).toThrow(message);
-      expect(() => serializePhysical(request)).toThrow(message);
+      } } as unknown as InferenceConfig;
+      expect(() => parseInferenceJson(JSON.stringify(request))).toThrow(message);
+      expect(() => serializeInference(request)).toThrow(message);
     }
     const legacy = { ...base, model: { ...base.model, norms: undefined, router: undefined, ihc: undefined } };
-    const parsed = parsePhysicalJson(serializePhysical(legacy));
+    const parsed = parseInferenceJson(serializeInference(legacy));
     expect(parsed.model).not.toHaveProperty("norms");
     expect(parsed.model).not.toHaveProperty("router");
     expect(parsed.model).not.toHaveProperty("ihc");
     const gqaSink = { ...base, model: { ...base.model, attention_groups: [{
       ...base.model.attention_groups![0], sink_dtype: "fp32" as const,
     }] } };
-    expect(parsePhysicalJson(serializePhysical(gqaSink))).toEqual(gqaSink);
+    expect(parseInferenceJson(serializeInference(gqaSink))).toEqual(gqaSink);
   });
 
   it("round-trips trace settings without reusing a temporary plan ID", () => {
@@ -237,7 +236,7 @@ describe("parameter JSON transfer", () => {
     [{ ...createDefaultSimConfig(), inference: { ...createDefaultSimConfig().inference,
       kv: { max_total_tokens: 130 } } }, "不支持的参数：inference.kv"],
     [{ ...createDefaultSimConfig(), inference: { ...createDefaultSimConfig().inference,
-      mode: "manual" } }, "inference.mode 仅支持 physical"],
+      mode: "physical" } }, "不支持的参数：inference.mode"],
     [{ ...createDefaultSimConfig(), workload: {
       ...createDefaultSimConfig().workload,
       synthetic: { ...createDefaultSimConfig().workload.synthetic!, session: null },
@@ -255,7 +254,7 @@ describe("parameter JSON transfer", () => {
   });
 
   it("round-trips mixed MLA and MLA+DSA groups and rejects invalid coverage", () => {
-    const request: PhysicalInferenceConfig = {
+    const request: InferenceConfig = {
       ...createDefaultSimConfig().inference, model: { ...initialModel, num_layers: 2,
         attention_layout: "grouped", attention_groups: [
           { kind: "mla", layers: 1, num_attention_heads: 32, output_gate: false,
@@ -269,15 +268,15 @@ describe("parameter JSON transfer", () => {
       hardware: initialHardware, storage: initialStorage,
       timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
     };
-    expect(parsePhysicalJson(serializePhysical(request))).toEqual(request);
-    expect(() => parsePhysicalJson(JSON.stringify({ ...request, model: {
+    expect(parseInferenceJson(serializeInference(request))).toEqual(request);
+    expect(() => parseInferenceJson(JSON.stringify({ ...request, model: {
       ...request.model, attention_groups: [{ ...request.model.attention_groups![0], layers: 2 },
         request.model.attention_groups![1]],
     } }))).toThrow("注意力组层数之和");
   });
 
   it.each(["grouped", "hy4_preview"] as const)("round-trips editable HY4 parameters with %s layout and rejects only invalid structures", (attention_layout) => {
-    const request: PhysicalInferenceConfig = {
+    const request: InferenceConfig = {
       ...createDefaultSimConfig().inference,
       model: { ...initialModel, name: "tencent/Hy4-preview",
         revision: "705d81ee51566a186d645b74c974d642ef2828fe",
@@ -298,9 +297,9 @@ describe("parameter JSON transfer", () => {
       hardware: { ...initialHardware, gpu_count: 8 },
       storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 8, ep_size: 8,
     };
-    expect(parsePhysicalJson(serializePhysical(request))).toEqual(request);
+    expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const group = request.model.attention_groups![0];
-    const changed: PhysicalInferenceConfig = { ...request, model: { ...request.model,
+    const changed: InferenceConfig = { ...request, model: { ...request.model,
       name: "edited-hy4", revision: "another-revision", num_layers: 80, hidden_size: 8192,
       weight_dtype: "fp16", kv_dtype: "fp16", tie_word_embeddings: true,
       num_shared_experts: 2, shared_expert_intermediate_size: 1024,
@@ -313,19 +312,19 @@ describe("parameter JSON transfer", () => {
         { kind: "gqa", layers: 1, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
           output_gate: false, qk_norm: true, index_norm: "layer" }],
     } };
-    expect(parsePhysicalJson(serializePhysical(changed))).toEqual(changed);
+    expect(parseInferenceJson(serializeInference(changed))).toEqual(changed);
     for (const patch of [{ revision: null }, { num_shared_experts: 0, shared_expert_intermediate_size: null },
       { norms: undefined, router: undefined, ihc: undefined }, { ihc: null }]) {
       const edited = { ...request, model: { ...request.model, ...patch } };
-      expect(parsePhysicalJson(serializePhysical(edited)))
+      expect(parseInferenceJson(serializeInference(edited)))
         .toEqual(JSON.parse(JSON.stringify(edited)));
     }
     for (const patch of [{ output_gate: undefined }, { output_gate: false }, { qk_norm: false },
       { norm_dtype: "fp32" as const }, { index_norm: "rms" as const },
       { index_norm_dtype: undefined }, { sink_dtype: undefined }, { index_norm_dtype: null }, { sink_dtype: null }]) {
       const edited = { ...request, model: { ...request.model, attention_groups: [{ ...group, ...patch }] } };
-      const parsed = parsePhysicalJson(JSON.stringify(edited));
-      expect(parsePhysicalJson(serializePhysical(parsed)))
+      const parsed = parseInferenceJson(JSON.stringify(edited));
+      expect(parseInferenceJson(serializeInference(parsed)))
         .toEqual(JSON.parse(JSON.stringify(edited)));
     }
     for (const [patch, message] of [
@@ -340,14 +339,14 @@ describe("parameter JSON transfer", () => {
       [{ shared_expert_intermediate_size: null }, "启用共享专家需要"],
       [{ weight_dtype: "fp8" }, "BF16/FP16"],
     ] as const) {
-      const invalid = { ...request, model: { ...request.model, ...patch } } as unknown as PhysicalInferenceConfig;
-      expect(() => parsePhysicalJson(JSON.stringify(invalid))).toThrow(message);
-      expect(() => serializePhysical(invalid)).toThrow(message);
+      const invalid = { ...request, model: { ...request.model, ...patch } } as unknown as InferenceConfig;
+      expect(() => parseInferenceJson(JSON.stringify(invalid))).toThrow(message);
+      expect(() => serializeInference(invalid)).toThrow(message);
     }
   });
 
   it.each(["mla", "mla_dsa"] as const)("round-trips %s output gates with shared experts", (kind) => {
-    const request: PhysicalInferenceConfig = {
+    const request: InferenceConfig = {
       ...createDefaultSimConfig().inference, model: { ...initialModel, num_layers: 2,
         moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
         num_shared_experts: 2, shared_expert_intermediate_size: 1024,
@@ -358,14 +357,14 @@ describe("parameter JSON transfer", () => {
         }] }, hardware: initialHardware, storage: initialStorage,
       timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
     };
-    expect(parsePhysicalJson(serializePhysical(request))).toEqual(request);
+    expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const disabled = { ...request, model: { ...request.model,
       num_shared_experts: 0, shared_expert_intermediate_size: null,
       attention_groups: [{ ...request.model.attention_groups![0], output_gate: false }],
     } };
-    expect(parsePhysicalJson(serializePhysical(disabled))).toEqual(disabled);
+    expect(parseInferenceJson(serializeInference(disabled))).toEqual(disabled);
     for (const output_gate of [null, 1, "true"]) {
-      expect(() => parsePhysicalJson(JSON.stringify({ ...request, model: { ...request.model,
+      expect(() => parseInferenceJson(JSON.stringify({ ...request, model: { ...request.model,
         attention_groups: [{ ...request.model.attention_groups![0], output_gate }],
       } }))).toThrow("output_gate 必须是布尔值");
     }
@@ -373,16 +372,16 @@ describe("parameter JSON transfer", () => {
       kind: "gqa" as const, layers: 2, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
       output_gate: true, qk_norm: true, index_norm: "layer" as const,
     }] } };
-    expect(() => parsePhysicalJson(JSON.stringify(gqa))).toThrow("output_gate 仅支持 MLA/DSA");
-    expect(() => serializePhysical(gqa)).toThrow("output_gate 仅支持 MLA/DSA");
+    expect(() => parseInferenceJson(JSON.stringify(gqa))).toThrow("output_gate 仅支持 MLA/DSA");
+    expect(() => serializeInference(gqa)).toThrow("output_gate 仅支持 MLA/DSA");
     const gqaWithoutGate = { ...gqa, model: { ...gqa.model, attention_groups: [{
       ...gqa.model.attention_groups[0], output_gate: false,
     }] } };
-    expect(parsePhysicalJson(serializePhysical(gqaWithoutGate))).toEqual(gqaWithoutGate);
+    expect(parseInferenceJson(serializeInference(gqaWithoutGate))).toEqual(gqaWithoutGate);
   });
 
   it("rejects invalid shared expert dimensions and missing MoE layers on import and export", () => {
-    const base: PhysicalInferenceConfig = { ...createDefaultSimConfig().inference,
+    const base: InferenceConfig = { ...createDefaultSimConfig().inference,
       model: { ...initialModel, moe_layers: 1, num_experts: 8, experts_per_token: 2,
         expert_intermediate_size: 512, num_shared_experts: 1, shared_expert_intermediate_size: 1024 },
       hardware: initialHardware, storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1 };
@@ -399,18 +398,18 @@ describe("parameter JSON transfer", () => {
       [{ ...base.model, num_shared_experts: 0 }, "关闭共享专家时"],
     ] as const;
     for (const [model, message] of invalid) {
-      expect(() => parsePhysicalJson(JSON.stringify({ ...base, model }))).toThrow(message);
-      expect(() => serializePhysical({ ...base, model } as unknown as PhysicalInferenceConfig)).toThrow(message);
+      expect(() => parseInferenceJson(JSON.stringify({ ...base, model }))).toThrow(message);
+      expect(() => serializeInference({ ...base, model } as unknown as InferenceConfig)).toThrow(message);
     }
     for (const model of [
       { ...base.model, num_shared_experts: Number.NaN },
       { ...base.model, shared_expert_intermediate_size: Number.POSITIVE_INFINITY },
     ]) {
-      expect(() => serializePhysical({ ...base, model })).toThrow("有限数值");
+      expect(() => serializeInference({ ...base, model })).toThrow("有限数值");
     }
   });
 
-  it("keeps explicit physical parallelism and rejects invalid EP widths", () => {
+  it("keeps explicit TP/EP parallelism and rejects invalid EP widths", () => {
     const request = {
       ...createDefaultSimConfig().inference, model: { name: "toy", num_layers: 1,
         hidden_size: 16, num_attention_heads: 2, num_kv_heads: 1,
@@ -419,13 +418,13 @@ describe("parameter JSON transfer", () => {
         effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
       storage: { l1_available_gb: 0.001, l2_available_gb: 0 },
     };
-    expect(parsePhysicalJson(JSON.stringify(request)).ep_size).toBe(1);
-    expect(() => parsePhysicalJson(JSON.stringify({ ...request, ep_size: 0 })))
+    expect(parseInferenceJson(JSON.stringify(request)).ep_size).toBe(1);
+    expect(() => parseInferenceJson(JSON.stringify({ ...request, ep_size: 0 })))
       .toThrow("ep_size 必须是正整数");
   });
 
-  it("rejects malformed physical specs and non-finite automatic drafts", () => {
-    const base: PhysicalInferenceConfig = {
+  it("rejects malformed model specs and non-finite configuration drafts", () => {
+    const base: InferenceConfig = {
       ...createDefaultSimConfig().inference,
       model: { ...initialModel, name: "toy", num_layers: 2, hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8,
@@ -437,8 +436,8 @@ describe("parameter JSON transfer", () => {
       storage: { ...initialStorage, l1_available_gb: 0.001 }, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" as const },
     };
-    expect(parsePhysicalJson(serializePhysical(base))).toEqual(base);
-    expect(() => parsePhysicalJson(JSON.stringify({ ...base,
+    expect(parseInferenceJson(serializeInference(base))).toEqual(base);
+    expect(() => parseInferenceJson(JSON.stringify({ ...base,
       model: { ...base.model, total_parameters: 10_000 },
     }))).toThrow("不支持的参数：model.total_parameters");
     const invalid = [
@@ -453,17 +452,17 @@ describe("parameter JSON transfer", () => {
       [{ ...base, unexpected: true }, "不支持的参数：inference.unexpected"],
     ] as const;
     for (const [request, message] of invalid) {
-      expect(() => parsePhysicalJson(JSON.stringify(request))).toThrow(message);
+      expect(() => parseInferenceJson(JSON.stringify(request))).toThrow(message);
     }
-    expect(() => serializePhysical({ ...base, hardware: {
+    expect(() => serializeInference({ ...base, hardware: {
       ...base.hardware, ep_communication_latency_ms: Number.POSITIVE_INFINITY,
     } })).toThrow("ep_communication_latency_ms");
-    expect(() => serializePhysical({ ...base, model: {
+    expect(() => serializeInference({ ...base, model: {
       ...base.model, num_experts: Number.NaN,
     } })).toThrow("num_experts");
   });
 
-  it("round-trips a physical three-tier config including link speeds and latency", () => {
+  it("round-trips a three-tier config including link speeds and latency", () => {
     const config = createDefaultSimConfig();
     config.inference.storage.l2_available_gb = 128;
     config.shared_l3!.available_gb = 64_000;
@@ -476,7 +475,7 @@ describe("parameter JSON transfer", () => {
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
   });
 
-  it("accepts defaults but rejects removed manual and malformed physical storage fields", () => {
+  it("accepts defaults but rejects obsolete mode and malformed storage fields", () => {
     const base = createDefaultSimConfig();
     const { shared_l3: _omitted, ...withoutL3 } = base;
     for (const [storage, message] of [
@@ -490,8 +489,12 @@ describe("parameter JSON transfer", () => {
     const { l3_prefetch_min_tokens: _noThreshold, ...withoutThreshold } = base.scheduler;
     expect(parseSimConfigJson(JSON.stringify({ ...base, scheduler: withoutThreshold })).scheduler.l3_prefetch_min_tokens).toBe(256);
     expect(parseSimConfigJson(JSON.stringify(withoutL3)).shared_l3).toBeNull();
-    expect(() => parseSimConfigJson(JSON.stringify({ ...base, shared_l3: { mode: "manual" } })))
-      .toThrow("shared_l3.mode 仅支持 physical");
+    expect(() => parseSimConfigJson(JSON.stringify({ ...base, shared_l3: { ...base.shared_l3, mode: "physical" } })))
+      .toThrow("不支持的参数：shared_l3.mode");
+    expect(() => serializeSimConfig({ ...base, inference: { ...base.inference, mode: "physical" } } as typeof base))
+      .toThrow("不支持的参数：inference.mode");
+    expect(() => serializeSimConfig({ ...base, shared_l3: { ...base.shared_l3, mode: "physical" } } as typeof base))
+      .toThrow("不支持的参数：shared_l3.mode");
     expect(() => parseSimConfigJson(JSON.stringify({ ...base, scheduler: { ...base.scheduler, l3_prefetch_min_tokens: -1 } })))
       .toThrow("scheduler.l3_prefetch_min_tokens");
   });

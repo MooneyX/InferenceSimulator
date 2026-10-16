@@ -23,11 +23,11 @@ from simcore.schemas import (
 )
 from simcore.workload import build_synthetic_closed_loop_plan
 from test_client import planned_client, synthetic_workload, trace_plan
-from test_schemas import physical_config, runtime_config
+from test_schemas import resolved_config, runtime_config
 
 
 def config(think: float = 0) -> SimConfig:
-    return physical_config(
+    return resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,

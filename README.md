@@ -53,19 +53,19 @@ cd web
 npm run dev
 ```
 
-前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面默认以目标 QPS 作为期望速率，按泊松过程投放全部请求：优先续写已完成会话，否则创建新会话；根输入、子轮新增内容及输出分别采样。理想命中率是构造结果，完成吞吐不保证等于发送 QPS。也可切换闭环会话模式：沿用根输入＋每轮新增内容的长度构造，配置会话数、新会话投放频率和平均思考间隔，不输入目标请求 QPS；结果显示实测请求 QPS 与完成吞吐。页面支持设置实例数与每实例独占的硬件/引擎配置（自动模式总 GPU 数 = 实例数 × 每实例 GPU 数），各实例独占 L1/L2，一场内共享唯一 L3，容量在「共享 L3」区按总量配置（0 为关闭，不乘实例数量）；根请求轮询、子请求回到父实例。可切换全场与逐实例指标和甘特图；共享 L3 的容量、驻留和峰值仅在全场指标展示。页面支持 P/D 模式切换、完成/失败/跳过状态及指标展示；Canvas 甘特图仅绘制已完成请求。
+前端默认监听 `http://127.0.0.1:5173`，开发服务器会将 `/api` 代理到 FastAPI。页面默认以目标 QPS 作为期望速率，按泊松过程投放全部请求：优先续写已完成会话，否则创建新会话；根输入、子轮新增内容及输出分别采样。理想命中率是构造结果，完成吞吐不保证等于发送 QPS。也可切换闭环会话模式：沿用根输入＋每轮新增内容的长度构造，配置会话数、新会话投放频率和平均思考间隔，不输入目标请求 QPS；结果显示实测请求 QPS 与完成吞吐。页面支持设置实例数与每实例独占的硬件/引擎配置（总 GPU 数 = 实例数 × 每实例 GPU 数），各实例独占 L1/L2，一场内共享唯一 L3，容量在「共享 L3」区按总量配置（0 为关闭，不乘实例数量）；根请求轮询、子请求回到父实例。可切换全场与逐实例指标和甘特图；共享 L3 的容量、驻留和峰值仅在全场指标展示。页面支持 P/D 模式切换、完成/失败/跳过状态及指标展示；Canvas 甘特图仅绘制已完成请求。
 
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"num_instances":1,"workload":{"mode":"synthetic","arrival_mode":"open_loop","target_qps":50.0,"seed":0,"synthetic":{"num_requests":1000,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128}}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"mode":"physical","page_size":64,"model":{"name":"toy","num_layers":2,"hidden_size":16,"num_attention_heads":2,"num_kv_heads":1,"head_dim":8,"ffn_intermediate_size":32,"vocab_size":16},"hardware":{"name":"toy","memory_bytes_per_gpu":10000000,"effective_fp16_tflops":1,"effective_hbm_gb_s":1},"storage":{"l1_available_gb":0.004204768},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
+$body = '{"num_instances":1,"workload":{"mode":"synthetic","arrival_mode":"open_loop","target_qps":50.0,"seed":0,"synthetic":{"num_requests":1000,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128}}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"page_size":64,"model":{"name":"toy","num_layers":2,"hidden_size":16,"num_attention_heads":2,"num_kv_heads":1,"head_dim":8,"ffn_intermediate_size":32,"vocab_size":16},"hardware":{"name":"toy","memory_bytes_per_gpu":10000000,"effective_fp16_tflops":1,"effective_hbm_gb_s":1},"storage":{"l1_available_gb":0.004204768},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
 Remove-Item simulate-request.json
 ```
 
-响应是单个 `SimResult`，包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings`、物理容量 `resolution` 和可为空的 `analysis`；各请求含 `instance_id`。`meta.config` 完整回显规范化后的输入 `SimConfig`（包括模型字段默认值），不以推导容量改写输入。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回。物理配置支持解析或经验计时，合成/Trace 负载均使用同一 `POST /api/simulate`；Trace 通过 `workload.trace.plan_id` 引用已上传的计划。旧手动配置 JSON 与 API 请求不再受支持，须重新选择模型、硬件与存储预算。
+响应是单个 `SimResult`，包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings`、物理容量 `resolution` 和可为空的 `analysis`；各请求含 `instance_id`。`meta.config` 完整回显规范化后的输入 `SimConfig`（包括模型字段默认值），不以推导容量改写输入。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回。推理配置支持解析或经验计时，合成/Trace 负载均使用同一 `POST /api/simulate`；Trace 通过 `workload.trace.plan_id` 引用已上传的计划。旧手动配置 JSON 与 API 请求不再受支持，须重新选择模型、硬件与存储预算。旧版物理配置 JSON 也需删除 `inference.mode` 和 `shared_l3.mode` 后才能导入或提交；保留负载与计时的 `mode` 字段。
 
 ## Trace 数据集 replay
 
@@ -116,7 +116,6 @@ result = simulate(
                 "pd_mutually_exclusive": True,
             },
             "inference": {
-                "mode": "physical",
                 "page_size": 64,
                 "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
                           "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,

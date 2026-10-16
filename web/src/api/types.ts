@@ -16,7 +16,6 @@ export type SyntheticWorkloadConfig = NonNullable<WorkloadConfig["synthetic"]>;
 export type TraceWorkloadConfig = NonNullable<WorkloadConfig["trace"]>;
 export type SchedulerConfig = SimConfig["scheduler"];
 export type InferenceConfig = SimConfig["inference"];
-export type PhysicalInferenceConfig = InferenceConfig;
 export type TimingConfig = NonNullable<InferenceConfig["timing"]>;
 export type EmpiricalTimingConfig = Extract<TimingConfig, { mode: "empirical" }>;
 export type AnalyticalTimingConfig = Extract<TimingConfig, { mode: "analytical" }>;

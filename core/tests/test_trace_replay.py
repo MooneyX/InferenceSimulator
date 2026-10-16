@@ -1,6 +1,6 @@
 """请求计划定时、依赖、同会话块复用及非法输出的内核回归。"""
 
-from typing import Literal, cast
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -13,17 +13,17 @@ from simcore.schemas import (
     AnalyticalTimingConfig,
     EngineConfig,
     HardwareSpec,
+    InferenceConfig,
     ModelSpec,
     PerfModelConfig,
-    PhysicalInferenceConfig,
-    PhysicalL3Config,
+    SharedL3Config,
     StorageSpec,
     TracePlan,
     TraceTurn,
     TraceWorkloadConfig,
     WorkloadConfig,
 )
-from test_schemas import physical_config
+from test_schemas import resolved_config
 
 
 def config(
@@ -31,7 +31,7 @@ def config(
     session_rate: float = 1, seed: int = 7, target_qps: float | None = None,
     max_output_tokens: int = 65_536,
 ) -> SimConfig:
-    return physical_config(
+    return resolved_config(
         num_instances=2,
         workload=WorkloadConfig(
             mode="trace", arrival_mode=mode, session_rate=session_rate, seed=seed,
@@ -215,8 +215,8 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
 ) -> None:
     baseline = config(capacity=64, mode=mode)
     original = baseline.model_copy(update={
-        "shared_l3": PhysicalL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
-        "inference": PhysicalInferenceConfig(
+        "shared_l3": SharedL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
+        "inference": InferenceConfig(
             page_size=64,
             model=ModelSpec(
                 name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
@@ -280,8 +280,8 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                 phase="PREFILL", prefill=(PrefillWork(0, 0, 129, 129),), decode=(),
                 allocated_pages=3, batch_requests=1,
             ),
-            cast(PhysicalInferenceConfig, original.inference).model,
-            cast(PhysicalInferenceConfig, original.inference).hardware,
+            original.inference.model,
+            original.inference.hardware,
         )
         assert first.prefill_end - first.prefill_start == pytest.approx(expected.duration_ms)
         assert analysis.device_ms == pytest.approx(

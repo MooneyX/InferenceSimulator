@@ -39,7 +39,7 @@ def config() -> dict:
         }},
         "scheduler": {"max_running_requests": 4},
         "inference": {
-            "mode": "physical", "page_size": 64,
+            "page_size": 64,
             "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
                       "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
                       "ffn_intermediate_size": 32, "vocab_size": 16},
@@ -135,10 +135,10 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert invalid.status_code == 422
 
 
-def test_physical_plan_uses_parsed_capacity_and_timing() -> None:
+def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
     resolved = config()
     resolved["inference"] = {
-        "mode": "physical", "page_size": 64, "tp_size": 1, "ep_size": 1,
+        "page_size": 64, "tp_size": 1, "ep_size": 1,
         "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
                   "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
                   "ffn_intermediate_size": 32, "vocab_size": 16},
@@ -159,7 +159,7 @@ def test_physical_plan_uses_parsed_capacity_and_timing() -> None:
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["resolution"] == preview.json()
-        assert data["meta"]["config"]["inference"]["mode"] == "physical"
+        assert "mode" not in data["meta"]["config"]["inference"]
         assert data["meta"]["num_requests"] == 3
         assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
         assert data["resolution"]["max_total_tokens"] != 2048

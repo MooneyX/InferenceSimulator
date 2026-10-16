@@ -28,6 +28,7 @@ __all__ = [
     "FixedLength",
     "HardwareSpec",
     "IHCSpec",
+    "InferenceConfig",
     "InferenceRequest",
     "InstanceResult",
     "LengthDist",
@@ -36,8 +37,6 @@ __all__ = [
     "ModelSpec",
     "NormSpec",
     "PerfModelConfig",
-    "PhysicalInferenceConfig",
-    "PhysicalL3Config",
     "PoissonLength",
     "RankCapacityReport",
     "RequestRecord",
@@ -45,6 +44,7 @@ __all__ = [
     "RouterSpec",
     "SchedulerConfig",
     "SessionConfig",
+    "SharedL3Config",
     "SimConfig",
     "SimMeta",
     "SimResult",
@@ -449,10 +449,8 @@ class StorageSpec(_Frozen):
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
-class PhysicalInferenceConfig(_Frozen):
-    """物理实例：共用模型和硬件解析容量及 GPU 计时规格。"""
-
-    mode: Literal["physical"] = "physical"
+class InferenceConfig(_Frozen):
+    """实例输入：从模型、硬件和存储解析容量及 GPU 计时规格。"""
     page_size: int = Field(default=64, ge=1)
     max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
     model: ModelSpec
@@ -465,8 +463,7 @@ class PhysicalInferenceConfig(_Frozen):
     ep_size: int = Field(default=1, ge=1)
 
 
-class PhysicalL3Config(_Frozen):
-    mode: Literal["physical"] = "physical"
+class SharedL3Config(_Frozen):
     available_gb: float = Field(
         default=0.0,
         ge=0,
@@ -481,9 +478,9 @@ class SimConfig(_Frozen):
 
     workload: WorkloadConfig
     scheduler: SchedulerConfig
-    inference: PhysicalInferenceConfig
+    inference: InferenceConfig
     num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1/L2，共享 L3")
-    shared_l3: PhysicalL3Config | None = None
+    shared_l3: SharedL3Config | None = None
 
 
 class RankCapacityReport(_Record):

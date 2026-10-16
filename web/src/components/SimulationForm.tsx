@@ -6,10 +6,10 @@ import {
   createDefaultSimConfig,
   createDefaultEmpiricalTiming,
   validateSimConfig,
-  type PhysicalSimConfig,
+  type FormSimConfig,
   type ConfigField,
 } from "../config/simulation";
-import { AutomaticConfig } from "./AutomaticConfig";
+import { ModelHardwareConfig } from "./ModelHardwareConfig";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
 import { TracePanel, type ReplaySelection } from "./TracePanel";
 import "./SimulationForm.css";
@@ -77,21 +77,21 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
   const [traceDraft, setTraceDraft] = useState({ arrival_mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
-  const [config, setConfig] = useState<PhysicalSimConfig>(createDefaultSimConfig);
+  const [config, setConfig] = useState<FormSimConfig>(createDefaultSimConfig);
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
   const { model, hardware, tp_size: tpSize, ep_size: epSize } = config.inference;
   const timing = config.inference.timing.mode;
   const empiricalTiming = config.inference.timing.mode === "empirical" ? config.inference.timing : null;
-  function updatePhysical(patch: Partial<PhysicalSimConfig["inference"]>) {
+  function updateInference(patch: Partial<FormSimConfig["inference"]>) {
     setConfig((current) => ({ ...current, inference: { ...current.inference, ...patch } }));
   }
-  function setTiming(value: PhysicalSimConfig["inference"]["timing"]["mode"]) {
+  function setTiming(value: FormSimConfig["inference"]["timing"]["mode"]) {
     if (config.inference.timing.mode === "empirical") setEmpiricalDraft(config.inference.timing);
-    updatePhysical({ timing: value === "analytical" ? { mode: "analytical" } : empiricalDraft });
+    updateInference({ timing: value === "analytical" ? { mode: "analytical" } : empiricalDraft });
   }
   function updateTiming(patch: Partial<EmpiricalTimingConfig>) {
     if (config.inference.timing.mode !== "empirical") return;
-    updatePhysical({ timing: { ...config.inference.timing, ...patch } });
+    updateInference({ timing: { ...config.inference.timing, ...patch } });
   }
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
@@ -399,7 +399,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
         </>}
       </section>
 
-      <AutomaticConfig config={{ ...config, workload: submissionConfig.workload }}
+      <ModelHardwareConfig config={{ ...config, workload: submissionConfig.workload }}
         onInferenceChange={(inference) => setConfig((current) => ({ ...current, inference }))} disabled={disabled} />
 
       <section className="form-section" aria-labelledby="shared-l3-heading">
@@ -411,13 +411,13 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             label="共享 L3 总容量（TB，仅 KV，0 为关闭）"
             value={(config.shared_l3?.available_gb ?? 0) / 1000}
             error={errorByField.get("shared_l3.available_gb")}
-            onChange={(value) => setConfig({ ...config, shared_l3: { mode: "physical", available_gb: value * 1000,
+            onChange={(value) => setConfig({ ...config, shared_l3: { available_gb: value * 1000,
               lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} />
           <NumberField id="shared-l3-lookup" name="shared_l3.lookup_latency_ms" label="L3 查找延迟（ms）"
             value={config.shared_l3?.lookup_latency_ms ?? 0} error={errorByField.get("shared_l3.lookup_latency_ms")}
             onChange={(value) => setConfig({ ...config, shared_l3: config.shared_l3
               ? { ...config.shared_l3, lookup_latency_ms: value }
-              : { mode: "physical", available_gb: 0, lookup_latency_ms: value } })} />
+              : { available_gb: 0, lookup_latency_ms: value } })} />
         </div>
       </section>
 
@@ -521,9 +521,9 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           <p>所有时间系数的单位均为毫秒</p>
         </div>
         <div className="form-grid" style={{ marginBottom: 14 }}>
-          <div className="form-field"><label htmlFor="auto-timing">计时模式</label>
-            <select id="auto-timing" value={timing} onChange={(event) =>
-              setTiming(event.target.value as PhysicalSimConfig["inference"]["timing"]["mode"])}>
+          <div className="form-field"><label htmlFor="timing-mode">计时模式</label>
+            <select id="timing-mode" value={timing} onChange={(event) =>
+              setTiming(event.target.value as FormSimConfig["inference"]["timing"]["mode"])}>
               <option value="analytical">逐步 Roofline 估计</option>
               <option value="empirical">四系数经验模型</option>
             </select></div>

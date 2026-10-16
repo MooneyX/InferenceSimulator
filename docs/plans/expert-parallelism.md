@@ -7,7 +7,7 @@
 - 最终目标是单实例、单机同构 GPU、`tp_size = ep_size`、`attn_dp_size = 1`；以 `TP8 + EP8`、8 张 B300 作为待核验场景，首个 EP 通信后端为 DeepEP。模型结构、实际权重和 KV 布局未核实时，不标为可运行或已校准。
 - 保持一个 `Engine`、一条实例内 FCFS 请求队列、一个全局仿真时钟和现有请求生命周期。参与的 GPU 协作执行同一个步骤，不为每个 GPU 建立独立请求队列或 `Engine`。
 - TP 表达注意力及其他非专家部分的逐 rank 权重、KV 放置和计算/通信；EP 在同一组 rank 上表达各 MoE 层的专家放置、token 分发、专家计算及结果汇集。共享权重与专家权重均计入逐 rank 显存账单。
-- 暂不实现 DPA（`attn_dp_size > 1`）、多实例、跨实例路由或 PD 分离。统一 `SimConfig.inference.mode=physical` 从模型和预算推导容量；保留经验四系数计时，但不再接受显式 token 容量。
+- 暂不实现 DPA（`attn_dp_size > 1`）、多实例、跨实例路由或 PD 分离。统一 `SimConfig.inference` 从模型和预算推导容量；保留经验四系数计时，但不再接受显式 token 容量。
 
 ## 分阶段交付
 

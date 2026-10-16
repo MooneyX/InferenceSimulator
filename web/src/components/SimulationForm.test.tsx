@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe("SimulationForm", () => {
-  it("runs one trace plan with physical inference and restores synthetic workload", async () => {
+  it("runs one trace plan with inference settings and restores synthetic workload", async () => {
     const onSubmit = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
     render(<SimulationForm onSubmit={onSubmit} />);
@@ -35,7 +35,7 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
       workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 2, seed: 0, trace: { plan_id: "plan-1" } },
-      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
+      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
     }));
     expect(onSubmit).toHaveBeenCalledTimes(1);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "synthetic" } });
@@ -86,7 +86,7 @@ describe("SimulationForm", () => {
     expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
   });
 
-  it("starts with physical resolution settings", () => {
+  it("starts with model and hardware settings", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
 
@@ -100,10 +100,10 @@ describe("SimulationForm", () => {
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,
         synthetic: expect.objectContaining({ turn_increment_len: { dist: "poisson", mean: 256 } }) }),
-      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" },
+      inference: expect.objectContaining({ timing: { mode: "analytical" },
         storage: expect.objectContaining({ l2_available_gb: 2048,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
-      shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0 },
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
     }));
   });
 
@@ -138,12 +138,12 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("计时模式")).toHaveValue("analytical");
   });
 
-  it("updates the physical engine output limit without submitting a synthetic request limit", () => {
+  it("updates the engine output limit without submitting a synthetic request limit", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText("引擎输出上限（token）"), { target: { value: "512" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmit.mock.lastCall![0].inference).toMatchObject({ mode: "physical", max_output_tokens: 512 });
+    expect(onSubmit.mock.lastCall![0].inference).toMatchObject({ max_output_tokens: 512 });
     expect(onSubmit.mock.lastCall![0].workload.synthetic).not.toHaveProperty("max_new_tokens");
     expect(screen.getByLabelText("引擎输出上限（token）")).toHaveValue(512);
   });
@@ -168,7 +168,7 @@ describe("SimulationForm", () => {
         synthetic: expect.objectContaining({
           session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
         }) }),
-      inference: expect.objectContaining({ mode: "physical" }),
+      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
     }));
   });
 
@@ -286,7 +286,7 @@ describe("SimulationForm", () => {
         },
       },
       scheduler: { pd_mutually_exclusive: false },
-      inference: { mode: "physical", page_size: 4, max_output_tokens: 12 },
+      inference: { page_size: 4, max_output_tokens: 12 },
     });
   });
 
@@ -304,8 +304,8 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 0 }),
-      shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0.75 },
-      inference: expect.objectContaining({ mode: "physical", storage: expect.objectContaining({ l3_to_l2_gb_s: 75 }) }),
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0.75 },
+      inference: expect.objectContaining({ storage: expect.objectContaining({ l3_to_l2_gb_s: 75 }) }),
     }));
   });
 
@@ -433,9 +433,9 @@ describe("SimulationForm", () => {
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
       workload: { synthetic: { num_requests: 20 } }, scheduler: { l3_prefetch_min_tokens: 1024 },
-      inference: { mode: "physical", timing: { mode: "empirical" }, model: { hidden_size: 2048 },
+      inference: { timing: { mode: "empirical" }, model: { hidden_size: 2048 },
         hardware: { memory_bytes_per_gpu: 300_000_000_000 } },
-      shared_l3: { mode: "physical", available_gb: 1500, lookup_latency_ms: 2.5 },
+      shared_l3: { available_gb: 1500, lookup_latency_ms: 2.5 },
     });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
@@ -455,11 +455,11 @@ describe("SimulationForm", () => {
         model: expect.objectContaining({ hidden_size: 2048 }),
         hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
         storage: expect.objectContaining({ l2_available_gb: 2048 }) }),
-      shared_l3: { mode: "physical", available_gb: 1500, lookup_latency_ms: 2.5 },
+      shared_l3: { available_gb: 1500, lookup_latency_ms: 2.5 },
     }));
   });
 
-  it("submits a single physical draft with workload, scheduler and page-size edits", () => {
+  it("submits a single config draft with workload, scheduler and page-size edits", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "40" } });
@@ -469,12 +469,12 @@ describe("SimulationForm", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 40 }) }),
       scheduler: expect.objectContaining({ max_running_requests: 8 }),
-      inference: expect.objectContaining({ mode: "physical", page_size: 100, timing: { mode: "analytical" } }),
+      inference: expect.objectContaining({ page_size: 100, timing: { mode: "analytical" } }),
     }));
     expect(onSubmit.mock.lastCall![0].inference).not.toHaveProperty("kv");
   });
 
-  it("imports a physical config over the current draft", () => {
+  it("imports a config over the current draft", () => {
     render(<SimulationForm onSubmit={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
     const imported = createDefaultSimConfig();
@@ -592,7 +592,7 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
   });
 
-  it("accepts physical config JSON and rejects legacy wrappers without changing the form", () => {
+  it("accepts config JSON and rejects legacy wrappers without changing the form", () => {
     render(<SimulationForm onSubmit={vi.fn()} />);
     const config = createDefaultSimConfig();
     config.workload.synthetic!.num_requests = 12;
@@ -607,6 +607,17 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("请求数量")).toHaveValue(12);
     expect(screen.getByLabelText("模型名称")).toHaveValue("Qwen/Qwen3-8B");
     expect(screen.getByLabelText("词表大小（结构估算必填）")).toHaveValue(151936);
+  });
+
+  it.each(["inference", "shared_l3"] as const)("rejects obsolete %s.mode without changing the form", (section) => {
+    render(<SimulationForm onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
+    const config = createDefaultSimConfig();
+    const legacy = { ...config, [section]: { ...config[section], mode: "physical" } };
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(legacy) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(`不支持的参数：${section}.mode`);
+    expect(screen.getByLabelText("请求数量")).toHaveValue(20);
   });
 
   it("preserves the current form when JSON is invalid or incomplete", () => {

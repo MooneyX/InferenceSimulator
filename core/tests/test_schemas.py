@@ -16,6 +16,7 @@ from simcore.schemas import (
     FixedLength,
     HardwareSpec,
     IHCSpec,
+    InferenceConfig,
     InstanceResult,
     LengthDist,
     LognormalLength,
@@ -23,13 +24,12 @@ from simcore.schemas import (
     ModelSpec,
     NormSpec,
     PerfModelConfig,
-    PhysicalInferenceConfig,
-    PhysicalL3Config,
     PoissonLength,
     RequestRecord,
     RouterSpec,
     SchedulerConfig,
     SessionConfig,
+    SharedL3Config,
     SimConfig,
     SimMeta,
     SimResult,
@@ -51,7 +51,7 @@ TOY_HARDWARE = HardwareSpec(
 )
 
 
-def physical_config(
+def resolved_config(
     *,
     workload: WorkloadConfig,
     engine: EngineConfig,
@@ -74,7 +74,7 @@ def physical_config(
     storage = StorageSpec(l1_available_gb=0.001)
     base = SimConfig(
         workload=workload, scheduler=scheduler, num_instances=num_instances,
-        inference=PhysicalInferenceConfig(
+        inference=InferenceConfig(
             page_size=engine.page_size, max_output_tokens=engine.max_output_tokens,
             model=TOY_MODEL, hardware=TOY_HARDWARE, storage=storage, timing=timing,
         ),
@@ -100,7 +100,7 @@ def physical_config(
     )
     return base.model_copy(update={
         "inference": base.inference.model_copy(update={"storage": physical_storage}),
-        "shared_l3": PhysicalL3Config(
+        "shared_l3": SharedL3Config(
             available_gb=l3_bytes / 1_000_000_000,
             lookup_latency_ms=perf_model.l3_lookup_latency_ms,
         ),
@@ -148,7 +148,7 @@ def metric_inputs() -> dict[str, Any]:
 
 def make_config(**engine_overrides: object) -> SimConfig:
     """构造一个合法的最小配置，供各用例复用。"""
-    return physical_config(
+    return resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10.0,
@@ -606,7 +606,7 @@ class TestConfigValidation:
     @pytest.mark.parametrize("invalid", [-1, float("inf"), float("nan")])
     def test_invalid_shared_lookup_latency_rejected(self, invalid: float) -> None:
         with pytest.raises(ValidationError, match="lookup_latency_ms"):
-            PhysicalL3Config(lookup_latency_ms=invalid)
+            SharedL3Config(lookup_latency_ms=invalid)
 
     @pytest.mark.parametrize("tier,missing", [
         ("l2", "L2.*L1"), ("l3", "L3.*L2"),
@@ -751,31 +751,30 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
-    @pytest.mark.parametrize("mode", ["manual", "unknown"])
-    def test_removed_inference_modes_are_rejected(self, mode: str) -> None:
+    @pytest.mark.parametrize("section", ["inference", "shared_l3"])
+    @pytest.mark.parametrize("mode", ["physical", "manual", "unknown"])
+    def test_removed_config_modes_are_forbidden(self, section: str, mode: str) -> None:
         payload = make_config().model_dump()
-        payload["inference"]["mode"] = mode
-        with pytest.raises(ValidationError, match="mode"):
+        payload[section]["mode"] = mode
+        with pytest.raises(ValidationError) as exc_info:
             SimConfig.model_validate(payload)
-
-    def test_removed_manual_l3_mode_is_rejected(self) -> None:
-        payload = make_config().model_dump()
-        payload["shared_l3"]["mode"] = "manual"
-        with pytest.raises(ValidationError, match="mode"):
-            SimConfig.model_validate(payload)
+        assert any(
+            error["type"] == "extra_forbidden" and error["loc"] == (section, "mode")
+            for error in exc_info.value.errors()
+        )
 
     @pytest.mark.parametrize("field", ["kv", "timing_coefficients"])
-    def test_physical_inference_rejects_legacy_manual_fields(self, field: str) -> None:
+    def test_inference_rejects_legacy_manual_fields(self, field: str) -> None:
         payload = make_config().model_dump()
         payload["inference"][field] = {}
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
-    def test_physical_analytical_timing_requires_no_empirical_coefficients(self) -> None:
+    def test_analytical_timing_requires_no_empirical_coefficients(self) -> None:
         payload = make_config().model_dump()
         payload["shared_l3"] = None
         payload["inference"] = {
-            "mode": "physical", "page_size": 4,
+            "page_size": 4,
             "model": {
                 "name": "toy", "num_layers": 2, "hidden_size": 16,
                 "num_attention_heads": 2, "num_kv_heads": 1,
@@ -798,12 +797,6 @@ class TestConfigValidation:
                 SimConfig.model_validate(payload | {"inference": inference})
         payload["inference"]["timing"]["prefill_c1"] = 1
         with pytest.raises(ValidationError, match="prefill_c1"):
-            SimConfig.model_validate(payload)
-
-    def test_inference_discriminator_rejects_unknown_mode(self) -> None:
-        payload = make_config().model_dump()
-        payload["inference"]["mode"] = "legacy"
-        with pytest.raises(ValidationError):
             SimConfig.model_validate(payload)
 
     def test_runtime_is_frozen_and_preserves_resolved_physical_components(self) -> None:
@@ -839,7 +832,12 @@ class TestConfigValidation:
 
     def test_roundtrip_is_lossless(self) -> None:
         cfg = make_config()
-        assert SimConfig.model_validate(cfg.model_dump()) == cfg
+        payload = cfg.model_dump()
+        assert "mode" not in payload["inference"]
+        assert "mode" not in payload["shared_l3"]
+        assert payload["workload"]["mode"] == "synthetic"
+        assert payload["inference"]["timing"]["mode"] == "empirical"
+        assert SimConfig.model_validate(payload) == cfg
         assert SimConfig.model_validate_json(cfg.model_dump_json()) == cfg
 
 
@@ -975,7 +973,11 @@ class TestResult:
                 )
             ],
         )
-        assert SimResult.model_validate(result.model_dump()) == result
+        dumped = result.model_dump()
+        assert "mode" not in dumped["meta"]["config"]["inference"]
+        assert "mode" not in dumped["meta"]["config"]["shared_l3"]
+        assert SimResult.model_validate(dumped) == result
+        assert SimResult.model_validate_json(result.model_dump_json()) == result
         assert result.requests == []
         assert result.aborted_requests == []
         assert result.skipped_requests == []

@@ -498,6 +498,38 @@ export interface components {
             dtype: "bf16" | "fp16" | "fp32";
         };
         /**
+         * InferenceConfig
+         * @description 实例输入：从模型、硬件和存储解析容量及 GPU 计时规格。
+         */
+        InferenceConfig: {
+            /**
+             * Page Size
+             * @default 64
+             */
+            page_size: number;
+            /**
+             * Max Output Tokens
+             * @description 单请求输出 token 硬上限
+             * @default 65536
+             */
+            max_output_tokens: number;
+            model: components["schemas"]["ModelSpec"];
+            hardware: components["schemas"]["HardwareSpec"];
+            storage: components["schemas"]["StorageSpec"];
+            /** Timing */
+            timing?: components["schemas"]["EmpiricalTimingConfig"] | components["schemas"]["AnalyticalTimingConfig"];
+            /**
+             * Tp Size
+             * @default 1
+             */
+            tp_size: number;
+            /**
+             * Ep Size
+             * @default 1
+             */
+            ep_size: number;
+        };
+        /**
          * InstanceResult
          * @description 单个副本的统计；吞吐按本副本已发送请求到达至最后成功完成计算。
          */
@@ -894,64 +926,6 @@ export interface components {
             /** Dtype */
             dtype?: ("bf16" | "fp16" | "fp32") | null;
         };
-        /**
-         * PhysicalInferenceConfig
-         * @description 物理实例：共用模型和硬件解析容量及 GPU 计时规格。
-         */
-        PhysicalInferenceConfig: {
-            /**
-             * Mode
-             * @default physical
-             * @constant
-             */
-            mode: "physical";
-            /**
-             * Page Size
-             * @default 64
-             */
-            page_size: number;
-            /**
-             * Max Output Tokens
-             * @description 单请求输出 token 硬上限
-             * @default 65536
-             */
-            max_output_tokens: number;
-            model: components["schemas"]["ModelSpec"];
-            hardware: components["schemas"]["HardwareSpec"];
-            storage: components["schemas"]["StorageSpec"];
-            /** Timing */
-            timing?: components["schemas"]["EmpiricalTimingConfig"] | components["schemas"]["AnalyticalTimingConfig"];
-            /**
-             * Tp Size
-             * @default 1
-             */
-            tp_size: number;
-            /**
-             * Ep Size
-             * @default 1
-             */
-            ep_size: number;
-        };
-        /** PhysicalL3Config */
-        PhysicalL3Config: {
-            /**
-             * Mode
-             * @default physical
-             * @constant
-             */
-            mode: "physical";
-            /**
-             * Available Gb
-             * @description 全场共享 L3 十进制 GB 总容量；0 表示关闭
-             * @default 0
-             */
-            available_gb: number;
-            /**
-             * Lookup Latency Ms
-             * @default 0
-             */
-            lookup_latency_ms: number;
-        };
         /** PlanReceipt */
         PlanReceipt: {
             /** Id */
@@ -1209,6 +1183,20 @@ export interface components {
             /** Ambiguous Dependencies */
             ambiguous_dependencies: number;
         };
+        /** SharedL3Config */
+        SharedL3Config: {
+            /**
+             * Available Gb
+             * @description 全场共享 L3 十进制 GB 总容量；0 表示关闭
+             * @default 0
+             */
+            available_gb: number;
+            /**
+             * Lookup Latency Ms
+             * @default 0
+             */
+            lookup_latency_ms: number;
+        };
         /**
          * SimConfig
          * @description 唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。
@@ -1216,13 +1204,13 @@ export interface components {
         SimConfig: {
             workload: components["schemas"]["WorkloadConfig"];
             scheduler: components["schemas"]["SchedulerConfig"];
-            inference: components["schemas"]["PhysicalInferenceConfig"];
+            inference: components["schemas"]["InferenceConfig"];
             /**
              * Num Instances
              * @description 同构推理副本数量；各自独占 L1/L2，共享 L3
              */
             num_instances: number;
-            shared_l3?: components["schemas"]["PhysicalL3Config"] | null;
+            shared_l3?: components["schemas"]["SharedL3Config"] | null;
         };
         /**
          * SimMeta

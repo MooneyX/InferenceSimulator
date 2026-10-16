@@ -28,11 +28,11 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
-from test_schemas import metric_inputs, physical_config, runtime_config
+from test_schemas import metric_inputs, resolved_config, runtime_config
 
 
 def config() -> SimConfig:
-    return physical_config(
+    return resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,
@@ -124,7 +124,7 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
 
 
 def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
-    settings = physical_config(
+    settings = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,

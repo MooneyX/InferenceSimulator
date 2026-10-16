@@ -28,7 +28,7 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
         },
         "scheduler": {"max_running_requests": 16},
         "inference": {
-            "mode": "physical", "page_size": 1,
+            "page_size": 1,
             "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
                       "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
                       "ffn_intermediate_size": 32, "vocab_size": 16},
@@ -71,6 +71,7 @@ class TestSuccess:
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["inference"]["page_size"] == 64
+        assert "mode" not in body["meta"]["config"]["inference"]
         assert body["meta"]["num_completed"] == 1
         assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
         assert body["aborted_requests"] == body["skipped_requests"] == []
@@ -84,7 +85,7 @@ class TestSuccess:
         payload["inference"]["max_output_tokens"] = 1
         payload["scheduler"]["max_running_requests"] = 1
         payload["inference"]["page_size"] = 4
-        payload["shared_l3"] = {"mode": "physical", "available_gb": 8 * 64 / 1_000_000_000}
+        payload["shared_l3"] = {"available_gb": 8 * 64 / 1_000_000_000}
         payload["inference"]["storage"].update(
             l1_available_gb=(10_464 + 12 * 64) / 1_000_000_000,
             l2_available_gb=4 * 64 / 1_000_000_000,
@@ -100,6 +101,7 @@ class TestSuccess:
         assert result.resolution.l2_capacity_tokens == 4
         assert result.resolution.l3_capacity_tokens == 8
         assert result.meta.config.shared_l3.available_gb == payload["shared_l3"]["available_gb"]
+        assert "mode" not in response.json()["meta"]["config"]["shared_l3"]
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
@@ -260,27 +262,33 @@ class TestErrors:
         assert response.status_code == 422
         assert "num_instances" in response.text
 
-    @pytest.mark.parametrize("mode", ["manual", "legacy"])
+    @pytest.mark.parametrize("field", ["inference", "shared_l3"])
     @pytest.mark.parametrize("url", [URL, "/api/resolve"])
-    def test_removed_manual_mode_is_rejected(self, client: TestClient, mode: str, url: str) -> None:
+    def test_removed_physical_mode_field_is_rejected(
+        self, client: TestClient, field: str, url: str,
+    ) -> None:
         payload = make_payload(num_requests=1)
-        payload["inference"] = {"mode": mode, "page_size": 64,
-                                "kv": {"max_total_tokens": 128},
-                                "timing": {"mode": "empirical", "prefill_c1": 1,
-                                           "decode_d1": 1, "decode_d2": 0}}
+        if field == "shared_l3":
+            payload[field] = {"available_gb": 0, "mode": "physical"}
+        else:
+            payload[field]["mode"] = "physical"
         response = client.post(url, json=payload)
         assert response.status_code == 422
-        assert "inference" in response.text
+        assert any(
+            error["type"] == "extra_forbidden"
+            and error["loc"] == ["body", field, "mode"]
+            for error in response.json()["detail"]
+        )
 
     @pytest.mark.parametrize("storage,shared,message", [
         ({"l1_available_gb": 0.00001}, None, "不足一个本地 KV 页"),
         ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
         ({"l2_available_gb": 0, "l2_to_l1_gb_s": None},
-         {"mode": "physical", "available_gb": 0.000000128}, "启用 L3 时必须先启用 L2"),
+         {"available_gb": 0.000000128}, "启用 L3 时必须先启用 L2"),
         ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": None},
          None, "L2 → L1 带宽"),
         ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
-         {"mode": "physical", "available_gb": 0.000000128}, "L3 → L2 带宽"),
+         {"available_gb": 0.000000128}, "L3 → L2 带宽"),
     ])
     def test_invalid_tiered_configuration_returns_422(
         self, client: TestClient, storage: dict[str, float | None],

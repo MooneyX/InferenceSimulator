@@ -4,10 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { ResolutionReport } from "../api/types";
 import { createDefaultSimConfig, initialHardware, initialModel, initialStorage,
-  type PhysicalSimConfig } from "../config/simulation";
-import { AutomaticConfig } from "./AutomaticConfig";
+  type FormSimConfig } from "../config/simulation";
+import { ModelHardwareConfig } from "./ModelHardwareConfig";
 
-function physicalConfig(patch: Partial<PhysicalSimConfig["inference"]> = {}): PhysicalSimConfig {
+function formConfig(patch: Partial<FormSimConfig["inference"]> = {}): FormSimConfig {
   const config = createDefaultSimConfig();
   return { ...config, inference: { ...config.inference, ...patch } };
 }
@@ -42,14 +42,14 @@ const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee5
     qk_norm: true, norm_dtype: null, index_norm: "layer" as const,
     index_norm_dtype: "fp32" as const, sink_dtype: "fp32" as const }] };
 
-describe("AutomaticConfig", () => {
+describe("ModelHardwareConfig", () => {
   beforeEach(() => {
     vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [] });
     vi.mocked(resolveConfig).mockResolvedValue(resolution);
   });
 
   it("previews server-resolved capacity without a separate run button", async () => {
-    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1,024 token"));
     expect(screen.getByRole("status")).toHaveTextContent("结构估算总参数 8.191 B");
@@ -57,7 +57,7 @@ describe("AutomaticConfig", () => {
     expect(screen.getByRole("status")).toHaveTextContent("全部专家参数 0.000 B");
     expect(resolveConfig).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ max_running_requests: 32 }),
-      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" },
+      inference: expect.objectContaining({ timing: { mode: "analytical" },
         model: expect.objectContaining({ name: "Qwen/Qwen3-8B", num_layers: 36 }),
         hardware: expect.objectContaining({ gpu_count: 1 }) }),
     }));
@@ -66,11 +66,11 @@ describe("AutomaticConfig", () => {
 
   it("invalidates a capacity preview when the shared L3 budget changes", async () => {
     const config = createDefaultSimConfig();
-    const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
+    const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("全场共享 L3"));
-    const changed = { ...config, shared_l3: { mode: "physical" as const, available_gb: 1000, lookup_latency_ms: 1 } };
-    rerender(<AutomaticConfig config={changed} onInferenceChange={vi.fn()} disabled={false} />);
+    const changed = { ...config, shared_l3: { available_gb: 1000, lookup_latency_ms: 1 } };
+    rerender(<ModelHardwareConfig config={changed} onInferenceChange={vi.fn()} disabled={false} />);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(resolveConfig).toHaveBeenLastCalledWith(changed));
@@ -84,7 +84,7 @@ describe("AutomaticConfig", () => {
     qwen.norms = Object.fromEntries(Object.entries(qwen.norms!).reverse()) as typeof qwen.norms;
     vi.mocked(getPresets).mockResolvedValue({ models: [qwen], hardware: [] });
     const onInferenceChange = vi.fn();
-    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue("Qwen/Qwen3-8B"));
     expect(screen.getByLabelText("第 1 组注意力方式")).toHaveValue("gqa");
     expect(screen.getByLabelText("第 1 组层数")).toHaveValue(36);
@@ -103,7 +103,7 @@ describe("AutomaticConfig", () => {
   });
 
   it("uses themed collapsible auxiliary sections and attention cards without disabling editable fields", () => {
-    const { container } = render(<fieldset disabled><AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled /></fieldset>);
+    const { container } = render(<fieldset disabled><ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled /></fieldset>);
     const details = screen.getByText("辅助权重容量配置", { exact: true }).closest("details")!;
     expect(details).toHaveClass("model-subsection", "auxiliary-config");
     expect(details).not.toHaveAttribute("open");
@@ -117,7 +117,7 @@ describe("AutomaticConfig", () => {
   it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [] });
     const onInferenceChange = vi.fn();
-    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByRole("option", { name: "tencent/Hy4-preview" })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "tencent/Hy4-preview" } });
     expect(onInferenceChange).toHaveBeenCalledTimes(1);
@@ -129,10 +129,10 @@ describe("AutomaticConfig", () => {
   it("directly edits HY4 structure, precision, auxiliary weights and groups while preserving the preview request", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [hy4], hardware: [] });
     const onInferenceChange = vi.fn();
-    const props = { config: physicalConfig({ model: hy4, tp_size: 8, ep_size: 8 }),
+    const props = { config: formConfig({ model: hy4, tp_size: 8, ep_size: 8 }),
       onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
-    const refresh = () => rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
+    const refresh = () => rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
     expect(screen.getByText(/HY4-Preview 为可编辑参考预设/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "复制为自定义模型" })).not.toBeInTheDocument();
@@ -198,9 +198,9 @@ describe("AutomaticConfig", () => {
     const model = { ...hy4, attention_layout };
     vi.mocked(getPresets).mockResolvedValue({ models: [model], hardware: [] });
     const onInferenceChange = vi.fn();
-    const props = { config: physicalConfig({ model, tp_size: 8, ep_size: 8 }),
+    const props = { config: formConfig({ model, tp_size: 8, ep_size: 8 }),
       onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
     for (const [label, value, patch] of [
       ["隐藏维度", "8192", { hidden_size: 8192 }],
@@ -218,19 +218,19 @@ describe("AutomaticConfig", () => {
       fireEvent.change(screen.getByLabelText(label), { target: { value } });
       expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
         model: { ...hy4, name: "自定义模型", revision: null, ...patch } });
-      rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+      rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
       expect(screen.getByLabelText("模型选择")).toHaveValue("custom");
-      rerender(<AutomaticConfig {...props} />);
+      rerender(<ModelHardwareConfig {...props} />);
     }
     fireEvent.click(screen.getByLabelText("输入输出词嵌入共享"));
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...hy4, name: "自定义模型", revision: null, tie_word_embeddings: true } });
-    rerender(<AutomaticConfig {...props} />);
+    rerender(<ModelHardwareConfig {...props} />);
     fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...hy4, name: "自定义模型", revision: null,
         attention_groups: [{ ...hy4.attention_groups[0], output_gate: false }] } });
-    rerender(<AutomaticConfig {...props} />);
+    rerender(<ModelHardwareConfig {...props} />);
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "custom" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...hy4, name: "自定义模型", revision: null } });
@@ -240,8 +240,8 @@ describe("AutomaticConfig", () => {
     const other = { ...hy4, name: "another-grouped-model" };
     vi.mocked(getPresets).mockResolvedValue({ models: [other], hardware: [] });
     const onInferenceChange = vi.fn();
-    const config = physicalConfig({ tp_size: 2 });
-    render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
+    const config = formConfig({ tp_size: 2 });
+    render(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByRole("option", { name: other.name })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: other.name } });
     expect(onInferenceChange).toHaveBeenCalledTimes(1);
@@ -251,8 +251,8 @@ describe("AutomaticConfig", () => {
   it("preserves a custom grouped model identity when adjusting its parameters", () => {
     const model = { ...hy4, name: "user-model", revision: "user-revision" };
     const onInferenceChange = vi.fn();
-    const config = physicalConfig({ model, tp_size: 8, ep_size: 8 });
-    render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
+    const config = formConfig({ model, tp_size: 8, ep_size: 8 });
+    render(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "8192" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
       model: { ...model, hidden_size: 8192 } });
@@ -267,24 +267,24 @@ describe("AutomaticConfig", () => {
         topk: kind === "mla_dsa" ? 2048 : undefined,
         index_norm_dtype: kind === "mla_dsa" ? "fp32" as const : null, output_gate: false }] };
     const onInferenceChange = vi.fn();
-    const props = { config: physicalConfig({ model }), onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
+    const props = { config: formConfig({ model }), onInferenceChange: onInferenceChange, disabled: false };
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
     expect(screen.getByLabelText("第 1 组注意力输出门控")).not.toBeChecked();
     fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...model, attention_groups: [{ ...model.attention_groups[0], output_gate: true }] } });
     const gated = onInferenceChange.mock.lastCall![0];
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: gated }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: gated }} />);
     fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), {
       target: { value: kind === "mla" ? "mla_dsa" : "mla" },
     });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: expect.objectContaining({ attention_groups: [expect.objectContaining({ output_gate: true })] }) });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "gqa" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: expect.objectContaining({ attention_groups: [expect.objectContaining({ kind: "gqa", output_gate: false })] }) });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("第 1 组注意力输出门控")).toBeDisabled();
     expect(screen.getByLabelText("第 1 组注意力输出门控")).not.toBeChecked();
   });
@@ -292,12 +292,12 @@ describe("AutomaticConfig", () => {
   it("creates attention groups with output gates disabled by default", () => {
     const onInferenceChange = vi.fn();
     const legacy = { ...initialModel, attention_layout: "full_gqa" as const, attention_groups: null };
-    const props = { config: physicalConfig({ model: legacy }), onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
+    const props = { config: formConfig({ model: legacy }), onInferenceChange: onInferenceChange, disabled: false };
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "启用注意力组合配置" }));
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: expect.objectContaining({ attention_groups: [expect.objectContaining({ kind: "gqa", output_gate: false })] }) });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "mla" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: expect.objectContaining({ attention_groups: [expect.objectContaining({ kind: "mla", output_gate: false })] }) });
@@ -306,8 +306,8 @@ describe("AutomaticConfig", () => {
   it.each(["bf16", "fp16", "fp32"] as const)("edits every auxiliary precision as %s without dropping settings", (dtype) => {
     const model = { ...hy4, name: "自定义模型", revision: null, attention_layout: "grouped" as const };
     const onInferenceChange = vi.fn();
-    const props = { config: physicalConfig({ model }), onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
+    const props = { config: formConfig({ model }), onInferenceChange: onInferenceChange, disabled: false };
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
     for (const [label, field] of [["主干归一化精度", "norms"], ["路由权重精度", "router"],
       ["路由选位修正向量精度", "router"], ["iHC 精度", "ihc"],
       ["第 1 组 Q/K 归一化精度", "attention_groups"], ["第 1 组索引归一化精度", "attention_groups"],
@@ -325,22 +325,22 @@ describe("AutomaticConfig", () => {
       expect(changed.ihc.mult).toBe(4);
       expect(changed.norms.block_per_layer).toBe(2);
       expect(changed.attention_groups[0].output_gate).toBe(true);
-      rerender(<AutomaticConfig {...props} config={{ ...props.config, inference }} />);
+      rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference }} />);
     }
     for (const label of ["主干归一化精度", "路由权重精度", "第 1 组 Q/K 归一化精度", "第 1 组索引归一化精度"]) {
       fireEvent.change(screen.getByLabelText(label), { target: { value: "" } });
-      rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+      rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
       expect(screen.getByLabelText(label)).toHaveValue("");
     }
   });
 
   it("edits auxiliary counts, kinds and switches including GQA sinks", () => {
     const onInferenceChange = vi.fn();
-    const props = { config: physicalConfig({ model: { ...hy4,
+    const props = { config: formConfig({ model: { ...hy4,
       name: "自定义模型", revision: null, attention_layout: "grouped" as const } }),
       onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
-    const refresh = () => rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
+    const refresh = () => rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     fireEvent.change(screen.getByLabelText("每层主干归一化数量"), { target: { value: "3" } });
     expect(onInferenceChange.mock.lastCall![0].model.norms.block_per_layer).toBe(3);
     refresh();
@@ -390,7 +390,7 @@ describe("AutomaticConfig", () => {
   it("enables shared experts only for MoE and clears their dimension when disabled", () => {
     const onInferenceChange = vi.fn();
     const props = { config: createDefaultSimConfig(), onInferenceChange: onInferenceChange, disabled: false };
-    const { rerender } = render(<AutomaticConfig {...props} />);
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(0);
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toHaveValue(null);
@@ -400,7 +400,7 @@ describe("AutomaticConfig", () => {
     expect(screen.getByLabelText("路由选位修正向量精度")).toBeDisabled();
     const moe = { ...initialModel, moe_layers: 1, num_experts: 8,
       experts_per_token: 2, expert_intermediate_size: 512, router: hy4.router };
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: { ...props.config.inference, model: moe } }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: { ...props.config.inference, model: moe } }} />);
     expect(screen.getByLabelText("路由权重精度")).toBeEnabled();
     expect(screen.getByLabelText("路由选位修正向量")).toBeEnabled();
     expect(screen.getByLabelText("路由选位修正向量精度")).toBeEnabled();
@@ -408,28 +408,28 @@ describe("AutomaticConfig", () => {
     fireEvent.change(screen.getByLabelText("共享专家数（0 为关闭）"), { target: { value: "2" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...moe, num_shared_experts: 2, shared_expert_intermediate_size: null } });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeEnabled();
     fireEvent.change(screen.getByLabelText("共享专家中间维度（启用时必填）"), { target: { value: "1024" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
       model: { ...moe, num_shared_experts: 2, shared_expert_intermediate_size: 1024 } });
     const shared = onInferenceChange.mock.lastCall![0];
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: shared }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: shared }} />);
     fireEvent.change(screen.getByLabelText("共享专家中间维度（启用时必填）"), { target: { value: "" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...shared,
       model: { ...shared.model, shared_expert_intermediate_size: null } });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     fireEvent.change(screen.getByLabelText("共享专家数（0 为关闭）"), { target: { value: "0" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...shared,
       model: { ...shared.model, num_shared_experts: 0, shared_expert_intermediate_size: null } });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: shared }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: shared }} />);
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "0" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...shared,
       model: { ...shared.model, moe_layers: 0, num_shared_experts: 0, shared_expert_intermediate_size: null,
         router: { dtype: null, correction_bias: false, correction_dtype: "fp32" } } });
-    rerender(<AutomaticConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
+    rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("路由权重精度")).toBeDisabled();
     expect(screen.getByLabelText("路由权重精度")).toHaveValue("");
     expect(screen.getByLabelText("路由选位修正向量")).not.toBeChecked();
@@ -447,13 +447,13 @@ describe("AutomaticConfig", () => {
           index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 },
       ] };
     const onInferenceChange = vi.fn();
-    const config = physicalConfig({ model });
-    const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
+    const config = formConfig({ model });
+    const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     expect(screen.getByText(/已配置 2 \/ 2 层/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "another-mla-model" } });
     expect(onInferenceChange).toHaveBeenCalledWith({ ...config.inference,
       model: { ...model, name: "another-mla-model" } });
-    rerender(<AutomaticConfig config={{ ...config, inference: onInferenceChange.mock.lastCall![0] }}
+    rerender(<ModelHardwareConfig config={{ ...config, inference: onInferenceChange.mock.lastCall![0] }}
       onInferenceChange={onInferenceChange} disabled={false} />);
     fireEvent.change(screen.getByLabelText("第 2 组选取 token 数"), { target: { value: "1024" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
@@ -472,8 +472,8 @@ describe("AutomaticConfig", () => {
           l1_kv_budget_bytes: 800, l1_capacity_pages: 2 }] },
     } as ResolutionReport;
     vi.mocked(resolveConfig).mockResolvedValue(preview);
-    const config = physicalConfig({ hardware: { ...initialHardware, gpu_count: 4 }, tp_size: 4 });
-    render(<AutomaticConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
+    const config = formConfig({ hardware: { ...initialHardware, gpu_count: 4 }, tp_size: 4 });
+    render(<ModelHardwareConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("GPU 0"));
     expect(resolveConfig).toHaveBeenCalledWith(expect.objectContaining({ inference: expect.objectContaining({ tp_size: 4 }) }));
@@ -491,8 +491,8 @@ describe("AutomaticConfig", () => {
         l1_kv_budget_bytes: 800, l1_capacity_pages: 2,
       }] },
     } as ResolutionReport);
-    const config = physicalConfig({ model, hardware: { ...initialHardware, gpu_count: 4 }, tp_size: 4, ep_size: 4 });
-    render(<AutomaticConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
+    const config = formConfig({ model, hardware: { ...initialHardware, gpu_count: 4 }, tp_size: 4, ep_size: 4 });
+    render(<ModelHardwareConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("全部驻留专家权重 2.000 GB"));
     expect(screen.getByRole("status")).toHaveTextContent("TP4 + EP4");
@@ -504,13 +504,13 @@ describe("AutomaticConfig", () => {
   it("shows the exact field path for server validation errors during preview", async () => {
     vi.mocked(resolveConfig).mockRejectedValueOnce(new SimulationApiError("模型规格错误", {
       validationErrors: [{
-        loc: ["body", "inference", "physical", "model", "num_experts"], msg: "专家数必须为正", type: "value_error",
+        loc: ["body", "inference", "model", "num_experts"], msg: "专家数必须为正", type: "value_error",
       }],
     }));
-    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("alert"))
-      .toHaveTextContent("body → inference → physical → model → num_experts：专家数必须为正"));
+      .toHaveTextContent("body → inference → model → num_experts：专家数必须为正"));
   });
 
   it("separates model and hardware cards and converts GB inputs to API units", async () => {
@@ -525,10 +525,10 @@ describe("AutomaticConfig", () => {
     });
     const onInferenceChange = vi.fn();
     let config = createDefaultSimConfig();
-    const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
+    const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     const refresh = () => {
       config = { ...config, inference: onInferenceChange.mock.lastCall![0] };
-      rerender(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
+      rerender(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     };
     await waitFor(() => expect(screen.getByRole("combobox", { name: "GPU 选择" })).toHaveValue("NVIDIA B300"));
     expect(screen.getByRole("heading", { name: "模型参数" })).toBeInTheDocument();

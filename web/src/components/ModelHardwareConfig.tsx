@@ -1,21 +1,21 @@
 import { useEffect, useState } from "react";
 
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
-import type { PhysicalInferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
-import type { PhysicalSimConfig } from "../config/simulation";
+import type { InferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
+import type { FormSimConfig } from "../config/simulation";
 export { initialModel, initialHardware, initialStorage } from "../config/simulation";
 
-export type Model = PhysicalInferenceConfig["model"];
+export type Model = InferenceConfig["model"];
 type AttentionGroup = NonNullable<Model["attention_groups"]>[number];
-export type Hardware = PhysicalInferenceConfig["hardware"];
-export type Storage = PhysicalInferenceConfig["storage"];
+export type Hardware = InferenceConfig["hardware"];
+export type Storage = InferenceConfig["storage"];
 type AuxiliaryDtype = "bf16" | "fp16" | "fp32";
 const defaultNorms = { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null };
 const defaultRouter = { dtype: null, correction_bias: false, correction_dtype: "fp32" as const };
 
 interface Props {
-  config: PhysicalSimConfig;
-  onInferenceChange: (inference: PhysicalSimConfig["inference"]) => void;
+  config: FormSimConfig;
+  onInferenceChange: (inference: FormSimConfig["inference"]) => void;
   disabled: boolean;
 }
 
@@ -57,10 +57,10 @@ function Input({ label, value, onChange, optional = false, disabled = false }: {
   </label></div>;
 }
 
-export function AutomaticConfig({ config, onInferenceChange, disabled }: Props) {
+export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Props) {
   const { model, hardware, storage, tp_size: tpSize, ep_size: epSize } = config.inference;
   const timing = config.inference.timing.mode;
-  function updateInference(patch: Partial<PhysicalSimConfig["inference"]>) {
+  function updateInference(patch: Partial<FormSimConfig["inference"]>) {
     onInferenceChange({ ...config.inference, ...patch });
   }
   const onModelChange = (model: Model) => updateInference({ model });
@@ -134,13 +134,13 @@ export function AutomaticConfig({ config, onInferenceChange, disabled }: Props) 
   }
 
   return <>
-    <section className="form-section" aria-labelledby="auto-model-heading">
+    <section className="form-section" aria-labelledby="model-heading">
       <div className="section-heading"><div>
         <p className="section-kicker">Analytical · Stage 1</p>
-        <h2 id="auto-model-heading">模型参数</h2>
+        <h2 id="model-heading">模型参数</h2>
       </div><p>选择预置模型，或切换到自定义并调整结构与精度</p></div>
-      <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="auto-model-preset">模型选择</label>
-        <select id="auto-model-preset" value={selectedModel?.name ?? "custom"}
+      <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="model-preset">模型选择</label>
+        <select id="model-preset" value={selectedModel?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.models.find((entry) => entry.name === event.target.value);
             updateInference({ model: selected ?? { ...model, name: "自定义模型", revision: null,
@@ -314,13 +314,13 @@ export function AutomaticConfig({ config, onInferenceChange, disabled }: Props) 
       <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延。归一化、路由修正向量、iHC 与 attention sink 使用统一通用容量公式，只计容量、不增加性能耗时；其他运行时空间不自动推断。</p>
     </div>
     </section>
-    <section className="form-section" aria-labelledby="auto-hardware-heading">
+    <section className="form-section" aria-labelledby="hardware-heading">
       <div className="section-heading"><div>
         <p className="section-kicker">Hardware · Stage 1</p>
-        <h2 id="auto-hardware-heading">硬件配置</h2>
+        <h2 id="hardware-heading">硬件配置</h2>
       </div><p>以下硬件与存储均为单实例规格；总 GPU 数 = 实例数量 × 每实例 GPU 数</p></div>
-      <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="auto-gpu-preset">GPU 选择</label>
-        <select id="auto-gpu-preset" value={selectedHardware?.name ?? "custom"}
+      <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="gpu-preset">GPU 选择</label>
+        <select id="gpu-preset" value={selectedHardware?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
             onHardwareChange(selected ? { ...hardware, name: selected.name,

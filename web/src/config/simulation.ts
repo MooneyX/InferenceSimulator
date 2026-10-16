@@ -1,7 +1,7 @@
-import type { EmpiricalTimingConfig, LengthDistribution, PhysicalInferenceConfig, SimConfig } from "../api/types";
+import type { EmpiricalTimingConfig, InferenceConfig, LengthDistribution, SimConfig } from "../api/types";
 
-export type PhysicalSimConfig = SimConfig & {
-  inference: PhysicalInferenceConfig & { timing: NonNullable<PhysicalInferenceConfig["timing"]> };
+export type FormSimConfig = SimConfig & {
+  inference: InferenceConfig & { timing: NonNullable<InferenceConfig["timing"]> };
 };
 
 export type ConfigField =
@@ -80,17 +80,17 @@ export function createDefaultEmpiricalTiming(): EmpiricalTimingConfig {
   return { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 };
 }
 
-export function createDefaultSimConfig(): PhysicalSimConfig {
+export function createDefaultSimConfig(): FormSimConfig {
   return {
     ...createDefaultCommonConfig(),
-    shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0 },
-    inference: { mode: "physical", page_size: 64, max_output_tokens: 65_536,
+    shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
+    inference: { page_size: 64, max_output_tokens: 65_536,
       model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
       tp_size: 1, ep_size: 1, timing: { mode: "analytical" } },
   };
 }
 
-export const initialModel: PhysicalInferenceConfig["model"] = {
+export const initialModel: InferenceConfig["model"] = {
   name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
   num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
   ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
@@ -107,13 +107,13 @@ export const initialModel: PhysicalInferenceConfig["model"] = {
   norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
   router: { dtype: null, correction_bias: false, correction_dtype: "fp32" }, ihc: null,
 };
-export const initialHardware: PhysicalInferenceConfig["hardware"] = {
+export const initialHardware: InferenceConfig["hardware"] = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
   effective_fp16_tflops: 100, effective_fp8_tflops: null,
   effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
   collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0,
 };
-export const initialStorage: PhysicalInferenceConfig["storage"] = {
+export const initialStorage: InferenceConfig["storage"] = {
   l1_available_gb: 200, l2_available_gb: 2048,
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
   l2_latency_ms: 0, l3_latency_ms: 0,

@@ -27,8 +27,8 @@ from simcore import (
 from simcore.schemas import (
     EmpiricalTimingConfig,
     HardwareSpec,
+    InferenceConfig,
     ModelSpec,
-    PhysicalInferenceConfig,
     SchedulerConfig,
     StorageSpec,
 )
@@ -52,7 +52,7 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
             )
         ),
         scheduler=SchedulerConfig(max_running_requests=8),
-        inference=PhysicalInferenceConfig(
+        inference=InferenceConfig(
             page_size=block_size,
             model=ModelSpec(name="toy", num_layers=2, hidden_size=16,
                             num_attention_heads=2, num_kv_heads=1, head_dim=8,

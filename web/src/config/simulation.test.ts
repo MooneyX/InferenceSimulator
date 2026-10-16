@@ -21,8 +21,8 @@ describe("createDefaultSimConfig", () => {
       },
       scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
         l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
-      shared_l3: { mode: "physical", available_gb: 40_000, lookup_latency_ms: 0 },
-      inference: { mode: "physical", page_size: 64, max_output_tokens: 65_536,
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
+      inference: { page_size: 64, max_output_tokens: 65_536,
         model: expect.any(Object), hardware: expect.any(Object), storage: expect.any(Object),
         tp_size: 1, ep_size: 1, timing: { mode: "analytical" },
       },
@@ -49,7 +49,7 @@ describe("createDefaultSimConfig", () => {
 });
 
 describe("validateSimConfig", () => {
-  it("uses physical specifications without manual capacity or analytical coefficient placeholders", () => {
+  it("uses model specifications without manual capacity or empirical coefficient placeholders", () => {
     const config = createDefaultSimConfig();
     expect(config.inference).not.toHaveProperty("kv");
     expect(config.inference.timing).toEqual({ mode: "analytical" });
@@ -146,7 +146,7 @@ describe("validateSimConfig", () => {
     ]);
   });
 
-  it("validates page size while resolving KV capacity from physical specifications", () => {
+  it("validates page size while resolving KV capacity from model specifications", () => {
     const config = createDefaultSimConfig();
     expect(config.inference).not.toHaveProperty("kv");
     config.inference.page_size = 0;

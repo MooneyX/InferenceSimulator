@@ -260,7 +260,7 @@ describe("trace replay requests", () => {
 
 describe("resolveConfig", () => {
   it("posts the same configuration without wrapping it in a separate request", async () => {
-    const physicalConfig = createDefaultSimConfig();
+    const previewConfig = createDefaultSimConfig();
     const report: ResolutionReport = {
       max_total_tokens: 4096, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
       runnable: true,
@@ -276,15 +276,15 @@ describe("resolveConfig", () => {
     };
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, report));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(resolveConfig(physicalConfig)).resolves.toEqual(report);
+    await expect(resolveConfig(previewConfig)).resolves.toEqual(report);
     expect(fetchMock).toHaveBeenCalledWith("/api/resolve", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(physicalConfig),
+      body: JSON.stringify(previewConfig),
     });
   });
 
   it("preserves nested field paths and business messages for both 422 formats", async () => {
-    const detail = [{ loc: ["body", "inference", "physical", "model", "num_experts"],
+    const detail = [{ loc: ["body", "inference", "model", "num_experts"],
       msg: "专家数错误", type: "value_error" }];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(422, { detail }))
       .mockResolvedValueOnce(jsonResponse(422, { detail: "TP 数必须等于 GPU 卡数" })));
@@ -294,7 +294,7 @@ describe("resolveConfig", () => {
     });
   });
 
-  it("recognizes unimplemented physical run modes", async () => {
+  it("recognizes unsupported timing combinations", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 EP" })));
     await expect(simulate(config)).rejects.toMatchObject({ message: "四系数不支持 EP" });
   });

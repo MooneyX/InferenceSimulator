@@ -1091,6 +1091,71 @@
         "title": "IHCSpec",
         "description": "每层两处 iHC 与最终汇总 head 的容量规格，不包含运行耗时。"
       },
+      "InferenceConfig": {
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page Size",
+            "default": 64
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Output Tokens",
+            "description": "单请求输出 token 硬上限",
+            "default": 65536
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelSpec"
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/HardwareSpec"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageSpec"
+          },
+          "timing": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmpiricalTimingConfig"
+              },
+              {
+                "$ref": "#/components/schemas/AnalyticalTimingConfig"
+              }
+            ],
+            "title": "Timing",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "analytical": "#/components/schemas/AnalyticalTimingConfig",
+                "empirical": "#/components/schemas/EmpiricalTimingConfig"
+              }
+            }
+          },
+          "tp_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Tp Size",
+            "default": 1
+          },
+          "ep_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ep Size",
+            "default": 1
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "model",
+          "hardware",
+          "storage"
+        ],
+        "title": "InferenceConfig",
+        "description": "实例输入：从模型、硬件和存储解析容量及 GPU 计时规格。"
+      },
       "InstanceResult": {
         "properties": {
           "instance_id": {
@@ -1852,103 +1917,6 @@
         "title": "NormSpec",
         "description": "Block 与最终归一化的容量规格；dtype 为 null 时跟随主权重。"
       },
-      "PhysicalInferenceConfig": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "physical",
-            "title": "Mode",
-            "default": "physical"
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Page Size",
-            "default": 64
-          },
-          "max_output_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Output Tokens",
-            "description": "单请求输出 token 硬上限",
-            "default": 65536
-          },
-          "model": {
-            "$ref": "#/components/schemas/ModelSpec"
-          },
-          "hardware": {
-            "$ref": "#/components/schemas/HardwareSpec"
-          },
-          "storage": {
-            "$ref": "#/components/schemas/StorageSpec"
-          },
-          "timing": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/EmpiricalTimingConfig"
-              },
-              {
-                "$ref": "#/components/schemas/AnalyticalTimingConfig"
-              }
-            ],
-            "title": "Timing",
-            "discriminator": {
-              "propertyName": "mode",
-              "mapping": {
-                "analytical": "#/components/schemas/AnalyticalTimingConfig",
-                "empirical": "#/components/schemas/EmpiricalTimingConfig"
-              }
-            }
-          },
-          "tp_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Tp Size",
-            "default": 1
-          },
-          "ep_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Ep Size",
-            "default": 1
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "model",
-          "hardware",
-          "storage"
-        ],
-        "title": "PhysicalInferenceConfig",
-        "description": "物理实例：共用模型和硬件解析容量及 GPU 计时规格。"
-      },
-      "PhysicalL3Config": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "physical",
-            "title": "Mode",
-            "default": "physical"
-          },
-          "available_gb": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Available Gb",
-            "description": "全场共享 L3 十进制 GB 总容量；0 表示关闭",
-            "default": 0.0
-          },
-          "lookup_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Lookup Latency Ms",
-            "default": 0.0
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "PhysicalL3Config"
-      },
       "PlanReceipt": {
         "properties": {
           "id": {
@@ -2468,6 +2436,26 @@
         ],
         "title": "SessionSummary"
       },
+      "SharedL3Config": {
+        "properties": {
+          "available_gb": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Available Gb",
+            "description": "全场共享 L3 十进制 GB 总容量；0 表示关闭",
+            "default": 0.0
+          },
+          "lookup_latency_ms": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Lookup Latency Ms",
+            "default": 0.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SharedL3Config"
+      },
       "SimConfig": {
         "properties": {
           "workload": {
@@ -2477,7 +2465,7 @@
             "$ref": "#/components/schemas/SchedulerConfig"
           },
           "inference": {
-            "$ref": "#/components/schemas/PhysicalInferenceConfig"
+            "$ref": "#/components/schemas/InferenceConfig"
           },
           "num_instances": {
             "type": "integer",
@@ -2488,7 +2476,7 @@
           "shared_l3": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PhysicalL3Config"
+                "$ref": "#/components/schemas/SharedL3Config"
               },
               {
                 "type": "null"

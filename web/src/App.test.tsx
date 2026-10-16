@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
-import type { PhysicalInferenceConfig, SimResult } from "./api/types";
+import type { InferenceConfig, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
@@ -113,7 +113,7 @@ const result: SimResult = {
 result.instances.push({ instance_id: 0, num_completed: 1, num_aborted: 0, num_skipped: 0,
   num_engine_steps: 8, metrics: result.metrics });
 
-function physicalResult(overrides: Partial<PhysicalInferenceConfig> = {}): SimResult {
+function resolvedResult(overrides: Partial<InferenceConfig> = {}): SimResult {
   const config = createDefaultSimConfig();
   config.inference = { ...config.inference, ...overrides };
   return {
@@ -212,7 +212,7 @@ describe("App", () => {
   });
 
   it("shows resolved capacity and cost after running an automatic trace plan", async () => {
-    const traceResult = physicalResult();
+    const traceResult = resolvedResult();
     traceResult.meta.config.workload = { mode: "trace", arrival_mode: "open_loop",
       session_rate: 1, seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } };
     uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
@@ -232,15 +232,15 @@ describe("App", () => {
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
       workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1,
         seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } },
-      inference: expect.objectContaining({ mode: "physical", timing: { mode: "analytical" } }),
+      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
     }));
     expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByText("目标发送 QPS").closest(".metric-card")).toHaveTextContent("9 请求/秒");
   });
 
-  it("routes the single physical run button to the simulation API", async () => {
-    simulateMock.mockResolvedValue(physicalResult());
+  it("routes the single run button to the simulation API", async () => {
+    simulateMock.mockResolvedValue(resolvedResult());
     render(<App />);
     expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
@@ -255,7 +255,7 @@ describe("App", () => {
   });
 
   it("shows TP communication inside the existing resolved result card", async () => {
-    const resolved = physicalResult({ tp_size: 4,
+    const resolved = resolvedResult({ tp_size: 4,
       hardware: { ...createDefaultSimConfig().inference.hardware, gpu_count: 4 } });
     resolved.analysis = {
       steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
@@ -274,7 +274,7 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ mode: "physical", tp_size: 4 }),
+      inference: expect.objectContaining({ tp_size: 4 }),
     }));
     const summary = await screen.findByLabelText("解析配置与成本");
     expect(summary).toHaveTextContent("TP4");
@@ -285,7 +285,7 @@ describe("App", () => {
 
   it("shows TP and EP timing separately without adding communication to GPU time twice", async () => {
     const initial = createDefaultSimConfig().inference;
-    const resolved = physicalResult({ tp_size: 4, ep_size: 4,
+    const resolved = resolvedResult({ tp_size: 4, ep_size: 4,
       model: { ...initial.model, name: "toy-moe", moe_layers: 2 },
       hardware: { ...initial.hardware, name: "B300", gpu_count: 4 } });
     resolved.resolution!.capacity = { ...resolved.resolution!.capacity,

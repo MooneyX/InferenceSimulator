@@ -21,11 +21,11 @@ from simcore.schemas import (
     WorkloadConfig,
 )
 from simcore.workload import build_synthetic_closed_loop_plan
-from test_schemas import metric_inputs, physical_config
+from test_schemas import metric_inputs, resolved_config
 
 
 def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) -> SimConfig:
-    return physical_config(
+    return resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=30.0,
@@ -63,7 +63,7 @@ def expected_open_loop_arrivals(seed: int, qps: float, count: int) -> list[float
 
 
 def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -97,7 +97,7 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
 
 
 def test_open_loop_completion_at_tick_is_ready() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -122,7 +122,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
 
 
 def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -149,7 +149,7 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
 
 
 def test_open_loop_capacity_failure_still_consumes_tick() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -179,7 +179,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
 
 
 def test_open_loop_single_arrival_has_no_observed_qps() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -201,7 +201,7 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
 
 
 def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
-    config = physical_config(
+    config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
             arrival_mode="open_loop",
@@ -274,7 +274,7 @@ class TestEndToEnd:
         assert m.throughput is not None and m.throughput > 0
 
     def test_prefix_metrics_are_weighted_and_capacity_conserved(self) -> None:
-        config = physical_config(
+        config = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=10,
@@ -312,7 +312,7 @@ class TestEndToEnd:
         assert result.requests[1].actual_prefill_tokens == 3
 
     def test_constructed_ideal_hit_rate_is_plan_result(self) -> None:
-        config = physical_config(
+        config = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=10,
@@ -340,7 +340,7 @@ class TestEndToEnd:
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
-        cfg = physical_config(
+        cfg = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=10,
@@ -361,7 +361,7 @@ class TestEndToEnd:
         assert result.metrics.ttft_mean is None
 
     def test_enabled_tiers_propagate_capacity_and_zero_transfer(self) -> None:
-        cfg = physical_config(
+        cfg = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=1,
@@ -397,7 +397,7 @@ class TestEndToEnd:
         assert SimResult.model_validate_json(result.model_dump_json()) == result
 
     def test_closed_loop_skipped_turns_do_not_count_toward_request_qps(self) -> None:
-        cfg = physical_config(
+        cfg = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=2,
@@ -451,7 +451,7 @@ class TestReproducibility:
 class TestSmallCases:
     @pytest.mark.parametrize("think_time_ms", [0.0, 30.0])
     def test_followup_arrives_only_after_parent_completion(self, think_time_ms: float) -> None:
-        cfg = physical_config(
+        cfg = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=1.0,
@@ -486,7 +486,7 @@ class TestSmallCases:
         assert result.meta.num_engine_steps == 6
 
     def test_single_request_fixed_lengths(self) -> None:
-        cfg = physical_config(
+        cfg = resolved_config(
             num_instances=1,
             workload=WorkloadConfig(
                 session_rate=1.0,

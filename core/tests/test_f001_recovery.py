@@ -23,7 +23,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
-from test_schemas import manual_config, metric_inputs, runtime_config
+from test_schemas import metric_inputs, physical_config, runtime_config
 
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=1)
 
@@ -306,7 +306,7 @@ def test_scheduler_failure_at_empty_pool_continues_later_fcfs_candidate() -> Non
 
 
 def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> None:
-    config = manual_config(
+    config = physical_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,

@@ -4,6 +4,7 @@ test("runs 10 requests through the unified simulation endpoint", async ({ page }
   const browserErrors: string[] = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   await page.goto("/");
+  await expect(page.getByRole("radio", { name: /自动解析|手动配置/ })).toHaveCount(0);
   await page.getByLabel("请求数量").fill("10");
   const responsePromise = page.waitForResponse((response) =>
     response.url().endsWith("/api/simulate") && response.request().method() === "POST",
@@ -118,7 +119,6 @@ test("reports browser response for 100/1k/10k in both P/D modes", async ({ page 
 
 test("edits HY4 preset and exposes complete attention group parameters", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("radio", { name: /自动解析/ }).check();
   await page.getByLabel("模型选择").selectOption("tencent/Hy4-preview");
   await expect(page.getByLabel("第 1 组注意力方式")).toHaveValue("mla_dsa");
   await expect(page.getByLabel("第 1 组层数")).toHaveValue("78");
@@ -160,7 +160,6 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
 
 test("shows Qwen attention defaults with consistent auxiliary form styling", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("radio", { name: /自动解析/ }).check();
   await expect(page.getByLabel("模型选择")).toHaveValue("Qwen/Qwen3-8B");
   for (const preset of [
     { name: "Qwen/Qwen3-8B", layers: "36", heads: "32", kv: "8" },

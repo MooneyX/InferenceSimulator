@@ -25,7 +25,12 @@ from simcore import (
     simulate,
 )
 from simcore.schemas import (
-    EmpiricalTimingConfig, ManualInferenceConfig, ManualKVConfig, SchedulerConfig,
+    EmpiricalTimingConfig,
+    HardwareSpec,
+    ModelSpec,
+    PhysicalInferenceConfig,
+    SchedulerConfig,
+    StorageSpec,
 )
 
 
@@ -47,9 +52,14 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
             )
         ),
         scheduler=SchedulerConfig(max_running_requests=8),
-        inference=ManualInferenceConfig(
+        inference=PhysicalInferenceConfig(
             page_size=block_size,
-            kv=ManualKVConfig(max_total_tokens=4096),
+            model=ModelSpec(name="toy", num_layers=2, hidden_size=16,
+                            num_attention_heads=2, num_kv_heads=1, head_dim=8,
+                            ffn_intermediate_size=32, vocab_size=16),
+            hardware=HardwareSpec(name="toy", memory_bytes_per_gpu=2_000_000,
+                                  effective_fp16_tflops=1, effective_hbm_gb_s=1),
+            storage=StorageSpec(l1_available_gb=(10_464 + 4096 * 64) / 1_000_000_000),
             timing=EmpiricalTimingConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
         ),
     )

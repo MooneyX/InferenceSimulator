@@ -6,7 +6,7 @@
 
 - 让用户选择指定版本的模型、具体硬件形态与部署精度，查看可追溯的显存账单、KV 字节/页、可容纳页数及最终生效的 L1 token 容量；可编辑参数并区分官方规格、部署假设和用户输入。
 - **预置可浏览 ≠ 可计算 ≠ 可在当前仿真器中运行。** 每个组合分别标记 `catalog_only`（仅目录）、`capacity_ready`（KV/权重/单卡显存口径齐备且逐项标注证据或用户假设）、`runnable`（容量可解析且满足当前单卡拓扑，可提交仿真）；缺任一关键值时不返回虚假的精确容量，也不静默用别的型号代替。已计算容量仍只是估算，不代表真实硬件适配、运行时性能或实际服务可用。
-- 首期落实单 GPU、单 Engine、文本 **Dense 全注意力 GQA/MQA** KV 容量及权重预算，并作为 [F004 第一阶段](expert-parallelism.md) 的规格/容量基线；普通 MoE 即使 KV 是标准 GQA，也须在补齐**总驻留权重**和运行时预算后作为后续容量扩展，不使用每 token 激活参数量替代。非 NVIDIA 硬件可作为**容量预算输入**，不等于已有对应运行时或校准模型。手填模式继续使用原四系数计时；解析模式使用 [F002 Roofline 计划](perf-model.md) 根据有效硬件参数在仿真每步计算 Prefill/Decode 成本，不从卡名或峰值 FLOPS 直接推导四个经验系数。多卡 TP/EP 的逐 rank 容量由 F004 后续阶段交付。
+- 首期落实单 GPU、单 Engine、文本 **Dense 全注意力 GQA/MQA** KV 容量及权重预算，并作为 [F004 第一阶段](expert-parallelism.md) 的规格/容量基线；普通 MoE 即使 KV 是标准 GQA，也须在补齐**总驻留权重**和运行时预算后作为后续容量扩展，不使用每 token 激活参数量替代。非 NVIDIA 硬件可作为**容量预算输入**，不等于已有对应运行时或校准模型。物理输入仍可选择原四系数经验计时；解析计时使用 [F002 Roofline 计划](perf-model.md) 根据有效硬件参数在仿真每步计算 Prefill/Decode 成本，不从卡名或峰值 FLOPS 直接推导四个经验系数。多卡 TP/EP 的逐 rank 容量由 F004 后续阶段交付。
 - 自定义 MLA/DSA 组合只按用户显式填写的固定缓存布局作条件化粗估；要将 DeepSeek、Hy4 等具体大模型标记为经过核验的容量仍须有**针对对应版本和推理实现的缓存布局公式/测试**，不能把 `num_key_value_heads` 套进普通 GQA 公式。对 KV 字节/token 随上下文、层、实现变化的模型，不能压成单一固定 token 容量喂给现有 L1 页池；需要独立的可变页成本设计，未完成前只展示目录和不可计算原因。
 - 超出单卡的模型显示“当前单卡模式放不下”，不将多卡显存求和假装为单实例容量，也不暗示 TP/PP、权重卸载、KV offload、多模态视觉缓存已实现。
 
@@ -53,18 +53,18 @@ kv_budget_bytes    = usable_bytes - weights_resident_bytes
                    - activation_peak_bytes - allocator_reserve_bytes - other_reserve_bytes
 hardware_pages     = floor(kv_budget_bytes / kv_bytes_per_page)
 hardware_tokens    = hardware_pages * inference.page_size
-resolved_tokens    = min(hardware_tokens, user_cap_tokens)  # 仅当用户提供上限
+resolved_tokens    = hardware_tokens
 ```
 
-所有中间计算以**整数 bytes**记录和核对；负余额、非正每页字节数、推导不足一页都报显式错误。现行手填 `user_cap_tokens` 仍先按 `inference.page_size` 校验为至少一页的正整数倍，**不静默取整**；硬件推导才向下对齐整页。只把唯一 `resolved_tokens` 写进内部 `RuntimeConfig.engine.max_total_tokens`，不改写外部 `SimConfig`，不再增加另一套生效容量或 paged-KV block size。每页碎片和前缀物理共享由现有 L1 模拟处理；显存预算只规定页池**上限**，不把逻辑上下文 token 数误认为物理驻留页数。与已实现的 [分层 KV 设计](../design/kv-prefix-reuse.md) 共用同一 KV bytes/token 口径；后续自动解析容量时不得独立填写与 L2/L3 传输参数矛盾的字节数。
+所有中间计算以**整数 bytes**记录和核对；负余额、非正每页字节数、推导不足一页都报显式错误。当前无 `user_cap_tokens` 手填入口；按物理预算向下对齐整页，L1 不足一页时拒绝运行。只把唯一 `resolved_tokens` 写进内部 `RuntimeConfig.engine.max_total_tokens`，不改写外部 `SimConfig`，不再增加另一套生效容量或 paged-KV block size。每页碎片和前缀物理共享由现有 L1 模拟处理；显存预算只规定页池**上限**，不把逻辑上下文 token 数误认为物理驻留页数。与已实现的 [分层 KV 设计](../design/kv-prefix-reuse.md) 共用同一 KV bytes/token 口径；后续自动解析容量时不得独立填写与 L2/L3 传输参数矛盾的字节数。
 
 验证例：Qwen3-32B 配置为 64 层、8 个 KV 头、头维 128，BF16 时 `2 × 64 × 8 × 128 × 2 = 262144` bytes/token，即 **256 KiB/token**；这是 KV 数据字节，不含权重、运行时或预留，不能由此单独宣布哪张卡可运行。对 MLA/DSA、压缩、混合线性注意力及滑窗先提供计算器分支的**专用设计与金标准测试**；在当前固定 token 页池不能表达真实存储时，拒绝自动容量解析，不能用标准公式得出看似精确的结论。
 
 ## 5. 服务、内核与页面契约
 
 1. **服务端解析入口。** `GET /api/presets` 提供参考规格；后续目录状态、证据与来源扩展按本计划验收。`POST /api/resolve` 与运行接收同一个 `SimConfig`，模型/硬件/存储及页大小位于 `inference.mode=physical`，返回 `ResolutionReport`（容量账单、运行 token 容量、可运行性与原因），不返回另一套仿真输入。内核在 `Client` 与 `Engine(runtime, ...)` 创建之前调用一次 `capacity.prepare_runtime`；纯解析逻辑只消费显式规格，不读取服务端目录或执行 IO。
-2. **仿真模式区分。** 唯一 `POST /api/simulate` 接收统一 `SimConfig`：手动分支使用显式 `kv` 容量和四系数经验计时，物理分支根据模型/硬件/存储推导内部运行容量并使用选定计时后端，返回单个 `SimResult`。`meta.config` 回显包含字段默认值的原规范化输入，`resolution` 展示实际容量与账单，`analysis` 展示解析计时汇总；不能将临时预览报告重新当作运行配置，也不能由此推断规格已获真实部署认证。非法规格、不支持布局或显存不足返回具体 422；请求级 KV 失败仍归运行结果。
-3. **前端配置与展示。** 在同一 `SimConfig` 表单编辑手动/物理推理分支和独立调度、负载字段；展示服务端的显存账单、KV bytes/token、完整页数、最终运行容量与已实现的步骤成本分项。前端不维护另一套容量或 Roofline 公式；不可计算的配置给出原因并禁止提交。JSON 导入导出只保留统一输入规格与计时/回放设置，不嵌入解析报告；Trace 导出清空临时 `plan_id`，导入后重新上传独立计划资源。后续证据目录的版本/来源展示不得冒充已认证部署。
+2. **仿真模式区分。** 唯一 `POST /api/simulate` 接收统一 `SimConfig`：物理输入根据模型/硬件/存储推导内部运行容量并使用选定计时后端，返回单个 `SimResult`。`meta.config` 回显包含字段默认值的原规范化输入，`resolution` 展示实际容量与账单，`analysis` 展示解析计时汇总；不能将临时预览报告重新当作运行配置，也不能由此推断规格已获真实部署认证。非法规格、不支持布局或显存不足返回具体 422；请求级 KV 失败仍归运行结果。
+3. **前端配置与展示。** 在同一 `SimConfig` 表单编辑物理推理输入和独立调度、负载字段；展示服务端的显存账单、KV bytes/token、完整页数、最终运行容量与已实现的步骤成本分项。前端不维护另一套容量或 Roofline 公式；不可计算的配置给出原因并禁止提交。JSON 导入导出只保留统一输入规格与计时/回放设置，不嵌入解析报告；Trace 导出清空临时 `plan_id`，导入后重新上传独立计划资源。后续证据目录的版本/来源展示不得冒充已认证部署。
 4. 改动对外 schema/路由后同步 `web/openapi.json` 和 `web/src/api/schema.d.ts`，更新 [服务计划](server-api.md)、[前端计划](frontend.md) 的交付与校验；只把真正落地行为迁入 `docs/design/`，不把目录选项当作已有仿真模式。
 
 ## 6. 交付顺序与验收

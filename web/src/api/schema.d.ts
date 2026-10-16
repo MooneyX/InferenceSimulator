@@ -536,78 +536,6 @@ export interface components {
             sigma: number;
         };
         /**
-         * ManualInferenceConfig
-         * @description 抽象实例：直接填写容量、链路和经验计时。
-         */
-        ManualInferenceConfig: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            mode: "manual";
-            /**
-             * Page Size
-             * @default 64
-             */
-            page_size: number;
-            /**
-             * Max Output Tokens
-             * @description 单请求输出 token 硬上限
-             * @default 65536
-             */
-            max_output_tokens: number;
-            kv: components["schemas"]["ManualKVConfig"];
-            timing: components["schemas"]["EmpiricalTimingConfig"];
-        };
-        /**
-         * ManualKVConfig
-         * @description 手动指定 KV 容量和每条上行链路的参数。
-         */
-        ManualKVConfig: {
-            /** Max Total Tokens */
-            max_total_tokens: number;
-            /**
-             * L2 Capacity Tokens
-             * @default 0
-             */
-            l2_capacity_tokens: number;
-            /** Kv Bytes Per Token */
-            kv_bytes_per_token?: number | null;
-            /** L2 To L1 Bandwidth Bytes Per Ms */
-            l2_to_l1_bandwidth_bytes_per_ms?: number | null;
-            /** L3 To L2 Bandwidth Bytes Per Ms */
-            l3_to_l2_bandwidth_bytes_per_ms?: number | null;
-            /**
-             * L2 Latency Ms
-             * @default 0
-             */
-            l2_latency_ms: number;
-            /**
-             * L3 Latency Ms
-             * @default 0
-             */
-            l3_latency_ms: number;
-        };
-        /** ManualL3Config */
-        ManualL3Config: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            mode: "manual";
-            /**
-             * Capacity Tokens
-             * @description 全场共享 L3 token 总容量；0 表示关闭
-             * @default 0
-             */
-            capacity_tokens: number;
-            /**
-             * Lookup Latency Ms
-             * @default 0
-             */
-            lookup_latency_ms: number;
-        };
-        /**
          * Metrics
          * @description 全场指标。``None`` 表示该指标在本场仿真中无定义。
          */
@@ -972,8 +900,9 @@ export interface components {
          */
         PhysicalInferenceConfig: {
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Mode
+             * @default physical
+             * @constant
              */
             mode: "physical";
             /**
@@ -1006,8 +935,9 @@ export interface components {
         /** PhysicalL3Config */
         PhysicalL3Config: {
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Mode
+             * @default physical
+             * @constant
              */
             mode: "physical";
             /**
@@ -1286,15 +1216,13 @@ export interface components {
         SimConfig: {
             workload: components["schemas"]["WorkloadConfig"];
             scheduler: components["schemas"]["SchedulerConfig"];
-            /** Inference */
-            inference: components["schemas"]["ManualInferenceConfig"] | components["schemas"]["PhysicalInferenceConfig"];
+            inference: components["schemas"]["PhysicalInferenceConfig"];
             /**
              * Num Instances
              * @description 同构推理副本数量；各自独占 L1/L2，共享 L3
              */
             num_instances: number;
-            /** Shared L3 */
-            shared_l3?: (components["schemas"]["ManualL3Config"] | components["schemas"]["PhysicalL3Config"]) | null;
+            shared_l3?: components["schemas"]["PhysicalL3Config"] | null;
         };
         /**
          * SimMeta

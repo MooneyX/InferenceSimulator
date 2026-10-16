@@ -28,16 +28,16 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
         },
         "scheduler": {"max_running_requests": 16},
         "inference": {
-            "mode": "manual",
-            "page_size": 1,
-            "kv": {"max_total_tokens": budget},
-            "timing": {
-                "mode": "empirical",
-                "prefill_c1": 0.05,
-                "prefill_c2": 1e-5,
-                "decode_d1": 8.0,
-                "decode_d2": 0.002,
-            },
+            "mode": "physical", "page_size": 1,
+            "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
+                      "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
+                      "ffn_intermediate_size": 32, "vocab_size": 16},
+            "hardware": {"name": "toy", "memory_bytes_per_gpu": 2_000_000,
+                         "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1},
+            "storage": {"l1_available_gb": (10_464 + budget * 64) / 1_000_000_000,
+                        "l2_available_gb": 0},
+            "timing": {"mode": "empirical", "prefill_c1": 0.05,
+                       "prefill_c2": 1e-5, "decode_d1": 8.0, "decode_d2": 0.002},
         },
     }
 
@@ -61,12 +61,11 @@ class TestSuccess:
         assert body["meta"]["config"]["workload"]["session_rate"] == 2
         assert body["metrics"]["arrival_qps"] > 0
 
-    def test_manual_fields_echo_and_counts(self, client: TestClient) -> None:
+    def test_physical_fields_echo_and_counts(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 16}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
         payload["scheduler"] = {"max_running_requests": 1}
-        payload["inference"]["kv"] = {"max_total_tokens": 192}
         del payload["inference"]["page_size"]
         response = client.post(URL, json=payload)
         assert response.status_code == 200
@@ -75,7 +74,8 @@ class TestSuccess:
         assert body["meta"]["num_completed"] == 1
         assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
         assert body["aborted_requests"] == body["skipped_requests"] == []
-        assert body["resolution"] is body["analysis"] is None
+        assert body["resolution"]["max_total_tokens"] == 16_000
+        assert body["analysis"] is None
 
     def test_enabled_tiers_use_existing_route_and_echo_metrics(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
@@ -84,19 +84,22 @@ class TestSuccess:
         payload["inference"]["max_output_tokens"] = 1
         payload["scheduler"]["max_running_requests"] = 1
         payload["inference"]["page_size"] = 4
-        payload["shared_l3"] = {"mode": "manual", "capacity_tokens": 8}
-        payload["inference"]["kv"].update(
-            max_total_tokens=12, l2_capacity_tokens=4,
-            kv_bytes_per_token=16,
-            l2_to_l1_bandwidth_bytes_per_ms=64,
-            l3_to_l2_bandwidth_bytes_per_ms=32,
+        payload["shared_l3"] = {"mode": "physical", "available_gb": 8 * 64 / 1_000_000_000}
+        payload["inference"]["storage"].update(
+            l1_available_gb=(10_464 + 12 * 64) / 1_000_000_000,
+            l2_available_gb=4 * 64 / 1_000_000_000,
+            l2_to_l1_gb_s=64 / 1_000_000,
+            l3_to_l2_gb_s=32 / 1_000_000,
         )
         response = client.post(URL, json=payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
         assert result.meta.num_completed == 1
-        assert result.meta.config.inference.kv.l2_capacity_tokens == 4
-        assert result.meta.config.shared_l3.capacity_tokens == 8
+        assert result.resolution is not None
+        assert result.meta.config.shared_l3 is not None
+        assert result.resolution.l2_capacity_tokens == 4
+        assert result.resolution.l3_capacity_tokens == 8
+        assert result.meta.config.shared_l3.available_gb == payload["shared_l3"]["available_gb"]
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
@@ -257,47 +260,35 @@ class TestErrors:
         assert response.status_code == 422
         assert "num_instances" in response.text
 
-    @pytest.mark.parametrize("capacity", [63, 130])
-    def test_invalid_page_capacity_returns_422(self, client: TestClient, capacity: int) -> None:
+    @pytest.mark.parametrize("mode", ["manual", "legacy"])
+    @pytest.mark.parametrize("url", [URL, "/api/resolve"])
+    def test_removed_manual_mode_is_rejected(self, client: TestClient, mode: str, url: str) -> None:
         payload = make_payload(num_requests=1)
-        payload["inference"]["page_size"] = 64
-        payload["inference"]["kv"]["max_total_tokens"] = capacity
-        response = client.post(URL, json=payload)
+        payload["inference"] = {"mode": mode, "page_size": 64,
+                                "kv": {"max_total_tokens": 128},
+                                "timing": {"mode": "empirical", "prefill_c1": 1,
+                                           "decode_d1": 1, "decode_d2": 0}}
+        response = client.post(url, json=payload)
         assert response.status_code == 422
-        assert "max_total_tokens" in response.text
+        assert "inference" in response.text
 
-    @pytest.mark.parametrize(
-        ("engine_updates", "perf_updates", "message"),
-        [
-            ({"l2_capacity_tokens": 3}, {}, "l2_capacity_tokens"),
-            ({"l3_capacity_tokens": 2}, {}, "L2"),
-            ({"l2_capacity_tokens": 2}, {}, "kv_bytes_per_token"),
-            (
-                {"l2_capacity_tokens": 2},
-                {"kv_bytes_per_token": 16},
-                "l2_to_l1_bandwidth_bytes_per_ms",
-            ),
-            (
-                {"l2_capacity_tokens": 2, "l3_capacity_tokens": 2},
-                {"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128},
-                "l3_to_l2_bandwidth_bytes_per_ms",
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("storage,shared,message", [
+        ({"l1_available_gb": 0.00001}, None, "不足一个本地 KV 页"),
+        ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
+        ({"l2_available_gb": 0, "l2_to_l1_gb_s": None},
+         {"mode": "physical", "available_gb": 0.000000128}, "启用 L3 时必须先启用 L2"),
+        ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": None},
+         None, "L2 → L1 带宽"),
+        ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
+         {"mode": "physical", "available_gb": 0.000000128}, "L3 → L2 带宽"),
+    ])
     def test_invalid_tiered_configuration_returns_422(
-        self,
-        client: TestClient,
-        engine_updates: dict[str, int],
-        perf_updates: dict[str, int],
-        message: str,
+        self, client: TestClient, storage: dict[str, float | None],
+        shared: dict[str, object] | None, message: str,
     ) -> None:
         payload = make_payload(num_requests=1)
-        payload["inference"]["page_size"] = 2
-        local_updates = dict(engine_updates)
-        if "l3_capacity_tokens" in local_updates:
-            payload["shared_l3"] = {"mode": "manual", "capacity_tokens": local_updates.pop("l3_capacity_tokens")}
-        payload["inference"]["kv"].update(local_updates)
-        payload["inference"]["kv"].update(perf_updates)
+        payload["inference"]["storage"].update(storage)
+        payload["shared_l3"] = shared
         response = client.post(URL, json=payload)
         assert response.status_code == 422
         assert message in response.text
@@ -373,9 +364,12 @@ class TestErrors:
         assert response.status_code == (422 if plan_id is None else 404)
         assert response.json()["detail"]
 
-    def test_manual_preview_is_rejected(self, client: TestClient) -> None:
-        response = client.post("/api/resolve", json=make_payload())
-        assert response.status_code == 422
+    def test_physical_preview_matches_run(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        preview = client.post("/api/resolve", json=payload)
+        run = client.post(URL, json=payload)
+        assert preview.status_code == run.status_code == 200
+        assert run.json()["resolution"] == preview.json()
 
     @pytest.mark.parametrize("field", ["engine", "perf_model", "config"])
     def test_removed_top_level_inputs_rejected(self, client: TestClient, field: str) -> None:
@@ -410,9 +404,11 @@ class TestErrors:
     @pytest.mark.parametrize(
         "path,value,expected",
         [
-            (("scheduler", "max_running_requests"), 0, ["body", "scheduler", "max_running_requests"]),
-            (("inference", "timing", "decode_d1"), -1, ["body", "inference", "manual", "timing", "decode_d1"]),
-            (("inference", "kv", "unknown_field"), 1, ["body", "inference", "manual", "kv", "unknown_field"]),
+            (("scheduler", "max_running_requests"), 0,
+             ["body", "scheduler", "max_running_requests"]),
+            (("inference", "timing", "decode_d1"), -1,
+             ["body", "inference", "timing", "empirical", "decode_d1"]),
+            (("inference", "kv"), {"max_total_tokens": 128}, ["body", "inference", "kv"]),
         ],
     )
     def test_field_validation_paths_follow_unified_config(

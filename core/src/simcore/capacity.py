@@ -8,17 +8,14 @@ from simcore.runtime import (
     RuntimeConfig,
     TransferLink,
     TransferLinks,
-    runtime_from_components,
 )
 from simcore.schemas import (
     AttentionGroup,
     CapacityReport,
     EmpiricalTimingConfig,
     EngineConfig,
-    ManualInferenceConfig,
     ModelSpec,
     PerfModelConfig,
-    PhysicalInferenceConfig,
     RankCapacityReport,
     ResolutionReport,
     SimConfig,
@@ -177,8 +174,6 @@ def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, 
 def resolve_config(config: SimConfig) -> ResolutionReport:
     """预览物理推理配置；报告与原输入、运行状态相互独立。"""
     request = config.inference
-    if not isinstance(request, PhysicalInferenceConfig):
-        raise ValueError("容量预览仅适用于 physical 推理配置")
     model, hardware, storage = request.model, request.hardware, request.storage
     page_size = request.page_size
     tp_size = request.tp_size
@@ -215,10 +210,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
     l1 = _bytes_from_gb(storage.l1_available_gb)
     l2 = _bytes_from_gb(storage.l2_available_gb)
     shared = config.shared_l3
-    l3 = (
-        _bytes_from_gb(shared.available_gb)
-        if shared is not None and shared.mode == "physical" else 0
-    )
+    l3 = _bytes_from_gb(shared.available_gb) if shared is not None else 0
     if l1 > hardware.memory_bytes_per_gpu:
         raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
@@ -316,35 +308,6 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     scheduler = config.scheduler
     shared = config.shared_l3
     lookup_latency = shared.lookup_latency_ms if shared is not None else 0.0
-    if isinstance(inference, ManualInferenceConfig):
-        kv, timing = inference.kv, inference.timing
-        engine = EngineConfig(
-            max_running_requests=scheduler.max_running_requests,
-            max_prefill_tokens=scheduler.max_prefill_tokens,
-            pd_mutually_exclusive=scheduler.pd_mutually_exclusive,
-            l3_prefetch_min_tokens=scheduler.l3_prefetch_min_tokens,
-            page_size=inference.page_size,
-            max_output_tokens=inference.max_output_tokens,
-            max_total_tokens=kv.max_total_tokens,
-            l2_capacity_tokens=kv.l2_capacity_tokens,
-            l3_capacity_tokens=(
-                shared.capacity_tokens if shared is not None and shared.mode == "manual" else 0
-            ),
-        )
-        perf = PerfModelConfig(
-            prefill_c1=timing.prefill_c1,
-            prefill_c2=timing.prefill_c2,
-            decode_d1=timing.decode_d1,
-            decode_d2=timing.decode_d2,
-            kv_bytes_per_token=kv.kv_bytes_per_token,
-            l2_to_l1_bandwidth_bytes_per_ms=kv.l2_to_l1_bandwidth_bytes_per_ms,
-            l3_to_l2_bandwidth_bytes_per_ms=kv.l3_to_l2_bandwidth_bytes_per_ms,
-            l2_latency_ms=kv.l2_latency_ms,
-            l3_latency_ms=kv.l3_latency_ms,
-            l3_lookup_latency_ms=lookup_latency,
-        )
-        return runtime_from_components(engine, perf)
-
     report = resolve_config(config)
     if not report.runnable:
         if inference.timing.mode == "empirical":

@@ -32,9 +32,6 @@ __all__ = [
     "InstanceResult",
     "LengthDist",
     "LognormalLength",
-    "ManualInferenceConfig",
-    "ManualKVConfig",
-    "ManualL3Config",
     "Metrics",
     "ModelSpec",
     "NormSpec",
@@ -61,7 +58,6 @@ __all__ = [
     "WorkloadConfig",
     "WorkloadMode",
     "WorkloadPlan",
-    "validate_kv_config",
 ]
 
 
@@ -261,18 +257,6 @@ class PerfModelConfig(_Frozen):
     l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
-def validate_kv_config(engine: EngineConfig, perf: PerfModelConfig) -> None:  # 引擎容量与传输系数 → 校验层间带宽配置；无返回值
-    """为手动运行规格检查 KV 层与传输参数。"""
-    if engine.l2_capacity_tokens and (
-        perf.kv_bytes_per_token is None or perf.l2_to_l1_bandwidth_bytes_per_ms is None
-    ):
-        raise ValueError(
-            "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 l2_to_l1_bandwidth_bytes_per_ms 为正"
-        )
-    if engine.l3_capacity_tokens and perf.l3_to_l2_bandwidth_bytes_per_ms is None:
-        raise ValueError("l3_capacity_tokens > 0 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
-
-
 class SchedulerConfig(_Frozen):
     """所有推理实例共用的调度规则，不包含容量与性能参数。"""
 
@@ -296,44 +280,6 @@ class AnalyticalTimingConfig(_Frozen):
     """复用物理推理规格的解析 GPU 计时。"""
 
     mode: Literal["analytical"] = "analytical"
-
-
-class ManualKVConfig(_Frozen):
-    """手动指定 KV 容量和每条上行链路的参数。"""
-
-    max_total_tokens: int = Field(ge=1)
-    l2_capacity_tokens: int = Field(default=0, ge=0)
-    kv_bytes_per_token: int | None = Field(default=None, gt=0)
-    l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-
-
-class ManualInferenceConfig(_Frozen):
-    """抽象实例：直接填写容量、链路和经验计时。"""
-
-    mode: Literal["manual"] = "manual"
-    page_size: int = Field(default=64, ge=1)
-    max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
-    kv: ManualKVConfig
-    timing: EmpiricalTimingConfig
-
-    @model_validator(mode="after")
-    def _check_kv(self) -> Self:
-        kv = self.kv
-        if kv.max_total_tokens < self.page_size or kv.max_total_tokens % self.page_size:
-            raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
-        if kv.l2_capacity_tokens % self.page_size:
-            raise ValueError("l2_capacity_tokens 必须是 page_size 的整数倍")
-        if kv.l2_capacity_tokens and (
-            kv.kv_bytes_per_token is None or kv.l2_to_l1_bandwidth_bytes_per_ms is None
-        ):
-            raise ValueError(
-                "l2_capacity_tokens > 0 要求 kv_bytes_per_token 与 "
-                "l2_to_l1_bandwidth_bytes_per_ms 为正"
-            )
-        return self
 
 
 AuxWeightDtype = Literal["bf16", "fp16", "fp32"]
@@ -519,14 +465,6 @@ class PhysicalInferenceConfig(_Frozen):
     ep_size: int = Field(default=1, ge=1)
 
 
-class ManualL3Config(_Frozen):
-    mode: Literal["manual"] = "manual"
-    capacity_tokens: int = Field(
-        default=0, ge=0, description="全场共享 L3 token 总容量；0 表示关闭"
-    )
-    lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-
-
 class PhysicalL3Config(_Frozen):
     mode: Literal["physical"] = "physical"
     available_gb: float = Field(
@@ -543,30 +481,9 @@ class SimConfig(_Frozen):
 
     workload: WorkloadConfig
     scheduler: SchedulerConfig
-    inference: Annotated[
-        ManualInferenceConfig | PhysicalInferenceConfig, Field(discriminator="mode")
-    ]
+    inference: PhysicalInferenceConfig
     num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1/L2，共享 L3")
-    shared_l3: Annotated[ManualL3Config | PhysicalL3Config, Field(discriminator="mode")] | None = (
-        None
-    )
-
-    @model_validator(mode="after")
-    def _check_shared_l3(self) -> Self:
-        l3 = self.shared_l3
-        if l3 is None:
-            return self
-        if l3.mode != self.inference.mode:
-            raise ValueError("shared_l3.mode 必须与 inference.mode 一致")
-        if isinstance(l3, ManualL3Config) and isinstance(self.inference, ManualInferenceConfig):
-            if l3.capacity_tokens % self.inference.page_size:
-                raise ValueError("shared_l3.capacity_tokens 必须是 page_size 的整数倍")
-            if l3.capacity_tokens:
-                if not self.inference.kv.l2_capacity_tokens:
-                    raise ValueError("启用共享 L3 前必须先启用 L2")
-                if self.inference.kv.l3_to_l2_bandwidth_bytes_per_ms is None:
-                    raise ValueError("启用共享 L3 要求 l3_to_l2_bandwidth_bytes_per_ms 为正")
-        return self
+    shared_l3: PhysicalL3Config | None = None
 
 
 class RankCapacityReport(_Record):

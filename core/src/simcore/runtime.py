@@ -8,7 +8,6 @@ from simcore.schemas import (
     ModelSpec,
     PerfModelConfig,
     ResolutionReport,
-    validate_kv_config,
 )
 
 
@@ -39,26 +38,3 @@ class RuntimeConfig:
     links: TransferLinks
     analytical: AnalyticalSpec | None = None
     resolution: ResolutionReport | None = None
-
-
-def runtime_from_components(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig:
-    """将手动配置的容量与经验系数准备为实例规格。"""
-    validate_kv_config(engine, perf)
-    page_bytes = engine.page_size * (perf.kv_bytes_per_token or 0)
-    l2 = (
-        TransferLink(
-            page_bytes / perf.l2_to_l1_bandwidth_bytes_per_ms,
-            perf.l2_latency_ms,
-        )
-        if engine.l2_capacity_tokens and perf.l2_to_l1_bandwidth_bytes_per_ms is not None
-        else None
-    )
-    l3 = (
-        TransferLink(
-            page_bytes / perf.l3_to_l2_bandwidth_bytes_per_ms,
-            perf.l3_latency_ms,
-        )
-        if engine.l3_capacity_tokens and perf.l3_to_l2_bandwidth_bytes_per_ms is not None
-        else None
-    )
-    return RuntimeConfig(engine, perf, TransferLinks(l2, l3))

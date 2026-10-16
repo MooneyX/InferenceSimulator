@@ -4,7 +4,6 @@ import pytest
 
 from simcore import simulate
 from simcore.capacity import prepare_runtime
-from test_schemas import manual_config
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -14,12 +13,13 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
+from test_schemas import physical_config
 
 
 def config(
     *, instances: int = 2, requests: int = 4, sessions: int = 2, capacity: int = 64, prompt: int = 4
 ) -> SimConfig:
-    return manual_config(
+    return physical_config(
         num_instances=instances,
         workload=WorkloadConfig(
             session_rate=100,

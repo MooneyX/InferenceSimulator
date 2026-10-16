@@ -18,7 +18,7 @@ from simcore.schemas import (
 )
 from simcore.workload import build_synthetic_closed_loop_plan
 from test_client import planned_client
-from test_schemas import manual_config
+from test_schemas import physical_config
 
 
 def config(n: int = 10, s: int = 3, rate: float = 25.0) -> WorkloadConfig:
@@ -210,7 +210,7 @@ def test_output_is_not_clamped_and_is_bound_to_request() -> None:
     small = build_synthetic_closed_loop_plan(cfg, engine(page_size=64, capacity=192))
     assert small.turns == plan.turns
     assert build_synthetic_closed_loop_plan(cfg, runtime) == plan
-    result = simulate(manual_config(
+    result = simulate(physical_config(
         workload=cfg, engine=runtime,
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     ))
@@ -233,7 +233,7 @@ def test_full_parent_output_drives_child_context_even_beyond_kv_capacity() -> No
     assert (child.prompt_len, child.max_new_tokens, child.output_len) == (166, 128, 100)
     assert child.ideal_reuse_blocks == 2
     assert descendant.prompt_len == 267 and descendant.ideal_reuse_blocks == 4
-    result = simulate(manual_config(
+    result = simulate(physical_config(
         workload=cfg, engine=runtime,
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     ))
@@ -257,7 +257,7 @@ def test_engine_completes_at_actual_output_not_rounded_request_limit() -> None:
     client = planned_client(plan, runtime)
     request = client.on_wakeup(client.initial_wakeups()[0])
     assert request.output_len == 3 and request.max_new_tokens == 4
-    result = simulate(manual_config(
+    result = simulate(physical_config(
         workload=cfg, engine=runtime,
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
     ))
@@ -278,7 +278,7 @@ def test_synthetic_output_over_engine_cap_aborts_without_truncation(mode: str, c
         },
     })
     runtime = engine().model_copy(update={"max_output_tokens": cap})
-    result = simulate(manual_config(
+    result = simulate(physical_config(
         workload=workload, engine=runtime,
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     ))
@@ -306,7 +306,7 @@ def test_synthetic_output_at_engine_cap_completes_uncut(cap: int) -> None:
     runtime = engine(page_size=64, capacity=128).model_copy(update={"max_output_tokens": cap})
     plan = build_synthetic_closed_loop_plan(workload, runtime)
     assert (plan.turns[0].output_len, plan.turns[0].max_new_tokens) == (cap, cap)
-    result = simulate(manual_config(
+    result = simulate(physical_config(
         workload=workload, engine=runtime,
         perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
     ))

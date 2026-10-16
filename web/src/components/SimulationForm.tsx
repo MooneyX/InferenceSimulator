@@ -1,13 +1,11 @@
 import { useRef, useState, type FormEvent } from "react";
 
-import type { ManualInferenceConfig, SimConfig } from "../api/types";
+import type { EmpiricalTimingConfig, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
-  createDefaultPhysicalSimConfig,
   createDefaultEmpiricalTiming,
   validateSimConfig,
-  type ManualSimConfig,
   type PhysicalSimConfig,
   type ConfigField,
 } from "../config/simulation";
@@ -75,37 +73,25 @@ function NumberField({
 }
 
 export function SimulationForm({ onSubmit, disabled = false }: SimulationFormProps) {
-  const [mode, setMode] = useState<"manual" | "automatic">("automatic");
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
   const [traceDraft, setTraceDraft] = useState({ arrival_mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
-  const [manualConfig, setManualConfig] = useState<ManualSimConfig>(createDefaultSimConfig);
-  const [automaticConfig, setAutomaticConfig] = useState<PhysicalSimConfig>(createDefaultPhysicalSimConfig);
+  const [config, setConfig] = useState<PhysicalSimConfig>(createDefaultSimConfig);
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
-  const config: ManualSimConfig | PhysicalSimConfig = mode === "automatic" ? automaticConfig : manualConfig;
-  function setConfig(next: SimConfig) {
-    if (next.inference.mode === "manual") setManualConfig({ ...next, inference: next.inference,
-      shared_l3: next.shared_l3?.mode === "manual" ? next.shared_l3 : null });
-    else setAutomaticConfig({ ...next, shared_l3: next.shared_l3?.mode === "physical" ? next.shared_l3 : null,
-      inference: { ...next.inference, timing: next.inference.timing ?? { mode: "analytical" } } });
-  }
-  const { model, hardware, tp_size: tpSize, ep_size: epSize } = automaticConfig.inference;
+  const { model, hardware, tp_size: tpSize, ep_size: epSize } = config.inference;
   const timing = config.inference.timing.mode;
   const empiricalTiming = config.inference.timing.mode === "empirical" ? config.inference.timing : null;
   function updatePhysical(patch: Partial<PhysicalSimConfig["inference"]>) {
-    setAutomaticConfig((current) => ({ ...current, inference: { ...current.inference, ...patch } }));
+    setConfig((current) => ({ ...current, inference: { ...current.inference, ...patch } }));
   }
   function setTiming(value: PhysicalSimConfig["inference"]["timing"]["mode"]) {
-    if (automaticConfig.inference.timing.mode === "empirical") setEmpiricalDraft(automaticConfig.inference.timing);
+    if (config.inference.timing.mode === "empirical") setEmpiricalDraft(config.inference.timing);
     updatePhysical({ timing: value === "analytical" ? { mode: "analytical" } : empiricalDraft });
   }
-  function updateKv(patch: Partial<ManualInferenceConfig["kv"]>) {
-    setManualConfig((current) => ({ ...current, inference: { ...current.inference, kv: { ...current.inference.kv, ...patch } } }));
-  }
-  function updateTiming(patch: Partial<ManualInferenceConfig["timing"]>) {
+  function updateTiming(patch: Partial<EmpiricalTimingConfig>) {
     if (config.inference.timing.mode !== "empirical") return;
-    setConfig({ ...config, inference: { ...config.inference, timing: { ...config.inference.timing, ...patch } } });
+    updatePhysical({ timing: { ...config.inference.timing, ...patch } });
   }
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
@@ -123,7 +109,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   );
   const needsTpCommunication = tpSize > 1;
   const needsEpCommunication = model.moe_layers > 0 && epSize > 1;
-  const automaticRunUnavailable = mode === "automatic" && (
+  const runUnavailable = (
     (timing === "empirical" && (model.moe_layers > 0 || needsTpCommunication)) ||
     tpSize !== hardware.gpu_count ||
     (model.moe_layers > 0 ? epSize !== tpSize : epSize !== 1) ||
@@ -149,7 +135,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
     event.preventDefault();
     setShowValidation(true);
 
-    if (validateSimConfig(submissionConfig).length > 0 || automaticRunUnavailable) return;
+    if (validateSimConfig(submissionConfig).length > 0 || runUnavailable) return;
     if (workloadMode === "trace" && !replay) return;
     onSubmit(submissionConfig);
   }
@@ -183,19 +169,10 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
   function handleImport(): void {
     try {
       const imported = parseSimConfigJson(paramsJson.trim());
-      if (imported.inference.mode === "physical") {
-        const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
-        setAutomaticConfig({ ...imported, inference,
-          shared_l3: imported.shared_l3?.mode === "physical" ? imported.shared_l3 : null,
-          workload: imported.workload.mode === "trace" ? automaticConfig.workload : imported.workload });
-        if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
-        setMode("automatic");
-      } else {
-        setManualConfig({ ...imported, inference: imported.inference,
-          shared_l3: imported.shared_l3?.mode === "manual" ? imported.shared_l3 : null,
-          workload: imported.workload.mode === "trace" ? manualConfig.workload : imported.workload });
-        setMode("manual");
-      }
+      const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
+      setConfig({ ...imported, inference,
+        workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
+      if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
       setWorkloadMode(imported.workload.mode);
       if (imported.workload.mode === "trace" && imported.workload.trace) {
         const workload = imported.workload;
@@ -218,20 +195,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
 
   return (
     <form className="simulation-form" noValidate onSubmit={handleSubmit}>
-      <fieldset className="configuration-mode" disabled={disabled}>
-        <legend>配置方式</legend>
-        <label className={mode === "automatic" ? "mode-option selected" : "mode-option"}>
-          <input type="radio" name="configuration-mode" value="automatic" checked={mode === "automatic"}
-            onChange={() => { setMode("automatic"); setShowValidation(false); setTransferNote(null); }} />
-          <span><strong>自动解析</strong><small>根据模型与硬件推算容量，支持解析或经验计时</small></span>
-        </label>
-        <label className={mode === "manual" ? "mode-option selected" : "mode-option"}>
-          <input type="radio" name="configuration-mode" value="manual" checked={mode === "manual"}
-            onChange={() => { setMode("manual"); setShowValidation(false); setTransferNote(null); }} />
-          <span><strong>手动配置</strong><small>直接填写容量与经验计时参数</small></span>
-        </label>
-      </fieldset>
-      <fieldset className="configuration-panel" disabled={disabled} aria-label={mode === "automatic" ? "自动解析参数" : "手动配置参数"}>
+      <fieldset className="configuration-panel" disabled={disabled} aria-label="仿真参数">
       <section className="form-section" aria-labelledby="workload-heading">
         <div className="section-heading">
           <div>
@@ -435,40 +399,25 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
         </>}
       </section>
 
-      {mode === "automatic" && <AutomaticConfig config={{ ...automaticConfig, workload: submissionConfig.workload }}
-        onInferenceChange={(inference) => setAutomaticConfig((current) => ({ ...current, inference }))} disabled={disabled} />}
+      <AutomaticConfig config={{ ...config, workload: submissionConfig.workload }}
+        onInferenceChange={(inference) => setConfig((current) => ({ ...current, inference }))} disabled={disabled} />
 
       <section className="form-section" aria-labelledby="shared-l3-heading">
         <div className="section-heading"><div>
           <p className="section-kicker">Shared cache</p><h2 id="shared-l3-heading">共享 L3</h2>
         </div><p>所有实例共享总容量，不乘实例数量；0 表示关闭。带宽按每实例接入链路计算，不模拟存储端总吞吐竞争。</p></div>
         <div className="form-grid">
-          {config.inference.mode === "manual" ? <NumberField id="shared-l3-capacity"
-            name="shared_l3.capacity_tokens" label="共享 L3 总容量（token，0 为关闭）" integer
-            value={config.shared_l3?.mode === "manual" ? config.shared_l3.capacity_tokens ?? 0 : 0}
-            error={errorByField.get("shared_l3.capacity_tokens")}
-            onChange={(value) => setConfig({ ...config, shared_l3: { mode: "manual", capacity_tokens: value,
-              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} /> : <NumberField
-            id="shared-l3-capacity" name="shared_l3.available_gb" label="共享 L3 总容量（TB，仅 KV，0 为关闭）"
-            value={config.shared_l3?.mode === "physical" ? (config.shared_l3.available_gb ?? 0) / 1000 : 0}
+          <NumberField id="shared-l3-capacity" name="shared_l3.available_gb"
+            label="共享 L3 总容量（TB，仅 KV，0 为关闭）"
+            value={(config.shared_l3?.available_gb ?? 0) / 1000}
             error={errorByField.get("shared_l3.available_gb")}
             onChange={(value) => setConfig({ ...config, shared_l3: { mode: "physical", available_gb: value * 1000,
-              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} />}
+              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} />
           <NumberField id="shared-l3-lookup" name="shared_l3.lookup_latency_ms" label="L3 查找延迟（ms）"
             value={config.shared_l3?.lookup_latency_ms ?? 0} error={errorByField.get("shared_l3.lookup_latency_ms")}
             onChange={(value) => setConfig({ ...config, shared_l3: config.shared_l3
               ? { ...config.shared_l3, lookup_latency_ms: value }
-              : config.inference.mode === "manual" ? { mode: "manual", capacity_tokens: 0, lookup_latency_ms: value }
-                : { mode: "physical", available_gb: 0, lookup_latency_ms: value } })} />
-          {config.inference.mode === "manual" && config.shared_l3?.mode === "manual" && (config.shared_l3.capacity_tokens ?? 0) > 0 && <>
-            <NumberField id="l3-bandwidth" name="inference.kv.l3_to_l2_bandwidth_bytes_per_ms"
-              label="每实例 L3 → L2 带宽（字节/ms）" value={config.inference.kv.l3_to_l2_bandwidth_bytes_per_ms ?? NaN}
-              error={errorByField.get("inference.kv.l3_to_l2_bandwidth_bytes_per_ms")}
-              onChange={(value) => updateKv({ l3_to_l2_bandwidth_bytes_per_ms: Number.isNaN(value) ? null : value })} />
-            <NumberField id="l3-latency" name="inference.kv.l3_latency_ms" label="每实例 L3 链路固定延迟（ms）"
-              value={config.inference.kv.l3_latency_ms ?? 0} error={errorByField.get("inference.kv.l3_latency_ms")}
-              onChange={(value) => updateKv({ l3_latency_ms: value })} />
-          </>}
+              : { mode: "physical", available_gb: 0, lookup_latency_ms: value } })} />
         </div>
       </section>
 
@@ -510,13 +459,6 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             integer min={1} error={errorByField.get("inference.max_output_tokens")}
             onChange={(value) => setConfig({ ...config,
               inference: { ...config.inference, max_output_tokens: value } })} />
-          {config.inference.mode === "manual" && ([
-            ["max_total_tokens", "L1 KV 总容量（token）"],
-            ["l2_capacity_tokens", "L2 KV 容量（token，0 为关闭）"],
-          ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
-            name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field]}
-            integer min={field === "max_total_tokens" ? 1 : 0}
-            error={errorByField.get(`inference.kv.${field}`)} onChange={(value) => updateKv({ [field]: value })} />)}
           <NumberField
             id="max-prefill-tokens"
             name="scheduler.max_prefill_tokens"
@@ -568,14 +510,6 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
             Prefill / Decode 分步执行（关闭后允许融合步）
           </label>
         </div>
-        {config.inference.mode === "manual" && <p>
-          L1 容量：{Number.isInteger(config.inference.kv.max_total_tokens) &&
-          Number.isInteger(config.inference.page_size) && config.inference.page_size > 0 &&
-          config.inference.kv.max_total_tokens >= config.inference.page_size &&
-          config.inference.kv.max_total_tokens % config.inference.page_size === 0
-            ? `${config.inference.kv.max_total_tokens / config.inference.page_size} 页`
-            : "请填写至少一页且为整页倍数的容量"}
-        </p>}
       </section>
 
       <section className="form-section" aria-labelledby="performance-heading">
@@ -586,33 +520,16 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           </div>
           <p>所有时间系数的单位均为毫秒</p>
         </div>
-        {mode === "automatic" && <div className="form-grid" style={{ marginBottom: 14 }}>
+        <div className="form-grid" style={{ marginBottom: 14 }}>
           <div className="form-field"><label htmlFor="auto-timing">计时模式</label>
             <select id="auto-timing" value={timing} onChange={(event) =>
               setTiming(event.target.value as PhysicalSimConfig["inference"]["timing"]["mode"])}>
               <option value="analytical">逐步 Roofline 估计</option>
-              <option value="empirical">原四系数经验模型</option>
+              <option value="empirical">四系数经验模型</option>
             </select></div>
-        </div>}
-        {mode === "automatic" && timing === "analytical" &&
+        </div>
+        {timing === "analytical" &&
           <p>使用模型与硬件规格估算计时；KV 容量和链路参数由自动解析生成。</p>}
-
-        {config.inference.mode === "manual" && config.inference.kv.l2_capacity_tokens > 0 && (
-          <div className="form-grid" style={{ marginBottom: 14 }}>
-            {([
-              ["kv_bytes_per_token", "KV 每 token 字节数"],
-              ["l2_to_l1_bandwidth_bytes_per_ms", "L2 → L1 带宽（字节/ms）"],
-              ["l2_latency_ms", "L2 链路固定延迟（ms）"],
-
-            ] as const).map(([field, label]) => <NumberField key={field} id={field.replaceAll("_", "-")}
-              name={`inference.kv.${field}`} label={label} value={manualConfig.inference.kv[field] ?? NaN}
-              integer={field === "kv_bytes_per_token"} min={field === "kv_bytes_per_token" ? 1 : 0}
-              error={errorByField.get(`inference.kv.${field}`)} onChange={(value) => updateKv({
-                [field]: field === "kv_bytes_per_token" || field.endsWith("bandwidth_bytes_per_ms")
-                  ? Number.isNaN(value) ? null : value : value,
-              })} />)}
-          </div>
-        )}
         {empiricalTiming && <div className="form-grid">
           {([ ["prefill_c1", "Prefill C1"], ["prefill_c2", "Prefill C2"],
             ["decode_d1", "Decode D1"], ["decode_d2", "Decode D2"] ] as const).map(([field, label]) =>
@@ -625,10 +542,10 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
 
       <div className="form-actions">
         <button className="run-button" type="submit"
-          disabled={disabled || automaticRunUnavailable || (workloadMode === "trace" && !replay)}>
+          disabled={disabled || runUnavailable || (workloadMode === "trace" && !replay)}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
-        {automaticRunUnavailable && <p>当前配置尚不可运行；请核对 TP/EP 与 GPU 数、计时模式及通信参数。仍可预览容量。</p>}
+        {runUnavailable && <p>当前配置尚不可运行；请核对 TP/EP 与 GPU 数、计时模式及通信参数。仍可预览容量。</p>}
         {workloadMode === "trace" && !replay &&
           <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}
       </div>

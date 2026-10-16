@@ -55,10 +55,9 @@ export function parseSimConfigJson(json: string): SimConfig {
   const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference", "shared_l3"], { shared_l3: null });
   if (root.shared_l3 != null) {
     const mode = (root.shared_l3 as Record<string, unknown>).mode;
-    if (mode !== "manual" && mode !== "physical") throw new Error("shared_l3.mode 仅支持 manual 或 physical");
-    const capacity = mode === "manual" ? "capacity_tokens" : "available_gb";
-    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["mode", capacity, "lookup_latency_ms"], { [capacity]: 0, lookup_latency_ms: 0 });
-    numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", [capacity, "lookup_latency_ms"]);
+    if (mode !== "physical") throw new Error("shared_l3.mode 仅支持 physical");
+    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["mode", "available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: 0 });
+    numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", ["available_gb", "lookup_latency_ms"]);
   }
   numericFields(root, "参数配置", ["num_instances"]);
   const workload: Record<string, unknown> = { mode: "synthetic", arrival_mode: "closed_loop", seed: 0,
@@ -108,21 +107,8 @@ export function parseSimConfigJson(json: string): SimConfig {
   if (typeof scheduler.pd_mutually_exclusive !== "boolean") throw new Error("scheduler.pd_mutually_exclusive 必须是布尔值");
   root.scheduler = scheduler;
   const inferenceMode = (root.inference as Record<string, unknown> | null)?.mode;
-  if (inferenceMode === "physical") {
-    root.inference = validatePhysicalInference(root.inference);
-  } else if (inferenceMode === "manual") {
-    const inference = objectWithKeys(root.inference, "inference", ["mode", "page_size", "max_output_tokens", "kv", "timing"], { page_size: 64, max_output_tokens: 65_536 });
-    numericFields(inference, "inference", ["page_size", "max_output_tokens"]);
-    const kv = objectWithKeys(inference.kv, "inference.kv", [
-      "max_total_tokens", "l2_capacity_tokens", "kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms", "l2_latency_ms", "l3_latency_ms",
-    ], { l2_capacity_tokens: 0, kv_bytes_per_token: null, l2_to_l1_bandwidth_bytes_per_ms: null,
-      l3_to_l2_bandwidth_bytes_per_ms: null, l2_latency_ms: 0, l3_latency_ms: 0 });
-    numericFields(kv, "inference.kv", ["max_total_tokens", "l2_capacity_tokens", "l2_latency_ms", "l3_latency_ms"]);
-    for (const key of ["kv_bytes_per_token", "l2_to_l1_bandwidth_bytes_per_ms", "l3_to_l2_bandwidth_bytes_per_ms"]) {
-      if (kv[key] !== null && typeof kv[key] !== "number") throw new Error(`inference.kv.${key} 必须是数值或 null`);
-    }
-    root.inference = { ...inference, kv, timing: validateTiming(inference.timing, false) };
-  } else throw new Error("inference.mode 仅支持 manual 或 physical");
+  if (inferenceMode !== "physical") throw new Error("inference.mode 仅支持 physical");
+  root.inference = validatePhysicalInference(root.inference);
 
   const config = root as SimConfig;
   const error = validateSimConfig(config)[0];
@@ -172,12 +158,11 @@ function physicalDtype(record: Record<string, unknown>, path: string, key: strin
   }
 }
 
-function validateTiming(value: unknown, analyticalAllowed: boolean): TimingConfig {
+function validateTiming(value: unknown): TimingConfig {
   const mode = (value as Record<string, unknown> | null)?.mode;
-  const timingMode = mode === undefined && !analyticalAllowed ? "empirical" : mode;
-  if (timingMode === "analytical" && analyticalAllowed) {
+  if (mode === "analytical") {
     return objectWithKeys(value, "inference.timing", ["mode"]) as TimingConfig;
-  } else if (timingMode === "empirical") {
+  } else if (mode === "empirical") {
     const timing = objectWithKeys(value, "inference.timing", ["mode", "prefill_c1", "prefill_c2", "decode_d1", "decode_d2"], { mode: "empirical", prefill_c2: 0 });
     numericFields(timing, "inference.timing", ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"]);
     return timing as TimingConfig;
@@ -189,7 +174,7 @@ function validatePhysicalInference(value: unknown): PhysicalInferenceConfig {
     page_size: 64, max_output_tokens: 65_536, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
   });
   numericFields(root, "inference", ["page_size", "max_output_tokens"]);
-  root.timing = validateTiming(root.timing, true);
+  root.timing = validateTiming(root.timing);
   const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
     num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
     ...physicalObject(root.model, "model", ["name", "num_layers", "hidden_size",
@@ -370,7 +355,7 @@ export function serializeSimConfig(config: SimConfig): string {
   if (error) {
     throw new Error(`${error.field}：${error.message}`);
   }
-  if (config.inference.mode === "physical") validatePhysicalInference(config.inference);
+  validatePhysicalInference(config.inference);
   const reusable = config.workload.mode === "trace" && config.workload.trace
     ? { ...config, workload: { ...config.workload, trace: { ...config.workload.trace, plan_id: null } } }
     : config;

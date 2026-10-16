@@ -1,4 +1,4 @@
-"""统一推理入口的物理容量预览与三种推理模式覆盖。"""
+"""统一推理入口的物理容量预览与两种计时方式覆盖。"""
 
 from typing import Any
 from unittest.mock import patch
@@ -56,15 +56,9 @@ def inference_payload(mode: str) -> dict[str, Any]:
         "mode": "empirical", "prefill_c1": 0.01, "prefill_c2": 0,
         "decode_d1": 0.01, "decode_d2": 0,
     }
-    if mode == "manual":
-        request["inference"] = {
-            "mode": "manual", "page_size": 64,
-            "kv": {"max_total_tokens": 8192}, "timing": timing,
-        }
-    else:
-        request["inference"]["storage"].update(l2_available_gb=0)
-        if mode == "physical_empirical":
-            request["inference"]["timing"] = timing
+    request["inference"]["storage"].update(l2_available_gb=0)
+    if mode == "physical_empirical":
+        request["inference"]["timing"] = timing
     return request
 
 
@@ -86,9 +80,9 @@ def attach_trace(
     }
 
 
-@pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
-def test_three_inference_modes_use_one_run_contract(
+def test_physical_timing_modes_use_one_run_contract(
     inference_mode: str, workload_mode: str,
 ) -> None:
     with TestClient(create_app()) as client:
@@ -100,18 +94,17 @@ def test_three_inference_modes_use_one_run_contract(
         result = SimResult.model_validate_json(response.content)
         assert result.meta.config == SimConfig.model_validate(request)
         assert result.meta.num_completed == (1 if workload_mode == "synthetic" else 2)
-        assert (result.resolution is not None) == (inference_mode != "manual")
+        assert result.resolution is not None
         assert (result.analysis is not None) == (inference_mode == "physical_analytical")
-        if result.resolution is not None:
-            preview = client.post("/api/resolve", json=request)
-            assert preview.status_code == 200, preview.text
-            assert result.resolution.model_dump(mode="json") == preview.json()
+        preview = client.post("/api/resolve", json=request)
+        assert preview.status_code == 200, preview.text
+        assert result.resolution.model_dump(mode="json") == preview.json()
         with patch("simserver.routes.simulate", return_value=result):
             repeated = client.post("/api/simulate", json=request)
         assert repeated.text == result.model_dump_json()
 
 
-@pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
 def test_engine_output_limit_is_request_failure_in_every_mode(
     inference_mode: str, workload_mode: str,
@@ -135,7 +128,7 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
             assert result.requests[0].output_len == 1
 
 
-@pytest.mark.parametrize("inference_mode", ["manual", "physical_empirical", "physical_analytical"])
+@pytest.mark.parametrize("inference_mode", ["physical_empirical", "physical_analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
 @pytest.mark.parametrize("error,status", [(ValueError("invalid"), 422), (NotImplementedError("unsupported"), 501)])
 def test_unified_run_maps_kernel_errors_for_every_mode(
@@ -449,7 +442,7 @@ def test_presets_and_unsupported_modes() -> None:
         request["inference"]["model"][field] = 1
         rejected = client.post("/api/resolve", json=request)
         assert rejected.status_code == 422
-        assert rejected.json()["detail"][0]["loc"] == ["body", "inference", "physical", "model", field]
+        assert rejected.json()["detail"][0]["loc"] == ["body", "inference", "model", field]
         del request["inference"]["model"][field]
     request["inference"]["model"]["moe_layers"] = 2
     assert client.post("/api/simulate", json=request).status_code == 422

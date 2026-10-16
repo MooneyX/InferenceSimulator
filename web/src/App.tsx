@@ -98,7 +98,7 @@ export default function App() {
           <div>
             <p className="eyebrow">基础参数 / 多实例推理</p>
             <h1>推理服务仿真器</h1>
-            <p className="hero-description">选择手动配置或自动解析，设置仿真参数并查看请求生命周期。</p>
+            <p className="hero-description">根据模型、硬件和存储预算解析容量，设置仿真参数并查看请求生命周期。</p>
           </div>
           <div className="hero-badges" aria-label="当前仿真范围">
             <span>多实例 · TP 可选</span>
@@ -159,7 +159,7 @@ export default function App() {
                   </ul>
                 ) : null}
               </section>
-              {inference?.mode === "physical" && resolution && <section className="simulation-status" aria-label="解析配置与成本">
+              {inference && resolution && <section className="simulation-status" aria-label="解析配置与成本">
                 <h3>自动解析 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · {(inference.timing?.mode ?? "analytical") === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
                 <p>模型 {inference.model.name} · GPU {inference.hardware.name} ·
                   {result.meta.config.num_instances} 实例 × 每实例 {inference.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * inference.hardware.gpu_count} GPU ·

@@ -43,8 +43,10 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
         "num_requests", "prompt_len", "turn_increment_len", "output_len", "session",
     }
     assert set(schemas["TraceWorkloadConfig"]["properties"]) == {"plan_id"}
-    for name in ("ManualInferenceConfig", "PhysicalInferenceConfig"):
-        assert schemas[name]["properties"]["max_output_tokens"]["default"] == 65536
+    assert schemas["PhysicalInferenceConfig"]["properties"]["max_output_tokens"]["default"] == 65536
+    assert not {"ManualInferenceConfig", "ManualKVConfig", "ManualL3Config"} & set(schemas)
+    config = schemas["SimConfig"]["properties"]
+    assert config["inference"]["$ref"] == "#/components/schemas/PhysicalInferenceConfig"
 
 
 def test_unified_routes_document_business_and_field_errors() -> None:

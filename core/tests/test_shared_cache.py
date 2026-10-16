@@ -19,7 +19,7 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
-from test_schemas import manual_config, runtime_config
+from test_schemas import physical_config, runtime_config
 
 
 def request(key: int, ids: tuple[str, ...] = ()) -> InferenceRequest:
@@ -189,7 +189,7 @@ def test_repeated_pool_insert_is_rejected_without_corrupting_state() -> None:
 
 
 def settings(*, instances: int = 3, prompt: int = 4) -> SimConfig:
-    return manual_config(
+    return physical_config(
         num_instances=instances,
         workload=WorkloadConfig(
             session_rate=100,
@@ -279,9 +279,9 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
     assert engine._restore_bytes == 64
 
 
-@pytest.mark.parametrize("value", [-1, 3, 4.5])
-def test_shared_manual_capacity_rejects_invalid_page_counts(value: float) -> None:
+@pytest.mark.parametrize("value", [-1, float("inf"), float("nan")])
+def test_shared_physical_capacity_rejects_invalid_budget(value: float) -> None:
     payload = settings().model_dump()
-    payload["shared_l3"]["capacity_tokens"] = value
+    payload["shared_l3"]["available_gb"] = value
     with pytest.raises(ValidationError):
         SimConfig.model_validate(payload)

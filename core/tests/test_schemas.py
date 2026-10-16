@@ -1,17 +1,20 @@
 """schemas 模块单测：可判别联合、校验边界、不可变性、序列化往返。"""
 
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from simcore.runtime import RuntimeConfig, TransferLink, TransferLinks
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
     AttentionGroup,
     AuxWeightDtype,
+    EmpiricalTimingConfig,
     EngineConfig,
     FixedLength,
+    HardwareSpec,
     IHCSpec,
     InstanceResult,
     LengthDist,
@@ -20,9 +23,12 @@ from simcore.schemas import (
     ModelSpec,
     NormSpec,
     PerfModelConfig,
+    PhysicalInferenceConfig,
+    PhysicalL3Config,
     PoissonLength,
     RequestRecord,
     RouterSpec,
+    SchedulerConfig,
     SessionConfig,
     SimConfig,
     SimMeta,
@@ -31,60 +37,97 @@ from simcore.schemas import (
     StorageSpec,
     SyntheticWorkloadConfig,
     WorkloadConfig,
-    validate_kv_config,
 )
-
-if TYPE_CHECKING:
-    from simcore.runtime import RuntimeConfig
 
 LENGTH_DIST = TypeAdapter[LengthDist](LengthDist)
 
+TOY_MODEL = ModelSpec(
+    name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
+    num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+)
+TOY_HARDWARE = HardwareSpec(
+    name="toy", memory_bytes_per_gpu=2_000_000,
+    effective_fp16_tflops=1, effective_hbm_gb_s=1,
+)
 
-def manual_config(
+
+def physical_config(
     *,
     workload: WorkloadConfig,
     engine: EngineConfig,
     perf_model: PerfModelConfig,
     num_instances: int = 1,
 ) -> SimConfig:
-    """把内部组件测试的参数分配到公开手动配置各自的职责。"""
-    engine_data = engine.model_dump()
-    perf_data = perf_model.model_dump()
-    scheduler_fields = (
-        "max_running_requests", "max_prefill_tokens",
-        "pd_mutually_exclusive", "l3_prefetch_min_tokens",
+    """用模型解析得到的每页 KV 字节数和权重字节数还原测试所需容量。"""
+    from simcore.capacity import resolve_config
+
+    scheduler = SchedulerConfig(
+        max_running_requests=engine.max_running_requests,
+        max_prefill_tokens=engine.max_prefill_tokens,
+        pd_mutually_exclusive=engine.pd_mutually_exclusive,
+        l3_prefetch_min_tokens=engine.l3_prefetch_min_tokens,
     )
-    timing_fields = ("prefill_c1", "prefill_c2", "decode_d1", "decode_d2")
-    page_size = engine_data.pop("page_size")
-    max_output_tokens = engine_data.pop("max_output_tokens")
-    scheduler = {name: engine_data.pop(name) for name in scheduler_fields}
-    timing = {name: perf_data.pop(name) for name in timing_fields}
-    shared_l3 = {"mode": "manual", "capacity_tokens": engine_data.pop("l3_capacity_tokens"),
-                 "lookup_latency_ms": perf_data.pop("l3_lookup_latency_ms")}
-    return SimConfig.model_validate({
-        "shared_l3": shared_l3,
-        "num_instances": num_instances,
-        "workload": workload,
-        "scheduler": scheduler,
-        "inference": {
-            "mode": "manual", "page_size": page_size,
-            "max_output_tokens": max_output_tokens,
-            "kv": engine_data | perf_data,
-            "timing": {"mode": "empirical", **timing},
-        },
+    timing = EmpiricalTimingConfig(
+        prefill_c1=perf_model.prefill_c1, prefill_c2=perf_model.prefill_c2,
+        decode_d1=perf_model.decode_d1, decode_d2=perf_model.decode_d2,
+    )
+    storage = StorageSpec(l1_available_gb=0.001)
+    base = SimConfig(
+        workload=workload, scheduler=scheduler, num_instances=num_instances,
+        inference=PhysicalInferenceConfig(
+            page_size=engine.page_size, max_output_tokens=engine.max_output_tokens,
+            model=TOY_MODEL, hardware=TOY_HARDWARE, storage=storage, timing=timing,
+        ),
+    )
+    budget = resolve_config(base).capacity
+    kv_bytes_per_token = budget.kv_bytes_per_token
+    l1_bytes = budget.weights_resident_bytes + engine.max_total_tokens * kv_bytes_per_token
+    l2_bytes = engine.l2_capacity_tokens * kv_bytes_per_token
+    l3_bytes = engine.l3_capacity_tokens * kv_bytes_per_token
+    physical_storage = StorageSpec(
+        l1_available_gb=l1_bytes / 1_000_000_000,
+        l2_available_gb=l2_bytes / 1_000_000_000,
+        l2_to_l1_gb_s=(
+            (perf_model.l2_to_l1_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
+            if l2_bytes else None
+        ),
+        l3_to_l2_gb_s=(
+            (perf_model.l3_to_l2_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
+            if l3_bytes else None
+        ),
+        l2_latency_ms=perf_model.l2_latency_ms,
+        l3_latency_ms=perf_model.l3_latency_ms,
+    )
+    return base.model_copy(update={
+        "inference": base.inference.model_copy(update={"storage": physical_storage}),
+        "shared_l3": PhysicalL3Config(
+            available_gb=l3_bytes / 1_000_000_000,
+            lookup_latency_ms=perf_model.l3_lookup_latency_ms,
+        ),
     })
 
 
-def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> "RuntimeConfig":
-    """直接组件场景也经过统一运行时准备入口。"""
-    from simcore.capacity import prepare_runtime
-
-    workload = WorkloadConfig(session_rate=1, synthetic=SyntheticWorkloadConfig(
-        num_requests=1,
-        prompt_len=FixedLength(value=1), turn_increment_len=FixedLength(value=1),
-        output_len=FixedLength(value=1),
-    ))
-    return prepare_runtime(manual_config(workload=workload, engine=engine, perf_model=perf))
+def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig:
+    """直接 Engine 单测保留显式运行参数，不经过公开 SimConfig。"""
+    l2 = (
+        TransferLink(
+            engine.page_size * perf.kv_bytes_per_token
+            / perf.l2_to_l1_bandwidth_bytes_per_ms,
+            perf.l2_latency_ms,
+        )
+        if engine.l2_capacity_tokens and perf.kv_bytes_per_token
+        and perf.l2_to_l1_bandwidth_bytes_per_ms else None
+    )
+    l3 = (
+        TransferLink(
+            engine.page_size * perf.kv_bytes_per_token
+            / perf.l3_to_l2_bandwidth_bytes_per_ms,
+            perf.l3_latency_ms,
+        )
+        if engine.l3_capacity_tokens and perf.kv_bytes_per_token
+        and perf.l3_to_l2_bandwidth_bytes_per_ms else None
+    )
+    return RuntimeConfig(engine=engine, perf_model=perf, links=TransferLinks(l2, l3))
 
 
 def metric_inputs() -> dict[str, Any]:
@@ -105,7 +148,7 @@ def metric_inputs() -> dict[str, Any]:
 
 def make_config(**engine_overrides: object) -> SimConfig:
     """构造一个合法的最小配置，供各用例复用。"""
-    return manual_config(
+    return physical_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10.0,
@@ -469,24 +512,18 @@ class TestConfigValidation:
         ],
     )
     def test_engine_bounds(self, overrides: dict[str, int]) -> None:
-        payload = make_config().model_dump()
-        scheduler = payload["scheduler"]
-        inference = payload["inference"]
-        for field, value in overrides.items():
-            if field in scheduler:
-                scheduler[field] = value
-            elif field == "page_size":
-                inference[field] = value
-            else:
-                inference["kv"][field] = value
+        payload = EngineConfig(max_running_requests=8, max_total_tokens=4096).model_dump()
+        payload.update(overrides)
         with pytest.raises(ValidationError):
-            SimConfig.model_validate(payload)
+            EngineConfig.model_validate(payload)
 
     def test_engine_defaults_and_page_capacity(self) -> None:
         from simcore.capacity import prepare_runtime
 
         config = make_config()
-        assert set(config.model_dump()) == {"num_instances", "workload", "scheduler", "inference", "shared_l3"}
+        assert set(config.model_dump()) == {
+            "num_instances", "workload", "scheduler", "inference", "shared_l3",
+        }
         assert not hasattr(config, "engine") and not hasattr(config, "perf_model")
         engine = prepare_runtime(config).engine
         assert (engine.page_size, engine.capacity_pages) == (64, 64)
@@ -519,13 +556,13 @@ class TestConfigValidation:
             make_config(**{legacy: 1})
 
     @pytest.mark.parametrize("cap", [1, 64, 100, 65_536])
-    def test_engine_output_limit_lives_on_manual_inference(self, cap: int) -> None:
+    def test_engine_output_limit_lives_on_physical_inference(self, cap: int) -> None:
         from simcore.capacity import prepare_runtime
 
         config = make_config(max_output_tokens=cap)
         assert config.inference.max_output_tokens == cap
         assert prepare_runtime(config).engine.max_output_tokens == cap
-        assert "max_output_tokens" not in config.inference.kv.model_dump()
+        assert "max_output_tokens" not in config.inference.storage.model_dump()
 
     @pytest.mark.parametrize("invalid", [0, -1, 1.5, None])
     def test_engine_output_limit_rejects_non_positive_or_non_integer_values(
@@ -542,102 +579,77 @@ class TestConfigValidation:
             })
 
     def test_prefill_c2_defaults_to_zero(self) -> None:
-        inference = make_config().inference
-        assert (
-            inference.timing.prefill_c2
-            == inference.kv.l2_latency_ms
-            == inference.kv.l3_latency_ms
-            == 0.0
-        )
-        assert make_config().shared_l3.lookup_latency_ms == 0.0
-        assert inference.kv.kv_bytes_per_token is None
-        assert inference.kv.l2_to_l1_bandwidth_bytes_per_ms is None
-        assert inference.kv.l3_to_l2_bandwidth_bytes_per_ms is None
+        from simcore.capacity import prepare_runtime
 
-    @pytest.mark.parametrize(
-        ("field", "invalid"),
-        [
-            ("kv_bytes_per_token", 0),
-            ("kv_bytes_per_token", -1),
-            ("kv_bytes_per_token", 1.5),
-            ("l2_to_l1_bandwidth_bytes_per_ms", 0),
-            ("l3_to_l2_bandwidth_bytes_per_ms", -1),
-            ("l2_to_l1_bandwidth_bytes_per_ms", float("inf")),
-            ("l3_to_l2_bandwidth_bytes_per_ms", float("nan")),
-            ("l2_latency_ms", -1),
-            ("l3_latency_ms", -1),
-            ("l2_latency_ms", float("inf")),
-            ("l3_latency_ms", float("nan")),
-            ("l3_lookup_latency_ms", -1),
-            ("l3_lookup_latency_ms", float("inf")),
-        ],
-    )
-    def test_invalid_tiered_perf_coefficients_rejected(self, field: str, invalid: float) -> None:
+        config = make_config()
+        inference = config.inference
+        assert isinstance(inference.timing, EmpiricalTimingConfig)
+        assert (inference.timing.prefill_c2 == inference.storage.l2_latency_ms
+                == inference.storage.l3_latency_ms == 0.0)
+        assert config.shared_l3 is not None and config.shared_l3.lookup_latency_ms == 0.0
+        runtime = prepare_runtime(config)
+        assert runtime.perf_model.kv_bytes_per_token == 64
+        assert runtime.links.l2_to_l1 is None and runtime.links.l3_to_l2 is None
+
+    @pytest.mark.parametrize("field,invalid", [
+        ("l2_to_l1_gb_s", 0), ("l3_to_l2_gb_s", -1),
+        ("l2_to_l1_gb_s", float("inf")), ("l3_to_l2_gb_s", float("nan")),
+        ("l2_latency_ms", -1), ("l3_latency_ms", -1),
+        ("l2_latency_ms", float("inf")), ("l3_latency_ms", float("nan")),
+    ])
+    def test_invalid_tiered_storage_fields_rejected(self, field: str, invalid: float) -> None:
         payload = make_config().model_dump()
-        payload["inference"]["kv"][field] = invalid
-        with pytest.raises(ValidationError):
+        payload["inference"]["storage"][field] = invalid
+        with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
     @pytest.mark.parametrize("invalid", [-1, float("inf"), float("nan")])
-    def test_invalid_storage_lookup_latency_rejected(self, invalid: float) -> None:
-        with pytest.raises(ValidationError):
-            StorageSpec(l1_available_gb=1, l3_lookup_latency_ms=invalid)
+    def test_invalid_shared_lookup_latency_rejected(self, invalid: float) -> None:
+        with pytest.raises(ValidationError, match="lookup_latency_ms"):
+            PhysicalL3Config(lookup_latency_ms=invalid)
 
-    @pytest.mark.parametrize(
-        ("tier", "perf_updates", "missing"),
-        [
-            ("l2", {}, "kv_bytes_per_token"),
-            ("l2", {"kv_bytes_per_token": 16}, "l2_to_l1_bandwidth_bytes_per_ms"),
-            (
-                "l3",
-                {"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128},
-                "l3_to_l2_bandwidth_bytes_per_ms",
-            ),
-        ],
-    )
-    def test_enabled_tier_requires_transfer_params(
-        self, tier: str, perf_updates: dict[str, float], missing: str
-    ) -> None:
+    @pytest.mark.parametrize("tier,missing", [
+        ("l2", "L2.*L1"), ("l3", "L3.*L2"),
+    ])
+    def test_enabled_tier_requires_transfer_bandwidth(self, tier: str, missing: str) -> None:
+        from simcore.capacity import resolve_config
+
         payload = make_config().model_dump()
-        payload["inference"]["kv"]["l2_capacity_tokens"] = 64
-        if tier == "l3":
-            payload["shared_l3"]["capacity_tokens"] = 128
-        payload["inference"]["kv"].update(perf_updates)
-        with pytest.raises(ValidationError, match=missing):
-            SimConfig.model_validate(payload)
-
-    def test_shared_kv_config_validator(self) -> None:
-        engine = EngineConfig(max_running_requests=1, max_total_tokens=128, l2_capacity_tokens=64)
-        perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)
-        with pytest.raises(ValueError, match="kv_bytes_per_token"):
-            validate_kv_config(engine, perf)
-        valid_perf = perf.model_copy(
-            update={"kv_bytes_per_token": 16, "l2_to_l1_bandwidth_bytes_per_ms": 128.0}
+        payload["inference"]["storage"].update(
+            l2_available_gb=64 * 64 / 1_000_000_000, l2_to_l1_gb_s=1,
         )
-        validate_kv_config(engine, valid_perf)
+        if tier == "l3":
+            payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
+            payload["inference"]["storage"]["l3_to_l2_gb_s"] = None
+        else:
+            payload["inference"]["storage"]["l2_to_l1_gb_s"] = None
+        with pytest.raises(ValueError, match=missing):
+            resolve_config(SimConfig.model_validate(payload))
 
     def test_enabled_tiers_roundtrip_and_disabled_tiers_need_no_bandwidth(self) -> None:
+        from simcore.capacity import prepare_runtime
+
         payload = make_config().model_dump()
-        kv = payload["inference"]["kv"]
-        payload["shared_l3"]["capacity_tokens"] = 128
-        kv.update(
-            l2_capacity_tokens=64,
-            kv_bytes_per_token=16,
-            l2_to_l1_bandwidth_bytes_per_ms=128,
-            l3_to_l2_bandwidth_bytes_per_ms=64,
-            l2_latency_ms=0.5,
-            l3_latency_ms=1.5,
+        payload["inference"]["storage"].update(
+            l2_available_gb=64 * 64 / 1_000_000_000,
+            l2_to_l1_gb_s=0.000128, l3_to_l2_gb_s=0.000064,
+            l2_latency_ms=0.5, l3_latency_ms=1.5,
         )
+        payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
         config = SimConfig.model_validate(payload)
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
-        payload["shared_l3"]["capacity_tokens"] = 0
-        kv.update(
-            l2_capacity_tokens=0,
-            kv_bytes_per_token=None,
-            l2_to_l1_bandwidth_bytes_per_ms=None,
-            l3_to_l2_bandwidth_bytes_per_ms=None,
+        runtime = prepare_runtime(config)
+        assert runtime.engine.l2_capacity_tokens == 64
+        assert runtime.engine.l3_capacity_tokens == 128
+        assert runtime.links.l2_to_l1 is not None and runtime.links.l2_to_l1.transfer_ms == 32
+        assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
+        payload["shared_l3"]["available_gb"] = 0
+        payload["inference"]["storage"].update(
+            l2_available_gb=0, l2_to_l1_gb_s=None, l3_to_l2_gb_s=None,
         )
-        assert SimConfig.model_validate(payload).inference.kv.l2_capacity_tokens == 0
+        disabled = prepare_runtime(SimConfig.model_validate(payload))
+        assert disabled.engine.l2_capacity_tokens == disabled.engine.l3_capacity_tokens == 0
+        assert disabled.links.l2_to_l1 is None and disabled.links.l3_to_l2 is None
 
     @pytest.mark.parametrize(
         "field",
@@ -727,9 +739,11 @@ class TestConfigValidation:
         with pytest.raises(ValidationError):
             cfg.inference.page_size = 1
         with pytest.raises(ValidationError):
-            cfg.inference.kv.max_total_tokens = 128
+            cfg.inference.storage.l1_available_gb = 0.001
+        timing = cfg.inference.timing
+        assert isinstance(timing, EmpiricalTimingConfig)
         with pytest.raises(ValidationError):
-            cfg.inference.timing.prefill_c1 = 1
+            timing.prefill_c1 = 1
 
     @pytest.mark.parametrize("field", ["engine", "perf_model", "model", "hardware", "storage"])
     def test_removed_top_level_configuration_fields_are_rejected(self, field: str) -> None:
@@ -737,17 +751,23 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
-    @pytest.mark.parametrize("mode", ["analytical", "unknown"])
-    def test_manual_inference_requires_empirical_timing(self, mode: str) -> None:
+    @pytest.mark.parametrize("mode", ["manual", "unknown"])
+    def test_removed_inference_modes_are_rejected(self, mode: str) -> None:
         payload = make_config().model_dump()
-        payload["inference"]["timing"] = {"mode": mode}
-        with pytest.raises(ValidationError):
+        payload["inference"]["mode"] = mode
+        with pytest.raises(ValidationError, match="mode"):
             SimConfig.model_validate(payload)
 
-    @pytest.mark.parametrize("field", ["model", "hardware", "storage", "tp_size", "ep_size"])
-    def test_manual_inference_rejects_physical_fields(self, field: str) -> None:
+    def test_removed_manual_l3_mode_is_rejected(self) -> None:
         payload = make_config().model_dump()
-        payload["inference"][field] = {} if field in ("model", "hardware", "storage") else 1
+        payload["shared_l3"]["mode"] = "manual"
+        with pytest.raises(ValidationError, match="mode"):
+            SimConfig.model_validate(payload)
+
+    @pytest.mark.parametrize("field", ["kv", "timing_coefficients"])
+    def test_physical_inference_rejects_legacy_manual_fields(self, field: str) -> None:
+        payload = make_config().model_dump()
+        payload["inference"][field] = {}
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
@@ -786,33 +806,35 @@ class TestConfigValidation:
         with pytest.raises(ValidationError):
             SimConfig.model_validate(payload)
 
-    def test_runtime_is_frozen_and_preserves_explicit_manual_components(self) -> None:
+    def test_runtime_is_frozen_and_preserves_resolved_physical_components(self) -> None:
         from dataclasses import FrozenInstanceError
 
-        from simcore.capacity import prepare_runtime
+        from simcore.capacity import prepare_runtime, resolve_config
 
         payload = make_config().model_dump()
-        payload["shared_l3"]["capacity_tokens"] = 128
-        payload["inference"]["kv"].update(
-            l2_capacity_tokens=64,
-            kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=128,
-            l3_to_l2_bandwidth_bytes_per_ms=64, l2_latency_ms=0.5, l3_latency_ms=1.5,
+        payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
+        payload["inference"]["storage"].update(
+            l2_available_gb=64 * 64 / 1_000_000_000,
+            l2_to_l1_gb_s=0.000128, l3_to_l2_gb_s=0.000064,
+            l2_latency_ms=0.5, l3_latency_ms=1.5,
         )
         config = SimConfig.model_validate(payload)
         original = config.model_dump()
         runtime = prepare_runtime(config)
-        assert runtime.resolution is None and runtime.analytical is None
+        assert runtime.resolution == resolve_config(config) and runtime.analytical is None
         assert runtime.engine.page_size == 64
-        assert runtime.perf_model.prefill_c1 == config.inference.timing.prefill_c1
-        assert runtime.perf_model.kv_bytes_per_token == 16
-        assert runtime.links.l2_to_l1.transfer_ms == 8
-        assert runtime.links.l3_to_l2.transfer_ms == 16
+        timing = config.inference.timing
+        assert isinstance(timing, EmpiricalTimingConfig)
+        assert runtime.perf_model.prefill_c1 == timing.prefill_c1
+        assert runtime.perf_model.kv_bytes_per_token == 64
+        assert runtime.links.l2_to_l1 is not None and runtime.links.l2_to_l1.transfer_ms == 32
+        assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
         assert runtime.links.l2_to_l1.latency_ms == 0.5
         assert runtime.links.l3_to_l2.latency_ms == 1.5
         with pytest.raises(FrozenInstanceError):
-            runtime.engine = runtime.engine
+            runtime.engine = runtime.engine  # type: ignore[misc]
         with pytest.raises(FrozenInstanceError):
-            runtime.links.l2_to_l1.transfer_ms = 0
+            runtime.links.l2_to_l1.transfer_ms = 0  # type: ignore[misc]
         assert config.model_dump() == original
 
     def test_roundtrip_is_lossless(self) -> None:

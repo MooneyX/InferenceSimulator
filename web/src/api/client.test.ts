@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveConfig, simulate, SimulationApiError } from "./client";
 import type { ResolutionReport, SimConfig, SimResult } from "./types";
-import { createDefaultPhysicalSimConfig } from "../config/simulation";
+import { createDefaultSimConfig } from "../config/simulation";
 
 const config: SimConfig = {
   num_instances: 1,
@@ -25,25 +25,8 @@ const config: SimConfig = {
     pd_mutually_exclusive: true,
   },
   inference: {
-    mode: "manual",
-    page_size: 64,
-    max_output_tokens: 65_536,
-    kv: {
-      max_total_tokens: 4096,
-      l2_capacity_tokens: 0,
-      kv_bytes_per_token: null,
-      l2_to_l1_bandwidth_bytes_per_ms: null,
-      l3_to_l2_bandwidth_bytes_per_ms: null,
-      l2_latency_ms: 0,
-      l3_latency_ms: 0,
-    },
-    timing: {
-      mode: "empirical",
-      prefill_c1: 0.1,
-      prefill_c2: 0,
-      decode_d1: 0.2,
-      decode_d2: 0.001,
-    },
+    ...createDefaultSimConfig().inference,
+    timing: { mode: "empirical", prefill_c1: 0.1, prefill_c2: 0, decode_d1: 0.2, decode_d2: 0.001 },
   },
 };
 
@@ -277,7 +260,7 @@ describe("trace replay requests", () => {
 
 describe("resolveConfig", () => {
   it("posts the same configuration without wrapping it in a separate request", async () => {
-    const physicalConfig = createDefaultPhysicalSimConfig();
+    const physicalConfig = createDefaultSimConfig();
     const report: ResolutionReport = {
       max_total_tokens: 4096, l2_capacity_tokens: 0, l3_capacity_tokens: 0,
       runnable: true,
@@ -305,7 +288,7 @@ describe("resolveConfig", () => {
       msg: "专家数错误", type: "value_error" }];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(422, { detail }))
       .mockResolvedValueOnce(jsonResponse(422, { detail: "TP 数必须等于 GPU 卡数" })));
-    await expect(resolveConfig(createDefaultPhysicalSimConfig())).rejects.toMatchObject({ validationErrors: detail });
+    await expect(resolveConfig(createDefaultSimConfig())).rejects.toMatchObject({ validationErrors: detail });
     await expect(simulate(config)).rejects.toMatchObject({
       message: "TP 数必须等于 GPU 卡数", validationErrors: [],
     });

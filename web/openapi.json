@@ -1165,139 +1165,6 @@
         "title": "LognormalLength",
         "description": "对数正态分布长度，用于表达长尾负载。"
       },
-      "ManualInferenceConfig": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "manual",
-            "title": "Mode",
-            "default": "manual"
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Page Size",
-            "default": 64
-          },
-          "max_output_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Output Tokens",
-            "description": "单请求输出 token 硬上限",
-            "default": 65536
-          },
-          "kv": {
-            "$ref": "#/components/schemas/ManualKVConfig"
-          },
-          "timing": {
-            "$ref": "#/components/schemas/EmpiricalTimingConfig"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kv",
-          "timing"
-        ],
-        "title": "ManualInferenceConfig",
-        "description": "抽象实例：直接填写容量、链路和经验计时。"
-      },
-      "ManualKVConfig": {
-        "properties": {
-          "max_total_tokens": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Max Total Tokens"
-          },
-          "l2_capacity_tokens": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "L2 Capacity Tokens",
-            "default": 0
-          },
-          "kv_bytes_per_token": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Kv Bytes Per Token"
-          },
-          "l2_to_l1_bandwidth_bytes_per_ms": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "L2 To L1 Bandwidth Bytes Per Ms"
-          },
-          "l3_to_l2_bandwidth_bytes_per_ms": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "L3 To L2 Bandwidth Bytes Per Ms"
-          },
-          "l2_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L2 Latency Ms",
-            "default": 0.0
-          },
-          "l3_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "L3 Latency Ms",
-            "default": 0.0
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "max_total_tokens"
-        ],
-        "title": "ManualKVConfig",
-        "description": "手动指定 KV 容量和每条上行链路的参数。"
-      },
-      "ManualL3Config": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "manual",
-            "title": "Mode",
-            "default": "manual"
-          },
-          "capacity_tokens": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Capacity Tokens",
-            "description": "全场共享 L3 token 总容量；0 表示关闭",
-            "default": 0
-          },
-          "lookup_latency_ms": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Lookup Latency Ms",
-            "default": 0.0
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "ManualL3Config"
-      },
       "Metrics": {
         "properties": {
           "ttft_mean": {
@@ -2610,22 +2477,7 @@
             "$ref": "#/components/schemas/SchedulerConfig"
           },
           "inference": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ManualInferenceConfig"
-              },
-              {
-                "$ref": "#/components/schemas/PhysicalInferenceConfig"
-              }
-            ],
-            "title": "Inference",
-            "discriminator": {
-              "propertyName": "mode",
-              "mapping": {
-                "manual": "#/components/schemas/ManualInferenceConfig",
-                "physical": "#/components/schemas/PhysicalInferenceConfig"
-              }
-            }
+            "$ref": "#/components/schemas/PhysicalInferenceConfig"
           },
           "num_instances": {
             "type": "integer",
@@ -2636,27 +2488,12 @@
           "shared_l3": {
             "anyOf": [
               {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/ManualL3Config"
-                  },
-                  {
-                    "$ref": "#/components/schemas/PhysicalL3Config"
-                  }
-                ],
-                "discriminator": {
-                  "propertyName": "mode",
-                  "mapping": {
-                    "manual": "#/components/schemas/ManualL3Config",
-                    "physical": "#/components/schemas/PhysicalL3Config"
-                  }
-                }
+                "$ref": "#/components/schemas/PhysicalL3Config"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Shared L3"
+            ]
           }
         },
         "additionalProperties": false,

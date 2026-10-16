@@ -11,58 +11,6 @@
   border: 0;
 }
 
-.configuration-mode {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 0;
-  padding: 16px 20px 18px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.configuration-mode legend {
-  padding: 0 6px;
-  font-size: 0.85rem;
-  font-weight: 700;
-}
-
-.mode-option {
-  display: flex;
-  flex: 1 1 200px;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface2);
-  cursor: pointer;
-}
-
-.mode-option.selected {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface2));
-}
-
-.mode-option input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.mode-option span {
-  display: grid;
-  gap: 3px;
-}
-
-.mode-option small {
-  color: var(--text-dim);
-}
-
-.configuration-mode:disabled .mode-option {
-  cursor: default;
-}
-
 .form-section {
   min-width: 0;
   padding: 18px 20px;

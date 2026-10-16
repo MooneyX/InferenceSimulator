@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { ResolutionReport } from "../api/types";
-import { createDefaultPhysicalSimConfig, initialHardware, initialModel, initialStorage,
+import { createDefaultSimConfig, initialHardware, initialModel, initialStorage,
   type PhysicalSimConfig } from "../config/simulation";
 import { AutomaticConfig } from "./AutomaticConfig";
 
 function physicalConfig(patch: Partial<PhysicalSimConfig["inference"]> = {}): PhysicalSimConfig {
-  const config = createDefaultPhysicalSimConfig();
+  const config = createDefaultSimConfig();
   return { ...config, inference: { ...config.inference, ...patch } };
 }
 
@@ -49,7 +49,7 @@ describe("AutomaticConfig", () => {
   });
 
   it("previews server-resolved capacity without a separate run button", async () => {
-    render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
+    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1,024 token"));
     expect(screen.getByRole("status")).toHaveTextContent("结构估算总参数 8.191 B");
@@ -65,7 +65,7 @@ describe("AutomaticConfig", () => {
   });
 
   it("invalidates a capacity preview when the shared L3 budget changes", async () => {
-    const config = createDefaultPhysicalSimConfig();
+    const config = createDefaultSimConfig();
     const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("全场共享 L3"));
@@ -84,7 +84,7 @@ describe("AutomaticConfig", () => {
     qwen.norms = Object.fromEntries(Object.entries(qwen.norms!).reverse()) as typeof qwen.norms;
     vi.mocked(getPresets).mockResolvedValue({ models: [qwen], hardware: [] });
     const onInferenceChange = vi.fn();
-    render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue("Qwen/Qwen3-8B"));
     expect(screen.getByLabelText("第 1 组注意力方式")).toHaveValue("gqa");
     expect(screen.getByLabelText("第 1 组层数")).toHaveValue(36);
@@ -96,14 +96,14 @@ describe("AutomaticConfig", () => {
     expect(onInferenceChange).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("第 1 组 Query 头数"), { target: { value: "64" } });
     expect(onInferenceChange).toHaveBeenCalledWith({
-      ...createDefaultPhysicalSimConfig().inference,
+      ...createDefaultSimConfig().inference,
       model: { ...initialModel, name: "自定义模型",
         attention_groups: [{ ...initialModel.attention_groups![0], num_attention_heads: 64 }] },
     });
   });
 
   it("uses themed collapsible auxiliary sections and attention cards without disabling editable fields", () => {
-    const { container } = render(<fieldset disabled><AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={vi.fn()} disabled /></fieldset>);
+    const { container } = render(<fieldset disabled><AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled /></fieldset>);
     const details = screen.getByText("辅助权重容量配置", { exact: true }).closest("details")!;
     expect(details).toHaveClass("model-subsection", "auxiliary-config");
     expect(details).not.toHaveAttribute("open");
@@ -117,11 +117,11 @@ describe("AutomaticConfig", () => {
   it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [] });
     const onInferenceChange = vi.fn();
-    render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByRole("option", { name: "tencent/Hy4-preview" })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "tencent/Hy4-preview" } });
     expect(onInferenceChange).toHaveBeenCalledTimes(1);
-    expect(onInferenceChange).toHaveBeenCalledWith({ ...createDefaultPhysicalSimConfig().inference,
+    expect(onInferenceChange).toHaveBeenCalledWith({ ...createDefaultSimConfig().inference,
       model: hy4, tp_size: 8, ep_size: 8,
       hardware: { ...initialHardware, gpu_count: 8 }, storage: { ...initialStorage, l1_available_gb: 260 } });
   });
@@ -389,7 +389,7 @@ describe("AutomaticConfig", () => {
 
   it("enables shared experts only for MoE and clears their dimension when disabled", () => {
     const onInferenceChange = vi.fn();
-    const props = { config: createDefaultPhysicalSimConfig(), onInferenceChange: onInferenceChange, disabled: false };
+    const props = { config: createDefaultSimConfig(), onInferenceChange: onInferenceChange, disabled: false };
     const { rerender } = render(<AutomaticConfig {...props} />);
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toHaveValue(0);
     expect(screen.getByLabelText("共享专家数（0 为关闭）")).toBeDisabled();
@@ -507,7 +507,7 @@ describe("AutomaticConfig", () => {
         loc: ["body", "inference", "physical", "model", "num_experts"], msg: "专家数必须为正", type: "value_error",
       }],
     }));
-    render(<AutomaticConfig config={createDefaultPhysicalSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
+    render(<AutomaticConfig config={createDefaultSimConfig()} onInferenceChange={vi.fn()} disabled={false} />);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(screen.getByRole("alert"))
       .toHaveTextContent("body → inference → physical → model → num_experts：专家数必须为正"));
@@ -524,7 +524,7 @@ describe("AutomaticConfig", () => {
         peak_fp16_tflops: 2250, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
     });
     const onInferenceChange = vi.fn();
-    let config = createDefaultPhysicalSimConfig();
+    let config = createDefaultSimConfig();
     const { rerender } = render(<AutomaticConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
     const refresh = () => {
       config = { ...config, inference: onInferenceChange.mock.lastCall![0] };

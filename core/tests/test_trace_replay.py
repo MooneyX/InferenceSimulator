@@ -11,20 +11,19 @@ from simcore.capacity import prepare_runtime, resolve_config
 from simcore.perf_model import PrefillWork, StepWorkload
 from simcore.schemas import (
     AnalyticalTimingConfig,
-    EmpiricalTimingConfig,
+    EngineConfig,
     HardwareSpec,
-    ManualInferenceConfig,
-    ManualKVConfig,
     ModelSpec,
+    PerfModelConfig,
     PhysicalInferenceConfig,
     PhysicalL3Config,
-    SchedulerConfig,
     StorageSpec,
     TracePlan,
     TraceTurn,
     TraceWorkloadConfig,
     WorkloadConfig,
 )
+from test_schemas import physical_config
 
 
 def config(
@@ -32,21 +31,17 @@ def config(
     session_rate: float = 1, seed: int = 7, target_qps: float | None = None,
     max_output_tokens: int = 65_536,
 ) -> SimConfig:
-    return SimConfig(
+    return physical_config(
         num_instances=2,
         workload=WorkloadConfig(
             mode="trace", arrival_mode=mode, session_rate=session_rate, seed=seed,
             target_qps=target_qps, trace=TraceWorkloadConfig(plan_id="test-plan"),
         ),
-        scheduler=SchedulerConfig(max_running_requests=4),
-        inference=ManualInferenceConfig(
-            page_size=64,
-            max_output_tokens=max_output_tokens,
-            kv=ManualKVConfig(max_total_tokens=capacity),
-            timing=EmpiricalTimingConfig(
-                prefill_c1=0.01, prefill_c2=0, decode_d1=0.01, decode_d2=0,
-            ),
+        engine=EngineConfig(
+            max_running_requests=4, max_total_tokens=capacity,
+            max_output_tokens=max_output_tokens, page_size=64,
         ),
+        perf_model=PerfModelConfig(prefill_c1=0.01, decode_d1=0.01, decode_d2=0),
     )
 
 
@@ -218,8 +213,8 @@ def test_timed_root_ratio_counts_all_branches_without_changing_session_count() -
 def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
     timing: Literal["empirical", "analytical"], mode: Literal["open_loop", "closed_loop"],
 ) -> None:
-    manual = config(capacity=64, mode=mode)
-    original = manual.model_copy(update={
+    baseline = config(capacity=64, mode=mode)
+    original = baseline.model_copy(update={
         "shared_l3": PhysicalL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
         "inference": PhysicalInferenceConfig(
             page_size=64,
@@ -237,7 +232,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                 l2_to_l1_gb_s=0.001, l3_to_l2_gb_s=0.002,
                 l2_latency_ms=3, l3_latency_ms=4,
             ),
-            timing=(manual.inference.timing if timing == "empirical"
+            timing=(baseline.inference.timing if timing == "empirical"
                     else AnalyticalTimingConfig()),
         ),
     })
@@ -261,8 +256,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
     assert runtime.engine.max_total_tokens == resolution.max_total_tokens == (
         resolution.capacity.l1_capacity_pages * source.block_size
     )
-    manual_kv = cast(ManualInferenceConfig, manual.inference).kv
-    assert runtime.engine.max_total_tokens > manual_kv.max_total_tokens
+    assert runtime.engine.max_total_tokens > resolve_config(baseline).max_total_tokens
     assert runtime.engine.l2_capacity_tokens == resolution.l2_capacity_tokens == 128
     assert runtime.engine.l3_capacity_tokens == resolution.l3_capacity_tokens == 64
     assert runtime.perf_model.kv_bytes_per_token == 64

@@ -28,11 +28,11 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
-from test_schemas import manual_config, metric_inputs, runtime_config
+from test_schemas import metric_inputs, physical_config, runtime_config
 
 
 def config() -> SimConfig:
-    return manual_config(
+    return physical_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,
@@ -50,13 +50,14 @@ def config() -> SimConfig:
     )
 
 
-def test_direct_engine_rejects_missing_transfer_config() -> None:
+def test_direct_engine_defers_missing_transfer_link_until_needed() -> None:
     engine = EngineConfig(
         max_running_requests=1, max_total_tokens=8, page_size=4, l2_capacity_tokens=4
     )
     perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
-    with pytest.raises(ValueError, match="kv_bytes_per_token"):
-        Engine(runtime_config(engine, perf))
+    direct = Engine(runtime_config(engine, perf))
+    assert direct._links.l2_to_l1 is None
+    assert direct._prefix_cache.pools["L2"].capacity == 1
 
 
 def mixed_plan() -> WorkloadPlan:
@@ -123,7 +124,7 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
 
 
 def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
-    settings = manual_config(
+    settings = physical_config(
         num_instances=1,
         workload=WorkloadConfig(
             session_rate=10,

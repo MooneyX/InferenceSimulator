@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
 import type { PhysicalInferenceConfig, SimResult } from "./api/types";
-import { createDefaultPhysicalSimConfig, createDefaultSimConfig } from "./config/simulation";
+import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
@@ -114,7 +114,7 @@ result.instances.push({ instance_id: 0, num_completed: 1, num_aborted: 0, num_sk
   num_engine_steps: 8, metrics: result.metrics });
 
 function physicalResult(overrides: Partial<PhysicalInferenceConfig> = {}): SimResult {
-  const config = createDefaultPhysicalSimConfig();
+  const config = createDefaultSimConfig();
   config.inference = { ...config.inference, ...overrides };
   return {
     ...result,
@@ -151,7 +151,7 @@ describe("App", () => {
       screen.getByRole("heading", { level: 1, name: "推理服务仿真器" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "负载配置" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("当前仿真范围")).toHaveTextContent(
       "多实例 · TP 可选Synthetic / Trace workloadFCFS 调度",
     );
@@ -169,7 +169,6 @@ describe("App", () => {
       requests: [result.requests![0], { ...result.requests![0], id: 1, instance_id: 1 }],
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.change(screen.getByLabelText("推理实例数量（L1/L2 独占，L3 共享）"),
       { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
@@ -201,7 +200,6 @@ describe("App", () => {
     simulateMock.mockResolvedValue(result);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
@@ -241,13 +239,13 @@ describe("App", () => {
     expect(screen.getByText("目标发送 QPS").closest(".metric-card")).toHaveTextContent("9 请求/秒");
   });
 
-  it("routes the single run button to the same API in automatic mode", async () => {
+  it("routes the single physical run button to the simulation API", async () => {
     simulateMock.mockResolvedValue(physicalResult());
     render(<App />);
-    expect(screen.getByRole("radio", { name: /自动解析/ })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(simulateMock).toHaveBeenCalledWith(createDefaultPhysicalSimConfig());
+    expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
     const summary = screen.getByLabelText("解析配置与成本");
@@ -258,7 +256,7 @@ describe("App", () => {
 
   it("shows TP communication inside the existing resolved result card", async () => {
     const resolved = physicalResult({ tp_size: 4,
-      hardware: { ...createDefaultPhysicalSimConfig().inference.hardware, gpu_count: 4 } });
+      hardware: { ...createDefaultSimConfig().inference.hardware, gpu_count: 4 } });
     resolved.analysis = {
       steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
       memory_ms: 0.2, device_ms: 5, restore_ms: 0,
@@ -286,7 +284,7 @@ describe("App", () => {
   });
 
   it("shows TP and EP timing separately without adding communication to GPU time twice", async () => {
-    const initial = createDefaultPhysicalSimConfig().inference;
+    const initial = createDefaultSimConfig().inference;
     const resolved = physicalResult({ tp_size: 4, ep_size: 4,
       model: { ...initial.model, name: "toy-moe", moe_layers: 2 },
       hardware: { ...initial.hardware, name: "B300", gpu_count: 4 } });
@@ -328,7 +326,6 @@ describe("App", () => {
       skipped_requests: [{ id: 2, instance_id: 0, parent_request_id: 1, reason: "parent_not_completed" }],
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 1 · 跳过 1");
     expect(screen.getByLabelText("失败请求原因")).toHaveTextContent("output_exceeds_engine_limit");
@@ -353,7 +350,6 @@ describe("App", () => {
       }],
     });
     render(<App />);
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByText("本次没有已完成请求，无法绘制生命周期图。")).toBeInTheDocument();
     expect(screen.queryByTestId("request-gantt")).not.toBeInTheDocument();
@@ -369,7 +365,6 @@ describe("App", () => {
     );
     render(<App />);
 
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
@@ -393,7 +388,6 @@ describe("App", () => {
     );
     render(<App />);
 
-    fireEvent.click(screen.getByRole("radio", { name: /手动配置/ }));
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
 
     const alert = await screen.findByRole("alert");

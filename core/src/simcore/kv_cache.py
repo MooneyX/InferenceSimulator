@@ -30,7 +30,6 @@ class CacheEntry:
     tier: str
     ref_count: int
     last_access_seq: int
-    capacity_pages: int = 1
     pool_id: int = 0
 
 

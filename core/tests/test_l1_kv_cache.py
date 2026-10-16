@@ -78,7 +78,6 @@ def test_private_tail_and_decode_full_page_only_published_at_completion() -> Non
     cache.finish(0)
     page = cache.page(encode(0, 0))
     assert page is not None and page.ref_count == 0 and page.tier == "L1"
-    assert page.capacity_pages == 1
     assert cache._private_pages == 0 and cache.evictable_pages == 1
     assert_conserved(cache)
 

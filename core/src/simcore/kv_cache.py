@@ -1,7 +1,7 @@
 """实例请求 KV 管理与可独占或共享的分层资源池。"""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from heapq import heapify, heappop, heappush
 
 from simcore.prefix_hash import logical_chunk_id
@@ -24,7 +24,7 @@ class CacheCapacityError(ValueError):
     """当前物理容量不足，调用方应等待或回撤请求。"""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class CacheEntry:
     chunk_id: str
     tier: str
@@ -165,10 +165,11 @@ class CachePool:
         if not count:
             return
         page = self.entries[chunk_id]
-        if not page.ref_count:
+        was_evictable = not page.ref_count
+        if was_evictable:
             self.evictable -= 1
-        self.entries[chunk_id] = replace(page, ref_count=page.ref_count + count)
-        if not page.ref_count:
+        page.ref_count += count
+        if was_evictable:
             self._maybe_rebuild_heap()
 
     def add_ref(self, chunk_id: str, *, refresh: bool = False) -> None:
@@ -178,16 +179,15 @@ class CachePool:
 
     def drop_ref(self, chunk_id: str) -> None:
         page = self.entries[chunk_id]
-        page = replace(page, ref_count=page.ref_count - 1)
-        self.entries[chunk_id] = page
+        page.ref_count -= 1
         if not page.ref_count:
             self.evictable += 1
             self._queue(page)
 
     def touch(self, chunk_id: str) -> None:
         self.access_seq += 1
-        page = replace(self.entries[chunk_id], last_access_seq=self.access_seq)
-        self.entries[chunk_id] = page
+        page = self.entries[chunk_id]
+        page.last_access_seq = self.access_seq
         if not page.ref_count:
             self._queue(page)
 

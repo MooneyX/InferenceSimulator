@@ -141,6 +141,9 @@ def compute_metrics(
     ideal = sum(record.ideal_reuse_tokens for record in records)
     matched = sum(record.matched_cache_tokens for record in records)
     actual = sum(record.actual_hit_tokens for record in records)
+    l1_hits = sum(record.l1_hit_tokens for record in records)
+    l2_hits = sum(record.l2_hit_tokens for record in records)
+    l3_hits = sum(record.l3_hit_tokens for record in records)
     children = [record for record in records if record.parent_request_id is not None]
     child_input = sum(record.prompt_len for record in children)
     prefill = sum(record.actual_prefill_tokens for record in records)
@@ -174,6 +177,9 @@ def compute_metrics(
             if child_input else None
         ),
         actual_prefix_hit_rate=actual / input_tokens,
+        l1_prefix_hit_rate=l1_hits / input_tokens,
+        l2_prefix_hit_rate=l2_hits / input_tokens,
+        l3_prefix_hit_rate=l3_hits / input_tokens,
         requests_with_hit_ratio=sum(record.actual_hit_tokens > 0 for record in records)
         / len(records),
         requests_fully_cached_ratio=fully_cached / len(records),
@@ -181,9 +187,9 @@ def compute_metrics(
         ideal_hit_tokens=ideal,
         matched_cache_tokens=matched,
         actual_hit_tokens=actual,
-        l1_hit_tokens=sum(record.l1_hit_tokens for record in records),
-        l2_hit_tokens=sum(record.l2_hit_tokens for record in records),
-        l3_hit_tokens=sum(record.l3_hit_tokens for record in records),
+        l1_hit_tokens=l1_hits,
+        l2_hit_tokens=l2_hits,
+        l3_hit_tokens=l3_hits,
         actual_prefill_tokens=prefill,
         replayed_prefill_tokens=replayed_prefill_tokens,
         saved_prefill_tokens=input_tokens - prefill,

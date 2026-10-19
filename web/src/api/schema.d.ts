@@ -630,6 +630,24 @@ export interface components {
              */
             actual_prefix_hit_rate: number;
             /**
+             * L1 Prefix Hit Rate
+             * @description L1 命中 token / 成功请求输入 token
+             * @default 0
+             */
+            l1_prefix_hit_rate: number;
+            /**
+             * L2 Prefix Hit Rate
+             * @description L2 命中 token / 成功请求输入 token
+             * @default 0
+             */
+            l2_prefix_hit_rate: number;
+            /**
+             * L3 Prefix Hit Rate
+             * @description L3 命中 token / 成功请求输入 token
+             * @default 0
+             */
+            l3_prefix_hit_rate: number;
+            /**
              * Requests With Hit Ratio
              * @default 0
              */

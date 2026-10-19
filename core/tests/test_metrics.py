@@ -156,11 +156,34 @@ class TestPrefixMetrics:
         assert result.total_input_tokens == 15
         assert result.ideal_hit_tokens == 4
         assert result.actual_prefix_hit_rate == pytest.approx(4 / 15)
+        assert result.l1_prefix_hit_rate == pytest.approx(4 / 15)
+        assert result.l2_prefix_hit_rate == result.l3_prefix_hit_rate == 0
         assert result.requests_with_hit_ratio == 0.5
         assert result.requests_fully_cached_ratio == 0.5
         assert result.actual_prefill_tokens == 11
         assert result.saved_prefill_tokens == result.actual_hit_tokens == result.l1_hit_tokens == 4
         assert result.l2_hit_tokens == result.l3_hit_tokens == 0
+
+    def test_mixed_tier_rates_use_total_successful_input_tokens(self) -> None:
+        first = RequestRecord(
+            id=0, arrival=0, prefill_start=0, prefill_end=1, finish=2,
+            prompt_len=8, output_len=1, ideal_reuse_tokens=6,
+            matched_cache_tokens=6, actual_hit_tokens=6, actual_prefill_tokens=2,
+            l1_hit_tokens=2, l2_hit_tokens=2, l3_hit_tokens=2,
+        )
+        second = RequestRecord(
+            id=1, arrival=2, prefill_start=2, prefill_end=3, finish=4,
+            prompt_len=12, output_len=1, ideal_reuse_tokens=4,
+            matched_cache_tokens=4, actual_hit_tokens=4, actual_prefill_tokens=8,
+            l3_hit_tokens=4,
+        )
+        metrics = compute_metrics([first, second], **(metric_inputs() | {"page_size": 2}))
+        assert metrics.total_input_tokens == 20
+        assert metrics.l1_prefix_hit_rate == pytest.approx(2 / 20)
+        assert metrics.l2_prefix_hit_rate == pytest.approx(2 / 20)
+        assert metrics.l3_prefix_hit_rate == pytest.approx(6 / 20)
+        assert sum((metrics.l1_prefix_hit_rate, metrics.l2_prefix_hit_rate,
+                    metrics.l3_prefix_hit_rate)) == pytest.approx(metrics.actual_prefix_hit_rate)
 
     def test_request_rejects_hit_above_ideal(self) -> None:
         from pydantic import ValidationError
@@ -186,6 +209,9 @@ class TestEdgeCases:
         assert result.ttft_mean is None and result.ttft_p50 is None
         assert result.ttft_p99 is None and result.tpot_mean is None
         assert result.throughput is None and result.makespan == 0
+        assert result.actual_prefix_hit_rate == 0
+        assert (result.l1_prefix_hit_rate, result.l2_prefix_hit_rate,
+                result.l3_prefix_hit_rate) == (0, 0, 0)
 
     @pytest.mark.parametrize("has_success", [False, True])
     def test_tiered_metrics_survive_with_and_without_success(self, has_success: bool) -> None:

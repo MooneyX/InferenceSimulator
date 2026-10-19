@@ -106,6 +106,9 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
         />
         <MetricCard label="构造理想命中率" value={metrics.constructed_ideal_prefix_hit_rate} unit="%" description="全场已构造轮次的可继承完整页 token / 计划输入 token；闭环含失败及跳过轮次的计划" />
         <MetricCard label="实际前缀命中率" value={metrics.actual_prefix_hit_rate} unit="%" description="成功请求实际跳过的输入 token / 成功请求输入 token" />
+        <MetricCard label="L1 前缀命中率" value={metrics.l1_prefix_hit_rate} unit="%" description="L1 来源命中 token / 成功请求输入 token；与 L2、L3 相加等于实际前缀命中率" />
+        <MetricCard label="L2 前缀命中率" value={metrics.l2_prefix_hit_rate} unit="%" description="L2 来源命中 token / 成功请求输入 token" />
+        <MetricCard label="L3 前缀命中率" value={metrics.l3_prefix_hit_rate} unit="%" description="L3 来源命中 token / 成功请求输入 token；逐实例仍可统计共享层命中" />
         <MetricCard label="子轮理想命中率" value={metrics.child_ideal_prefix_hit_rate} unit="%" description="成功子轮的理想复用 token / 成功子轮输入 token" />
         <MetricCard label="子轮实际命中率" value={metrics.child_actual_prefix_hit_rate} unit="%" description="成功子轮实际复用 token / 成功子轮输入 token" />
         <MetricCard label="有命中请求比例" value={metrics.requests_with_hit_ratio} unit="%" description="至少一个输入 token 真正复用的请求" />

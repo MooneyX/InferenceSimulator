@@ -22,6 +22,9 @@ const metrics: Metrics = {
   child_actual_prefix_hit_rate: 0.2,
   constructed_ideal_prefix_hit_rate: 0.28,
   actual_prefix_hit_rate: 0.17,
+  l1_prefix_hit_rate: 0.17,
+  l2_prefix_hit_rate: 0,
+  l3_prefix_hit_rate: 0,
   requests_with_hit_ratio: 0.6,
   requests_fully_cached_ratio: 0.25,
   total_input_tokens: 1000,
@@ -93,6 +96,9 @@ describe("MetricsPanel", () => {
     expect(metricValue("实际运行耗时")).toHaveTextContent("42.5 ms");
     expect(metricValue("构造理想命中率")).toHaveTextContent("28 %");
     expect(metricValue("实际前缀命中率")).toHaveTextContent("17 %");
+    expect(metricValue("L1 前缀命中率")).toHaveTextContent("17 %");
+    expect(metricValue("L2 前缀命中率")).toHaveTextContent("0 %");
+    expect(metricValue("L3 前缀命中率")).toHaveTextContent("0 %");
     expect(metricValue("完整块全命中请求比例")).toHaveTextContent("25 %");
     expect(metricValue("节省 Prefill")).toHaveTextContent("170 token");
     expect(metricValue("重算 Prefill")).toHaveTextContent("4 token");
@@ -114,11 +120,12 @@ describe("MetricsPanel", () => {
     render(<MetricsPanel wallClockMs={42.5} metrics={{ ...metrics,
       l3_capacity_blocks: null, l3_resident_blocks: null, l3_active_blocks: null,
       l3_evictable_blocks: null, l3_free_blocks: null, l3_peak_resident_blocks: null,
-      l3_evictions: null, l3_hit_tokens: 20,
+      l3_evictions: null, l3_hit_tokens: 20, l3_prefix_hit_rate: 0.02,
     }} />);
     expect(screen.queryByText("L3 容量")).not.toBeInTheDocument();
     expect(screen.queryByText("L3 峰值驻留")).not.toBeInTheDocument();
     expect(metricValue("L3 命中")).toHaveTextContent("20 token");
+    expect(metricValue("L3 前缀命中率")).toHaveTextContent("2 %");
   });
 
   it("uses the actual shared peak even in aggregate mode", () => {
@@ -141,6 +148,9 @@ describe("MetricsPanel", () => {
       l1_hit_tokens: 50,
       l2_hit_tokens: 100,
       l3_hit_tokens: 20,
+      l1_prefix_hit_rate: 0.05,
+      l2_prefix_hit_rate: 0.1,
+      l3_prefix_hit_rate: 0.02,
       promotions: 3,
       demotions: 5,
       restore_bytes: 8192,
@@ -151,6 +161,9 @@ describe("MetricsPanel", () => {
     expect(metricValue("L1 命中")).toHaveTextContent("50 token");
     expect(metricValue("L2 命中")).toHaveTextContent("100 token");
     expect(metricValue("L3 命中")).toHaveTextContent("20 token");
+    expect(metricValue("L1 前缀命中率")).toHaveTextContent("5 %");
+    expect(metricValue("L2 前缀命中率")).toHaveTextContent("10 %");
+    expect(metricValue("L3 前缀命中率")).toHaveTextContent("2 %");
     expect(metricValue("提升到 L1")).toHaveTextContent("3 次");
     expect(metricValue("逐级降级")).toHaveTextContent("5 次");
     expect(metricValue("Restore 传输量")).toHaveTextContent("8,192 字节");

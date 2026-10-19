@@ -124,6 +124,14 @@ class TestSuccess:
             == body["meta"]["num_completed"]
         )
         assert {item["instance_id"] for item in body["requests"]} == {0, 1}
+        for metrics in [body["metrics"], *(item["metrics"] for item in body["instances"])]:
+            for tier in ("l1", "l2", "l3"):
+                expected = (metrics[f"{tier}_hit_tokens"] / metrics["total_input_tokens"]
+                            if metrics["total_input_tokens"] else 0)
+                assert metrics[f"{tier}_prefix_hit_rate"] == pytest.approx(expected)
+            assert sum(metrics[f"{tier}_prefix_hit_rate"] for tier in ("l1", "l2", "l3")) == (
+                pytest.approx(metrics["actual_prefix_hit_rate"])
+            )
 
     def test_returns_full_result(self, client: TestClient) -> None:
         response = client.post(URL, json=make_payload())

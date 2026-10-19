@@ -42,6 +42,9 @@ const result: SimResult = {
     root_request_ratio: 1,
     constructed_ideal_prefix_hit_rate: 0,
     actual_prefix_hit_rate: 0,
+    l1_prefix_hit_rate: 0,
+    l2_prefix_hit_rate: 0,
+    l3_prefix_hit_rate: 0,
     requests_with_hit_ratio: 0,
     requests_fully_cached_ratio: 0,
     total_input_tokens: 16,
@@ -165,7 +168,10 @@ describe("App", () => {
         num_requests: 2, num_completed: 2 },
       instances: [result.instances[0], { instance_id: 1, num_completed: 1,
         num_aborted: 0, num_skipped: 0, num_engine_steps: 1,
-        metrics: { ...result.metrics, ttft_mean: 2 } }],
+        metrics: { ...result.metrics, ttft_mean: 2, actual_prefix_hit_rate: 0.25,
+          l1_prefix_hit_rate: 0.25, l1_hit_tokens: 4, actual_hit_tokens: 4,
+          ideal_hit_tokens: 4, matched_cache_tokens: 4, saved_prefill_tokens: 4,
+          actual_prefill_tokens: 12 } }],
       requests: [result.requests![0], { ...result.requests![0], id: 1, instance_id: 1 }],
     });
     render(<App />);
@@ -178,6 +184,7 @@ describe("App", () => {
     expect(screen.getByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.getByLabelText("实例结果筛选")).toHaveTextContent("实例 1");
     expect(screen.getByText("TTFT 均值").closest(".metric-card")).toHaveTextContent("2 ms");
+    expect(screen.getByText("L1 前缀命中率").closest(".metric-card")).toHaveTextContent("25 %");
   });
 
   it("navigates to real configuration and result sections", () => {

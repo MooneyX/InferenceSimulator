@@ -1,6 +1,6 @@
 """实例请求 KV 管理与可独占或共享的分层资源池。"""
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from heapq import heapify, heappop, heappush
 
@@ -456,115 +456,53 @@ class TieredKVCache:
         self.pools["L1"].resident -= count
         del self._states[request_id]
 
-    def _migration_plan(
-        self,
-        promote_ids: Iterable[str],
-        reserve_pages: int,
-        *,
-        reserve_tier: str = "L1",
-        protected: tuple[str, str] | None = None,
-    ) -> tuple[list[tuple[str, str, str | None]], tuple[tuple[str, str], ...]]:
-        """按资源池分别试算增量；共享副本不会借用来源容量。"""
-        if reserve_pages < 0:
-            raise ValueError("所需页数不得为负")
-        needed = tuple(sorted(set(promote_ids)))
-        for chunk_id in needed:
-            page = self.page(chunk_id)
-            if page is None:
-                raise ValueError("待提升页不存在")
-            if chunk_id in self._transfers:
-                raise ValueError("在途页不能同步提升")
-            if page.tier != "L1" and not page.ref_count:
-                raise ValueError("待提升的低层页必须先 pin")
-        counts = {tier: pool.resident for tier, pool in self.pools.items()}
-        seqs = {tier: pool.access_seq for tier, pool in self.pools.items()}
-        changed: dict[tuple[str, str], CacheEntry | None] = {}
-        actions: list[tuple[str, str, str | None]] = []
-        promoted: list[tuple[str, str]] = []
-        candidates = {tier: pool.candidates() for tier, pool in self.pools.items()}
-        pending: dict[str, tuple[int, str] | None] = dict.fromkeys(self.pools)
-        added: dict[str, list[tuple[int, str]]] = {tier: [] for tier in self.pools}
+    def _evict_one(self, tier: str, protected: tuple[str, str] | None = None) -> bool:
+        pool = self.pools[tier]
+        victim = None
+        for access_seq, chunk_id in pool.candidates():
+            page = pool.lookup(chunk_id)
+            if (
+                page is not None
+                and not page.ref_count
+                and page.last_access_seq == access_seq
+                and (tier, chunk_id) != protected
+            ):
+                victim = page
+                break
+        if victim is None:
+            return False
 
-        def lookup(tier: str, chunk_id: str) -> CacheEntry | None:
-            return changed.get((tier, chunk_id), self.pools[tier].lookup(chunk_id))
-
-        def next_victim(tier: str) -> CacheEntry:
-            while True:
-                if pending[tier] is None:
-                    pending[tier] = next(candidates[tier], None)
-                original = pending[tier]
-                if original is not None and (not added[tier] or original <= added[tier][0]):
-                    access_seq, chunk_id = original
-                    pending[tier] = None
-                elif added[tier]:
-                    access_seq, chunk_id = heappop(added[tier])
-                else:
-                    raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
-                page = lookup(tier, chunk_id)
-                if (
-                    page is not None
-                    and not page.ref_count
-                    and page.last_access_seq == access_seq
-                    and (tier, chunk_id) != protected
-                ):
-                    return page
-
-        def place(chunk_id: str, destination: str, refs: int = 0) -> None:
-            existing = lookup(destination, chunk_id)
-            if existing is not None:
-                seqs[destination] += 1
-                page = replace(existing, ref_count=existing.ref_count + refs,
-                               last_access_seq=seqs[destination])
-                changed[destination, chunk_id] = page
-                if not page.ref_count:
-                    heappush(added[destination], (page.last_access_seq, chunk_id))
-                return
-            pending_refs = self.pools[destination].pending_pages.get(chunk_id, 0)
-            if not pending_refs:
-                free_slot(destination)
-                counts[destination] += 1
-            seqs[destination] += 1
-            page = CacheEntry(
-                chunk_id,
-                destination,
-                refs + pending_refs,
-                seqs[destination],
-                pool_id=self.pools[destination].pool_id,
+        lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
+        destination = lower if lower is not None and self.pools[lower].capacity else None
+        if destination is not None:
+            target = self.pools[destination]
+            duplicate = target.lookup(victim.chunk_id) is not None or (
+                victim.chunk_id in target.pending_pages
             )
-            changed[destination, chunk_id] = page
-            if not page.ref_count:
-                heappush(added[destination], (page.last_access_seq, chunk_id))
+            if (
+                not duplicate
+                and target.resident == target.capacity
+                and not self._evict_one(destination, protected)
+            ):
+                destination = None
+        self._apply_move(victim.chunk_id, tier, destination)
+        return True
 
-        def evict_one(tier: str) -> None:
-            victim = next_victim(tier)
-            lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
-            destination = lower if lower is not None and self.pools[lower].capacity else None
-            changed[tier, victim.chunk_id] = None
-            counts[tier] -= 1
-            if destination is not None:
-                place(victim.chunk_id, destination)
-            actions.append((victim.chunk_id, tier, destination))
-
-        def free_slot(tier: str) -> None:
-            while counts[tier] >= self.pools[tier].capacity:
-                evict_one(tier)
-
-        for chunk_id in needed:
-            source = next(
-                (tier for tier in _TIER_ORDER if lookup(tier, chunk_id) is not None), None
-            )
-            if source is None or source == "L1":
-                continue
-            page = lookup(source, chunk_id)
-            if source != "L3":
-                counts[source] -= 1
-                changed[source, chunk_id] = None
-            place(chunk_id, "L1", page.ref_count if page is not None else 0)
-            actions.append((chunk_id, source, "L1"))
-            promoted.append((chunk_id, source))
-        while self.pools[reserve_tier].capacity - counts[reserve_tier] < reserve_pages:
-            evict_one(reserve_tier)
-        return actions, tuple(promoted)
+    def _ensure_tier_free(
+        self, tier: str, count: int, protected: tuple[str, str] | None = None
+    ) -> None:
+        pool = self.pools[tier]
+        protected_page = (
+            pool.lookup(protected[1]) if protected is not None and protected[0] == tier else None
+        )
+        evictable = pool.evictable - int(
+            protected_page is not None and not protected_page.ref_count
+        )
+        if count > pool.capacity - pool.resident + evictable:
+            raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
+        while pool.capacity - pool.resident < count:
+            if not self._evict_one(tier, protected):
+                raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
 
     def _apply_move(self, chunk_id: str, source: str, destination: str | None) -> None:
         old = self.pools[source]
@@ -589,11 +527,6 @@ class TieredKVCache:
         else:
             self.demotions += 1
 
-    def plan(
-        self, promote_ids: Iterable[str] = (), reserve_pages: int = 0
-    ) -> tuple[tuple[str, str], ...]:
-        return self._migration_plan(promote_ids, reserve_pages)[1]
-
     def reserve_transfer(self, chunk_id: str, destination: str) -> str:
         page = self.page(chunk_id)
         if page is None:
@@ -609,11 +542,8 @@ class TieredKVCache:
             raise CacheCapacityError("有活动引用的页不能降级")
         target = self.pools[destination]
         duplicate = target.lookup(chunk_id) is not None or chunk_id in target.pending_pages
-        actions, _ = self._migration_plan(
-            (), int(not duplicate), reserve_tier=destination, protected=(source, chunk_id)
-        )
-        for victim, source_tier, destination_tier in actions:
-            self._apply_move(victim, source_tier, destination_tier)
+        if not duplicate:
+            self._ensure_tier_free(destination, 1, protected=(source, chunk_id))
         self.pools[source].add_ref(chunk_id)
         target.reserve_page(chunk_id)
         self._transfers[chunk_id] = (source, destination)
@@ -641,9 +571,7 @@ class TieredKVCache:
         if count <= self.free_pages:
             return 0
         evictions_before = self.evictions
-        actions, _ = self._migration_plan((), count)
-        for chunk_id, source, destination in actions:
-            self._apply_move(chunk_id, source, destination)
+        self._ensure_tier_free("L1", count)
         return self.evictions - evictions_before
 
     @staticmethod

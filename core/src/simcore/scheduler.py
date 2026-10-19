@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from simcore.kv_cache import CacheCapacityError, TieredKVCache
+from simcore.kv_cache import TieredKVCache
 from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
@@ -154,7 +154,6 @@ class FcfsAdmissionScheduler:
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
         selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
-        tiered = self._engine.l2_capacity_tokens > 0
         while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
             item = self._waiting[0]
             request = item.request
@@ -203,17 +202,6 @@ class FcfsAdmissionScheduler:
                     < self._engine.max_prefill_tokens - selected_pages_tokens
                 )
             )
-            planned_promotions = tuple(sorted(promotions | new_promotions))
-            planned_new_pages = (
-                sum(candidate.required_pages for candidate in selected)
-                + required_tokens // block_size
-            )
-            capacity_ok = True
-            if tiered:
-                try:
-                    cache.plan(planned_promotions, planned_new_pages)
-                except CacheCapacityError:
-                    capacity_ok = False
             future_ok = proposed_total <= cache.available_tokens or not (
                 running or selected or restored or restore_only
             )
@@ -221,7 +209,6 @@ class FcfsAdmissionScheduler:
                 proposed_current > cache.available_tokens
                 or not future_ok
                 or not compute_ok
-                or not capacity_ok
             ):
                 cache.cancel_pin(request.request_id)  # 未准入，撤销对命中页的临时保护
                 if (

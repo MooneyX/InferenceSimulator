@@ -371,8 +371,12 @@ class Engine:
             )
             if missing:
                 self._pending_selection = selection
-                for chunk_id in missing:
-                    try:
+                failed_chunk = missing[0]
+                try:
+                    new_pages = sum(candidate.required_pages for candidate in selection.admitted)
+                    self._prefix_cache.ensure_free(len(missing) + new_pages)
+                    for chunk_id in missing:
+                        failed_chunk = chunk_id
                         self._start_transfer(
                             chunk_id,
                             "L1",
@@ -382,24 +386,22 @@ class Engine:
                             else selection.restore_only[0].request.request_id,
                         )
                         self._pending_loads.add(chunk_id)
-                    except CacheCapacityError:
-                        for item in selection.aborted:
-                            self._abort(
-                                item.request.request_id, now_ms, "input_exceeds_kv_capacity"
-                            )
-                        for item in selection.restored:
-                            self._running[item.request.request_id] = item.generated_tokens
-                        for candidate in selection.admitted:
-                            self._unusable_hits.setdefault(
-                                candidate.waiting.request.request_id, set()
-                            ).add(chunk_id)
-                        for item in selection.restore_only:
-                            self._unusable_hits.setdefault(item.request.request_id, set()).add(
-                                chunk_id
-                            )
-                        self._prefix_scheduler.rollback_selection(selection)
-                        self._pending_selection = None
-                        return None
+                except CacheCapacityError:
+                    for item in selection.aborted:
+                        self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
+                    for item in selection.restored:
+                        self._running[item.request.request_id] = item.generated_tokens
+                    for candidate in selection.admitted:
+                        self._unusable_hits.setdefault(
+                            candidate.waiting.request.request_id, set()
+                        ).add(failed_chunk)
+                    for item in selection.restore_only:
+                        self._unusable_hits.setdefault(item.request.request_id, set()).add(
+                            failed_chunk
+                        )
+                    self._prefix_scheduler.rollback_selection(selection)
+                    self._pending_selection = None
+                    return None
                 return None
         return self._execute_step(now_ms, step_index, selection)
 

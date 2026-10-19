@@ -308,6 +308,46 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     assert run.l2_snapshot.free_blocks + run.l2_snapshot.resident_blocks == 2
 
 
+def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=16, page_size=4, l2_capacity_tokens=8
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1,
+        decode_d1=5,
+        decode_d2=1,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l2_latency_ms=3,
+    )
+    engine = Engine(runtime_config(config, perf))
+    cache = engine._prefix_cache
+    for key in (0, 99, 100):
+        seed = request(key, prompt=8)
+        cache.pin(seed, 0)
+        cache.admit(key)
+        cache.extend(key, 8)
+        cache.publish(key)
+        cache.finish(key)
+    shared = (encode(0, 0), encode(0, 1))
+    assert all(cache.page(chunk_id).tier == "L2" for chunk_id in shared)
+    evictions_before = cache.evictions
+    engine.submit(request(1, prompt=9, maximum=1, output=1, inherited=shared), 0)
+    assert engine.start_step(0, 0) is None
+    events = engine.drain_events()
+    assert len(events) == 2
+    assert cache.evictions == evictions_before + 3
+    assert cache.free_pages == 1
+    assert cache.pools["L1"].reserved == 2
+    assert all(cache.page(chunk_id).tier == "L2" for chunk_id in shared)
+    for now, kind, transfer_id in events:
+        engine.on_transfer_done(kind, transfer_id, now)
+    assert engine.start_step(events[-1][0], 0) == (1, (1,))
+    assert cache.promotions == 2
+    assert engine.finish_step(events[-1][0] + 1) == (1,)
+    engine.complete(events[-1][0] + 1, 1)
+
+
 def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> None:
     config = EngineConfig(
         max_running_requests=2,

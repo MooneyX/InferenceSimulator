@@ -62,7 +62,7 @@ def test_decode_evicts_cached_pages_before_considering_withdrawal() -> None:
     assert engine.finalize().aborted_requests == ()
 
 
-def test_decode_withdraws_when_lower_tier_is_protected_by_inflight_load() -> None:
+def test_decode_drops_cached_page_when_lower_tier_is_protected_by_inflight_load() -> None:
     cfg = EngineConfig(
         max_running_requests=2, max_total_tokens=12, page_size=4, l2_capacity_tokens=4
     )
@@ -86,9 +86,11 @@ def test_decode_withdraws_when_lower_tier_is_protected_by_inflight_load() -> Non
     cached = cache.page(source)
     assert cached is not None and cached.tier == "L2"
     cache.reserve_transfer(source, "L1")
-    assert engine.start_step(4, 1) == (0, ())
-    assert engine.finish_step(4) == ()
-    assert engine._aborted[0].reason == "decode_kv_exhausted"
+    assert engine.start_step(4, 1) == (10, (0,))
+    assert cache.page(encode(98, 0)) is None
+    assert not engine._aborted
+    assert engine.finish_step(14) == (0,)
+    engine.complete(14, 0)
     assert cache.complete_transfer(source) == "L2"
 
 

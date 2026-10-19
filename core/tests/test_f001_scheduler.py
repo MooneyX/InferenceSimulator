@@ -307,7 +307,6 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     assert batch.promote_ids == (shared,)
     pinned_page = cache.page(shared)
     assert pinned_page is not None and pinned_page.ref_count == 2 and pinned_page.tier == "L2"
-    assert cache.plan(batch.promote_ids, 2) == ((shared, "L2"),)
     assert cache.promotions == 0
     assert cache.reserve_transfer(shared, "L1") == "L2"
     in_flight = cache.page(shared)

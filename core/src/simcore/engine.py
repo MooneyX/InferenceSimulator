@@ -17,7 +17,7 @@ from simcore.perf_model import (
     workload_time,
 )
 from simcore.runtime import RuntimeConfig
-from simcore.scheduler import AdmissionBatch, F001Scheduler, RunningRequest
+from simcore.scheduler import AdmissionBatch, FcfsAdmissionScheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
@@ -90,7 +90,7 @@ class Engine:
             shared_l3=shared_l3,
             pool_id_base=instance_id * 2,
         )
-        self._prefix_scheduler = F001Scheduler(engine, self._prefix_cache)
+        self._prefix_scheduler = FcfsAdmissionScheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
         self._admission_tiers: dict[
             int, tuple[int, int, int]

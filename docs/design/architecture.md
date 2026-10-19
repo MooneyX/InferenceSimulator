@@ -72,7 +72,7 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 协作者注入：
 
-- `TieredKVCache`：由 `engine` 独占并注入 `F001Scheduler`，管理请求 `K/F`、私有页和候选引用；`probe` / `pin` / `cancel_pin` / `plan` 组织连续匹配与无副作用预算，`admit` / `extend` / `publish_batch` / `finish` / `withdraw` 管理请求生命周期。
+- `TieredKVCache`：由 `engine` 独占并注入 `FcfsAdmissionScheduler`，管理请求 `K/F`、私有页和候选引用；`probe` / `pin` / `cancel_pin` / `plan` 组织连续匹配与无副作用预算，`admit` / `extend` / `publish_batch` / `finish` / `withdraw` 管理请求生命周期。
 - `CachePool`：逐池拥有页索引、容量、LRU 和保护状态。每实例独占 L1/L2；`runner` 每场创建一个 L3 并以 `Engine(runtime, shared_l3=..., instance_id=...)` 注入所有实例，编号在本场唯一。共享 L3 是明确的可变协作者例外，不放进不可变 `RuntimeConfig`，不跨运行复用。上行传输由 `reserve_transfer` / `complete_transfer` 保护来源并完成目标占位；L3 回载保留来源副本。共享池统计由 `runner` 只读取一次。
 
 调度事件仅用于推进仿真，不保存逐步诊断日志。`EngineRun` 只携带正常汇总使用的请求记录、分层快照与整体计数；`compute_metrics` 必须接收完整计划、三级快照和实际发送统计。

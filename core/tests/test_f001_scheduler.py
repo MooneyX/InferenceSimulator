@@ -4,7 +4,7 @@ import pytest
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import F001Scheduler, RunningRequest
+from simcore.scheduler import FcfsAdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
@@ -15,7 +15,7 @@ def make(
     max_running: int = 8,
     max_prefill: int = 16_384,
     exclusive: bool = True,
-) -> tuple[F001Scheduler, TieredKVCache]:
+) -> tuple[FcfsAdmissionScheduler, TieredKVCache]:
     config = EngineConfig(
         max_running_requests=max_running,
         max_total_tokens=capacity,
@@ -24,7 +24,7 @@ def make(
         pd_mutually_exclusive=exclusive,
     )
     cache = TieredKVCache(config.max_total_tokens, config.page_size)
-    return F001Scheduler(config, cache), cache
+    return FcfsAdmissionScheduler(config, cache), cache
 
 
 def request(
@@ -298,7 +298,7 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     shared = encode(0, 0)
     initial_page = cache.page(shared)
     assert initial_page is not None and initial_page.tier == "L2"
-    scheduler = F001Scheduler(config, cache)
+    scheduler = FcfsAdmissionScheduler(config, cache)
     for key in (1, 2):
         scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 1)
     batch = scheduler.select_prefill({})
@@ -343,7 +343,7 @@ def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
     before = cache.page(shared)
     assert before is not None and before.tier == "L2"
     counters = (cache.promotions, cache.demotions)
-    scheduler = F001Scheduler(config, cache)
+    scheduler = FcfsAdmissionScheduler(config, cache)
     scheduler.enqueue(request(1, prompt=5, inherited=(shared,)), 1)
     scheduler.enqueue(request(2, prompt=1), 1)
     batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})

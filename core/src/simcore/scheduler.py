@@ -9,7 +9,7 @@ from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
     "AdmissionBatch",
-    "F001Scheduler",
+    "FcfsAdmissionScheduler",
     "PrefillCandidate",
     "RunningRequest",
     "WaitingRequest",
@@ -61,7 +61,7 @@ class AdmissionBatch:
     promote_ids: tuple[str, ...] = ()
 
 
-class F001Scheduler:
+class FcfsAdmissionScheduler:
     """按当前 KV 状态逐队头准入；只用生成上限与进度估算，不以 output_len 调度。"""
 
     def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值

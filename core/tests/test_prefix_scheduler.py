@@ -2,14 +2,14 @@
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import F001Scheduler, RunningRequest
+from simcore.scheduler import FcfsAdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
-def setup(capacity: int = 80) -> tuple[F001Scheduler, TieredKVCache]:
+def setup(capacity: int = 80) -> tuple[FcfsAdmissionScheduler, TieredKVCache]:
     engine = EngineConfig(max_running_requests=3, max_total_tokens=capacity, page_size=4)
     cache = TieredKVCache(engine.max_total_tokens, engine.page_size)
-    return F001Scheduler(engine, cache), cache
+    return FcfsAdmissionScheduler(engine, cache), cache
 
 
 def request(

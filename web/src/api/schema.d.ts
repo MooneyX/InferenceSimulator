@@ -53,12 +53,28 @@ export interface paths {
          *
          *     - 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，
          *       不阻塞事件循环。
-         *     - 直接返回内核 ``model_dump_json`` 的字节：跳过 FastAPI 对响应模型的二次
-         *       校验（逐条 ``RequestRecord`` 重新校验在大规模仿真下开销可观），并保证
-         *       响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。
+         *     - 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。
+         *       ``response_model`` 仅用于 OpenAPI 登记。
          */
         post: operations["simulate_endpoint_api_simulate_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/simulation-cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 清空本地仿真结果缓存 */
+        delete: operations["clear_simulation_cache_api_simulation_cache_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1531,7 +1547,10 @@ export interface operations {
     };
     simulate_endpoint_api_simulate_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description 跳过已有结果并重算；相同输入仍合并进行中的计算 */
+                force?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1545,6 +1564,10 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算 */
+                    "X-Simulation-Cache"?: "hit" | "miss" | "shared";
+                    /** @description 本次缓存查找/读取耗时（ms），不含等待、计算和网络传输 */
+                    "X-Simulation-Cache-Lookup-Ms"?: number;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1577,6 +1600,24 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
+            };
+        };
+    };
+    clear_simulation_cache_api_simulation_cache_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

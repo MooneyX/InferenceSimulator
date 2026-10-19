@@ -26,5 +26,8 @@ Thumbs.db
 # Env
 .env
 
+# Local persistent simulation results
+/.simulation-cache/
+
 # Local replay datasets (not distributed with the repository)
 /refs/cc-traces/

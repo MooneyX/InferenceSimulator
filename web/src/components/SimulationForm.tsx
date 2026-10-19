@@ -15,7 +15,7 @@ import { TracePanel, type ReplaySelection } from "./TracePanel";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
-  onSubmit: (config: SimConfig) => void;
+  onSubmit: (config: SimConfig, force?: boolean) => void;
   disabled?: boolean;
 }
 
@@ -137,7 +137,9 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
 
     if (validateSimConfig(submissionConfig).length > 0 || runUnavailable) return;
     if (workloadMode === "trace" && !replay) return;
-    onSubmit(submissionConfig);
+    const force = (event.nativeEvent as SubmitEvent).submitter?.getAttribute("value") === "force";
+    if (force) onSubmit(submissionConfig, true);
+    else onSubmit(submissionConfig);
   }
 
   function handleExport(): void {
@@ -545,6 +547,11 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
           disabled={disabled || runUnavailable || (workloadMode === "trace" && !replay)}>
           {disabled ? "正在运行…" : "运行仿真"}
         </button>
+        <button className="secondary-button" type="submit" name="cache-action" value="force"
+          disabled={disabled || runUnavailable || (workloadMode === "trace" && !replay)}>
+          强制重新计算
+        </button>
+        <p>相同参数自动复用结果缓存；强制重新计算会更新缓存。</p>
         {runUnavailable && <p>当前配置尚不可运行；请核对 TP/EP 与 GPU 数、计时模式及通信参数。仍可预览容量。</p>}
         {workloadMode === "trace" && !replay &&
           <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}

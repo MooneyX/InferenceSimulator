@@ -286,8 +286,36 @@
 
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
   justify-content: flex-start;
   padding: 0 2px;
+}
+
+.form-actions > p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.secondary-button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface2);
+  cursor: pointer;
+  font: inherit;
+}
+
+.secondary-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .run-button {

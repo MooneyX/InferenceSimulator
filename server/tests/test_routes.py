@@ -42,7 +42,7 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def client() -> TestClient:
     return TestClient(create_app())
 
@@ -448,7 +448,7 @@ class TestErrors:
         assert client.get(URL).status_code == 405
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def operation(client: TestClient) -> dict[str, Any]:
     spec: dict[str, Any] = client.get("/openapi.json").json()
     op: dict[str, Any] = spec["paths"][URL]["post"]

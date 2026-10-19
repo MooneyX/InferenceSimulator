@@ -16,6 +16,19 @@ afterEach(() => {
 });
 
 describe("SimulationForm", () => {
+  it("validates force recalculation and disables it while running", () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "强制重新计算" }));
+    expect(onSubmit).toHaveBeenCalledWith(createDefaultSimConfig(), true);
+    onSubmit.mockClear();
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "强制重新计算" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(<SimulationForm onSubmit={onSubmit} disabled />);
+    expect(screen.getByRole("button", { name: "强制重新计算" })).toBeDisabled();
+  });
+
   it("runs one trace plan with inference settings and restores synthetic workload", async () => {
     const onSubmit = vi.fn();
     vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });

@@ -18,6 +18,16 @@
   font-size: 1.05rem;
 }
 
+.cache-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
 .results-heading > p {
   margin: 0;
   color: var(--text-dim);

@@ -57,11 +57,21 @@ function validationErrors(detail: unknown): ValidationError[] {
     typeof item.msg === "string" && typeof item.type === "string") : [];
 }
 
-export async function simulate(config: SimConfig): Promise<SimResult> {
+export interface SimulationCacheInfo {
+  status: "hit" | "miss" | "shared";
+  lookupMs: number;
+}
+
+export interface SimulationResponse {
+  result: SimResult;
+  cache: SimulationCacheInfo;
+}
+
+export async function simulate(config: SimConfig, force = false): Promise<SimulationResponse> {
   let response: Response;
 
   try {
-    response = await fetch(SIMULATE_ENDPOINT, {
+    response = await fetch(force ? `${SIMULATE_ENDPOINT}?force=true` : SIMULATE_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -79,7 +89,14 @@ export async function simulate(config: SimConfig): Promise<SimResult> {
       throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
     }
 
-    return payload as SimResult;
+    const status = response.headers.get("X-Simulation-Cache");
+    return {
+      result: payload as SimResult,
+      cache: {
+        status: status === "hit" || status === "shared" ? status : "miss",
+        lookupMs: Number(response.headers.get("X-Simulation-Cache-Lookup-Ms") ?? 0),
+      },
+    };
   }
 
   if (response.status === 422) {
@@ -100,6 +117,20 @@ export async function simulate(config: SimConfig): Promise<SimResult> {
   throw new SimulationApiError(
     getErrorDetail(payload) ?? `仿真请求失败（HTTP ${response.status}）`,
   );
+}
+
+export async function clearSimulationCache(): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch("/api/simulation-cache", { method: "DELETE" });
+  } catch (cause) {
+    throw new SimulationApiError("无法连接仿真服务", { cause });
+  }
+  if (!response.ok) {
+    throw new SimulationApiError(
+      getErrorDetail(await readJson(response)) ?? `清空结果缓存失败（HTTP ${response.status}）`,
+    );
+  }
 }
 
 async function requestConfig<T>(endpoint: string, body?: SimConfig): Promise<T> {

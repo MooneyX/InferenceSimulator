@@ -6,7 +6,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult, simulate
@@ -32,7 +32,7 @@ class FieldValidationResponse(BaseModel):
     detail: list[dict[str, Any]]
 
 
-_SIMULATION_ERRORS = {
+_SIMULATION_ERRORS: dict[int | str, dict[str, Any]] = {
     status.HTTP_404_NOT_FOUND: {
         "model": ErrorResponse,
         "description": "Trace 请求计划不存在或已过期",
@@ -94,16 +94,35 @@ def resolve_endpoint(config: SimConfig) -> ResolutionReport:
     "/simulate",
     response_model=SimResult,
     summary="同步执行一场仿真",
-    responses=_SIMULATION_ERRORS,
+    responses={
+        **_SIMULATION_ERRORS,
+        200: {
+            "headers": {
+                "X-Simulation-Cache": {
+                    "description": "hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算",
+                    "schema": {"type": "string", "enum": ["hit", "miss", "shared"]},
+                },
+                "X-Simulation-Cache-Lookup-Ms": {
+                    "description": "本次缓存查找/读取耗时（ms），不含等待、计算和网络传输",
+                    "schema": {"type": "number"},
+                },
+            },
+        },
+    },
 )
-def simulate_endpoint(config: SimConfig, request: Request) -> Response:
+def simulate_endpoint(
+    config: SimConfig,
+    request: Request,
+    force: bool = Query(
+        default=False, description="跳过已有结果并重算；相同输入仍合并进行中的计算"
+    ),
+) -> Response:
     """执行整场仿真并返回区间记录、指标与告警。
 
     - 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，
       不阻塞事件循环。
-    - 直接返回内核 ``model_dump_json`` 的字节：跳过 FastAPI 对响应模型的二次
-      校验（逐条 ``RequestRecord`` 重新校验在大规模仿真下开销可观），并保证
-      响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。
+    - 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。
+      ``response_model`` 仅用于 OpenAPI 登记。
     """
     try:
         trace_plan = None
@@ -112,11 +131,29 @@ def simulate_endpoint(config: SimConfig, request: Request) -> Response:
             if not trace.plan_id:
                 raise ValueError("Trace 仿真须提供 workload.trace.plan_id")
             trace_plan = request.app.state.trace_store.plan(trace.plan_id)
-        result = simulate(config, trace_plan=trace_plan)
+        result = request.app.state.result_cache.run(
+            config,
+            trace_plan,
+            lambda: simulate(config, trace_plan=trace_plan),
+            force=force,
+        )
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NotImplementedError as exc:
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    return Response(content=result.model_dump_json(), media_type="application/json")
+    return Response(
+        content=result.content,
+        media_type="application/json",
+        headers={
+            "X-Simulation-Cache": result.status,
+            "X-Simulation-Cache-Lookup-Ms": f"{result.lookup_ms:.3f}",
+        },
+    )
+
+
+@router.delete("/simulation-cache", status_code=204, summary="清空本地仿真结果缓存")
+def clear_simulation_cache(request: Request) -> Response:
+    request.app.state.result_cache.clear()
+    return Response(status_code=204)

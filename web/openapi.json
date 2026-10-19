@@ -73,17 +73,31 @@
     "/api/simulate": {
       "post": {
         "summary": "同步执行一场仿真",
-        "description": "执行整场仿真并返回区间记录、指标与告警。\n\n- 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，\n  不阻塞事件循环。\n- 直接返回内核 ``model_dump_json`` 的字节：跳过 FastAPI 对响应模型的二次\n  校验（逐条 ``RequestRecord`` 重新校验在大规模仿真下开销可观），并保证\n  响应与内核序列化逐字节一致。``response_model`` 仅用于 OpenAPI 登记。",
+        "description": "执行整场仿真并返回区间记录、指标与告警。\n\n- 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，\n  不阻塞事件循环。\n- 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。\n  ``response_model`` 仅用于 OpenAPI 登记。",
         "operationId": "simulate_endpoint_api_simulate_post",
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "跳过已有结果并重算；相同输入仍合并进行中的计算",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "跳过已有结果并重算；相同输入仍合并进行中的计算"
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SimConfig"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -92,6 +106,25 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SimResult"
+                }
+              }
+            },
+            "headers": {
+              "X-Simulation-Cache": {
+                "description": "hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "hit",
+                    "miss",
+                    "shared"
+                  ]
+                }
+              },
+              "X-Simulation-Cache-Lookup-Ms": {
+                "description": "本次缓存查找/读取耗时（ms），不含等待、计算和网络传输",
+                "schema": {
+                  "type": "number"
                 }
               }
             }
@@ -133,6 +166,17 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/simulation-cache": {
+      "delete": {
+        "summary": "清空本地仿真结果缓存",
+        "operationId": "clear_simulation_cache_api_simulation_cache_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           }
         }
       }

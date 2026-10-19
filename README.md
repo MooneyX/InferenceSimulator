@@ -67,6 +67,14 @@ Remove-Item simulate-request.json
 
 响应是单个 `SimResult`，包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings`、物理容量 `resolution` 和可为空的 `analysis`；各请求含 `instance_id`。`meta.config` 完整回显规范化后的输入 `SimConfig`（包括模型字段默认值），不以推导容量改写输入。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回。推理配置支持解析或经验计时，合成/Trace 负载均使用同一 `POST /api/simulate`；Trace 通过 `workload.trace.plan_id` 引用已上传的计划。旧手动配置 JSON 与 API 请求不再受支持，须重新选择模型、硬件与存储预算。旧版物理配置 JSON 也需删除 `inference.mode` 和 `shared_l3.mode` 后才能导入或提交；保留负载与计时的 `mode` 字段。
 
+## 仿真结果缓存
+
+服务端自动使用 SQLite 保存完整结果，默认位置为启动工作目录下的 `.simulation-cache/results.sqlite3`；本地部署从项目根启动，重启后仍可复用。键包含补齐默认值的配置、随机种子、规范化 Trace 计划的 SHA-256 及内核/服务源代码、Python/Pydantic 版本指纹。同内容计划重复上传可命中，响应仍回显本次 `plan_id`；Trace 临时 ID 过期或服务重启后须先重新上传计划。
+
+页面显示结果缓存命中状态、缓存查找/读取耗时和原始仿真计算耗时。「强制重新计算」使用当前表单参数重算并更新缓存；「清空结果缓存」确认后清空本地全部缓存，不删除已显示的结果。API 对应 `POST /api/simulate?force=true` 和 `DELETE /api/simulation-cache`（204）。
+
+缓存默认最多保存 512 MiB 的压缩结果及输入记录，超限按最久未使用记录清理；单条超限仍正常返回但不保存。可在启动前通过 `SIMULATOR_CACHE_PATH` 指定数据库路径、`SIMULATOR_CACHE_MAX_BYTES` 指定容量字节数。数据库文件另有少量索引/页开销。同参数并发计算合并仅作用于同一服务进程；当前不提供跨进程或多机任务协调。HTTP 异常不缓存，包含请求级失败的完整结果可以缓存。
+
 ## Trace 数据集 replay
 
 页面根据模型、硬件与存储预算自动解析容量；「负载模式」可选择合成负载或数据集 Trace 回放。选择 Trace 后，可上传原始 JSONL、等待后台扫描、预览并选择会话后下载请求计划，也可直接上传既有计划 JSON；准备就绪后使用同一个「运行仿真」按钮执行。上传完整数据集需要服务端磁盘空间；更推荐先在数据所在机器本地执行：

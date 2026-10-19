@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveConfig, simulate, SimulationApiError } from "./client";
+import { clearSimulationCache, resolveConfig, simulate, SimulationApiError } from "./client";
 import type { ResolutionReport, SimConfig, SimResult } from "./types";
 import { createDefaultSimConfig } from "../config/simulation";
 
@@ -131,6 +131,7 @@ function jsonResponse(status: number, payload: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(),
     json: vi.fn().mockResolvedValue(payload),
   } as unknown as Response;
 }
@@ -144,7 +145,7 @@ describe("simulate", () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, result));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(simulate(config)).resolves.toEqual(result);
+    await expect(simulate(config)).resolves.toEqual({ result, cache: { status: "miss", lookupMs: 0 } });
     expect(fetchMock).toHaveBeenCalledWith("/api/simulate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -237,6 +238,40 @@ describe("simulate", () => {
       message: "无法连接仿真服务",
       cause,
     });
+  });
+});
+
+describe("result cache", () => {
+  it("reads hit metadata and sends the force query", async () => {
+    const response = jsonResponse(200, result);
+    response.headers.set("X-Simulation-Cache", "hit");
+    response.headers.set("X-Simulation-Cache-Lookup-Ms", "1.25");
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(simulate(config, true)).resolves.toEqual({
+      result, cache: { status: "hit", lookupMs: 1.25 },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/simulate?force=true", expect.objectContaining({
+      method: "POST", body: JSON.stringify(config),
+    }));
+    response.headers.set("X-Simulation-Cache", "shared");
+    expect((await simulate(config)).cache.status).toBe("shared");
+  });
+
+  it("clears the cache with DELETE without reading an empty JSON body", async () => {
+    const response = jsonResponse(204, undefined);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    vi.stubGlobal("fetch", fetchMock);
+    await clearSimulationCache();
+    expect(fetchMock).toHaveBeenCalledWith("/api/simulation-cache", { method: "DELETE" });
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it("reports cache clearing failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(500, { detail: "清理失败" })));
+    await expect(clearSimulationCache()).rejects.toThrow("清理失败");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    await expect(clearSimulationCache()).rejects.toThrow("无法连接仿真服务");
   });
 });
 

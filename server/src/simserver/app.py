@@ -3,8 +3,12 @@
 采用工厂函数而非模块级单例：导入本模块无副作用，测试可按需构造独立实例。
 """
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI
 
+from simserver.result_cache import DEFAULT_MAX_BYTES, ResultCache
 from simserver.routes import router
 from simserver.trace_routes import router as trace_router
 from simserver.trace_store import TraceStore
@@ -12,7 +16,7 @@ from simserver.trace_store import TraceStore
 __all__ = ["create_app"]
 
 
-def create_app() -> FastAPI:
+def create_app(*, cache_path: Path | None = None) -> FastAPI:
     """构造服务层应用实例。
 
     ``separate_input_output_schemas=False``：请求与响应复用同一组 Pydantic 模型
@@ -26,6 +30,12 @@ def create_app() -> FastAPI:
         separate_input_output_schemas=False,
     )
     app.state.trace_store = TraceStore()
+    app.state.result_cache = ResultCache(
+        cache_path
+        if cache_path is not None
+        else Path(os.environ.get("SIMULATOR_CACHE_PATH", ".simulation-cache/results.sqlite3")),
+        max_bytes=int(os.environ.get("SIMULATOR_CACHE_MAX_BYTES", str(DEFAULT_MAX_BYTES))),
+    )
     app.include_router(router)
     app.include_router(trace_router)
     return app

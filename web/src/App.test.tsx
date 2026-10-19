@@ -1,14 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
+import { clearSimulationCache, simulate, uploadReplayPlan, SimulationApiError, type SimulationResponse } from "./api/client";
 import type { InferenceConfig, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
-  return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn() };
+  return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn(), clearSimulationCache: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -140,13 +140,62 @@ function resolvedResult(overrides: Partial<InferenceConfig> = {}): SimResult {
 
 const simulateMock = vi.mocked(simulate);
 const uploadReplayPlanMock = vi.mocked(uploadReplayPlan);
+const clearCacheMock = vi.mocked(clearSimulationCache);
+
+function resolveSimulation(value: SimResult): void {
+  simulateMock.mockResolvedValue({ result: value, cache: { status: "miss", lookupMs: 0 } });
+}
 
 beforeEach(() => {
   simulateMock.mockReset();
   uploadReplayPlanMock.mockReset();
+  clearCacheMock.mockReset();
+  vi.restoreAllMocks();
 });
 
 describe("App", () => {
+  it("shows a cache hit and forces a recalculation with the current form", async () => {
+    simulateMock.mockResolvedValueOnce({ result, cache: { status: "hit", lookupMs: 1.25 } });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(await screen.findByLabelText("结果缓存状态")).toHaveTextContent("结果缓存命中");
+    expect(screen.getByLabelText("结果缓存状态")).toHaveTextContent("缓存查找/读取 1.25 ms");
+    expect(screen.getByLabelText("结果缓存状态")).toHaveTextContent("原始仿真计算 42.50 ms");
+    expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
+    resolveSimulation(result);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "强制重新计算" }));
+    expect(simulateMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 20 }) }),
+    }), true);
+    expect(await screen.findByLabelText("结果缓存状态")).toHaveTextContent("本次结果为重新计算");
+  });
+
+  it("confirms cache clearing and keeps the displayed result", async () => {
+    resolveSimulation(result);
+    clearCacheMock.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    await screen.findByRole("heading", { name: "仿真指标" });
+    fireEvent.click(screen.getByRole("button", { name: "清空结果缓存" }));
+    expect(clearCacheMock).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "清空结果缓存" }));
+    expect(await screen.findByText("结果缓存已清空，下一次运行将重新计算。")).toBeInTheDocument();
+    expect(clearCacheMock).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+  });
+
+  it("reports cache clearing errors", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    clearCacheMock.mockRejectedValue(new SimulationApiError("清空失败"));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "清空结果缓存" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("清空失败");
+    expect(screen.getByRole("button", { name: "清空结果缓存" })).toBeEnabled();
+  });
+
   it("renders the configuration form and initial result placeholder", () => {
     render(<App />);
 
@@ -162,7 +211,7 @@ describe("App", () => {
   });
 
   it("routes the configured replica count and filters instance results", async () => {
-    simulateMock.mockResolvedValue({
+    resolveSimulation({
       ...result,
       meta: { ...result.meta, config: { ...result.meta.config, num_instances: 2 },
         num_requests: 2, num_completed: 2 },
@@ -204,7 +253,7 @@ describe("App", () => {
   });
 
   it("runs a simulation and renders every result section", async () => {
-    simulateMock.mockResolvedValue(result);
+    resolveSimulation(result);
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
@@ -223,7 +272,7 @@ describe("App", () => {
     traceResult.meta.config.workload = { mode: "trace", arrival_mode: "open_loop",
       session_rate: 1, seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } };
     uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
-    simulateMock.mockResolvedValue(traceResult);
+    resolveSimulation(traceResult);
     render(<App />);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
@@ -247,7 +296,7 @@ describe("App", () => {
   });
 
   it("routes the single run button to the simulation API", async () => {
-    simulateMock.mockResolvedValue(resolvedResult());
+    resolveSimulation(resolvedResult());
     render(<App />);
     expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "运行仿真" })).toHaveLength(1);
@@ -272,7 +321,7 @@ describe("App", () => {
       ep_dispatch_ms: 0, ep_combine_ms: 0,
       ep_dispatch_bytes: 0, ep_combine_bytes: 0, ep_exchanges: 0,
     };
-    simulateMock.mockResolvedValue(resolved);
+    resolveSimulation(resolved);
     render(<App />);
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("本实例 GPU 卡数"), { target: { value: "4" } });
@@ -308,7 +357,7 @@ describe("App", () => {
       ep_dispatch_ms: 0.4, ep_combine_ms: 0.6,
       ep_dispatch_bytes: 900, ep_combine_bytes: 1100, ep_exchanges: 8,
     };
-    simulateMock.mockResolvedValue(resolved);
+    resolveSimulation(resolved);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     const summary = await screen.findByLabelText("解析配置与成本");
@@ -323,7 +372,7 @@ describe("App", () => {
   });
 
   it("shows abort and skip reasons but charts completed requests only", async () => {
-    simulateMock.mockResolvedValue({
+    resolveSimulation({
       ...result,
       meta: { ...result.meta, num_requests: 3, num_aborted: 1, num_skipped: 1 },
       aborted_requests: [{
@@ -342,7 +391,7 @@ describe("App", () => {
   });
 
   it("shows an empty chart state when every request failed", async () => {
-    simulateMock.mockResolvedValue({
+    resolveSimulation({
       ...result,
       meta: { ...result.meta, num_completed: 0, num_aborted: 1 },
       metrics: {
@@ -364,7 +413,7 @@ describe("App", () => {
   });
 
   it("disables duplicate submission while the request is pending", async () => {
-    let resolveRequest: (value: SimResult) => void = () => undefined;
+    let resolveRequest: (value: SimulationResponse) => void = () => undefined;
     simulateMock.mockReturnValue(
       new Promise((resolve) => {
         resolveRequest = resolve;
@@ -377,7 +426,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("正在运行仿真…");
 
-    resolveRequest(result);
+    resolveRequest({ result, cache: { status: "miss", lookupMs: 0 } });
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
   });
 

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 
-import { simulate, SimulationApiError } from "./api/client";
+import { clearSimulationCache, simulate, SimulationApiError, type SimulationCacheInfo } from "./api/client";
 import type { SimConfig, SimResult } from "./api/types";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
@@ -45,6 +45,9 @@ export default function App() {
   const [selectedInstanceId, setSelectedInstanceId] = useState<number | null>(null);
   const [error, setError] = useState<PresentationError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [cacheInfo, setCacheInfo] = useState<SimulationCacheInfo | null>(null);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [cacheNotice, setCacheNotice] = useState<{ message: string; error: boolean } | null>(null);
   const selectedInstance = result?.instances.find((item) => item.instance_id === selectedInstanceId);
   const inference = result?.meta.config.inference;
   const resolution = result?.resolution;
@@ -55,18 +58,36 @@ export default function App() {
       : navigation[0].id,
   );
 
-  async function handleSubmit(config: SimConfig): Promise<void> {
+  async function handleSubmit(config: SimConfig, force = false): Promise<void> {
     setIsRunning(true);
     setError(null);
     setResult(null);
+    setCacheInfo(null);
+    setCacheNotice(null);
     setSelectedInstanceId(null);
 
     try {
-      setResult(await simulate(config));
+      const response = force ? await simulate(config, true) : await simulate(config);
+      setResult(response.result);
+      setCacheInfo(response.cache);
     } catch (cause) {
       setError(presentError(cause));
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function handleClearCache(): Promise<void> {
+    if (!window.confirm("清空本地所有仿真结果缓存？已显示的结果不会删除。")) return;
+    setIsClearingCache(true);
+    setCacheNotice(null);
+    try {
+      await clearSimulationCache();
+      setCacheNotice({ message: "结果缓存已清空，下一次运行将重新计算。", error: false });
+    } catch (cause) {
+      setCacheNotice({ message: presentError(cause).message, error: true });
+    } finally {
+      setIsClearingCache(false);
     }
   }
 
@@ -107,7 +128,7 @@ export default function App() {
           </div>
         </header>
 
-        <SimulationForm onSubmit={handleSubmit} disabled={isRunning} />
+        <SimulationForm onSubmit={handleSubmit} disabled={isRunning || isClearingCache} />
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">
@@ -115,8 +136,22 @@ export default function App() {
               <p className="section-kicker">Simulation output</p>
               <h2>仿真结果</h2>
             </div>
-            <p>运行当前配置后更新 · 指标由仿真服务计算</p>
+            <div className="cache-controls">
+              <span>相同参数自动复用结果</span>
+              <button className="secondary-button" type="button" onClick={() => void handleClearCache()}
+                disabled={isRunning || isClearingCache}>
+                {isClearingCache ? "正在清空…" : "清空结果缓存"}
+              </button>
+            </div>
           </div>
+          {cacheNotice && <section className={cacheNotice.error ? "simulation-error" : "simulation-status"}
+            role={cacheNotice.error ? "alert" : "status"}>{cacheNotice.message}</section>}
+          {cacheInfo && result && <section className="simulation-status" aria-label="结果缓存状态">
+            {cacheInfo.status === "hit" ? "结果缓存命中" : cacheInfo.status === "shared"
+              ? "已复用相同参数的进行中计算" : "本次结果为重新计算"}
+            {" · "}缓存查找/读取 {cacheInfo.lookupMs.toFixed(2)} ms
+            {" · "}原始仿真计算 {result.meta.wall_clock_ms.toFixed(2)} ms
+          </section>}
           {isRunning ? (
             <section className="simulation-status" role="status">
               <span className="status-indicator" aria-hidden="true" />

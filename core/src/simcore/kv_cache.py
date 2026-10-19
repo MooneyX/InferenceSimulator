@@ -552,7 +552,7 @@ class TieredKVCache:
         del self._transfers[chunk_id]
         return source
 
-    def ensure_free(self, count: int) -> int:
+    def ensure_free(self, count: int) -> int: # 确保剩余空闲页数不小于count, 返回因此驱逐的页数
         if count <= self.free_pages:
             return 0
         evictions_before = self.evictions

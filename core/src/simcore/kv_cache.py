@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from heapq import heappop, heappush
+from heapq import heapify, heappop, heappush
 
 from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import InferenceRequest
@@ -157,6 +157,7 @@ class CachePool:
         self.resident -= 1
         if not page.ref_count:
             self.evictable -= 1
+            self._maybe_rebuild_heap()
         self.evictions += int(evicted)
         return page
 
@@ -167,6 +168,8 @@ class CachePool:
         if not page.ref_count:
             self.evictable -= 1
         self.entries[chunk_id] = replace(page, ref_count=page.ref_count + count)
+        if not page.ref_count:
+            self._maybe_rebuild_heap()
 
     def add_ref(self, chunk_id: str, *, refresh: bool = False) -> None:
         self.add_refs(chunk_id, 1)
@@ -193,6 +196,19 @@ class CachePool:
         if key not in self.queued:
             heappush(self.heap, key)
             self.queued.add(key)
+            self._maybe_rebuild_heap()
+
+    def _maybe_rebuild_heap(self) -> None:
+        stale = len(self.heap) - self.evictable
+        if stale < 512 or stale * 16 < self.evictable:
+            return
+        self.heap = [
+            (page.last_access_seq, page.chunk_id)
+            for page in self.entries.values()
+            if not page.ref_count
+        ]
+        heapify(self.heap)
+        self.queued = set(self.heap)
 
     def candidates(self) -> Iterator[tuple[int, str]]:
         """按稳定 LRU 顺序只读遍历堆，不复制整个索引或修改真实堆。"""

@@ -2,7 +2,7 @@
 
 import pytest
 
-from simcore.kv_cache import CacheCapacityError, CacheEntry, TieredKVCache
+from simcore.kv_cache import CacheCapacityError, CacheEntry, CachePool, TieredKVCache
 from simcore.prefix_hash import encode
 from simcore.schemas import InferenceRequest
 
@@ -165,6 +165,32 @@ def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
     assert cache.ensure_free(2) == 1
     assert cache.page(encode(0, 0)) is None
     assert_conserved(cache)
+
+
+@pytest.mark.parametrize("change", ["queue", "protect", "remove"])
+def test_candidate_heap_rebuild_discards_stale_entries(change: str) -> None:
+    pool = CachePool("L1", 0, 3, 1)
+    pool.insert("old")
+    pool.insert("recent")
+    for _ in range(511):
+        pool.touch("recent")
+    assert len(pool.heap) == 513
+    if change == "queue":
+        pool.touch("recent")
+    elif change == "protect":
+        pool.add_ref("old")
+    else:
+        pool.remove("old")
+    assert list(pool.candidates()) == sorted(
+        (page.last_access_seq, page.chunk_id)
+        for page in pool.entries.values()
+        if not page.ref_count
+    )
+    assert pool.queued == set(pool.heap)
+    assert len(pool.heap) == pool.evictable
+    if change == "protect":
+        pool.drop_ref("old")
+        assert list(pool.candidates())[0] == (pool.entries["old"].last_access_seq, "old")
 
 
 def test_eviction_is_lru_and_never_evicts_active_pages() -> None:

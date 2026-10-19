@@ -181,16 +181,32 @@ def test_candidate_heap_rebuild_discards_stale_entries(change: str) -> None:
         pool.add_ref("old")
     else:
         pool.remove("old")
-    assert list(pool.candidates()) == sorted(
+    expected = sorted(
         (page.last_access_seq, page.chunk_id)
         for page in pool.entries.values()
         if not page.ref_count
     )
+    assert set(pool.heap) == set(expected)
     assert pool.queued == set(pool.heap)
     assert len(pool.heap) == pool.evictable
+    assert pool.heap[0] == expected[0]
     if change == "protect":
         pool.drop_ref("old")
-        assert list(pool.candidates())[0] == (pool.entries["old"].last_access_seq, "old")
+        assert pool.heap[0] == (pool.entries["old"].last_access_seq, "old")
+
+
+def test_pop_lru_cleans_stale_entries_and_requeues_released_page() -> None:
+    pool = CachePool("L1", 0, 3, 1)
+    pool.insert("old")
+    pool.insert("recent")
+    pool.touch("old")
+    pool.add_ref("recent")
+    assert pool.pop_lru() == pool.lookup("old")
+    assert pool.heap == [] and pool.queued == set()
+    pool.remove("old", evicted=True)
+    pool.drop_ref("recent")
+    assert pool.pop_lru() == pool.lookup("recent")
+    assert pool.heap == [] and pool.queued == set()
 
 
 def test_eviction_is_lru_and_never_evicts_active_pages() -> None:
@@ -485,24 +501,26 @@ def test_transfer_completion_moves_one_page_into_reserved_slot() -> None:
     assert_tiers_conserved(cache)
 
 
-def test_transfer_failed_reservation_preserves_all_cache_state() -> None:
+@pytest.mark.parametrize("stale_entries", [0, 511])
+def test_transfer_failed_reservation_restores_source_reference(stale_entries: int) -> None:
     cache = TieredKVCache(1, 1, 1)
     for request_id in range(2):
         run_prefill(cache, request(request_id, 1))
         cache.finish(request_id)
     source = encode(0, 0)
+    source_pool = cache.pools["L2"]
+    for _ in range(stale_entries):
+        source_pool.touch(source)
     pinned = request(9, 2, (encode(1, 0),))
     cache.pin(pinned, 1)
     entries = dict(cache_entries(cache))
     snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
-    heaps = {tier: list(state.heap) for tier, state in cache.pools.items()}
-    queued = {tier: set(state.queued) for tier, state in cache.pools.items()}
     with pytest.raises(CacheCapacityError):
         cache.reserve_transfer(source, "L1")
     assert cache_entries(cache) == entries
     assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
-    assert {tier: state.heap for tier, state in cache.pools.items()} == heaps
-    assert {tier: state.queued for tier, state in cache.pools.items()} == queued
+    assert source_pool.heap[0] == (source_pool.entries[source].last_access_seq, source)
+    assert all(pool.queued == set(pool.heap) for pool in cache.pools.values())
     assert cache._transfers == {}
     cache.cancel_pin(pinned.request_id)
     assert_tiers_conserved(cache)

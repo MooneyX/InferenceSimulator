@@ -1,6 +1,6 @@
 """实例请求 KV 管理与可独占或共享的分层资源池。"""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from heapq import heapify, heappop, heappush
 
@@ -210,17 +210,15 @@ class CachePool:
         heapify(self.heap)
         self.queued = set(self.heap)
 
-    def candidates(self) -> Iterator[tuple[int, str]]:
-        """按稳定 LRU 顺序只读遍历堆，不复制整个索引或修改真实堆。"""
-        frontier: list[tuple[int, str, int]] = []
-        if self.heap:
-            heappush(frontier, (*self.heap[0], 0))
-        while frontier:
-            seq, chunk_id, index = heappop(frontier)
-            for child in (2 * index + 1, 2 * index + 2):
-                if child < len(self.heap):
-                    heappush(frontier, (*self.heap[child], child))
-            yield seq, chunk_id
+    def pop_lru(self) -> CacheEntry | None:
+        """弹出最老的可驱逐页，顺带清理堆顶过期条目。"""
+        while self.heap:
+            seq, chunk_id = heappop(self.heap)
+            self.queued.remove((seq, chunk_id))
+            page = self.lookup(chunk_id)
+            if page is not None and not page.ref_count and page.last_access_seq == seq:
+                return page
+        return None
 
 
 class TieredKVCache:
@@ -456,19 +454,9 @@ class TieredKVCache:
         self.pools["L1"].resident -= count
         del self._states[request_id]
 
-    def _evict_one(self, tier: str, protected: tuple[str, str] | None = None) -> bool:
+    def _evict_one(self, tier: str) -> bool:
         pool = self.pools[tier]
-        victim = None
-        for access_seq, chunk_id in pool.candidates():
-            page = pool.lookup(chunk_id)
-            if (
-                page is not None
-                and not page.ref_count
-                and page.last_access_seq == access_seq
-                and (tier, chunk_id) != protected
-            ):
-                victim = page
-                break
+        victim = pool.pop_lru()
         if victim is None:
             return False
 
@@ -482,26 +470,18 @@ class TieredKVCache:
             if (
                 not duplicate
                 and target.resident == target.capacity
-                and not self._evict_one(destination, protected)
+                and not self._evict_one(destination)
             ):
                 destination = None
         self._apply_move(victim.chunk_id, tier, destination)
         return True
 
-    def _ensure_tier_free(
-        self, tier: str, count: int, protected: tuple[str, str] | None = None
-    ) -> None:
+    def _ensure_tier_free(self, tier: str, count: int) -> None:
         pool = self.pools[tier]
-        protected_page = (
-            pool.lookup(protected[1]) if protected is not None and protected[0] == tier else None
-        )
-        evictable = pool.evictable - int(
-            protected_page is not None and not protected_page.ref_count
-        )
-        if count > pool.capacity - pool.resident + evictable:
+        if count > pool.capacity - pool.resident + pool.evictable:
             raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
         while pool.capacity - pool.resident < count:
-            if not self._evict_one(tier, protected):
+            if not self._evict_one(tier):
                 raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
 
     def _apply_move(self, chunk_id: str, source: str, destination: str | None) -> None:
@@ -542,10 +522,15 @@ class TieredKVCache:
             raise CacheCapacityError("有活动引用的页不能降级")
         target = self.pools[destination]
         duplicate = target.lookup(chunk_id) is not None or chunk_id in target.pending_pages
-        if not duplicate:
-            self._ensure_tier_free(destination, 1, protected=(source, chunk_id))
-        self.pools[source].add_ref(chunk_id)
-        target.reserve_page(chunk_id)
+        source_pool = self.pools[source]
+        source_pool.add_ref(chunk_id)
+        try:
+            if not duplicate:
+                self._ensure_tier_free(destination, 1)
+            target.reserve_page(chunk_id)
+        except Exception:
+            source_pool.drop_ref(chunk_id)
+            raise
         self._transfers[chunk_id] = (source, destination)
         return source
 

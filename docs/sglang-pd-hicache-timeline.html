@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SGLang PD 分离与 HiCache 并行时序</title>
+  <style>
+    :root {
+      font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+      color: #edf4ff;
+      background: #091321;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: clamp(22px, 4vw, 54px) 18px 70px;
+      background:
+        radial-gradient(circle at 15% 0%, #156e814d, transparent 30%),
+        radial-gradient(circle at 85% 6%, #613da046, transparent 33%),
+        #091321;
+    }
+    main { max-width: 1180px; margin: auto; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: #79ddd9;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .17em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.03em; }
+    .intro { max-width: 880px; margin: 0 0 26px; color: #aabbd3; line-height: 1.7; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+    .legend span {
+      padding: 8px 11px;
+      border: 1px solid #ffffff20;
+      border-radius: 999px;
+      background: #162538;
+      color: #cbd8e9;
+      font-size: 12px;
+    }
+    .legend b { color: #f2f7ff; }
+    .scroll { overflow-x: auto; padding-bottom: 8px; }
+    .diagram {
+      min-width: 880px;
+      padding: 24px;
+      border: 1px solid #d0e8ff20;
+      border-radius: 24px;
+      background: #101c2cf2;
+      box-shadow: 0 30px 80px #02091775;
+    }
+    .header, .step {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 168px minmax(0, 1fr);
+      gap: 16px;
+    }
+    .header { margin-bottom: 12px; }
+    .lane-title { padding: 16px 19px; border-radius: 14px; font-size: 18px; font-weight: 750; }
+    .lane-title.p { background: #174c5d; color: #8df2e9; }
+    .lane-title.d { background: #3c315f; color: #d2b9ff; }
+    .time-title { align-self: center; color: #91a3bf; font-size: 12px; text-align: center; }
+    .step { position: relative; min-height: 132px; }
+    .step::before, .step::after {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      content: "";
+      border-left: 2px dashed #6c8ca456;
+    }
+    .step::before { left: calc((100% - 200px) / 4); }
+    .step::after { right: calc((100% - 200px) / 4); }
+    .cell { position: relative; z-index: 1; padding: 9px 0; }
+    .card {
+      height: 100%;
+      min-height: 110px;
+      padding: 15px 17px;
+      border: 1px solid #ffffff1d;
+      border-radius: 15px;
+      background: #1a2a3d;
+      box-shadow: 0 7px 22px #02091735;
+    }
+    .cell.p .card { border-left: 3px solid #55dcd3; }
+    .cell.d .card { border-left: 3px solid #b995fc; }
+    .card h2 { margin: 0 0 7px; font-size: 16px; line-height: 1.4; }
+    .card h2 em { margin-right: 8px; font-size: 12px; font-style: normal; opacity: .63; }
+    .card p { margin: 0; color: #bdcbdd; font-size: 13px; line-height: 1.55; }
+    .card small { display: block; margin-top: 8px; color: #91e8cc; font-size: 12px; line-height: 1.5; }
+    .link {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: #9aaac3;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .link.flow { color: #ffda94; font-weight: 700; }
+    .link.flow::before {
+      position: absolute;
+      z-index: -1;
+      top: 50%;
+      left: 0;
+      right: 0;
+      border-top: 1px solid #ffd083a8;
+      content: "";
+    }
+    .link span { padding: 5px 8px; border-radius: 8px; background: #101c2c; }
+    .notes {
+      margin-top: 20px;
+      padding: 17px 19px;
+      border: 1px solid #ffffff20;
+      border-radius: 14px;
+      background: #132238;
+      color: #bfcede;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .notes strong { color: #f1f7ff; }
+    @media print {
+      :root { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      body { padding: 12px; }
+      .diagram { box-shadow: none; }
+      .step { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">SGLang · PD disaggregation · HiCache</p>
+    <h1>P / D 实例并行执行时序</h1>
+    <p class="intro">面向仿真的简化流程：两侧启用 HiCache cache 模式与 write-through，D 启用 radix，L3 为两侧可访问的共享存储。时间从上向下推进；同行表示可并行发生，不代表必须严格同步。</p>
+    <div class="legend" aria-label="缓存层级说明">
+      <span><b>L1</b> · 实例 GPU / HBM</span>
+      <span><b>L2</b> · 实例本地 DRAM</span>
+      <span><b>L3</b> · 共享存储</span>
+      <span><b>横向箭头</b> · P / D 间通信</span>
+    </div>
+
+    <div class="scroll">
+      <section class="diagram" aria-label="P 与 D 双轴并行时序图">
+        <div class="header">
+          <div class="lane-title p">P 实例 · Prefill</div>
+          <div class="time-title">时间向下 ↓</div>
+          <div class="lane-title d">D 实例 · Decode</div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>01</em>请求到达 P</h2>
+            <p>匹配本地 L1 / L2 连续前缀；对未命中部分按条件提交异步 L3 查询与 L3→L2 预取。</p>
+          </div></div>
+          <div class="link"><span>并行接收</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>01</em>请求到达 D</h2>
+            <p>独立匹配 D 的 L1 / L2 / L3 前缀，确定本地已有或可恢复的 KV。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>02</em>进入 bootstrap_queue</h2>
+            <p>等待 D 发布目标信息；P 的 L3 预取在后台继续，不要求先读完才能入队。</p>
+          </div></div>
+          <div class="link"><span>各自推进</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>02</em>传输前准入</h2>
+            <p>检查请求行与 KV 预算；为 P 未命中的后缀预分配 GPU 接收地址，也为 D 本地前缀恢复留出空间。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>03</em>进入 waiting_queue</h2>
+            <p>收齐 D 的目标信息并取得交接信息槽位后，离开 bootstrap_queue。</p>
+          </div></div>
+          <div class="link flow"><span>← 目标地址与前缀长度</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>03</em>通知 P</h2>
+            <p>发送接收地址与 decode_prefix_len；被 D 命中的 L2 / L3 前缀将由 D 自行恢复。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>04</em>Prefill 组批</h2>
+            <p>跳过未达到 L3 预取停止条件的请求；按队列顺序、请求行、KV 容量和 token / chunk 预算选取请求。</p>
+          </div></div>
+          <div class="link"><span>并行推进</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>04</em>D 本地前缀恢复</h2>
+            <p>L3 命中先进入 D 的 L2；需要使用时再由 L2 载回 D GPU。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>05</em>执行 Prefill</h2>
+            <p>将所需 P L2 KV 载回 GPU，并计算剩余 prompt。长 prompt 可以分多个 chunk。</p>
+            <small>中间 chunk 可更新 L1 radix 前缀，但通常不触发新 Full-KV 的写穿备份。</small>
+          </div></div>
+          <div class="link"><span>计算 / 恢复可重叠</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>05</em>等待后缀 KV</h2>
+            <p>继续恢复 D 本地前缀；D 不会重复接收 decode_prefix_len 覆盖的部分。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>06</em>最终 chunk 就绪</h2>
+            <p>对 prompt KV 进行非 chunked 缓存插入，符合条件时触发 P GPU→P L2 的写穿备份。</p>
+            <small>P→D KV 传输与 P 的 HiCache 备份是独立路径。</small>
+          </div></div>
+          <div class="link flow"><span>KV：P GPU → D GPU →</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>06</em>接收 KV</h2>
+            <p>P 可提前发送已完成的中间 chunk；D 接收缺失的 KV 后缀，不必等待 P 将 prompt 写入 L3。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>07</em>PD 交接完成</h2>
+            <p>最终 KV 和辅助信息发送成功后，P 释放该请求占用的资源；本地异步备份可继续。</p>
+          </div></div>
+          <div class="link flow"><span>首 token 等辅助信息 →</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>07</em>接收与恢复汇合</h2>
+            <p>P 传来的后缀和 D 自行恢复的前缀均就绪，请求才进入 D 的 waiting_queue。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>08</em>P 异步写共享 L3</h2>
+            <p>P L1→L2 写入确认后，再提交 L2→共享 L3 写入；L3 完成之前不能算作可用命中。</p>
+          </div></div>
+          <div class="link"><span>独立缓存任务</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>08</em>PREBUILT</h2>
+            <p>首次 Decode 前将已提交的 prompt KV 插入 D radix；符合条件时，D 也可能启动 prompt 写穿备份。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>09</em>P 处理其他请求</h2>
+            <p>已经完成写入的 P 侧 L3 前缀可供后续请求查询，尚在途的写入则不可用。</p>
+          </div></div>
+          <div class="link"><span>持续并行</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>09</em>运行 Decode</h2>
+            <p>取得运行空位并满足下一步 KV 容量后逐 token 生成；通常不会每生成一个 token 就写穿。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>10</em>共享前缀逐步可用</h2>
+            <p>P 对子请求重新匹配自己的 L1 / L2，并仅查询共享 L3 中已完成写入的前缀。</p>
+          </div></div>
+          <div class="link"><span>共享 L3</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>10</em>Decode 结束</h2>
+            <p>尝试插入新增的可缓存输出 KV，触发 D GPU→D L2→共享 L3 的异步备份。</p>
+          </div></div>
+        </div>
+
+        <div class="step">
+          <div class="cell p"><div class="card">
+            <h2><em>11</em>子请求复用</h2>
+            <p>当共享 L3 写入完成、缓存键和 KV 布局兼容时，子请求可预取父请求的 KV 前缀。</p>
+          </div></div>
+          <div class="link"><span>L3 写入完成后可命中</span></div>
+          <div class="cell d"><div class="card">
+            <h2><em>11</em>输出前缀可共享</h2>
+            <p>D 的 L2→L3 写入确认后，新增的可缓存输出 KV 才能作为后续请求的共享 L3 命中。</p>
+          </div></div>
+        </div>
+
+        <div class="notes">
+          <strong>仿真边界：</strong>省略失败、取消、回撤和特殊模型路径。缓存插入、L2 备份完成、L3 写入完成是三个不同事件；
+          P 的 Prefill 完成、PD 传输完成、D 的 Decode 完成也不是同一时点。D 的 PREBUILT 备份保留在图中，简化实现时可作为可选事件。
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

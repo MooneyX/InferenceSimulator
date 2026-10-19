@@ -17,6 +17,12 @@
 | [design/api.md](design/api.md) | 分层配置、HTTP 响应与 OpenAPI 类型链 |
 | [design/frontend.md](design/frontend.md) | 分层配置表单、结果展示与甘特图交互 |
 
+## 时序图
+
+| 文档 | 内容 |
+|---|---|
+| [SGLang PD 分离与 HiCache 并行时序图](sglang-pd-hicache-timeline.html) | P/D 双实例请求准入、KV 传输与分层缓存备份的仿真简化流程 |
+
 ## 规划文档
 
 | 文档 | 内容 |

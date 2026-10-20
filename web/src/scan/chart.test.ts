@@ -40,5 +40,7 @@ describe("scan projections", () => {
     expect(html).toContain("scan-data.csv");
     expect(html).not.toMatch(/<script[^>]+src=/i);
     expect(html).toContain("window.echarts.init");
+    expect(html).toContain("--bg:#0f1117");
+    expect(html).toContain("backgroundColor: '#242837'");
   });
 });

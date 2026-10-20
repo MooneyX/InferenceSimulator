@@ -1,9 +1,16 @@
 .scan-results {
-  margin: 24px 0;
+  min-width: 0;
+  margin: 16px 0;
   padding: 18px 20px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
+}
+
+.scan-results .scan-chart ~ p:not([role]) {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.6;
 }
 
 .scan-batches,
@@ -11,33 +18,87 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 20px;
-  margin: 16px 0;
+  gap: 8px 12px;
+  margin: 14px 0;
 }
 
-.scan-batches label,
-.scan-view-controls label {
+.scan-batches {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.scan-batches label {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
 }
 
-.scan-view-controls select,
-.scan-view-controls button {
-  max-width: min(250px, 100%);
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface2);
+.scan-batches label:hover {
+  border-color: var(--accent);
   color: var(--text);
 }
 
-.scan-view-controls button {
-  cursor: pointer;
-  background: var(--accent);
+.scan-batches input {
+  margin: 0;
+  accent-color: var(--accent);
 }
+
+.scan-view-controls label {
+  display: inline-grid;
+  gap: 3px;
+  min-width: min(100%, 130px);
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+
+.scan-view-controls select {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.scan-view-controls select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.scan-view-controls button {
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scan-view-controls button:hover:not(:disabled) { background: #7f78ff; }
+.scan-view-controls button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .scan-chart {
   width: 100%;
-  height: 460px;
+  min-height: 320px;
+  height: 45vh;
+  max-height: 500px;
+  margin-top: 8px;
+}
+
+@media (max-width: 700px) {
+  .scan-results { padding: 16px 14px; }
+  .scan-chart { height: 36vh; max-height: 340px; }
 }

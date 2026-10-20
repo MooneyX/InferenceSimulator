@@ -4,7 +4,7 @@
   const batches = report.data;
   const parameters = report.parameters;
   const roles = ['x', 'color', 'shape', 'line'];
-  const palette = ['#1765ad', '#d25a42', '#329271', '#8b62ad', '#ba8421', '#146c82', '#b74d83'];
+  const palette = ['#6c63ff', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#8b5cf6', '#84cc16'];
   const symbols = ['circle', 'rect', 'triangle', 'diamond', 'pin', 'arrow', 'roundRect', 'emptyCircle'];
   const styles = ['solid', 'dashed', 'dotted', [10, 4, 2, 4]];
   const keys = [...new Set(batches.flatMap(batch => Object.values(batch.job.axes || {}).map(axis => axis.key)))];
@@ -115,12 +115,20 @@
       data: xValues.map(x => group.values.get(String(x)) ?? null),
     }));
     chart?.setOption({
-      animation: false, grid: { left: 64, right: 38, top: 40, bottom: 95 },
-      legend: { type: 'scroll', bottom: 0 }, tooltip: { trigger: 'axis' },
-      toolbox: { feature: { saveAsImage: {}, restore: {} } },
-      dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 50 }],
-      xAxis: { type: 'category', name: label(used.x), data: xValues.map(String) },
-      yAxis: { type: 'value', name: metric, scale: true }, series,
+      animation: false, backgroundColor: 'transparent', textStyle: { color: '#9ca0b0' },
+      grid: { left: 64, right: 38, top: 40, bottom: 95 },
+      legend: { type: 'scroll', bottom: 0, textStyle: { color: '#9ca0b0', fontSize: 10 } },
+      tooltip: { trigger: 'axis', backgroundColor: '#242837', borderColor: '#2e3347',
+        textStyle: { color: '#e4e4e7' } },
+      toolbox: { iconStyle: { borderColor: '#9ca0b0' }, feature: { saveAsImage: {}, restore: {} } },
+      dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 50, borderColor: '#2e3347',
+        textStyle: { color: '#9ca0b0' }, fillerColor: 'rgba(108,99,255,.18)' }],
+      xAxis: { type: 'category', name: label(used.x), data: xValues.map(String),
+        nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
+        axisLine: { lineStyle: { color: '#2e3347' } } },
+      yAxis: { type: 'value', name: metric, scale: true,
+        nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
+        splitLine: { lineStyle: { color: '#2e3347' } } }, series,
     }, true);
     const body = byId('data-body'); body.replaceChildren();
     tableRows = entries.map(({ batch, point, sources }) => ({

@@ -1,50 +1,76 @@
 .scan-panel {
-  margin-top: 24px;
+  min-width: 0;
+  margin-top: 16px;
   padding: 18px 20px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
 }
 
+.scan-panel > .section-heading p,
+.scan-panel .form-actions > span {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.scan-panel .form-actions {
+  margin-top: 16px;
+}
+
+.scan-panel .form-field small {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
 .scan-axes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 14px;
-  margin: 20px 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 12px;
+  margin: 16px 0;
 }
 
 .scan-axis {
   position: relative;
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 3px;
+  min-width: 0;
 }
 
 .scan-axis > label {
-  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
 }
 
 .scan-axis > input {
   width: 100%;
   min-width: 0;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border-radius: 9px;
+  min-height: 32px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
+  border-radius: 5px;
   background: var(--surface2);
   color: var(--text);
+  font-size: 0.8rem;
+}
+
+.scan-axis > input:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .scan-options {
   position: absolute;
-  top: 72px;
+  top: 55px;
   left: 0;
   right: 0;
   z-index: 12;
   max-height: 235px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--surface2);
   box-shadow: 0 15px 35px #0008;
 }
@@ -52,12 +78,13 @@
 .scan-options button {
   display: grid;
   width: 100%;
-  padding: 9px 12px;
+  padding: 7px 10px;
   border: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
   color: var(--text);
+  font-size: 0.8rem;
 }
 
 .scan-options button:hover,
@@ -67,10 +94,21 @@
 
 .scan-options small {
   color: var(--text-dim);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
 }
 
 .scan-options p,
 .scan-hint {
   color: var(--text-dim);
+  font-size: 0.75rem;
   line-height: 1.6;
+}
+
+.scan-panel .scan-hint {
+  margin: 8px 0 0;
+}
+
+@media (max-width: 640px) {
+  .scan-panel { padding: 16px 14px; }
 }

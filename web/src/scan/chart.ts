@@ -3,7 +3,7 @@ import type { JobSummary, ScanPoint } from "../api/types";
 export type Role = "x" | "color" | "shape" | "line";
 export type Roles = Record<Role, string>;
 export interface ScanData { job: JobSummary; points: ScanPoint[] }
-export const palette = ["#1765ad", "#d25a42", "#329271", "#8b62ad", "#ba8421", "#146c82", "#b74d83", "#566d38"];
+export const palette = ["#6c63ff", "#f59e0b", "#10b981", "#ef4444", "#06b6d4", "#8b5cf6", "#84cc16"];
 export const symbols = ["circle", "rect", "triangle", "diamond", "pin", "arrow", "roundRect", "emptyCircle"];
 export const lineStyles: ("solid" | "dashed" | "dotted" | number[])[] = [
   "solid", "dashed", "dotted", [10, 4, 2, 4],

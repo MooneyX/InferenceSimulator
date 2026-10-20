@@ -80,6 +80,57 @@
   overflow-wrap: anywhere;
 }
 
+.job-list {
+  color: var(--text);
+}
+
+.job-list h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.job-list ul {
+  max-height: 220px;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.job-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.76rem;
+}
+
+.job-list li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.job-status {
+  color: var(--text-dim);
+}
+
+.job-status-running { color: var(--accent3); }
+.job-status-completed { color: var(--accent2); }
+.job-status-failed, .job-status-cancelled { color: var(--accent4); }
+
+.job-progress {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.job-list li .secondary-button {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
 .status-indicator {
   display: inline-block;
   width: 12px;

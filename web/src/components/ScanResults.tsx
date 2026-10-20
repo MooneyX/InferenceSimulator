@@ -28,12 +28,21 @@ function Curve({ data, roles, metric }: { data: ScanData[]; roles: Roles; metric
   useEffect(() => {
     chart.current?.setOption({
       animation: false,
+      backgroundColor: "transparent",
+      textStyle: { color: "#9ca0b0" },
       grid: { top: 42, left: 66, right: 35, bottom: 105 },
-      legend: { type: "scroll", bottom: 0 }, tooltip: { trigger: "axis" },
-      toolbox: { feature: { saveAsImage: {}, restore: {} } },
-      dataZoom: [{ type: "inside" }, { type: "slider", bottom: 52 }],
-      xAxis: { type: "category", name: roles.x, data: model.xValues },
-      yAxis: { type: "value", name: metric, scale: true }, series: model.series,
+      legend: { type: "scroll", bottom: 0, textStyle: { color: "#9ca0b0", fontSize: 10 } },
+      tooltip: { trigger: "axis", backgroundColor: "#242837", borderColor: "#2e3347",
+        textStyle: { color: "#e4e4e7" } },
+      toolbox: { iconStyle: { borderColor: "#9ca0b0" }, feature: { saveAsImage: {}, restore: {} } },
+      dataZoom: [{ type: "inside" }, { type: "slider", bottom: 52, borderColor: "#2e3347",
+        textStyle: { color: "#9ca0b0" }, fillerColor: "rgba(108,99,255,.18)" }],
+      xAxis: { type: "category", name: roles.x, data: model.xValues,
+        nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
+        axisLine: { lineStyle: { color: "#2e3347" } } },
+      yAxis: { type: "value", name: metric, scale: true,
+        nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
+        splitLine: { lineStyle: { color: "#2e3347" } } }, series: model.series,
     }, true);
   }, [model, roles.x, metric]);
   const used = data.reduce((sum, batch) => sum + batch.points.length, 0);

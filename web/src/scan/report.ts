@@ -12,16 +12,25 @@ export function renderReport(data: ScanData[], parameters: ScanParameter[]): str
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>参数组合扫描报告</title><style>
-:root{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#172c42;background:#f2f5fa}
-*{box-sizing:border-box}body{max-width:1560px;margin:auto;padding:24px}
-h1{font-size:28px;margin:0}p{line-height:1.6;color:#516479}.panel{background:white;border:1px solid #dce5ed;
- border-radius:14px;padding:22px;margin:18px 0;box-shadow:0 8px 20px #142a4410}
-.controls{display:flex;gap:16px;flex-wrap:wrap;align-items:center}.controls label{display:flex;gap:8px;align-items:center}
-select,button{padding:9px 12px;border:1px solid #afc1d4;border-radius:8px;background:white;color:#172c42}
-button{cursor:pointer;background:#e8f2fd}button:hover{background:#d7eafc}#chart{height:520px;width:100%}
-.table-wrap{overflow:auto;max-height:540px}table{border-collapse:collapse;width:100%;font-size:13px}
- th,td{border-bottom:1px solid #e5ecf3;text-align:left;padding:8px;white-space:nowrap}
- th{position:sticky;top:0;background:#eff5fb}td:last-child{max-width:400px;overflow:hidden;text-overflow:ellipsis}
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#242837;--border:#2e3347;--accent:#6c63ff;
+ --text:#e4e4e7;--text-dim:#9ca0b0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ color:var(--text);background:var(--bg);color-scheme:dark}
+*{box-sizing:border-box}body{max-width:1560px;margin:auto;padding:20px 24px;line-height:1.5}
+h1{font-size:1.25rem;margin:0}h2,h3{font-size:1.05rem;margin:0 0 12px}
+p{line-height:1.6;color:var(--text-dim);font-size:.75rem}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0}
+.controls{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.controls label{display:inline-flex;gap:6px;align-items:center;color:var(--text-dim);font-size:.75rem}
+select{min-width:100px;max-width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
+ background:var(--surface2);color:var(--text);font-size:.8rem}
+select:focus{border-color:var(--accent);outline:none}input[type=checkbox]{accent-color:var(--accent)}
+button{padding:7px 16px;border:0;border-radius:6px;background:var(--accent);color:#fff;
+ font-size:.82rem;font-weight:600;cursor:pointer}button:hover{background:#7f78ff}
+#chart{width:100%;min-height:320px;height:45vh;max-height:500px}
+.table-wrap{overflow:auto;max-height:540px}table{border-collapse:collapse;width:100%;font-size:.75rem}
+th,td{border-bottom:1px solid var(--border);text-align:left;padding:8px;white-space:nowrap}
+th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400px;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){body{padding:14px 16px}.panel{padding:16px 14px}#chart{height:36vh;max-height:340px}}
 </style></head><body>
 <header><h1>参数组合扫描报告</h1><p>跨批次筛选与参数透视 · 离线可用 · 不插值、不补算、不对不同配置求平均</p></header>
 <section class="panel"><div id="batches" class="controls"></div><div class="controls">

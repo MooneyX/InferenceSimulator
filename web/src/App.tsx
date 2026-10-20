@@ -139,11 +139,12 @@ export default function App() {
         <SimulationForm onSubmit={handleSubmit} onScanSubmit={(request) => void handleScanSubmit(request)}
           disabled={isClearingCache} />
 
-        {tasks.jobs.length > 0 && <section className="simulation-status" aria-label="后台任务">
+        {tasks.jobs.length > 0 && <section className="simulation-status job-list" aria-label="后台任务">
           <h2>后台任务</h2>
           <ul>{tasks.jobs.map((job) => <li key={job.id}>
             <strong>{job.kind === "scan" ? "扫描" : "仿真"} {job.id.slice(0, 8)}</strong>
-            {" · "}{job.status} · {job.completed + job.failed}/{job.total}
+            <span className={`job-status job-status-${job.status}`}>{job.status}</span>
+            <span className="job-progress">{job.completed + job.failed}/{job.total}</span>
             {job.error && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&
               <button type="button" className="secondary-button" onClick={() => tasks.select(job.id)}>

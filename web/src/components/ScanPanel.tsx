@@ -74,9 +74,6 @@ export function ScanPanel({ base, onSubmit }: Props) {
   const [blockSize, setBlockSize] = useState<number | null>(null);
   const [planNotice, setPlanNotice] = useState("");
   const [planBusy, setPlanBusy] = useState(false);
-  const [rate, setRate] = useState(1);
-  const [qps, setQps] = useState(64);
-  const [scaleTrace, setScaleTrace] = useState(false);
   const [catalog, setCatalog] = useState<ScanParameter[]>([]);
   const [axes, setAxes] = useState<Record<Role, AxisDraft>>(empty);
   const [search, setSearch] = useState<Record<Role, string>>({ x: "", color: "", shape: "", line: "" });
@@ -120,8 +117,7 @@ export function ScanPanel({ base, onSubmit }: Props) {
     const config = structuredClone(base);
     if (mode === "trace") {
       config.workload = { mode: "trace", arrival_mode: arrival, seed: base.workload.seed,
-        session_rate: rate, trace: { plan_id: planId },
-        ...(arrival === "open_loop" && scaleTrace ? { target_qps: qps } : {}) };
+        session_rate: base.workload.session_rate ?? 1, trace: { plan_id: planId } };
     } else {
       const source = base.workload.synthetic;
       if (!source) throw new Error("请先在普通配置中提供合成负载参数");
@@ -129,12 +125,12 @@ export function ScanPanel({ base, onSubmit }: Props) {
       if (arrival === "open_loop") {
         synthetic.session = { num_sessions: null, think_time_ms: 0, topology: "linear" };
         config.workload = { mode: "synthetic", arrival_mode: arrival,
-          seed: base.workload.seed, synthetic, target_qps: qps };
+          seed: base.workload.seed, synthetic, target_qps: base.workload.target_qps ?? 64 };
       } else {
         synthetic.session = { num_sessions: synthetic.session?.num_sessions ?? Math.min(20, synthetic.num_requests),
           think_time_ms: synthetic.session?.think_time_ms ?? 10_000, topology: "linear" };
         config.workload = { mode: "synthetic", arrival_mode: arrival,
-          seed: base.workload.seed, synthetic, session_rate: rate };
+          seed: base.workload.seed, synthetic, session_rate: base.workload.session_rate ?? 1 };
       }
     }
     return config;
@@ -205,16 +201,6 @@ export function ScanPanel({ base, onSubmit }: Props) {
           changeContext(mode, event.target.value as typeof arrival)}>
           <option value="open_loop">开环</option><option value="closed_loop">闭环</option>
         </select></div>
-      {(mode === "trace" || arrival === "closed_loop") && <div className="form-field">
-        <label htmlFor="scan-rate">会话投放频率（会话/秒）</label>
-        <input id="scan-rate" type="number" min="0" step="any" value={rate}
-          onChange={(event) => setRate(event.target.valueAsNumber)} /></div>}
-      {arrival === "open_loop" && <div className="form-field">
-        {mode === "trace" && <label><input type="checkbox" checked={scaleTrace}
-          onChange={(event) => setScaleTrace(event.target.checked)} />按目标 QPS 缩放 Trace</label>}
-        {(mode === "synthetic" || scaleTrace) && <><label htmlFor="scan-qps">目标发送 QPS</label>
-          <input id="scan-qps" type="number" min="0" step="any" value={qps}
-            onChange={(event) => setQps(event.target.valueAsNumber)} /></>}</div>}
       {mode === "trace" && <div className="form-field">
         <label htmlFor="scan-plan">回放计划 JSON 文件</label>
         <input id="scan-plan" type="file" accept=".json" disabled={planBusy}
@@ -258,6 +244,7 @@ export function ScanPanel({ base, onSubmit }: Props) {
               ...current[id], text: event.target.value } }))} /></>}
       </div>;
     })}</div>
+    <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>
     <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
       固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>
     <div className="form-actions"><button type="button" className="run-button" onClick={run}

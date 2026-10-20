@@ -367,6 +367,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         onChange={(value) => onStorageChange({ ...storage,
           [field]: field === "runtime_reserve_bytes" && value !== null ? value * 1e9 : value })} />)}
     </div>
+    <p>单算子开销默认 0.005 ms/建模计算阶段，仅用于解析计时；L2（本地 DRAM）→ L1 固定延迟默认 0.01 ms/页，L3（低延迟共享存储）→ L2 默认 0.1 ms/页，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、

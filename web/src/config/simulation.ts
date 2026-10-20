@@ -83,7 +83,7 @@ export function createDefaultEmpiricalTiming(): EmpiricalTimingConfig {
 export function createDefaultSimConfig(): FormSimConfig {
   return {
     ...createDefaultCommonConfig(),
-    shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
+    shared_l3: { ...initialSharedL3 },
     inference: { page_size: 64, max_output_tokens: 65_536,
       model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
       tp_size: 1, ep_size: 1, timing: { mode: "analytical" } },
@@ -111,12 +111,15 @@ export const initialHardware: InferenceConfig["hardware"] = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
   effective_fp16_tflops: 100, effective_fp8_tflops: null,
   effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
-  collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0,
+  collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0.005,
 };
 export const initialStorage: InferenceConfig["storage"] = {
   l1_available_gb: 200, l2_available_gb: 2048,
   runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
-  l2_latency_ms: 0, l3_latency_ms: 0,
+  l2_latency_ms: 0.01, l3_latency_ms: 0.1,
+};
+export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {
+  available_gb: 40_000, lookup_latency_ms: 0.1,
 };
 
 function validateFiniteNumber(

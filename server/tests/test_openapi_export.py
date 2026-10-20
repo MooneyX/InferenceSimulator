@@ -54,6 +54,20 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
     assert config["inference"]["$ref"] == "#/components/schemas/InferenceConfig"
 
 
+@pytest.mark.parametrize("schema,field,default", [
+    ("HardwareSpec", "kernel_overhead_ms", 0.005),
+    ("StorageSpec", "l2_latency_ms", 0.01),
+    ("StorageSpec", "l3_latency_ms", 0.1),
+    ("SharedL3Config", "lookup_latency_ms", 0.1),
+])
+def test_fixed_latency_defaults_in_openapi(schema: str, field: str, default: float) -> None:
+    schemas = json.loads(render_openapi())["components"]["schemas"]
+    property_schema = schemas[schema]["properties"][field]
+    assert property_schema["default"] == default
+    assert property_schema["minimum"] == 0
+    assert "未经实测校准" in property_schema["description"]
+
+
 def test_unified_routes_document_business_and_field_errors() -> None:
     spec = json.loads(render_openapi())
     for path in ("/api/resolve", "/api/simulate"):

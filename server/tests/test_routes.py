@@ -100,6 +100,10 @@ class TestSuccess:
         assert result.meta.num_completed == 1
         assert result.resolution is not None
         assert result.meta.config.shared_l3 is not None
+        assert result.meta.config.inference.hardware.kernel_overhead_ms == 0.005
+        assert result.meta.config.inference.storage.l2_latency_ms == 0.01
+        assert result.meta.config.inference.storage.l3_latency_ms == 0.1
+        assert result.meta.config.shared_l3.lookup_latency_ms == 0.1
         assert result.resolution.l2_capacity_tokens == 4
         assert result.resolution.l3_capacity_tokens == 8
         assert result.meta.config.shared_l3.available_gb == payload["shared_l3"]["available_gb"]

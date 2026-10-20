@@ -21,9 +21,10 @@ describe("createDefaultSimConfig", () => {
       },
       scheduler: { max_running_requests: 32, max_prefill_tokens: 16_384,
         l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true },
-      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0.1 },
       inference: { page_size: 64, max_output_tokens: 65_536,
-        model: expect.any(Object), hardware: expect.any(Object), storage: expect.any(Object),
+        model: expect.any(Object), hardware: expect.objectContaining({ kernel_overhead_ms: 0.005 }),
+        storage: expect.objectContaining({ l2_latency_ms: 0.01, l3_latency_ms: 0.1 }),
         tp_size: 1, ep_size: 1, timing: { mode: "analytical" },
       },
     });

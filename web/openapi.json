@@ -1337,7 +1337,8 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Kernel Overhead Ms",
-            "default": 0.0
+            "description": "解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
+            "default": 0.005
           }
         },
         "additionalProperties": false,
@@ -3070,7 +3071,8 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Lookup Latency Ms",
-            "default": 0.0
+            "description": "每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；默认假设低延迟共享存储，未经实测校准，0 为理想基线",
+            "default": 0.1
           }
         },
         "additionalProperties": false,
@@ -3338,13 +3340,15 @@
             "type": "number",
             "minimum": 0.0,
             "title": "L2 Latency Ms",
-            "default": 0.0
+            "description": "每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+            "default": 0.01
           },
           "l3_latency_ms": {
             "type": "number",
             "minimum": 0.0,
             "title": "L3 Latency Ms",
-            "default": 0.0
+            "description": "每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+            "default": 0.1
           }
         },
         "additionalProperties": false,

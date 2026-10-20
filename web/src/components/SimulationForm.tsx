@@ -5,6 +5,7 @@ import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTrans
 import {
   createDefaultSimConfig,
   createDefaultEmpiricalTiming,
+  initialSharedL3,
   validateSimConfig,
   type FormSimConfig,
   type ConfigField,
@@ -416,13 +417,14 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             value={(config.shared_l3?.available_gb ?? 0) / 1000}
             error={errorByField.get("shared_l3.available_gb")}
             onChange={(value) => setConfig({ ...config, shared_l3: { available_gb: value * 1000,
-              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? 0 } })} />
+              lookup_latency_ms: config.shared_l3?.lookup_latency_ms ?? initialSharedL3.lookup_latency_ms } })} />
           <NumberField id="shared-l3-lookup" name="shared_l3.lookup_latency_ms" label="L3 查找延迟（ms）"
-            value={config.shared_l3?.lookup_latency_ms ?? 0} error={errorByField.get("shared_l3.lookup_latency_ms")}
+            value={config.shared_l3?.lookup_latency_ms ?? initialSharedL3.lookup_latency_ms} error={errorByField.get("shared_l3.lookup_latency_ms")}
             onChange={(value) => setConfig({ ...config, shared_l3: config.shared_l3
               ? { ...config.shared_l3, lookup_latency_ms: value }
               : { available_gb: 0, lookup_latency_ms: value } })} />
         </div>
+        <p>L3 查找默认 0.1 ms/次，未命中也计入；假设低延迟共享存储，未经实测校准，可按部署调整，设为 0 可对照理想基线。</p>
       </section>
 
       <section className="form-section" aria-labelledby="engine-heading">

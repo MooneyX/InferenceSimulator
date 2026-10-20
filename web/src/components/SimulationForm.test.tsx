@@ -109,6 +109,10 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(40);
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
+    expect(screen.getByLabelText("单算子固定开销（ms）")).toHaveValue(0.005);
+    expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(0.01);
+    expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(0.1);
+    expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(0.1);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,
@@ -116,8 +120,28 @@ describe("SimulationForm", () => {
       inference: expect.objectContaining({ timing: { mode: "analytical" },
         storage: expect.objectContaining({ l2_available_gb: 2048,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
-      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0 },
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0.1 },
     }));
+  });
+
+  it.each([null, 0])("uses the lookup default only when re-enabling L3 without a value (%s)", (latency) => {
+    const onSubmit = vi.fn();
+    const config = createDefaultSimConfig();
+    config.inference.hardware.kernel_overhead_ms = 0;
+    config.inference.storage.l2_latency_ms = 0;
+    config.inference.storage.l3_latency_ms = 0;
+    config.shared_l3 = latency === null ? null : { available_gb: 0, lookup_latency_ms: latency };
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("单算子固定开销（ms）")).toHaveValue(0);
+    expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(0);
+    expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(0);
+    fireEvent.change(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）"), { target: { value: "40" } });
+    expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(latency ?? 0.1);
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).toHaveBeenCalledWith({ ...config,
+      shared_l3: { available_gb: 40_000, lookup_latency_ms: latency ?? 0.1 } });
   });
 
   it("renders every synthetic configuration group with defaults", () => {

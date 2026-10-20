@@ -434,7 +434,10 @@ class HardwareSpec(_Frozen):
     effective_interconnect_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     collective_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     ep_communication_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    kernel_overhead_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    kernel_overhead_ms: float = Field(
+        default=0.005, ge=0, allow_inf_nan=False,
+        description="解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
+    )
 
 
 class StorageSpec(_Frozen):
@@ -445,8 +448,14 @@ class StorageSpec(_Frozen):
     runtime_reserve_bytes: int = Field(default=0, ge=0)
     l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    l2_latency_ms: float = Field(
+        default=0.01, ge=0, allow_inf_nan=False,
+        description="每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+    )
+    l3_latency_ms: float = Field(
+        default=0.1, ge=0, allow_inf_nan=False,
+        description="每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+    )
 
 
 class InferenceConfig(_Frozen):
@@ -470,7 +479,10 @@ class SharedL3Config(_Frozen):
         allow_inf_nan=False,
         description="全场共享 L3 十进制 GB 总容量；0 表示关闭",
     )
-    lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    lookup_latency_ms: float = Field(
+        default=0.1, ge=0, allow_inf_nan=False,
+        description="每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；默认假设低延迟共享存储，未经实测校准，0 为理想基线",
+    )
 
 
 class SimConfig(_Frozen):

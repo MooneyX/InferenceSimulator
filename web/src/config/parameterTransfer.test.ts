@@ -59,7 +59,8 @@ describe("parameter JSON transfer", () => {
     }));
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" }, model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
-      hardware: { gpu_count: 1, kernel_overhead_ms: 0 }, storage: { l2_available_gb: 0 } });
+      hardware: { gpu_count: 1, kernel_overhead_ms: 0.005 },
+      storage: { l2_available_gb: 0, l2_latency_ms: 0.01, l3_latency_ms: 0.1 } });
     expect(config.workload).toMatchObject({ seed: 0, target_qps: null, trace: { plan_id: null } });
   });
 
@@ -473,6 +474,23 @@ describe("parameter JSON transfer", () => {
     config.shared_l3!.lookup_latency_ms = 0.75;
     config.scheduler.l3_prefetch_min_tokens = 0;
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
+  });
+
+  it("keeps explicit zero fixed latencies as an ideal baseline", () => {
+    const config = createDefaultSimConfig();
+    config.inference.hardware.kernel_overhead_ms = 0;
+    config.inference.storage.l2_latency_ms = 0;
+    config.inference.storage.l3_latency_ms = 0;
+    config.shared_l3!.lookup_latency_ms = 0;
+    expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
+  });
+
+  it("defaults an omitted shared lookup latency without enabling omitted storage", () => {
+    const config = createDefaultSimConfig();
+    expect(parseSimConfigJson(JSON.stringify({ ...config, shared_l3: { available_gb: 40_000 } })).shared_l3)
+      .toEqual({ available_gb: 40_000, lookup_latency_ms: 0.1 });
+    expect(parseSimConfigJson(JSON.stringify({ ...config, shared_l3: {} })).shared_l3)
+      .toEqual({ available_gb: 0, lookup_latency_ms: 0.1 });
   });
 
   it("accepts defaults but rejects obsolete mode and malformed storage fields", () => {

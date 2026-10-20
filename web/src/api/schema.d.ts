@@ -607,7 +607,8 @@ export interface components {
             ep_communication_latency_ms?: number | null;
             /**
              * Kernel Overhead Ms
-             * @default 0
+             * @description 解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线
+             * @default 0.005
              */
             kernel_overhead_ms: number;
         };
@@ -1434,7 +1435,8 @@ export interface components {
             available_gb: number;
             /**
              * Lookup Latency Ms
-             * @default 0
+             * @description 每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；默认假设低延迟共享存储，未经实测校准，0 为理想基线
+             * @default 0.1
              */
             lookup_latency_ms: number;
         };
@@ -1555,12 +1557,14 @@ export interface components {
             l3_to_l2_gb_s?: number | null;
             /**
              * L2 Latency Ms
-             * @default 0
+             * @description 每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线
+             * @default 0.01
              */
             l2_latency_ms: number;
             /**
              * L3 Latency Ms
-             * @default 0
+             * @description 每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线
+             * @default 0.1
              */
             l3_latency_ms: number;
         };

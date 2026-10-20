@@ -1,5 +1,5 @@
 import type { InferenceConfig, SimConfig, TimingConfig } from "../api/types";
-import { validateSimConfig } from "./simulation";
+import { initialHardware, initialSharedL3, initialStorage, validateSimConfig } from "./simulation";
 
 function objectWithKeys(value: unknown, path: string, keys: readonly string[], defaults: Record<string, unknown> = {}): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -54,7 +54,7 @@ export function parseSimConfigJson(json: string): SimConfig {
 
   const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference", "shared_l3"], { shared_l3: null });
   if (root.shared_l3 != null) {
-    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: 0 });
+    root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: initialSharedL3.lookup_latency_ms });
     numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", ["available_gb", "lookup_latency_ms"]);
   }
   numericFields(root, "参数配置", ["num_instances"]);
@@ -178,12 +178,13 @@ function validateInference(value: unknown): InferenceConfig {
     ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
       "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
       "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]) } as Record<string, unknown>;
-  const hardware = { gpu_count: 1, kernel_overhead_ms: 0, ...configObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
+  const hardware = { gpu_count: 1, kernel_overhead_ms: initialHardware.kernel_overhead_ms,
+    ...configObject(root.hardware, "hardware", ["name", "memory_bytes_per_gpu",
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
     "kernel_overhead_ms"]) } as Record<string, unknown>;
-  const storage = { l2_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: 0,
-    l3_latency_ms: 0, ...configObject(root.storage, "storage", ["l1_available_gb"],
+  const storage = { l2_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: initialStorage.l2_latency_ms,
+    l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", ["l1_available_gb"],
     ["l2_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
       "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
   root.model = model;

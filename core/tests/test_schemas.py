@@ -591,6 +591,42 @@ class TestConfigValidation:
         assert runtime.perf_model.kv_bytes_per_token == 64
         assert runtime.links.l2_to_l1 is None and runtime.links.l3_to_l2 is None
 
+    @pytest.mark.parametrize("explicit_zero", [False, True])
+    def test_fixed_latency_defaults_and_explicit_zero(self, explicit_zero: bool) -> None:
+        from simcore.capacity import prepare_runtime
+
+        payload = make_config().model_dump()
+        fields = [
+            (payload["inference"]["hardware"], "kernel_overhead_ms"),
+            (payload["inference"]["storage"], "l2_latency_ms"),
+            (payload["inference"]["storage"], "l3_latency_ms"),
+            (payload["shared_l3"], "lookup_latency_ms"),
+        ]
+        for section, field in fields:
+            if explicit_zero:
+                section[field] = 0
+            else:
+                section.pop(field)
+        payload["inference"]["storage"].update(
+            l2_available_gb=0.001, l2_to_l1_gb_s=1, l3_to_l2_gb_s=1,
+        )
+        payload["shared_l3"]["available_gb"] = 0.001
+        config = SimConfig.model_validate(payload)
+        expected = (0.0, 0.0, 0.0, 0.0) if explicit_zero else (0.005, 0.01, 0.1, 0.1)
+        assert config.shared_l3 is not None
+        assert (
+            config.inference.hardware.kernel_overhead_ms,
+            config.inference.storage.l2_latency_ms,
+            config.inference.storage.l3_latency_ms,
+            config.shared_l3.lookup_latency_ms,
+        ) == expected
+        runtime = prepare_runtime(config)
+        assert runtime.links.l2_to_l1 is not None and runtime.links.l3_to_l2 is not None
+        assert runtime.links.l2_to_l1.latency_ms == expected[1]
+        assert runtime.links.l3_to_l2.latency_ms == expected[2]
+        assert runtime.perf_model.l3_lookup_latency_ms == expected[3]
+        assert SimConfig.model_validate_json(config.model_dump_json()) == config
+
     @pytest.mark.parametrize("field,invalid", [
         ("l2_to_l1_gb_s", 0), ("l3_to_l2_gb_s", -1),
         ("l2_to_l1_gb_s", float("inf")), ("l3_to_l2_gb_s", float("nan")),

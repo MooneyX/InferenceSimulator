@@ -23,6 +23,12 @@
 |---|---|
 | [SGLang PD 分离与 HiCache 并行时序图](sglang-pd-hicache-timeline.html) | P/D 双实例请求准入、KV 传输与分层缓存备份的仿真简化流程 |
 
+## 分析报告
+
+| 文档 | 内容 |
+|---|---|
+| [analysis/l2-hit-rate-factors.md](analysis/l2-hit-rate-factors.md) | 以 4000 请求闭环负载为基准的 L2 命中率影响因素：过载诊断、复用距离模型与扫描佐证 |
+
 ## 规划文档
 
 | 文档 | 内容 |
@@ -49,4 +55,5 @@
 
 - `design/` 一篇只讲一个当前已实现的主题：不变量、接口、所有权与必要的编码指导；不保留旧方案、讨论过程或未落地能力的细节。
 - `plans/` 按负责模块记录待实施范围、依赖、阶段交付和验收；`feature-roadmap.md` 仅做状态及依赖索引，不复制设计契约。
+- `analysis/` 记录基于仿真结果的实验分析，须注明代码版本、基准配置、指标口径和数据来源；结论只适用于所注明的版本与配置。
 - F001/KV3 的现行行为分别记于 [引擎](design/kernel.md)、[分层 KV](design/kv-prefix-reuse.md)、[经验模型](design/perf-model.md)、[指标](design/metrics.md)、[API](design/api.md) 和 [前端](design/frontend.md)；尚未实现的扩展留在 `plans/`，完成后将实际行为写入 `design/` 并移除已完成计划条目。

@@ -1,11 +1,11 @@
 """统一推理入口的物理容量预览与两种计时方式覆盖。"""
 
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import await_task, run_simulation
 from simcore import SimConfig, SimResult
 from simcore.schemas import TracePlan, TraceTurn
 from simserver import create_app
@@ -89,7 +89,7 @@ def test_timing_modes_use_one_run_contract(
         request = inference_payload(timing_mode)
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode)
-        response = client.post("/api/simulate", json=request)
+        response = run_simulation(client, request)
         assert response.status_code == 200, response.text
         result = SimResult.model_validate_json(response.content)
         assert result.meta.config == SimConfig.model_validate(request)
@@ -99,8 +99,8 @@ def test_timing_modes_use_one_run_contract(
         preview = client.post("/api/resolve", json=request)
         assert preview.status_code == 200, preview.text
         assert result.resolution.model_dump(mode="json") == preview.json()
-        with patch("simserver.routes.simulate", return_value=result):
-            repeated = client.post("/api/simulate", json=request)
+        repeated = run_simulation(client, request)
+        assert repeated.headers["X-Simulation-Cache"] == "hit"
         assert repeated.text == result.model_dump_json()
 
 
@@ -114,7 +114,7 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
         request["inference"]["max_output_tokens"] = 1
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode, output_len=2)
-        response = client.post("/api/simulate", json=request)
+        response = run_simulation(client, request)
         assert response.status_code == 200, response.text
         result = SimResult.model_validate_json(response.content)
         assert result.meta.config.inference.max_output_tokens == 1
@@ -130,18 +130,25 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
 
 @pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
-@pytest.mark.parametrize("error,status", [(ValueError("invalid"), 422), (NotImplementedError("unsupported"), 501)])
-def test_unified_run_maps_kernel_errors_for_every_mode(
-    timing_mode: str, workload_mode: str, error: Exception, status: int,
+@pytest.mark.parametrize("failure", ["invalid_tp", "unsupported_timing"])
+def test_unified_run_reports_kernel_errors_for_every_mode(
+    timing_mode: str, workload_mode: str, failure: str,
 ) -> None:
     with TestClient(create_app()) as client:
         request = inference_payload(timing_mode)
         if workload_mode == "trace":
             attach_trace(client, request)
-        with patch("simserver.routes.simulate", side_effect=error):
-            response = client.post("/api/simulate", json=request)
-        assert response.status_code == status
-        assert response.json() == {"detail": str(error)}
+        request["inference"]["hardware"]["gpu_count"] = 2
+        if failure == "unsupported_timing":
+            request["inference"]["tp_size"] = 2
+            request["inference"]["timing"] = {
+                "mode": "empirical", "prefill_c1": 1, "decode_d1": 1, "decode_d2": 0,
+            }
+        receipt = client.post("/api/simulate", json=request)
+        assert receipt.status_code == 202
+        job = await_task(client, receipt.json()["id"])
+        assert job["status"] == "failed"
+        assert ("TP 数" if failure == "invalid_tp" else "四系数") in job["error"]
 
 
 def test_trace_preview_does_not_require_uploaded_plan() -> None:
@@ -165,13 +172,14 @@ def test_preview_and_run_resolve_identically() -> None:
     request = payload()
     preview = client.post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
-    run = client.post("/api/simulate", json=request)
+    run = run_simulation(client, request)
     assert run.status_code == 200, run.text
     data = run.json()
     assert data["resolution"] == preview.json()
     assert data["meta"]["config"] == SimConfig.model_validate(request).model_dump(mode="json")
     assert set(data["resolution"]) == {
-        "capacity", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens", "runnable", "reason",
+        "capacity", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
+        "runnable", "reason",
     }
     assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
     assert data["meta"]["num_completed"] == 1
@@ -179,7 +187,7 @@ def test_preview_and_run_resolve_identically() -> None:
     request["inference"]["timing"] = {
         "mode": "empirical", "prefill_c1": 1, "prefill_c2": 0, "decode_d1": 2, "decode_d2": 1,
     }
-    empirical = client.post("/api/simulate", json=request).json()
+    empirical = run_simulation(client, request).json()
     assert empirical["analysis"] is None
     assert empirical["meta"]["wall_clock_ms"] >= 0
 
@@ -198,7 +206,7 @@ def test_custom_attention_groups_preview_and_run() -> None:
     preview = client.post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
     assert preview.json()["capacity"]["kv_bytes_per_token"] == 156
-    run = client.post("/api/simulate", json=request)
+    run = run_simulation(client, request)
     assert run.status_code == 200, run.text
     assert run.json()["resolution"] == preview.json()
     request["inference"]["model"]["attention_groups"][1]["layers"] = 2
@@ -220,7 +228,7 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     preview = client.post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
     assert preview.json()["capacity"]["rank_reports"][0]["kv_bytes_per_token"] == 92_628
-    result = client.post("/api/simulate", json=request)
+    result = run_simulation(client, request)
     assert result.status_code == 200, result.text
     assert result.json()["resolution"] == preview.json()
     assert result.json()["analysis"]["ep_exchanges"] > 0
@@ -231,7 +239,7 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     assert custom_preview.status_code == 200, custom_preview.text
     assert custom_preview.json()["capacity"] == preview.json()["capacity"]
     assert custom_preview.json() == preview.json()
-    custom_run = client.post("/api/simulate", json=custom)
+    custom_run = run_simulation(client, custom)
     assert custom_run.status_code == 200, custom_run.text
     assert custom_run.json()["analysis"] == result.json()["analysis"]
     request["inference"]["model"]["kv_dtype"] = "fp8"
@@ -247,7 +255,7 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
         modified.json()["capacity"]["weights_resident_bytes"]
         < preview.json()["capacity"]["weights_resident_bytes"]
     )
-    run_modified = client.post("/api/simulate", json=request)
+    run_modified = run_simulation(client, request)
     assert run_modified.status_code == 200, run_modified.text
     assert run_modified.json()["resolution"] == modified.json()
 
@@ -285,7 +293,7 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     assert body["runnable"] is True
     assert "tp_size" not in body
     assert len(body["capacity"]["rank_reports"]) == 4
-    run = client.post("/api/simulate", json=request)
+    run = run_simulation(client, request)
     assert run.status_code == 200, run.text
     data = run.json()
     assert data["resolution"] == body
@@ -297,8 +305,10 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     }
     assert client.post("/api/resolve", json=request).json()["runnable"] is False
     refused = client.post("/api/simulate", json=request)
-    assert refused.status_code == 501
-    assert "四系数" in refused.json()["detail"]
+    assert refused.status_code == 202
+    job = await_task(client, refused.json()["id"])
+    assert job["status"] == "failed"
+    assert "四系数" in job["error"]
 
 
 def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
@@ -332,7 +342,8 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert preview["capacity"]["estimated_expert_parameters"] == 227_096_395_776
     assert preview["capacity"]["weights_resident_bytes"] >= 2 * 235_093_634_560
     incomplete = client.post("/api/simulate", json=request)
-    assert incomplete.status_code == 422
+    assert incomplete.status_code == 202
+    assert await_task(client, incomplete.json()["id"])["status"] == "failed"
     request["inference"]["hardware"].update(
         {
             "collective_latency_ms": 0.01,
@@ -341,7 +352,7 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     )
     ready = client.post("/api/resolve", json=request)
     assert ready.status_code == 200 and ready.json()["runnable"] is True
-    run = client.post("/api/simulate", json=request)
+    run = run_simulation(client, request)
     assert run.status_code == 200, run.text
     data = run.json()
     assert data["resolution"] == ready.json()
@@ -353,7 +364,9 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
         "mode": "empirical", "prefill_c1": 1, "prefill_c2": 0, "decode_d1": 2, "decode_d2": 1,
     }
     assert client.post("/api/resolve", json=request).json()["runnable"] is False
-    assert client.post("/api/simulate", json=request).status_code == 501
+    refused = client.post("/api/simulate", json=request)
+    assert refused.status_code == 202
+    assert await_task(client, refused.json()["id"])["status"] == "failed"
 
 
 def test_presets_and_unsupported_modes() -> None:
@@ -421,8 +434,8 @@ def test_presets_and_unsupported_modes() -> None:
         original = client.post("/api/resolve", json=legacy)
         assert original.status_code == 200, original.text
         assert explicit.json()["capacity"] == original.json()["capacity"]
-        assert client.post("/api/simulate", json=request).json()["analysis"] == (
-            client.post("/api/simulate", json=legacy).json()["analysis"]
+        assert run_simulation(client, request).json()["analysis"] == (
+            run_simulation(client, legacy).json()["analysis"]
         )
     request = payload()
     missing_vocab = payload()
@@ -445,4 +458,4 @@ def test_presets_and_unsupported_modes() -> None:
         assert rejected.json()["detail"][0]["loc"] == ["body", "inference", "model", field]
         del request["inference"]["model"][field]
     request["inference"]["model"]["moe_layers"] = 2
-    assert client.post("/api/simulate", json=request).status_code == 422
+    assert run_simulation(client, request).status_code == 422

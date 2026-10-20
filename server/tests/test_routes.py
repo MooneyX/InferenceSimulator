@@ -1,11 +1,12 @@
 """routes 模块单测：``POST /api/simulate`` 的成功路径、可复现性、错误映射与 OpenAPI 登记。"""
 
+from collections.abc import Iterator
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import await_task, run_simulation
 from simcore import SimConfig, SimResult, simulate
 from simserver import create_app
 
@@ -43,8 +44,9 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(create_app())
+def client() -> Iterator[TestClient]:
+    with TestClient(create_app()) as active:
+        yield active
 
 
 class TestSuccess:
@@ -54,7 +56,7 @@ class TestSuccess:
         payload["workload"]["synthetic"]["session"] = {
             "num_sessions": 2, "think_time_ms": 200,
         }
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["workload"]["target_qps"] is None
@@ -67,7 +69,7 @@ class TestSuccess:
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
         payload["scheduler"] = {"max_running_requests": 1}
         del payload["inference"]["page_size"]
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["inference"]["page_size"] == 64
@@ -92,7 +94,7 @@ class TestSuccess:
             l2_to_l1_gb_s=64 / 1_000_000,
             l3_to_l2_gb_s=32 / 1_000_000,
         )
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
         assert result.meta.num_completed == 1
@@ -110,7 +112,7 @@ class TestSuccess:
     ) -> None:
         payload = make_payload(num_requests=4)
         payload["num_instances"] = 2
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["num_instances"] == 2
@@ -134,7 +136,7 @@ class TestSuccess:
             )
 
     def test_returns_full_result(self, client: TestClient) -> None:
-        response = client.post(URL, json=make_payload())
+        response = run_simulation(client, make_payload())
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/json"
         body = response.json()
@@ -183,14 +185,17 @@ class TestSuccess:
         """响应字节即本次内核 ``SimResult`` 的 JSON 序列化。"""
         payload = make_payload(seed=3)
         expected = simulate(SimConfig.model_validate(payload))
-        with patch("simserver.routes.simulate", return_value=expected):
-            response = client.post(URL, json=payload)
-        assert response.text == expected.model_dump_json()
+        response = run_simulation(client, payload)
+        received = SimResult.model_validate_json(response.content)
+        exclude = {"meta": {"wall_clock_ms"}}
+        assert received.model_dump_json(exclude=exclude) == expected.model_dump_json(
+            exclude=exclude
+        )
 
     def test_same_seed_bit_identical(self, client: TestClient) -> None:
         payload = make_payload(seed=7)
-        first = SimResult.model_validate_json(client.post(URL, json=payload).content)
-        second = SimResult.model_validate_json(client.post(URL, json=payload).content)
+        first = SimResult.model_validate_json(run_simulation(client, payload).content)
+        second = SimResult.model_validate_json(run_simulation(client, payload).content)
         exclude = {"meta": {"wall_clock_ms"}}
         assert first.model_dump_json(exclude=exclude) == second.model_dump_json(exclude=exclude)
 
@@ -205,7 +210,7 @@ class TestSuccess:
             }
         )
         payload["inference"]["page_size"] = 2
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["metrics"]["constructed_ideal_prefix_hit_rate"] == pytest.approx(22 / 41)
@@ -223,7 +228,7 @@ class TestSuccess:
         payload["workload"]["synthetic"]["prompt_len"] = {"dist": "fixed", "value": 193}
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 1}
         payload["inference"]["page_size"] = 64
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
         assert result.meta.num_requests == 2
@@ -255,7 +260,7 @@ class TestErrors:
         if branch == "trace":
             payload["workload"] = {"mode": "trace", "session_rate": 1, "trace": {}}
         payload["workload"][branch][legacy] = value
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert any(
             error["type"] == "extra_forbidden"
@@ -266,7 +271,7 @@ class TestErrors:
     def test_instance_count_is_required(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         del payload["num_instances"]
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert "num_instances" in response.text
 
@@ -298,22 +303,24 @@ class TestErrors:
         ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
          {"available_gb": 0.000000128}, "L3 → L2 带宽"),
     ])
-    def test_invalid_tiered_configuration_returns_422(
+    def test_invalid_tiered_configuration_fails_task(
         self, client: TestClient, storage: dict[str, float | None],
         shared: dict[str, object] | None, message: str,
     ) -> None:
         payload = make_payload(num_requests=1)
         payload["inference"]["storage"].update(storage)
         payload["shared_l3"] = shared
-        response = client.post(URL, json=payload)
-        assert response.status_code == 422
-        assert message in response.text
+        receipt = client.post(URL, json=payload)
+        assert receipt.status_code == 202
+        job = await_task(client, receipt.json()["id"])
+        assert job["status"] == "failed"
+        assert message in job["error"]
 
     @pytest.mark.parametrize("legacy", ["max_batch_size", "kv_token_budget", "prefix_cache"])
     def test_legacy_engine_inputs_are_rejected(self, client: TestClient, legacy: str) -> None:
         payload = make_payload(num_requests=1)
         payload["scheduler"][legacy] = 1
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert legacy in response.text
 
@@ -326,7 +333,7 @@ class TestErrors:
         payload["workload"]["synthetic"]["output_len"] = {"dist": "fixed", "value": 2}
         payload["inference"]["page_size"] = 4
         payload["scheduler"]["pd_mutually_exclusive"] = exclusive
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 200
         result = SimResult.model_validate_json(response.content)
         assert result.meta.config.scheduler.pd_mutually_exclusive is exclusive
@@ -338,14 +345,14 @@ class TestErrors:
             "num_sessions": 2,
             "target_ideal_prefix_hit_rate": 0.5,
         }
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert "target_ideal_prefix_hit_rate" in response.text
 
     def test_content_seed_is_rejected(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         payload["workload"]["synthetic"]["session"] = {"content_seed": 123}
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert "content_seed" in response.text
 
@@ -358,7 +365,7 @@ class TestErrors:
             "num_sessions": 2,
             "allow_cross_session_shared_prefix": value,
         }
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert any(
             error["type"] == "extra_forbidden"
@@ -376,14 +383,14 @@ class TestErrors:
             "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "seed": 0,
             "trace": {"plan_id": plan_id},
         }
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == (422 if plan_id is None else 404)
         assert response.json()["detail"]
 
     def test_physical_preview_matches_run(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
         preview = client.post("/api/resolve", json=payload)
-        run = client.post(URL, json=payload)
+        run = run_simulation(client, payload)
         assert preview.status_code == run.status_code == 200
         assert run.json()["resolution"] == preview.json()
 
@@ -391,7 +398,7 @@ class TestErrors:
     def test_removed_top_level_inputs_rejected(self, client: TestClient, field: str) -> None:
         payload = make_payload()
         payload[field] = {}
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert any(error["loc"] == ["body", field] for error in response.json()["detail"])
 
@@ -413,7 +420,7 @@ class TestErrors:
         for key in path[:-1]:
             node = node[key]
         node[path[-1]] = value
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert response.json()["detail"]
 
@@ -435,14 +442,14 @@ class TestErrors:
         for key in path[:-1]:
             node = node[key]
         node[path[-1]] = value
-        response = client.post(URL, json=payload)
+        response = run_simulation(client, payload)
         assert response.status_code == 422
         assert any(error["loc"] == expected for error in response.json()["detail"])
 
     def test_synthetic_mode_without_payload_rejected(self, client: TestClient) -> None:
         payload = make_payload()
         payload["workload"] = {"mode": "synthetic"}
-        assert client.post(URL, json=payload).status_code == 422
+        assert run_simulation(client, payload).status_code == 422
 
     def test_get_not_allowed(self, client: TestClient) -> None:
         assert client.get(URL).status_code == 405
@@ -460,11 +467,11 @@ class TestOpenAPI:
         schema = operation["requestBody"]["content"]["application/json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/SimConfig"}
 
-    def test_response_is_sim_result(self, operation: dict[str, Any]) -> None:
-        schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
-        assert schema == {"$ref": "#/components/schemas/SimResult"}
+    def test_response_is_job_receipt(self, operation: dict[str, Any]) -> None:
+        schema = operation["responses"]["202"]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/JobReceipt"}
 
     def test_error_responses_documented(self, operation: dict[str, Any]) -> None:
-        assert {"404", "422", "501"} <= set(operation["responses"])
-        schema = operation["responses"]["501"]["content"]["application/json"]["schema"]
+        assert {"404", "422"} <= set(operation["responses"])
+        schema = operation["responses"]["404"]["content"]["application/json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/ErrorResponse"}

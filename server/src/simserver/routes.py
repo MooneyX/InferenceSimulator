@@ -1,15 +1,11 @@
-"""HTTP 路由：``POST /api/simulate``。
-
-契约见 ``docs/design/api.md``。本模块只做 HTTP 边界工作：请求体由 FastAPI 按
-``SimConfig`` 校验（失败即 422），调用内核，再映射内核异常为 HTTP 状态码。
-"""
+"""参考配置、容量预览与结果缓存管理路由。"""
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
-from simcore import SimConfig, SimResult, simulate
+from simcore import SimConfig
 from simcore.capacity import resolve_config
 from simcore.schemas import ModelSpec, ResolutionReport
 from simserver.presets import HARDWARE, MODELS
@@ -40,10 +36,6 @@ _SIMULATION_ERRORS: dict[int | str, dict[str, Any]] = {
     status.HTTP_422_UNPROCESSABLE_CONTENT: {
         "model": ErrorResponse | FieldValidationResponse,
         "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
-    },
-    status.HTTP_501_NOT_IMPLEMENTED: {
-        "model": ErrorResponse,
-        "description": "此部署/计时模式尚未实现",
     },
 }
 
@@ -88,69 +80,6 @@ def resolve_endpoint(config: SimConfig) -> ResolutionReport:
         return resolve_config(config)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-
-
-@router.post(
-    "/simulate",
-    response_model=SimResult,
-    summary="同步执行一场仿真",
-    responses={
-        **_SIMULATION_ERRORS,
-        200: {
-            "headers": {
-                "X-Simulation-Cache": {
-                    "description": "hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算",
-                    "schema": {"type": "string", "enum": ["hit", "miss", "shared"]},
-                },
-                "X-Simulation-Cache-Lookup-Ms": {
-                    "description": "本次缓存查找/读取耗时（ms），不含等待、计算和网络传输",
-                    "schema": {"type": "number"},
-                },
-            },
-        },
-    },
-)
-def simulate_endpoint(
-    config: SimConfig,
-    request: Request,
-    force: bool = Query(
-        default=False, description="跳过已有结果并重算；相同输入仍合并进行中的计算"
-    ),
-) -> Response:
-    """执行整场仿真并返回区间记录、指标与告警。
-
-    - 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，
-      不阻塞事件循环。
-    - 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。
-      ``response_model`` 仅用于 OpenAPI 登记。
-    """
-    try:
-        trace_plan = None
-        if config.workload.mode == "trace":
-            trace = config.workload.trace
-            if not trace.plan_id:
-                raise ValueError("Trace 仿真须提供 workload.trace.plan_id")
-            trace_plan = request.app.state.trace_store.plan(trace.plan_id)
-        result = request.app.state.result_cache.run(
-            config,
-            trace_plan,
-            lambda: simulate(config, trace_plan=trace_plan),
-            force=force,
-        )
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except NotImplementedError as exc:
-        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    return Response(
-        content=result.content,
-        media_type="application/json",
-        headers={
-            "X-Simulation-Cache": result.status,
-            "X-Simulation-Cache-Lookup-Ms": f"{result.lookup_ms:.3f}",
-        },
-    )
 
 
 @router.delete("/simulation-cache", status_code=204, summary="清空本地仿真结果缓存")

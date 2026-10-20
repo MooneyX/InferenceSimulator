@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import await_task, run_simulation
 from simserver import create_app
 from simserver.trace_processing import PlanTooLargeError, compile_plan, scan_trace
 
@@ -119,14 +120,14 @@ def test_upload_preview_export_and_reupload_plan() -> None:
             "mode": "trace", "arrival_mode": "closed_loop", "session_rate": 1, "seed": 1,
             "trace": {"plan_id": plan_id},
         }
-        result = client.post("/api/simulate", json=request)
+        result = run_simulation(client, request)
         assert result.status_code == 200, result.text
         body = result.json()
         assert body["meta"]["num_completed"] == 2
         assert body["aborted_requests"][0]["reason"] == "invalid_trace_output"
         assert body["meta"]["config"]["workload"]["mode"] == "trace"
         request["workload"].update(arrival_mode="open_loop", target_qps=4)
-        scaled = client.post("/api/simulate", json=request)
+        scaled = run_simulation(client, request)
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["meta"]["num_requests"] == 3
@@ -155,7 +156,7 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
             "trace": {"plan_id": plan},
         }
         preview = client.post("/api/resolve", json=resolved)
-        response = client.post("/api/simulate", json=resolved)
+        response = run_simulation(client, resolved)
         assert response.status_code == 200, response.text
         data = response.json()
         assert data["resolution"] == preview.json()
@@ -164,14 +165,14 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
         assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
         assert data["resolution"]["max_total_tokens"] != 2048
         resolved["workload"]["target_qps"] = 4
-        scaled = client.post("/api/simulate", json=resolved)
+        scaled = run_simulation(client, resolved)
         assert scaled.status_code == 200, scaled.text
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["analysis"] is not None
         resolved["workload"].pop("target_qps")
         empirical_timing = config()["inference"]["timing"]
         resolved["inference"]["timing"] = empirical_timing
-        empirical = client.post("/api/simulate", json=resolved)
+        empirical = run_simulation(client, resolved)
         assert empirical.status_code == 200, empirical.text
         assert empirical.json()["analysis"] is None
         resolved["inference"]["hardware"].update({
@@ -179,12 +180,13 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
         })
         resolved["inference"]["tp_size"] = 2
         resolved["inference"]["timing"] = {"mode": "analytical"}
-        tp = client.post("/api/simulate", json=resolved)
+        tp = run_simulation(client, resolved)
         assert tp.status_code == 200, tp.text
         assert tp.json()["analysis"]["communication_ms"] > 0
         resolved["inference"]["timing"] = empirical_timing
         refused = client.post("/api/simulate", json=resolved)
-        assert refused.status_code == 501
+        assert refused.status_code == 202
+        assert await_task(client, refused.json()["id"])["status"] == "failed"
 
 
 def compile_plan_from_sample(client: TestClient) -> str:

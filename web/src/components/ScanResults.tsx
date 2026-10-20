@@ -1,0 +1,122 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import { CanvasRenderer } from "echarts/renderers";
+import { DataZoomComponent, GridComponent, LegendComponent, ToolboxComponent, TooltipComponent } from "echarts/components";
+
+import { getScanParameters, getScanPoints } from "../api/client";
+import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
+import { availableKeys, buildChart, metricsOf, palette, symbols, lineStyles,
+  type Roles, type Role, type ScanData } from "../scan/chart";
+import "./ScanResults.css";
+
+echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
+  ToolboxComponent, TooltipComponent]);
+
+function Curve({ data, roles, metric }: { data: ScanData[]; roles: Roles; metric: string }) {
+  const host = useRef<HTMLDivElement>(null);
+  const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
+  const model = useMemo(() => buildChart(data, roles, metric), [data, roles, metric]);
+  useEffect(() => {
+    if (!host.current) return;
+    const instance = echarts.init(host.current);
+    chart.current = instance;
+    const observer = new ResizeObserver(() => instance.resize());
+    observer.observe(host.current);
+    return () => { observer.disconnect(); instance.dispose(); chart.current = null; };
+  }, []);
+  useEffect(() => {
+    chart.current?.setOption({
+      animation: false,
+      grid: { top: 42, left: 66, right: 35, bottom: 105 },
+      legend: { type: "scroll", bottom: 0 }, tooltip: { trigger: "axis" },
+      toolbox: { feature: { saveAsImage: {}, restore: {} } },
+      dataZoom: [{ type: "inside" }, { type: "slider", bottom: 52 }],
+      xAxis: { type: "category", name: roles.x, data: model.xValues },
+      yAxis: { type: "value", name: metric, scale: true }, series: model.series,
+    }, true);
+  }, [model, roles.x, metric]);
+  const used = data.reduce((sum, batch) => sum + batch.points.length, 0);
+  const levels = (key: string) => new Set(model.entries.map(({ point }) => key && point.values[key])).size;
+  return <><div ref={host} className="scan-chart" role="img" aria-label="参数敏感性扫描折线图" />
+    <p>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
+      缺失点断线，不插值、不平均。</p>
+    {(levels(roles.color) > palette.length || levels(roles.shape) > symbols.length ||
+      levels(roles.line) > lineStyles.length) &&
+      <p role="status">部分视觉样式循环复用，建议减少相应档位以便区分。</p>}</>;
+}
+
+export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
+  const scans = jobs.filter((job) => job.kind === "scan");
+  const [selected, setSelected] = useState<string[] | null>(null);
+  const [points, setPoints] = useState<Record<string, ScanPoint[]>>({});
+  const [parameters, setParameters] = useState<ScanParameter[]>([]);
+  const [roles, setRoles] = useState<Roles>({ x: "", color: "", shape: "", line: "" });
+  const [metric, setMetric] = useState("throughput");
+  const [error, setError] = useState("");
+  const chosen = scans.filter((job) => selected === null || selected.includes(job.id));
+  const finished = chosen.filter((job) => job.status === "completed" || job.status === "cancelled");
+  const ids = finished.map((job) => job.id).join(",");
+
+  useEffect(() => {
+    let active = true;
+    void getScanParameters().then((items) => { if (active) setParameters(items); })
+      .catch(() => { if (active) setError("无法加载扫描参数目录"); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    void Promise.all(ids.split(",").filter(Boolean).map(async (id) =>
+      [id, await getScanPoints(id)] as const)).then((updates) => {
+      if (active) setPoints((current) => ({ ...current, ...Object.fromEntries(updates) }));
+    }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : "结果获取失败"); });
+    return () => { active = false; };
+  }, [ids]);
+  const data = useMemo(() => finished.filter((job) => points[job.id]).map((job) =>
+    ({ job, points: points[job.id] })), [finished.map((job) => job.id).join(","), points]);
+  const keys = availableKeys(data);
+  const measures = metricsOf(data);
+  const chosenRoles = { ...roles, x: roles.x && keys.includes(roles.x) ? roles.x : keys[0] ?? "" };
+  const currentMetric = measures.includes(metric) ? metric : measures[0] ?? "";
+
+  async function exportHtml() {
+    try {
+      const { downloadReport } = await import("../scan/report");
+      downloadReport(data, parameters);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "报告生成失败"); }
+  }
+  if (!scans.length) return null;
+  return <section className="scan-results" aria-labelledby="scan-results-heading">
+    <div className="section-heading"><div><p className="section-kicker">Scan results</p>
+      <h2 id="scan-results-heading">扫描结果组合</h2></div></div>
+    <div className="scan-batches">{scans.map((job) => <label key={job.id}>
+      <input type="checkbox" checked={selected === null || selected.includes(job.id)}
+        onChange={(event) => { const all = selected ?? scans.map((item) => item.id);
+          setSelected(event.target.checked ? [...all, job.id] : all.filter((id) => id !== job.id)); }} />
+      扫描 {job.id.slice(0, 8)} · {job.status} · {job.completed + job.failed}/{job.total}
+      {job.failed > 0 && ` · ${job.failed} 点失败`}</label>)}</div>
+    {keys.length > 0 && <>
+      <div className="scan-view-controls">{(["x", "color", "shape", "line"] as Role[]).map((role) =>
+        <label key={role}>{({ x: "横轴", color: "颜色", shape: "节点形状", line: "线样式" })[role]}
+          <select value={chosenRoles[role]} onChange={(event) => {
+            const next = event.target.value;
+            setRoles((current) => ({ ...current, [role]: next,
+              ...Object.fromEntries((["x", "color", "shape", "line"] as Role[])
+                .filter((other) => other !== role && current[other] === next && next)
+                .map((other) => [other, ""])) }));
+          }}>
+            {role !== "x" && <option value="">无</option>}
+            {keys.filter((key) => key === chosenRoles[role] ||
+              !Object.entries(chosenRoles).some(([other, value]) => other !== role && value === key))
+              .map((key) => <option key={key} value={key}>
+                {parameters.find((item) => item.key === key)?.label ?? key}</option>)}
+          </select></label>)}
+        <label>纵轴指标 <select value={currentMetric} onChange={(event) => setMetric(event.target.value)}>
+          {measures.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
+        <button type="button" onClick={() => void exportHtml()} disabled={!data.length}>
+          导出离线可操作 HTML</button></div>
+      <Curve data={data} roles={chosenRoles} metric={currentMetric} />
+    </>}
+    {error && <p role="alert" className="field-error">{error}</p>}
+  </section>;
+}

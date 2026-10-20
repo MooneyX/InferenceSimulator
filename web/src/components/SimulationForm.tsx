@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 
-import type { EmpiricalTimingConfig, SimConfig } from "../api/types";
+import type { EmpiricalTimingConfig, ScanRequest, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
@@ -10,12 +10,14 @@ import {
   type ConfigField,
 } from "../config/simulation";
 import { ModelHardwareConfig } from "./ModelHardwareConfig";
+import { ScanPanel } from "./ScanPanel";
 import { LengthDistributionEditor } from "./LengthDistributionEditor";
 import { TracePanel, type ReplaySelection } from "./TracePanel";
 import "./SimulationForm.css";
 
 export interface SimulationFormProps {
   onSubmit: (config: SimConfig, force?: boolean) => void;
+  onScanSubmit?: (request: ScanRequest) => void;
   disabled?: boolean;
 }
 
@@ -72,7 +74,7 @@ function NumberField({
   );
 }
 
-export function SimulationForm({ onSubmit, disabled = false }: SimulationFormProps) {
+export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: SimulationFormProps) {
   const [workloadMode, setWorkloadMode] = useState<"synthetic" | "trace">("synthetic");
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
@@ -556,6 +558,7 @@ export function SimulationForm({ onSubmit, disabled = false }: SimulationFormPro
         {workloadMode === "trace" && !replay &&
           <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}
       </div>
+      {onScanSubmit && <ScanPanel base={config} onSubmit={onScanSubmit} />}
     </form>
   );
 }

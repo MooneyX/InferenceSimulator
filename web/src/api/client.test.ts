@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { clearSimulationCache, resolveConfig, simulate, SimulationApiError } from "./client";
+import { clearSimulationCache, getJobResult, resolveConfig, simulate, SimulationApiError } from "./client";
 import type { ResolutionReport, SimConfig, SimResult } from "./types";
 import { createDefaultSimConfig } from "../config/simulation";
 
@@ -142,10 +142,10 @@ afterEach(() => {
 
 describe("simulate", () => {
   it("posts a typed config and returns the simulation result", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, result));
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(202, { id: "job-1" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(simulate(config)).resolves.toEqual({ result, cache: { status: "miss", lookupMs: 0 } });
+    await expect(simulate(config)).resolves.toEqual({ id: "job-1" });
     expect(fetchMock).toHaveBeenCalledWith("/api/simulate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -243,19 +243,21 @@ describe("simulate", () => {
 
 describe("result cache", () => {
   it("reads hit metadata and sends the force query", async () => {
+    const receipt = jsonResponse(202, { id: "job-1" });
     const response = jsonResponse(200, result);
     response.headers.set("X-Simulation-Cache", "hit");
     response.headers.set("X-Simulation-Cache-Lookup-Ms", "1.25");
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(receipt).mockResolvedValue(response);
     vi.stubGlobal("fetch", fetchMock);
-    await expect(simulate(config, true)).resolves.toEqual({
-      result, cache: { status: "hit", lookupMs: 1.25 },
-    });
+    await expect(simulate(config, true)).resolves.toEqual({ id: "job-1" });
     expect(fetchMock).toHaveBeenCalledWith("/api/simulate?force=true", expect.objectContaining({
       method: "POST", body: JSON.stringify(config),
     }));
+    await expect(getJobResult("job-1")).resolves.toEqual({
+      result, cache: { status: "hit", lookupMs: 1.25 },
+    });
     response.headers.set("X-Simulation-Cache", "shared");
-    expect((await simulate(config)).cache.status).toBe("shared");
+    expect((await getJobResult("job-1")).cache.status).toBe("shared");
   });
 
   it("clears the cache with DELETE without reading an empty JSON body", async () => {

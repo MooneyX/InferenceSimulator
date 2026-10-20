@@ -14,8 +14,8 @@
 | [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | L1/L2/L3 唯一索引、连续命中、容量、迁移与 LRU |
 | [design/perf-model.md](design/perf-model.md) | 四系数经验模型、融合步长与 restore 链路计时 |
 | [design/metrics.md](design/metrics.md) | 时延、吞吐、分层命中及容量迁移的计算口径 |
-| [design/api.md](design/api.md) | 分层配置、HTTP 响应与 OpenAPI 类型链 |
-| [design/frontend.md](design/frontend.md) | 分层配置表单、结果展示与甘特图交互 |
+| [design/api.md](design/api.md) | 分层配置、后台任务与扫描接口、OpenAPI 类型链 |
+| [design/frontend.md](design/frontend.md) | 配置/扫描输入、SSE 任务状态与交互图表 |
 
 ## 时序图
 
@@ -39,9 +39,9 @@
 | 模块 | 入口 | 状态 |
 |---|---|---|
 | 内核 | `simcore.simulate(SimConfig, *, trace_plan: TracePlan | None = None) -> SimResult` | M1 已完成 |
-| 服务层 | `simserver.app:create_app`；`POST /api/simulate` | M2 已完成 |
-| API 类型 | `web/openapi.json`；`web/src/api/schema.d.ts` | M2 已完成，运行 `npm run gen:api` 更新 |
-| 前端应用 | `web/src/App.tsx`；`web/src/components/RequestGantt.tsx` | M3 已完成 |
+| 服务层 | `simserver.app:create_app`；`simserver.jobs.JobManager`；`POST /api/simulate` / `POST /api/scans` | 后台任务与扫描已接入 |
+| API 类型 | `web/openapi.json`；`web/src/api/schema.d.ts` | 运行 `npm run gen:api` 更新 |
+| 前端应用 | `web/src/App.tsx`；`web/src/components/ScanPanel.tsx`；`web/src/components/ScanResults.tsx` | 单场与多扫描视图已接入 |
 
 运行、调用 API 与类型生成命令见仓库根目录 [README.md](../README.md)。
 

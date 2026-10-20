@@ -8,7 +8,7 @@ LLM Serving 系统级推理仿真器。离散事件仿真内核 + 前后端分�
 
 ```
 core/     # 仿真内核 simcore：纯 Python 包，零 IO（M1 已完成）
-server/   # FastAPI 服务层：同步仿真 API 与 OpenAPI 导出（M2 已完成）
+server/   # FastAPI 服务层：后台仿真与扫描任务、缓存及 OpenAPI 导出
 web/      # React + TypeScript + Vite + ECharts 单页前端（M3 已完成）
 docs/     # 现行设计、模块实施计划与文档索引
 ```
@@ -65,15 +65,19 @@ curl.exe -X POST http://127.0.0.1:8000/api/simulate `
 Remove-Item simulate-request.json
 ```
 
-响应是单个 `SimResult`，包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings`、物理容量 `resolution` 和可为空的 `analysis`；各请求含 `instance_id`。`meta.config` 完整回显规范化后的输入 `SimConfig`（包括模型字段默认值），不以推导容量改写输入。无效配置返回 `422`；运行中请求失败以成功响应中的 `aborted_requests` 返回。推理配置支持解析或经验计时，合成/Trace 负载均使用同一 `POST /api/simulate`；Trace 通过 `workload.trace.plan_id` 引用已上传的计划。旧手动配置 JSON 与 API 请求不再受支持，须重新选择模型、硬件与存储预算。旧版物理配置 JSON 也需删除 `inference.mode` 和 `shared_l3.mode` 后才能导入或提交；保留负载与计时的 `mode` 字段。
+`POST /api/simulate` 立即返回 `202` 与 `{"id":"任务ID"}`，不再同步返回整场结果。通过 `GET /api/jobs` 或 `GET /api/jobs/{id}` 查询状态，`GET /api/jobs/events` 接收 SSE 主动通知；完成后 `GET /api/jobs/{id}/result` 返回 `SimResult`，也可 `DELETE /api/jobs/{id}` 取消排队或运行中的任务。浏览器断线时页面回退为低频查询。`SimResult` 包含 `meta`、全场 `metrics`、逐实例 `instances`、仅成功请求的 `requests`、`aborted_requests`、`skipped_requests`、`warnings`、物理容量 `resolution` 和可为空的 `analysis`。`meta.config` 完整回显规范化输入。提交阶段无效配置返回 `422`；容量或计时不支持等运行时错误在任务状态中记为 `failed`，请求级失败在成功结果的 `aborted_requests` 中。合成/Trace 均通过该接口运行；Trace 使用已上传计划的 `plan_id`。旧版输入结构仍不支持。
 
 ## 仿真结果缓存
 
 服务端自动使用 SQLite 保存完整结果，默认位置为启动工作目录下的 `.simulation-cache/results.sqlite3`；本地部署从项目根启动，重启后仍可复用。键包含补齐默认值的配置、随机种子、规范化 Trace 计划的 SHA-256 及内核/服务源代码、Python/Pydantic 版本指纹。同内容计划重复上传可命中，响应仍回显本次 `plan_id`；Trace 临时 ID 过期或服务重启后须先重新上传计划。
 
-页面显示结果缓存命中状态、缓存查找/读取耗时和原始仿真计算耗时。「强制重新计算」使用当前表单参数重算并更新缓存；「清空结果缓存」确认后清空本地全部缓存，不删除已显示的结果。API 对应 `POST /api/simulate?force=true` 和 `DELETE /api/simulation-cache`（204）。
+页面在任务完成后显示结果缓存命中状态、缓存查找/读取耗时和原始仿真计算耗时。「强制重新计算」使用当前表单参数提交重算任务并更新缓存；「清空结果缓存」清空本地缓存，不删除已显示或正在运行的任务结果。缓存头在 `GET /api/jobs/{id}/result` 返回；提交 API 为 `POST /api/simulate?force=true`，清理为 `DELETE /api/simulation-cache`（204）。
 
-缓存默认最多保存 512 MiB 的压缩结果及输入记录，超限按最久未使用记录清理；单条超限仍正常返回但不保存。可在启动前通过 `SIMULATOR_CACHE_PATH` 指定数据库路径、`SIMULATOR_CACHE_MAX_BYTES` 指定容量字节数。数据库文件另有少量索引/页开销。同参数并发计算合并仅作用于同一服务进程；当前不提供跨进程或多机任务协调。HTTP 异常不缓存，包含请求级失败的完整结果可以缓存。
+缓存默认最多保存 512 MiB 的压缩结果及输入记录，超限按最久未使用记录清理；单条超限仍正常返回但不保存。启动前可通过 `SIMULATOR_CACHE_PATH` 指定数据库路径、`SIMULATOR_CACHE_MAX_BYTES` 指定容量字节数，通过 `SIMULATOR_WORKERS` 设置计算进程数（默认 8）。所有普通仿真与扫描点共用严格 FIFO 队列，有空闲 worker 即分发；取消运行中点会终止并补建其 worker。同参数已完成结果共享 SQLite 缓存，但不同 worker 上同时进行的同配置计算不会合并。当前是单个后端服务进程的内存任务队列：任务列表与扫描摘要不自动过期，但服务重启后不恢复，完整结果缓存仍受容量淘汰，Trace 上传计划仍受临时目录生命周期约束。
+
+## 参数组合扫描
+
+页面的扫描区有独立的「负载模式」与「请求到达模式」；Trace 扫描直接上传回放计划 JSON，使用上传回执中的块大小限制页大小。选择一个必需的横轴，并可为颜色、节点形状和线样式选择三个不同参数；参数选择器支持输入中文名称或字段路径搜索，档位可用逗号列表或 `起点:终点:步长`。参数目录由 `GET /api/scans/parameters` 返回，按照合成/Trace 和开环/闭环筛选，不包含模型配置或 GPU 预设名称。GPU 卡数与 TP（MoE 时同时包含 EP）是一个共同扫描参数，硬件/存储预算按页面显示单位填写。`POST /api/scans` 提交 `{ "base": SimConfig, "axes": { "x": { "key": "参数路径", "values": [1, 2] } } }`；扫描点和普通任务共用 `GET /api/jobs/{id}`、SSE 与取消接口；结果通过 `GET /api/jobs/{id}/points` 查询点级指标、实际配置和失败原因。组合数不设软件上限，但实际执行受 CPU、内存与磁盘容量限制。扫描任务完成后可勾选多批次组合、重分配图表维度、切换指标并导出包含 ECharts 源码和数据的离线可操作单文件 HTML。
 
 ## Trace 数据集 replay
 

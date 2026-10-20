@@ -1,7 +1,8 @@
 import { lazy, Suspense, useState } from "react";
 
-import { clearSimulationCache, simulate, SimulationApiError, type SimulationCacheInfo } from "./api/client";
-import type { SimConfig, SimResult } from "./api/types";
+import { clearSimulationCache, SimulationApiError, type SimulationCacheInfo } from "./api/client";
+import type { ScanRequest, SimConfig, SimResult } from "./api/types";
+import { useJobs } from "./useJobs";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
 import { WarningsPanel } from "./components/WarningsPanel";
@@ -10,6 +11,11 @@ import "./App.css";
 const RequestGantt = lazy(async () => {
   const module = await import("./components/RequestGantt");
   return { default: module.RequestGantt };
+});
+
+const ScanResults = lazy(async () => {
+  const module = await import("./components/ScanResults");
+  return { default: module.ScanResults };
 });
 
 const navigation = [
@@ -57,24 +63,26 @@ export default function App() {
       ? window.location.hash.slice(1)
       : navigation[0].id,
   );
+  const tasks = useJobs((response) => {
+    setResult(response.result);
+    setCacheInfo(response.cache);
+    setSelectedInstanceId(null);
+    setIsRunning(false);
+  }, (cause) => setError(presentError(cause)));
 
   async function handleSubmit(config: SimConfig, force = false): Promise<void> {
     setIsRunning(true);
     setError(null);
-    setResult(null);
-    setCacheInfo(null);
     setCacheNotice(null);
-    setSelectedInstanceId(null);
+    try { await tasks.submitSingle(config, force); }
+    catch (cause) { setError(presentError(cause)); }
+    finally { setIsRunning(false); }
+  }
 
-    try {
-      const response = force ? await simulate(config, true) : await simulate(config);
-      setResult(response.result);
-      setCacheInfo(response.cache);
-    } catch (cause) {
-      setError(presentError(cause));
-    } finally {
-      setIsRunning(false);
-    }
+  async function handleScanSubmit(request: ScanRequest): Promise<void> {
+    setError(null);
+    try { await tasks.submitSweep(request); }
+    catch (cause) { setError(presentError(cause)); }
   }
 
   async function handleClearCache(): Promise<void> {
@@ -128,7 +136,27 @@ export default function App() {
           </div>
         </header>
 
-        <SimulationForm onSubmit={handleSubmit} disabled={isRunning || isClearingCache} />
+        <SimulationForm onSubmit={handleSubmit} onScanSubmit={(request) => void handleScanSubmit(request)}
+          disabled={isClearingCache} />
+
+        {tasks.jobs.length > 0 && <section className="simulation-status" aria-label="后台任务">
+          <h2>后台任务</h2>
+          <ul>{tasks.jobs.map((job) => <li key={job.id}>
+            <strong>{job.kind === "scan" ? "扫描" : "仿真"} {job.id.slice(0, 8)}</strong>
+            {" · "}{job.status} · {job.completed + job.failed}/{job.total}
+            {job.error && ` · ${job.error}`}
+            {job.kind === "single" && job.status === "completed" &&
+              <button type="button" className="secondary-button" onClick={() => tasks.select(job.id)}>
+                查看结果</button>}
+            {(job.status === "queued" || job.status === "running") &&
+              <button type="button" className="secondary-button" onClick={() =>
+                void tasks.stop(job.id).catch((cause: unknown) => setError(presentError(cause)))}>
+                取消任务</button>}
+          </li>)}</ul>
+        </section>}
+        {tasks.jobs.some((job) => job.kind === "scan") && <Suspense fallback={<p>正在加载扫描图表…</p>}>
+          <ScanResults jobs={tasks.jobs} />
+        </Suspense>}
 
         <div className="result-stack" aria-live="polite">
           <div className="results-heading" id="results-heading">
@@ -155,7 +183,7 @@ export default function App() {
           {isRunning ? (
             <section className="simulation-status" role="status">
               <span className="status-indicator" aria-hidden="true" />
-              正在运行仿真…
+              正在提交后台任务…
             </section>
           ) : null}
 

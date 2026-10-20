@@ -70,11 +70,21 @@
         }
       }
     },
+    "/api/simulation-cache": {
+      "delete": {
+        "summary": "清空本地仿真结果缓存",
+        "operationId": "clear_simulation_cache_api_simulation_cache_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
     "/api/simulate": {
       "post": {
-        "summary": "同步执行一场仿真",
-        "description": "执行整场仿真并返回区间记录、指标与告警。\n\n- 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，\n  不阻塞事件循环。\n- 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。\n  ``response_model`` 仅用于 OpenAPI 登记。",
-        "operationId": "simulate_endpoint_api_simulate_post",
+        "summary": "提交单场后台仿真",
+        "operationId": "submit_simulation_api_simulate_post",
         "parameters": [
           {
             "name": "force",
@@ -82,11 +92,9 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "跳过已有结果并重算；相同输入仍合并进行中的计算",
               "default": false,
               "title": "Force"
-            },
-            "description": "跳过已有结果并重算；相同输入仍合并进行中的计算"
+            }
           }
         ],
         "requestBody": {
@@ -100,47 +108,27 @@
           }
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SimResult"
-                }
-              }
-            },
-            "headers": {
-              "X-Simulation-Cache": {
-                "description": "hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算",
-                "schema": {
-                  "type": "string",
-                  "enum": [
-                    "hit",
-                    "miss",
-                    "shared"
-                  ]
-                }
-              },
-              "X-Simulation-Cache-Lookup-Ms": {
-                "description": "本次缓存查找/读取耗时（ms），不含等待、计算和网络传输",
-                "schema": {
-                  "type": "number"
+                  "$ref": "#/components/schemas/JobReceipt"
                 }
               }
             }
           },
           "404": {
-            "description": "Trace 请求计划不存在或已过期",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
-            }
+            },
+            "description": "Not Found"
           },
           "422": {
-            "description": "字段校验错误列表，或解析模型/硬件时的业务错误消息",
             "content": {
               "application/json": {
                 "schema": {
@@ -152,17 +140,30 @@
                       "$ref": "#/components/schemas/FieldValidationResponse"
                     }
                   ],
-                  "title": "Response 422 Simulate Endpoint Api Simulate Post"
+                  "title": "Response 422 Submit Simulation Api Simulate Post"
                 }
               }
-            }
-          },
-          "501": {
-            "description": "此部署/计时模式尚未实现",
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/api/scans/parameters": {
+      "get": {
+        "summary": "Scan Parameters",
+        "operationId": "scan_parameters_api_scans_parameters_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "items": {
+                    "$ref": "#/components/schemas/ScanParameter"
+                  },
+                  "type": "array",
+                  "title": "Response Scan Parameters Api Scans Parameters Get"
                 }
               }
             }
@@ -170,13 +171,254 @@
         }
       }
     },
-    "/api/simulation-cache": {
-      "delete": {
-        "summary": "清空本地仿真结果缓存",
-        "operationId": "clear_simulation_cache_api_simulation_cache_delete",
+    "/api/scans": {
+      "post": {
+        "summary": "提交参数组合扫描",
+        "operationId": "submit_scan_api_scans_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobReceipt"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FieldValidationResponse"
+                    }
+                  ],
+                  "title": "Response 422 Submit Scan Api Scans Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "summary": "List Jobs",
+        "operationId": "list_jobs_api_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/JobSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Jobs Api Jobs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/events": {
+      "get": {
+        "summary": "任务状态 SSE 推送",
+        "operationId": "job_events_api_jobs_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{key}": {
+      "get": {
+        "summary": "Get Job",
+        "operationId": "get_job_api_jobs__key__get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Job",
+        "operationId": "cancel_job_api_jobs__key__delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{key}/result": {
+      "get": {
+        "summary": "Job Result",
+        "operationId": "job_result_api_jobs__key__result_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{key}/points": {
+      "get": {
+        "summary": "Scan Points",
+        "operationId": "scan_points_api_jobs__key__points_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScanPoint"
+                  },
+                  "title": "Response Scan Points Api Jobs  Key  Points Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
@@ -1244,6 +1486,124 @@
         "title": "InstanceResult",
         "description": "单个副本的统计；吞吐按本副本已发送请求到达至最后成功完成计算。"
       },
+      "JobReceipt": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "JobReceipt"
+      },
+      "JobSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "single",
+              "scan"
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "cache": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache"
+          },
+          "lookup_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lookup Ms"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "axes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ScanAxis"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Axes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "total",
+          "completed",
+          "failed",
+          "error",
+          "cache",
+          "lookup_ms",
+          "version",
+          "axes"
+        ],
+        "title": "JobSummary"
+      },
       "LognormalLength": {
         "properties": {
           "dist": {
@@ -1998,6 +2358,17 @@
           "requests": {
             "type": "integer",
             "title": "Requests"
+          },
+          "block_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Size"
           }
         },
         "type": "object",
@@ -2336,6 +2707,188 @@
         "type": "object",
         "title": "RouterSpec",
         "description": "逐 rank 复制的专家打分矩阵及选位修正向量。"
+      },
+      "ScanAxis": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "values": {
+            "items": {},
+            "type": "array",
+            "minItems": 1,
+            "title": "Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "values"
+        ],
+        "title": "ScanAxis"
+      },
+      "ScanParameter": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "modes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Modes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "modes"
+        ],
+        "title": "ScanParameter"
+      },
+      "ScanPoint": {
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Values"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SimConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics"
+          },
+          "num_completed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Completed"
+          },
+          "num_aborted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Aborted"
+          },
+          "num_skipped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Skipped"
+          },
+          "wall_clock_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Clock Ms"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "values",
+          "status"
+        ],
+        "title": "ScanPoint"
+      },
+      "ScanRequest": {
+        "properties": {
+          "base": {
+            "$ref": "#/components/schemas/SimConfig"
+          },
+          "axes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ScanAxis"
+            },
+            "type": "object",
+            "title": "Axes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base",
+          "axes"
+        ],
+        "title": "ScanRequest"
       },
       "SchedulerConfig": {
         "properties": {

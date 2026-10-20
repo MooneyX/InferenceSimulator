@@ -1,14 +1,16 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearSimulationCache, simulate, uploadReplayPlan, SimulationApiError, type SimulationResponse } from "./api/client";
+import { clearSimulationCache, getJob, getJobResult, getScanParameters, listJobs,
+  simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
 import type { InferenceConfig, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
 
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
-  return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn(), clearSimulationCache: vi.fn() };
+  return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn(), clearSimulationCache: vi.fn(),
+    listJobs: vi.fn(), getJob: vi.fn(), getJobResult: vi.fn(), getScanParameters: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -141,28 +143,39 @@ function resolvedResult(overrides: Partial<InferenceConfig> = {}): SimResult {
 const simulateMock = vi.mocked(simulate);
 const uploadReplayPlanMock = vi.mocked(uploadReplayPlan);
 const clearCacheMock = vi.mocked(clearSimulationCache);
+const jobMock = vi.mocked(getJob);
+const resultMock = vi.mocked(getJobResult);
 
 function resolveSimulation(value: SimResult): void {
-  simulateMock.mockResolvedValue({ result: value, cache: { status: "miss", lookupMs: 0 } });
+  simulateMock.mockResolvedValue({ id: "job-1" });
+  resultMock.mockResolvedValue({ result: value, cache: { status: "miss", lookupMs: 0 } });
 }
 
 beforeEach(() => {
   simulateMock.mockReset();
   uploadReplayPlanMock.mockReset();
   clearCacheMock.mockReset();
+  jobMock.mockReset();
+  resultMock.mockReset();
+  vi.mocked(listJobs).mockReset();
+  vi.mocked(listJobs).mockResolvedValue([]);
+  vi.mocked(getScanParameters).mockReset();
+  vi.mocked(getScanParameters).mockResolvedValue([]);
+  jobMock.mockResolvedValue({ id: "job-1", kind: "single", status: "completed", total: 1,
+    completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0, axes: null, version: 1 });
   vi.restoreAllMocks();
 });
 
 describe("App", () => {
   it("shows a cache hit and forces a recalculation with the current form", async () => {
-    simulateMock.mockResolvedValueOnce({ result, cache: { status: "hit", lookupMs: 1.25 } });
+    resolveSimulation(result);
+    resultMock.mockResolvedValueOnce({ result, cache: { status: "hit", lookupMs: 1.25 } });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(await screen.findByLabelText("结果缓存状态")).toHaveTextContent("结果缓存命中");
     expect(screen.getByLabelText("结果缓存状态")).toHaveTextContent("缓存查找/读取 1.25 ms");
     expect(screen.getByLabelText("结果缓存状态")).toHaveTextContent("原始仿真计算 42.50 ms");
     expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
-    resolveSimulation(result);
     fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "强制重新计算" }));
     expect(simulateMock).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -274,7 +287,7 @@ describe("App", () => {
     uploadReplayPlanMock.mockResolvedValue({ id: "plan-1", sessions: 1, requests: 1 });
     resolveSimulation(traceResult);
     render(<App />);
-    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    fireEvent.change(screen.getAllByLabelText("负载模式")[0], { target: { value: "trace" } });
     fireEvent.change(screen.getByLabelText("已导出的计划 JSON"), {
       target: { files: [new File(["{}"], "plan.json")] },
     });
@@ -292,7 +305,8 @@ describe("App", () => {
     }));
     expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
-    expect(screen.getByText("目标发送 QPS").closest(".metric-card")).toHaveTextContent("9 请求/秒");
+    expect(screen.getAllByText("目标发送 QPS").at(-1)?.closest(".metric-card"))
+      .toHaveTextContent("9 请求/秒");
   });
 
   it("routes the single run button to the simulation API", async () => {
@@ -412,21 +426,18 @@ describe("App", () => {
     expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 0 · 失败 1 · 跳过 0");
   });
 
-  it("disables duplicate submission while the request is pending", async () => {
-    let resolveRequest: (value: SimulationResponse) => void = () => undefined;
-    simulateMock.mockReturnValue(
-      new Promise((resolve) => {
-        resolveRequest = resolve;
-      }),
-    );
+  it("keeps the form editable while submitting and retrieves a background result", async () => {
+    let resolveRequest: (value: { id: string }) => void = () => undefined;
+    simulateMock.mockReturnValue(new Promise((resolve) => { resolveRequest = resolve; }));
+    resultMock.mockResolvedValue({ result, cache: { status: "miss", lookupMs: 0 } });
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(screen.getByRole("status")).toHaveTextContent("正在提交后台任务…");
+    expect(screen.getByLabelText("请求数量")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
 
-    expect(screen.getByRole("button", { name: "正在运行…" })).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent("正在运行仿真…");
-
-    resolveRequest({ result, cache: { status: "miss", lookupMs: 0 } });
+    resolveRequest({ id: "job-1" });
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
   });
 

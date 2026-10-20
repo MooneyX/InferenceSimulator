@@ -38,31 +38,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/simulate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 同步执行一场仿真
-         * @description 执行整场仿真并返回区间记录、指标与告警。
-         *
-         *     - 用同步 ``def``：仿真是纯 CPU 计算，FastAPI 会将其放入线程池执行，
-         *       不阻塞事件循环。
-         *     - 返回已序列化 JSON，跳过逐条结果的二次校验；缓存命中时回显本次配置。
-         *       ``response_model`` 仅用于 OpenAPI 登记。
-         */
-        post: operations["simulate_endpoint_api_simulate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/simulation-cache": {
         parameters: {
             query?: never;
@@ -75,6 +50,143 @@ export interface paths {
         post?: never;
         /** 清空本地仿真结果缓存 */
         delete: operations["clear_simulation_cache_api_simulation_cache_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 提交单场后台仿真 */
+        post: operations["submit_simulation_api_simulate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/scans/parameters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Parameters */
+        get: operations["scan_parameters_api_scans_parameters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/scans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 提交参数组合扫描 */
+        post: operations["submit_scan_api_scans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Jobs */
+        get: operations["list_jobs_api_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 任务状态 SSE 推送 */
+        get: operations["job_events_api_jobs_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job_api_jobs__key__get"];
+        put?: never;
+        post?: never;
+        /** Cancel Job */
+        delete: operations["cancel_job_api_jobs__key__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{key}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job Result */
+        get: operations["job_result_api_jobs__key__result_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{key}/points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Points */
+        get: operations["scan_points_api_jobs__key__points_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -562,6 +674,44 @@ export interface components {
             num_engine_steps: number;
             metrics: components["schemas"]["Metrics"];
         };
+        /** JobReceipt */
+        JobReceipt: {
+            /** Id */
+            id: string;
+        };
+        /** JobSummary */
+        JobSummary: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "single" | "scan";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed" | "failed" | "cancelled";
+            /** Total */
+            total: number;
+            /** Completed */
+            completed: number;
+            /** Failed */
+            failed: number;
+            /** Error */
+            error: string | null;
+            /** Cache */
+            cache: string | null;
+            /** Lookup Ms */
+            lookup_ms: number | null;
+            /** Version */
+            version: number;
+            /** Axes */
+            axes: {
+                [key: string]: components["schemas"]["ScanAxis"];
+            } | null;
+        };
         /**
          * LognormalLength
          * @description 对数正态分布长度，用于表达长尾负载。
@@ -968,6 +1118,8 @@ export interface components {
             sessions: number;
             /** Requests */
             requests: number;
+            /** Block Size */
+            block_size?: number | null;
         };
         /** PlanSelection */
         PlanSelection: {
@@ -1137,6 +1289,61 @@ export interface components {
              * @enum {string}
              */
             correction_dtype: "bf16" | "fp16" | "fp32";
+        };
+        /** ScanAxis */
+        ScanAxis: {
+            /** Key */
+            key: string;
+            /** Values */
+            values: unknown[];
+        };
+        /** ScanParameter */
+        ScanParameter: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Kind */
+            kind: string;
+            /** Modes */
+            modes: string[];
+        };
+        /** ScanPoint */
+        ScanPoint: {
+            /** Values */
+            values: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "completed" | "failed";
+            /** Signature */
+            signature?: string | null;
+            config?: components["schemas"]["SimConfig"] | null;
+            /** Metrics */
+            metrics?: {
+                [key: string]: unknown;
+            } | null;
+            /** Num Completed */
+            num_completed?: number | null;
+            /** Num Aborted */
+            num_aborted?: number | null;
+            /** Num Skipped */
+            num_skipped?: number | null;
+            /** Wall Clock Ms */
+            wall_clock_ms?: number | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** ScanRequest */
+        ScanRequest: {
+            base: components["schemas"]["SimConfig"];
+            /** Axes */
+            axes: {
+                [key: string]: components["schemas"]["ScanAxis"];
+            };
         };
         /**
          * SchedulerConfig
@@ -1545,64 +1752,6 @@ export interface operations {
             };
         };
     };
-    simulate_endpoint_api_simulate_post: {
-        parameters: {
-            query?: {
-                /** @description 跳过已有结果并重算；相同输入仍合并进行中的计算 */
-                force?: boolean;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SimConfig"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    /** @description hit：持久缓存命中；miss：重新计算；shared：复用进行中的计算 */
-                    "X-Simulation-Cache"?: "hit" | "miss" | "shared";
-                    /** @description 本次缓存查找/读取耗时（ms），不含等待、计算和网络传输 */
-                    "X-Simulation-Cache-Lookup-Ms"?: number;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SimResult"];
-                };
-            };
-            /** @description Trace 请求计划不存在或已过期 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 字段校验错误列表，或解析模型/硬件时的业务错误消息 */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
-                };
-            };
-            /** @description 此部署/计时模式尚未实现 */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     clear_simulation_cache_api_simulation_cache_delete: {
         parameters: {
             query?: never;
@@ -1618,6 +1767,276 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    submit_simulation_api_simulate_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimConfig"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReceipt"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
+                };
+            };
+        };
+    };
+    scan_parameters_api_scans_parameters_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanParameter"][];
+                };
+            };
+        };
+    };
+    submit_scan_api_scans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobReceipt"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["FieldValidationResponse"];
+                };
+            };
+        };
+    };
+    list_jobs_api_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSummary"][];
+                };
+            };
+        };
+    };
+    job_events_api_jobs_events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_job_api_jobs__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_api_jobs__key__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_result_api_jobs__key__result_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_points_api_jobs__key__points_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanPoint"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

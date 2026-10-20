@@ -1,10 +1,14 @@
 import type {
-  ErrorResponse,
   HTTPValidationError,
   PresetCatalog,
   ResolutionReport,
   SimConfig,
   SimResult,
+  JobReceipt,
+  JobSummary,
+  ScanRequest,
+  ScanPoint,
+  ScanParameter,
   ValidationError,
   PlanReceipt,
   TraceJob,
@@ -67,7 +71,7 @@ export interface SimulationResponse {
   cache: SimulationCacheInfo;
 }
 
-export async function simulate(config: SimConfig, force = false): Promise<SimulationResponse> {
+export async function simulate(config: SimConfig, force = false): Promise<JobReceipt> {
   let response: Response;
 
   try {
@@ -89,14 +93,7 @@ export async function simulate(config: SimConfig, force = false): Promise<Simula
       throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
     }
 
-    const status = response.headers.get("X-Simulation-Cache");
-    return {
-      result: payload as SimResult,
-      cache: {
-        status: status === "hit" || status === "shared" ? status : "miss",
-        lookupMs: Number(response.headers.get("X-Simulation-Cache-Lookup-Ms") ?? 0),
-      },
-    };
+    return payload as JobReceipt;
   }
 
   if (response.status === 422) {
@@ -107,16 +104,47 @@ export async function simulate(config: SimConfig, force = false): Promise<Simula
     });
   }
 
-  if (response.status === 501) {
-    const errorResponse = payload as ErrorResponse | undefined;
-    throw new SimulationApiError(
-      errorResponse?.detail ?? "服务端尚未实现此仿真模式",
-    );
-  }
-
   throw new SimulationApiError(
     getErrorDetail(payload) ?? `仿真请求失败（HTTP ${response.status}）`,
   );
+}
+
+export function submitScan(request: ScanRequest): Promise<JobReceipt> {
+  return requestConfig<JobReceipt>("/api/scans", request);
+}
+
+export function listJobs(): Promise<JobSummary[]> {
+  return requestConfig<JobSummary[]>("/api/jobs");
+}
+
+export function getJob(id: string): Promise<JobSummary> {
+  return requestConfig<JobSummary>(`/api/jobs/${encodeURIComponent(id)}`);
+}
+
+export function getScanParameters(): Promise<ScanParameter[]> {
+  return requestConfig<ScanParameter[]>("/api/scans/parameters");
+}
+
+export function getScanPoints(id: string): Promise<ScanPoint[]> {
+  return requestConfig<ScanPoint[]>(`/api/jobs/${encodeURIComponent(id)}/points`);
+}
+
+export async function cancelJob(id: string): Promise<JobSummary> {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) throw new SimulationApiError(getErrorDetail(await readJson(response)) ?? "取消任务失败");
+  return response.json() as Promise<JobSummary>;
+}
+
+export async function getJobResult(id: string): Promise<SimulationResponse> {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(id)}/result`);
+  if (!response.ok) throw new SimulationApiError(getErrorDetail(await readJson(response)) ?? "获取结果失败");
+  const result = await readJson(response);
+  if (result === undefined) throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
+  const status = response.headers.get("X-Simulation-Cache");
+  return { result: result as SimResult, cache: {
+    status: status === "hit" || status === "shared" ? status : "miss",
+    lookupMs: Number(response.headers.get("X-Simulation-Cache-Lookup-Ms") ?? 0),
+  } };
 }
 
 export async function clearSimulationCache(): Promise<void> {
@@ -133,7 +161,7 @@ export async function clearSimulationCache(): Promise<void> {
   }
 }
 
-async function requestConfig<T>(endpoint: string, body?: SimConfig): Promise<T> {
+async function requestConfig<T>(endpoint: string, body?: SimConfig | ScanRequest): Promise<T> {
   let response: Response;
   try {
     response = await fetch(endpoint, body ? {

@@ -49,6 +49,7 @@ class PlanReceipt(BaseModel):
     id: str
     sessions: int
     requests: int
+    block_size: int | None = None
 
 
 def _store(request: Request) -> TraceStore:
@@ -136,4 +137,5 @@ async def upload_plan(request: Request) -> PlanReceipt:
     except (ValidationError, ValueError) as exc:
         path.unlink(missing_ok=True)
         raise HTTPException(422, str(exc)) from exc
-    return PlanReceipt(id=key, sessions=len(plan.sessions), requests=len(plan.requests))
+    return PlanReceipt(id=key, sessions=len(plan.sessions), requests=len(plan.requests),
+                       block_size=plan.block_size)

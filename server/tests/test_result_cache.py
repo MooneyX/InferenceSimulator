@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import run_simulation
 from simcore import SimConfig, SimResult, simulate
 from simcore.schemas import TracePlan
 from simserver import create_app
@@ -186,26 +187,44 @@ def test_clear_does_not_repopulate_from_inflight(
     assert cache.run(config, None, lambda: result).status == "miss"
 
 
+def test_clear_across_worker_cache_instances(
+    tmp_path: Path, config: SimConfig, result: SimResult,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    worker_cache = ResultCache(path, fingerprint="engine")
+    controller_cache = ResultCache(path, fingerprint="engine")
+    started, release = Event(), Event()
+
+    def compute() -> SimResult:
+        started.set()
+        assert release.wait(5)
+        return result
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(worker_cache.run, config, None, compute)
+        assert started.wait(5)
+        controller_cache.clear()
+        release.set()
+        assert pending.result().status == "miss"
+    assert controller_cache.run(config, None, lambda: result).status == "miss"
+
+
 def test_http_hit_force_clear_and_restart(tmp_path: Path) -> None:
     path = tmp_path / "cache.sqlite3"
     payload = make_payload(num_requests=2)
     with TestClient(create_app(cache_path=path)) as client:
-        first = client.post("/api/simulate", json=payload)
+        first = run_simulation(client, payload)
         assert first.status_code == 200
         assert first.headers["X-Simulation-Cache"] == "miss"
-        with patch("simserver.routes.simulate", side_effect=AssertionError("must not compute")):
-            hit = client.post("/api/simulate", json=payload)
+        hit = run_simulation(client, payload)
         assert hit.headers["X-Simulation-Cache"] == "hit"
         assert hit.json() == first.json()
         assert float(hit.headers["X-Simulation-Cache-Lookup-Ms"]) >= 0
-        assert (
-            client.post("/api/simulate?force=true", json=payload).headers["X-Simulation-Cache"]
-            == "miss"
-        )
+        assert run_simulation(client, payload, force=True).headers["X-Simulation-Cache"] == "miss"
     with TestClient(create_app(cache_path=path)) as restarted:
-        assert restarted.post("/api/simulate", json=payload).headers["X-Simulation-Cache"] == "hit"
+        assert run_simulation(restarted, payload).headers["X-Simulation-Cache"] == "hit"
         assert restarted.delete("/api/simulation-cache").status_code == 204
-        assert restarted.post("/api/simulate", json=payload).headers["X-Simulation-Cache"] == "miss"
+        assert run_simulation(restarted, payload).headers["X-Simulation-Cache"] == "miss"
 
 
 def test_trace_content_identity_and_current_config_echo(tmp_path: Path) -> None:
@@ -237,11 +256,10 @@ def test_trace_content_identity_and_current_config_echo(tmp_path: Path) -> None:
             "session_rate": 1,
             "trace": {"plan_id": first_id},
         }
-        first = client.post("/api/simulate", json=payload)
+        first = run_simulation(client, payload)
         assert first.status_code == 200, first.text
         payload["workload"]["trace"]["plan_id"] = second_id
-        with patch("simserver.routes.simulate", side_effect=AssertionError("must not compute")):
-            hit = client.post("/api/simulate", json=payload)
+        hit = run_simulation(client, payload)
         assert hit.headers["X-Simulation-Cache"] == "hit"
         expected = first.json()
         expected["meta"]["config"]["workload"]["trace"]["plan_id"] = second_id
@@ -250,7 +268,7 @@ def test_trace_content_identity_and_current_config_echo(tmp_path: Path) -> None:
         changed["requests"][0]["output_len"] = 2
         third_id = client.post("/api/replay-plans", content=json.dumps(changed)).json()["id"]
         payload["workload"]["trace"]["plan_id"] = third_id
-        assert client.post("/api/simulate", json=payload).headers["X-Simulation-Cache"] == "miss"
+        assert run_simulation(client, payload).headers["X-Simulation-Cache"] == "miss"
         payload["workload"]["trace"]["plan_id"] = "expired"
         assert client.post("/api/simulate", json=payload).status_code == 404
 

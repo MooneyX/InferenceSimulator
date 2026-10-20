@@ -1,11 +1,15 @@
 import type { components, operations } from "./schema";
 
-type SimulateOperation = operations["simulate_endpoint_api_simulate_post"];
+type SimulateOperation = operations["submit_simulation_api_simulate_post"];
 
 export type SimConfig = SimulateOperation["requestBody"]["content"]["application/json"];
-export type SimResult = SimulateOperation["responses"][200]["content"]["application/json"];
-export type HTTPValidationError = SimulateOperation["responses"][422]["content"]["application/json"];
-export type ErrorResponse = SimulateOperation["responses"][501]["content"]["application/json"];
+export type SimResult = components["schemas"]["SimResult"];
+export type HTTPValidationError = components["schemas"]["HTTPValidationError"];
+export type JobReceipt = components["schemas"]["JobReceipt"];
+export type JobSummary = components["schemas"]["JobSummary"];
+export type ScanRequest = components["schemas"]["ScanRequest"];
+export type ScanPoint = components["schemas"]["ScanPoint"];
+export type ScanParameter = components["schemas"]["ScanParameter"];
 export type ValidationError = components["schemas"]["ValidationError"];
 export type RequestRecord = components["schemas"]["RequestRecord"];
 export type LengthDistribution = components["schemas"]["SyntheticWorkloadConfig"]["prompt_len"];

@@ -64,11 +64,9 @@ def test_unified_routes_document_business_and_field_errors() -> None:
             "#/components/schemas/ErrorResponse",
             "#/components/schemas/FieldValidationResponse",
         }
-    error = spec["paths"]["/api/simulate"]["post"]["responses"]["501"]
-    assert (
-        error["content"]["application/json"]["schema"]["$ref"]
-        == "#/components/schemas/ErrorResponse"
-    )
+    assert spec["paths"]["/api/simulate"]["post"]["responses"]["202"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/JobReceipt"}
 
 
 def test_only_unified_simulation_routes_remain() -> None:

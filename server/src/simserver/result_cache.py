@@ -96,6 +96,11 @@ class ResultCache:
                     )
                 """)
                 connection.execute("CREATE INDEX IF NOT EXISTS results_lru ON results(accessed_ns)")
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS cache_meta (id INTEGER PRIMARY KEY, "
+                    "generation INTEGER NOT NULL)"
+                )
+                connection.execute("INSERT OR IGNORE INTO cache_meta VALUES (1, 0)")
                 connection.commit()
                 self._initialized = True
             with connection:
@@ -109,10 +114,16 @@ class ResultCache:
             connection.execute("UPDATE results SET accessed_ns = ? WHERE key = ?", (time_ns(), key))
             return zlib.decompress(row[0]).decode()
 
-    def _write(self, key: str, inputs: str, result: str) -> None:
+    def _write(self, key: str, inputs: str, result: str, generation: int) -> None:
         compressed = zlib.compress(result.encode())
         size = len(compressed) + len(inputs.encode())
         with self._database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT generation FROM cache_meta WHERE id = 1"
+            ).fetchone()[0]
+            if current != generation:
+                return
             connection.execute("DELETE FROM results WHERE key = ?", (key,))
             if size > self.max_bytes:
                 return
@@ -158,6 +169,10 @@ class ResultCache:
             if cached is None and owner:
                 self._inflight[key] = future
             generation = self._generation
+            with self._database() as connection:
+                shared_generation = connection.execute(
+                    "SELECT generation FROM cache_meta WHERE id = 1"
+                ).fetchone()[0]
         if cached is not None:
             content = self._render(cached, config)
             return CachedSimulation(content, "hit", (perf_counter() - started) * 1000)
@@ -168,7 +183,7 @@ class ResultCache:
             neutral = result.model_dump_json(exclude={"meta": {"config"}})
             with self._lock:
                 if generation == self._generation:
-                    self._write(key, inputs, neutral)
+                    self._write(key, inputs, neutral, shared_generation)
                 future.set_result(neutral)
             return CachedSimulation(result.model_dump_json(), "miss", lookup_ms)
         except BaseException as exc:
@@ -181,5 +196,7 @@ class ResultCache:
     def clear(self) -> None:
         with self._lock:
             with self._database() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("UPDATE cache_meta SET generation = generation + 1 WHERE id = 1")
                 connection.execute("DELETE FROM results")
             self._generation += 1

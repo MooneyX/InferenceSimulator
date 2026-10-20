@@ -8,12 +8,13 @@ import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
 import { availableKeys, buildChart, metricsOf, palette, symbols, lineStyles,
   type Roles, type Role, type ScanData } from "../scan/chart";
+import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
 import "./ScanResults.css";
 
 echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
   ToolboxComponent, TooltipComponent]);
 
-function Curve({ data, roles, metric }: { data: ScanData[]; roles: Roles; metric: string }) {
+function Curve({ data, roles, metric, complete }: { data: ScanData[]; roles: Roles; metric: string; complete: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
   const model = useMemo(() => buildChart(data, roles, metric), [data, roles, metric]);
@@ -48,8 +49,8 @@ function Curve({ data, roles, metric }: { data: ScanData[]; roles: Roles; metric
   const used = data.reduce((sum, batch) => sum + batch.points.length, 0);
   const levels = (key: string) => new Set(model.entries.map(({ point }) => key && point.values[key])).size;
   return <><div ref={host} className="scan-chart" role="img" aria-label="参数敏感性扫描折线图" />
-    <p>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
-      缺失点断线，不插值、不平均。</p>
+    <p>{complete ? <>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
+      缺失点断线，不插值、不平均。</> : "背景参数尚未选齐，图表暂不显示。"}</p>
     {(levels(roles.color) > palette.length || levels(roles.shape) > symbols.length ||
       levels(roles.line) > lineStyles.length) &&
       <p role="status">部分视觉样式循环复用，建议减少相应档位以便区分。</p>}</>;
@@ -62,6 +63,9 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [parameters, setParameters] = useState<ScanParameter[]>([]);
   const [roles, setRoles] = useState<Roles>({ x: "", color: "", shape: "", line: "" });
   const [metric, setMetric] = useState("throughput");
+  const [background, setBackground] = useState<BackgroundValues>({});
+  const [choosingBackground, setChoosingBackground] = useState(false);
+  const [selectedValues, setSelectedValues] = useState<SelectedValues>({});
   const [error, setError] = useState("");
   const chosen = scans.filter((job) => selected === null || selected.includes(job.id));
   const finished = chosen.filter((job) => job.status === "completed" || job.status === "cancelled");
@@ -85,8 +89,14 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
     ({ job, points: points[job.id] })), [finished.map((job) => job.id).join(","), points]);
   const keys = availableKeys(data);
   const measures = metricsOf(data);
-  const chosenRoles = { ...roles, x: roles.x && keys.includes(roles.x) ? roles.x : keys[0] ?? "" };
+  const chosenRoles: Roles = { x: roles.x && keys.includes(roles.x) ? roles.x : keys[0] ?? "",
+    color: keys.includes(roles.color) ? roles.color : "",
+    shape: keys.includes(roles.shape) ? roles.shape : "",
+    line: keys.includes(roles.line) ? roles.line : "" };
   const currentMetric = measures.includes(metric) ? metric : measures[0] ?? "";
+  const selection = resolveSelection(data, chosenRoles, currentMetric,
+    background, selectedValues, choosingBackground);
+  const nameOf = (key: string) => parameters.find((item) => item.key === key)?.label ?? key;
 
   async function exportHtml() {
     try {
@@ -105,26 +115,54 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
       扫描 {job.id.slice(0, 8)} · {job.status} · {job.completed + job.failed}/{job.total}
       {job.failed > 0 && ` · ${job.failed} 点失败`}</label>)}</div>
     {keys.length > 0 && <>
-      <div className="scan-view-controls">{(["x", "color", "shape", "line"] as Role[]).map((role) =>
-        <label key={role}>{({ x: "横轴", color: "颜色", shape: "节点形状", line: "线样式" })[role]}
-          <select value={chosenRoles[role]} onChange={(event) => {
-            const next = event.target.value;
-            setRoles((current) => ({ ...current, [role]: next,
-              ...Object.fromEntries((["x", "color", "shape", "line"] as Role[])
-                .filter((other) => other !== role && current[other] === next && next)
-                .map((other) => [other, ""])) }));
-          }}>
-            {role !== "x" && <option value="">无</option>}
-            {keys.filter((key) => key === chosenRoles[role] ||
-              !Object.entries(chosenRoles).some(([other, value]) => other !== role && value === key))
-              .map((key) => <option key={key} value={key}>
-                {parameters.find((item) => item.key === key)?.label ?? key}</option>)}
-          </select></label>)}
+      {(["x", "color", "shape", "line"] as Role[]).map((role) =>
+        <div className="scan-role-row" key={role}>
+          <label>{({ x: "横轴", color: "颜色", shape: "节点形状", line: "线样式" })[role]}
+            <select value={chosenRoles[role]} onChange={(event) => {
+              setRoles({ ...chosenRoles, [role]: event.target.value });
+              setBackground({}); setChoosingBackground(false); setSelectedValues({});
+            }}>
+              {role !== "x" && <option value="">无</option>}
+              {keys.map((key) => <option key={key} value={key}
+                disabled={key !== chosenRoles[role] && Object.values(chosenRoles).includes(key)}>
+                {nameOf(key)}</option>)}
+            </select></label>
+          <div className="scan-role-values" aria-label={`${({ x: "横轴", color: "颜色", shape: "节点形状", line: "线样式" })[role]}参数值`}>
+            {!chosenRoles[role] ? "未选择参数" : selection.roleChoices[role].map((choice) =>
+              <label key={choice.token} className={choice.disabled ? "unavailable" : ""}>
+                <input type="checkbox" checked={choice.checked} disabled={choice.disabled}
+                  onChange={(event) => setSelectedValues({ ...selection.selected,
+                    [chosenRoles[role]]: event.target.checked
+                      ? [...selection.selected[chosenRoles[role]], choice.token]
+                      : selection.selected[chosenRoles[role]].filter((token) => token !== choice.token) })} />
+                {textOf(choice.value)}</label>)}
+          </div>
+        </div>)}
+      <div className="scan-view-controls">
         <label>纵轴指标 <select value={currentMetric} onChange={(event) => setMetric(event.target.value)}>
           {measures.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
+        <button type="button" onClick={() => setSelectedValues({})}>重置变化参数值</button>
         <button type="button" onClick={() => void exportHtml()} disabled={!data.length}>
           导出离线可操作 HTML</button></div>
-      <Curve data={data} roles={chosenRoles} metric={currentMetric} />
+      {selection.hidden.length > 0 && <div className="scan-background">
+        <div className="scan-background-heading"><h3>背景参数（每项选择一个值）</h3>
+          <button type="button" onClick={() => {
+            setBackground({}); setChoosingBackground(true); setSelectedValues({});
+          }}>重新选择背景值</button></div>
+        <div className="scan-background-groups">{selection.hidden.map((key) =>
+          <fieldset key={key}><legend>{nameOf(key)}</legend><div className="scan-background-options">
+            {selection.backgroundChoices[key].map((choice) => <label key={choice.token}
+              className={choice.disabled ? "unavailable" : ""}>
+              <input type="radio" name={`background-${key}`} checked={choice.checked}
+                disabled={choice.disabled} onChange={() => {
+                  const next = { ...selection.background, [key]: choice.token };
+                  setBackground(next); setSelectedValues({});
+                  setChoosingBackground(selection.hidden.some((other) => next[other] === undefined));
+                }} />{textOf(choice.value)}</label>)}
+          </div></fieldset>)}</div>
+      </div>}
+      <p className="scan-selection-notice" role="status">{selection.notice}</p>
+      <Curve data={selection.visible} roles={chosenRoles} metric={currentMetric} complete={selection.complete} />
     </>}
     {error && <p role="alert" className="field-error">{error}</p>}
   </section>;

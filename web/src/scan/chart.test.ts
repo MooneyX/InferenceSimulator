@@ -6,6 +6,7 @@ import type { ScanData } from "./chart";
 import { buildChart } from "./chart";
 import { renderReport } from "./report";
 import reportRuntime from "./reportRuntime.js?raw";
+import { resolveSelection } from "./selection";
 
 const config = { inference: { tp_size: 1 } } as ScanData["points"][number]["config"];
 const job: JobSummary = { id: "scan-a", kind: "scan", status: "completed", total: 4,
@@ -32,6 +33,7 @@ describe("scan projections", () => {
     expect(chart.xValues).toEqual(["1", "2"]);
     expect(chart.series).toHaveLength(2);
     expect(chart.series.some((series) => series.data[1] === null)).toBe(true);
+    expect(chart.series.every((series) => series.smooth && !series.connectNulls)).toBe(true);
     expect(new Set(chart.series.map((series) => series.itemStyle.color)).size).toBe(2);
   });
 
@@ -46,6 +48,39 @@ describe("scan projections", () => {
     expect(html).toContain("window.echarts.init");
     expect(html).toContain("--bg:#0f1117");
     expect(html).toContain("backgroundColor: '#242837'");
+    expect(html).toContain("smooth: true, connectNulls: false");
+  });
+
+  it("applies the report's value and background constraints to the live chart", () => {
+    const other = (x: number, color: number, signature: string) => ({
+      ...point(x, color, signature), values: { ...point(x, color, signature).values,
+        "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2 },
+    });
+    const scans: ScanData[] = [{ job, points: [point(1, 1, "live-a"),
+      { ...point(2, 2, "live-failed"), status: "failed", metrics: null }] },
+    { job: { ...job, id: "scan-b" }, points: [other(1, 1, "live-b1"),
+      other(2, 2, "live-b2")] }];
+    const roles = { x: "num_instances", color: "scheduler.max_running_requests", shape: "", line: "" };
+    const initial = resolveSelection(scans, roles, "throughput");
+    expect(initial.background).toEqual({ "scheduler.pd_mutually_exclusive": "true",
+      "inference.parallelism": "1" });
+    expect(initial.visible.flatMap((batch) => batch.points)).toHaveLength(1);
+    expect(initial.roleChoices.x.find((choice) => choice.value === 2)?.disabled).toBe(true);
+    const empty = resolveSelection(scans, roles, "throughput", {}, {}, true);
+    expect(empty.complete).toBe(false);
+    expect(empty.visible.flatMap((batch) => batch.points)).toHaveLength(0);
+    const partial = resolveSelection(scans, roles, "throughput",
+      { "scheduler.pd_mutually_exclusive": "false" }, {}, true);
+    expect(partial.backgroundChoices["inference.parallelism"].find((choice) => choice.value === 1)
+      ?.disabled).toBe(true);
+    const next = resolveSelection(scans, roles, "throughput",
+      { "scheduler.pd_mutually_exclusive": "false", "inference.parallelism": "2" });
+    expect(next.visible.flatMap((batch) => batch.points)).toHaveLength(2);
+    expect(next.notice).toContain("2 组勾选值组合无数据");
+    const narrowed = resolveSelection(scans, roles, "throughput", next.background,
+      { ...next.selected, num_instances: ['2'] });
+    expect(narrowed.visible.flatMap((batch) => batch.points)).toHaveLength(1);
+    expect(narrowed.roleChoices.color.find((choice) => choice.value === 1)?.disabled).toBe(true);
   });
 
   function openReport(scanData: ScanData[]) {

@@ -83,7 +83,7 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
     item.points.set(String(x), y);
   }
   const series = [...seriesMap.values()].map((item) => ({
-    name: item.name, type: "line" as const, connectNulls: false, showSymbol: true,
+    name: item.name, type: "line" as const, smooth: true, connectNulls: false, showSymbol: true,
     symbol: symbols[item.shape % symbols.length], symbolSize: 9,
     itemStyle: { color: palette[item.color % palette.length] },
     lineStyle: { color: palette[item.color % palette.length], type: lineStyles[item.line % lineStyles.length] },

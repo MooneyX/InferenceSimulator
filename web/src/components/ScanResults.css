@@ -76,7 +76,81 @@
   outline: none;
 }
 
-.scan-view-controls button {
+.scan-role-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.scan-role-row > label {
+  display: grid;
+  gap: 4px;
+  min-width: 185px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.scan-role-row select {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.scan-role-values, .scan-background-options {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: min(100%, 250px);
+  max-height: 150px;
+  overflow: auto;
+}
+
+.scan-role-values label, .scan-background-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.scan-role-values label.unavailable, .scan-background-options label.unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scan-role-values input, .scan-background-options input { accent-color: var(--accent); }
+.scan-background { margin-top: 16px; }
+.scan-background-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.scan-background-heading h3 { margin: 0; font-size: 1rem; }
+.scan-background-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.scan-background-groups fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.scan-background-groups legend { padding: 0 4px; font-size: 0.75rem; font-weight: 600; }
+.scan-selection-notice { color: var(--text-dim); font-size: 0.75rem; }
+
+.scan-view-controls button, .scan-background-heading button {
   padding: 7px 16px;
   border: 0;
   border-radius: 6px;
@@ -87,8 +161,12 @@
   cursor: pointer;
 }
 
-.scan-view-controls button:hover:not(:disabled) { background: #7f78ff; }
-.scan-view-controls button:disabled { opacity: 0.6; cursor: not-allowed; }
+.scan-view-controls button:hover:not(:disabled),
+.scan-background-heading button:hover:not(:disabled) { background: #7f78ff; }
+.scan-view-controls button:disabled, .scan-background-heading button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 
 .scan-chart {
   width: 100%;

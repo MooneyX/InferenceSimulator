@@ -26,7 +26,16 @@ test("后台扫描不锁表单，导出的离线 HTML 可重新透视", async ({
     const batch = batches.nth(index);
     if (!(await batch.textContent())?.includes(jobId.slice(0, 8))) await batch.locator("input").uncheck();
   }
-  await expect(page.getByText(/独立配置点 6/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/独立配置点 3/)).toBeVisible({ timeout: 30_000 });
+  const colorRole = page.locator(".scan-role-row").filter({ has: page.locator(".scan-role-values[aria-label='颜色参数值']") }).locator("select");
+  const background = page.locator(".scan-background-groups fieldset").filter({ hasText: "Prefill / Decode 分步执行" });
+  await expect(background.getByRole("radio", { name: "true" })).toBeChecked();
+  await page.getByRole("button", { name: "重新选择背景值" }).click();
+  await expect(page.getByText("背景参数尚未选齐，图表暂不显示。")).toBeVisible();
+  await background.getByRole("radio", { name: "false" }).check();
+  await expect(page.getByText(/独立配置点 3/)).toBeVisible();
+  await colorRole.selectOption("scheduler.pd_mutually_exclusive");
+  await expect(page.getByText(/独立配置点 6/)).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出离线可操作 HTML" }).click();
   const download = await downloadPromise;

@@ -220,7 +220,7 @@
       groups.get(groupKey).values.set(String(x), y);
     });
     const series = [...groups.values()].map(group => ({
-      name: group.name, type: 'line', connectNulls: false, showSymbol: true,
+      name: group.name, type: 'line', smooth: true, connectNulls: false, showSymbol: true,
       symbol: symbols[group.si % symbols.length], symbolSize: 9,
       itemStyle: { color: palette[group.ci % palette.length] },
       lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },

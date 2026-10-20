@@ -39,6 +39,7 @@
       : typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)))];
   }));
   let backgroundValues = {};
+  let choosingBackground = false;
   let selected = {};
   roles.forEach((role, index) => {
     const input = byId('role-' + role);
@@ -46,12 +47,17 @@
     keys.forEach(key => input.add(option(key, label(key))));
     const first = batches[0]?.job.axes || {};
     input.value = first[role]?.key || (index === 0 ? keys[0] || '' : '');
-    input.addEventListener('change', () => redraw(true));
+    input.addEventListener('change', () => { choosingBackground = false; redraw(true); });
   });
   metrics.forEach(metric => byId('metric').add(option(metric, metric)));
   byId('metric').value = metrics.includes('throughput') ? 'throughput' : metrics[0] || '';
   byId('metric').addEventListener('change', () => redraw());
   byId('reset-values').addEventListener('click', () => redraw(true));
+  byId('reset-background').addEventListener('click', () => {
+    backgroundValues = {};
+    choosingBackground = true;
+    redraw(true);
+  });
   batches.forEach(batch => {
     const check = document.createElement('label');
     const input = document.createElement('input');
@@ -74,9 +80,14 @@
     const activeRows = rows.filter(row => active.has(row.batch.job.id));
     const goodRows = activeRows.filter(row => row.point.status === 'completed'
       && typeof row.point.metrics?.[metric] === 'number' && value(row.point, used.x) != null);
-    const matchesBackground = row => hidden.every(key => row.tokens[key] === backgroundValues[key]);
+    const matchesBackground = row => hidden.every(key =>
+      !Object.prototype.hasOwnProperty.call(backgroundValues, key) || row.tokens[key] === backgroundValues[key]);
+    if (choosingBackground && goodRows.length && !goodRows.some(matchesBackground)) backgroundValues = {};
     const anchor = goodRows.find(matchesBackground) || goodRows[0];
-    backgroundValues = anchor ? Object.fromEntries(hidden.map(key => [key, anchor.tokens[key]])) : {};
+    if (!choosingBackground) {
+      backgroundValues = anchor ? Object.fromEntries(hidden.map(key => [key, anchor.tokens[key]])) : {};
+    }
+    const complete = hidden.every(key => Object.prototype.hasOwnProperty.call(backgroundValues, key));
     const eligible = goodRows.filter(matchesBackground);
     const matchesRoles = row => roleKeys.every(key => selected[key]?.has(row.tokens[key]));
     roles.forEach(role => {
@@ -102,28 +113,36 @@
             other === key || selected[other].has(row.tokens[other])))));
       });
     }
-    const backgroundTuples = new Map();
-    rows.forEach(row => {
-      const signature = JSON.stringify(hidden.map(key => row.tokens[key]));
-      if (!backgroundTuples.has(signature)) backgroundTuples.set(signature, row);
-    });
-    const validTuples = new Set(goodRows.map(row => JSON.stringify(hidden.map(key => row.tokens[key]))));
     const backgroundHost = byId('background-values');
     backgroundHost.replaceChildren();
     byId('background').hidden = hidden.length === 0;
-    if (hidden.length) backgroundTuples.forEach((row, signature) => {
-      const item = document.createElement('label');
-      const input = document.createElement('input');
-      input.type = 'radio'; input.name = 'background'; input.value = signature;
-      input.checked = hidden.every(key => row.tokens[key] === backgroundValues[key]) && !!anchor;
-      input.disabled = !validTuples.has(signature);
-      input.addEventListener('change', () => {
-        backgroundValues = Object.fromEntries(hidden.map(key => [key, row.tokens[key]]));
-        redraw(true);
+    hidden.forEach(key => {
+      const group = document.createElement('fieldset');
+      group.className = 'background-group';
+      const title = document.createElement('legend');
+      title.textContent = label(key);
+      const options = document.createElement('div');
+      options.className = 'background-options';
+      (levels[key] || []).forEach(([token, v]) => {
+        const item = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'radio'; input.name = 'background-' + key; input.value = token;
+        input.checked = backgroundValues[key] === token;
+        input.disabled = !goodRows.some(row => row.tokens[key] === token && matchesRoles(row)
+          && hidden.every(other => other === key
+            || !Object.prototype.hasOwnProperty.call(backgroundValues, other)
+            || row.tokens[other] === backgroundValues[other]));
+        input.addEventListener('change', () => {
+          backgroundValues[key] = token;
+          choosingBackground = !hidden.every(other =>
+            Object.prototype.hasOwnProperty.call(backgroundValues, other));
+          redraw(true);
+        });
+        item.append(input, document.createTextNode(textOf(v)));
+        options.append(item);
       });
-      item.append(input, document.createTextNode(hidden.map(key =>
-        label(key) + '=' + textOf(value(row.point, key))).join(' · ')));
-      backgroundHost.append(item);
+      group.append(title, options);
+      backgroundHost.append(group);
     });
     roles.forEach(role => {
       const host = byId('values-' + role);
@@ -138,7 +157,7 @@
           && roleKeys.every(other => other === key || selected[other].has(row.tokens[other])));
         const canRemove = selected[key].size > 1 && eligible.some(row => row.tokens[key] !== token
           && roleKeys.every(other => selected[other].has(row.tokens[other])));
-        input.disabled = !supported || (input.checked && !canRemove)
+        input.disabled = !complete || !supported || (input.checked && !canRemove)
           || (!input.checked && selected[key].size >= limits[role]);
         input.addEventListener('change', () => {
           const next = new Set(selected[key]);
@@ -164,10 +183,12 @@
     const total = roleKeys.reduce((count, key) => count * selected[key].size, 1);
     byId('selection-notice').textContent = !eligible.length
       ? '当前批次与指标没有可绘制的数据点；无数据的选项已禁用。'
-      : `当前背景下 ${combinations.size} 组实际有数据，${total - combinations.size} 组勾选值组合无数据（不补算）。`;
+      : !complete ? '请为每项背景参数选择一个值；全部选齐后显示结果。'
+        : `当前背景下 ${combinations.size} 组实际有数据，${total - combinations.size} 组勾选值组合无数据（不补算）。`;
+    byId('csv').disabled = !complete;
     const seen = new Map();
     activeRows.forEach(({ batch, point, tokens }) => {
-      if (!anchor || !hidden.every(key => tokens[key] === backgroundValues[key])
+      if (!complete || !anchor || !hidden.every(key => tokens[key] === backgroundValues[key])
           || !roleKeys.every(key => selected[key].has(tokens[key]))) return;
       const signature = point.signature || batch.job.id + ':' + JSON.stringify(point.values);
       const existing = seen.get(signature);
@@ -235,9 +256,10 @@
       }
       body.append(row);
     });
-    byId('summary').textContent = entries.length + ' 个独立配置点；去重 '
-      + (batches.filter(batch => active.has(batch.job.id)).reduce((n, batch) => n + batch.points.length, 0) - entries.length)
-      + ' 个相同输入点。缺失结果不插值或平均。';
+    byId('summary').textContent = !complete ? '背景参数尚未选齐，图表与点级数据暂不显示。'
+      : entries.length + ' 个独立配置点；去重 '
+        + (batches.filter(batch => active.has(batch.job.id)).reduce((n, batch) => n + batch.points.length, 0) - entries.length)
+        + ' 个相同输入点。缺失结果不插值或平均。';
   }
   byId('csv').addEventListener('click', () => {
     const fields = ['scan', 'x', 'color', 'shape', 'line', 'metric', 'status', 'error', 'config'];

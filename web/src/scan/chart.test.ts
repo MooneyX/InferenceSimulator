@@ -56,10 +56,12 @@ describe("scan projections", () => {
     } });
     new Function(reportRuntime)();
     const group = (id: string) => within(document.getElementById(id)!);
-    return { group, rows: () => document.querySelectorAll("#data-body tr") };
+    const background = (key: string) => within([...document.querySelectorAll<HTMLElement>(".background-group")]
+      .find(item => item.querySelector("legend")?.textContent === key)!);
+    return { group, background, rows: () => document.querySelectorAll("#data-body tr") };
   }
 
-  it("only offers observed background groups and compatible values across batches", () => {
+  it("selects one value per background parameter and disables incompatible values", () => {
     const otherPoint = (x: number, color: number, signature: string) => ({
       ...point(x, color, signature), values: { ...point(x, color, signature).values,
         "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2 },
@@ -70,17 +72,30 @@ describe("scan projections", () => {
     ] };
     const first: ScanData = { job, points: [point(1, 1, "a-first"),
       { ...point(2, 2, "a-failed"), status: "failed", metrics: null }] };
-    const { group, rows } = openReport([first, second]);
+    const { group, background, rows } = openReport([first, second]);
+    const shape = () => background("scheduler.pd_mutually_exclusive");
+    const parallelism = () => background("inference.parallelism");
     expect(group("role-x").getByRole("option", { name: "scheduler.max_running_requests" }))
       .toBeDisabled();
     fireEvent.change(document.getElementById("role-shape")!, { target: { value: "" } });
     fireEvent.change(document.getElementById("role-line")!, { target: { value: "" } });
-    expect(group("background-values").getAllByRole("radio")).toHaveLength(2);
+    expect(group("background-values").getAllByRole("radio")).toHaveLength(4);
+    expect(shape().getByRole("radio", { name: "true" })).toBeChecked();
+    expect(parallelism().getByRole("radio", { name: "1" })).toBeChecked();
+    expect(shape().getByRole("radio", { name: "false" })).toBeDisabled();
+    expect(parallelism().getByRole("radio", { name: "2" })).toBeDisabled();
     expect(rows()).toHaveLength(1);
     expect(group("values-x").getByRole("checkbox", { name: "2" })).toBeDisabled();
     expect(group("values-color").getByRole("checkbox", { name: "2" })).toBeDisabled();
     expect(group("values-x").getByRole("checkbox", { name: "3" })).toBeDisabled();
-    fireEvent.click(group("background-values").getByRole("radio", { name: /false.*2/ }));
+    fireEvent.click(document.getElementById("reset-background")!);
+    expect(rows()).toHaveLength(0);
+    expect(document.getElementById("csv")).toBeDisabled();
+    expect(shape().getByRole("radio", { name: "false" })).toBeEnabled();
+    fireEvent.click(shape().getByRole("radio", { name: "false" }));
+    expect(rows()).toHaveLength(0);
+    expect(parallelism().getByRole("radio", { name: "1" })).toBeDisabled();
+    fireEvent.click(parallelism().getByRole("radio", { name: "2" }));
     expect(rows()).toHaveLength(2);
     expect(document.getElementById("selection-notice")).toHaveTextContent("2 组勾选值组合无数据");
     fireEvent.click(group("values-x").getByRole("checkbox", { name: "1" }));
@@ -88,15 +103,34 @@ describe("scan projections", () => {
     expect(group("values-color").getByRole("checkbox", { name: "1" })).toBeDisabled();
     fireEvent.click(document.getElementById("reset-values")!);
     expect(rows()).toHaveLength(2);
-    expect(group("values-color").getByRole("checkbox", { name: "1" })).toBeEnabled();
-    fireEvent.click(group("background-values").getByRole("radio", { name: /true.*1/ }));
+    fireEvent.click(document.getElementById("reset-background")!);
+    fireEvent.click(parallelism().getByRole("radio", { name: "1" }));
+    expect(shape().getByRole("radio", { name: "false" })).toBeDisabled();
+    fireEvent.click(shape().getByRole("radio", { name: "true" }));
     expect(rows()).toHaveLength(1);
-    expect(group("values-x").getByRole("checkbox", { name: "2" })).toBeDisabled();
-    expect(group("values-x").getByRole("checkbox", { name: "1" })).toBeChecked();
     fireEvent.click(group("batches").getByRole("checkbox", { name: /scan-a/ }));
-    expect(group("background-values").getByRole("radio", { name: /true.*1/ })).toBeDisabled();
-    expect(group("background-values").getByRole("radio", { name: /false.*2/ })).toBeChecked();
+    expect(shape().getByRole("radio", { name: "true" })).toBeDisabled();
+    expect(shape().getByRole("radio", { name: "false" })).toBeChecked();
     expect(rows()).toHaveLength(1);
+  });
+
+  it("restricts background values by the currently selected axis levels", () => {
+    const axes = { x: job.axes!.x!, shape: job.axes!.shape! };
+    const first: ScanData = { job: { ...job, axes }, points: [point(1, 1, "axis-first")] };
+    const second: ScanData = { job: { ...job, id: "scan-b", axes }, points: [{
+      ...point(2, 1, "axis-second"), values: { ...point(2, 1, "axis-second").values,
+        "scheduler.pd_mutually_exclusive": false },
+    }] };
+    const { group, background, rows } = openReport([first, second]);
+    const shape = () => background("scheduler.pd_mutually_exclusive");
+    fireEvent.change(document.getElementById("role-shape")!, { target: { value: "" } });
+    expect(shape().getByRole("radio", { name: "false" })).toBeDisabled();
+    fireEvent.click(document.getElementById("reset-background")!);
+    expect(shape().getByRole("radio", { name: "false" })).toBeEnabled();
+    fireEvent.click(shape().getByRole("radio", { name: "false" }));
+    expect(rows()).toHaveLength(1);
+    expect(group("values-x").getByRole("checkbox", { name: "2" })).toBeChecked();
+    expect(shape().getByRole("radio", { name: "true" })).toBeDisabled();
   });
 
   it("limits selected visual levels to distinguishable styles", () => {

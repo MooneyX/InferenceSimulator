@@ -36,6 +36,7 @@ function Curve({ data, roles, metric, complete }: { data: ScanData[]; roles: Rol
       legend: { type: "scroll", bottom: 0, textStyle: { color: "#9ca0b0", fontSize: 10 } },
       tooltip: { trigger: "axis", backgroundColor: "#242837", borderColor: "#2e3347",
         textStyle: { color: "#e4e4e7" },
+        extraCssText: "max-width:calc(100vw - 32px);white-space:normal;box-sizing:border-box;",
         formatter: (params: unknown) => formatScanTooltip(params, model.series) },
       toolbox: { iconStyle: { borderColor: "#9ca0b0" }, feature: { saveAsImage: {}, restore: {} } },
       dataZoom: [{ type: "inside" }, { type: "slider", bottom: 52, borderColor: "#2e3347",
@@ -143,12 +144,12 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
       <div className="scan-view-controls">
         <label>纵轴指标 <select value={currentMetric} onChange={(event) => setMetric(event.target.value)}>
           {measures.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
-        <button type="button" onClick={() => setSelectedValues({})}>重置变化参数值</button>
+        <button className="scan-secondary-button" type="button" onClick={() => setSelectedValues({})}>重置变化参数值</button>
         <button type="button" onClick={() => void exportHtml()} disabled={!data.length}>
           导出离线可操作 HTML</button></div>
       {selection.hidden.length > 0 && <div className="scan-background">
-        <div className="scan-background-heading"><h3>背景参数（每项选择一个值）</h3>
-          <button type="button" onClick={() => {
+        <div className="scan-background-heading"><h3>背景参数</h3>
+          <button className="scan-secondary-button" type="button" onClick={() => {
             setBackground({}); setChoosingBackground(true); setSelectedValues({});
           }}>重新选择背景值</button></div>
         <div className="scan-background-groups">{selection.hidden.map((key) =>

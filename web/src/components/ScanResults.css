@@ -85,20 +85,29 @@
 }
 
 .scan-role-row > label {
-  display: grid;
-  gap: 4px;
-  min-width: 185px;
-  font-size: 0.8rem;
+  display: inline-grid;
+  flex: 0 0 min(100%, 185px);
+  gap: 3px;
+  min-width: 0;
   color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
 }
 
 .scan-role-row select {
+  width: 100%;
   min-height: 32px;
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface2);
   color: var(--text);
+  font-size: 0.8rem;
+}
+
+.scan-role-row select:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .scan-role-values, .scan-background-options {
@@ -114,13 +123,22 @@
 .scan-role-values label, .scan-background-options label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface2);
+  color: var(--text-dim);
   font-size: 0.75rem;
+  overflow-wrap: anywhere;
   cursor: pointer;
+}
+
+.scan-role-values label:hover:not(.unavailable),
+.scan-background-options label:hover:not(.unavailable) {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .scan-role-values label.unavailable, .scan-background-options label.unavailable {
@@ -128,10 +146,13 @@
   cursor: not-allowed;
 }
 
-.scan-role-values input, .scan-background-options input { accent-color: var(--accent); }
+.scan-role-values input, .scan-background-options input {
+  margin: 0;
+  accent-color: var(--accent);
+}
 .scan-background { margin-top: 16px; }
 .scan-background-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.scan-background-heading h3 { margin: 0; font-size: 1rem; }
+.scan-background-heading h3 { margin: 0; font-size: 0.9rem; }
 .scan-background-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
@@ -147,8 +168,14 @@
   border-radius: 6px;
 }
 
-.scan-background-groups legend { padding: 0 4px; font-size: 0.75rem; font-weight: 600; }
-.scan-selection-notice { color: var(--text-dim); font-size: 0.75rem; }
+.scan-background-groups legend {
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.scan-selection-notice { color: var(--text-dim); font-size: 0.75rem; line-height: 1.6; }
 
 .scan-view-controls button, .scan-background-heading button {
   padding: 7px 16px;
@@ -161,8 +188,21 @@
   cursor: pointer;
 }
 
-.scan-view-controls button:hover:not(:disabled),
-.scan-background-heading button:hover:not(:disabled) { background: #7f78ff; }
+.scan-view-controls button:hover:not(:disabled):not(.scan-secondary-button) { background: #7f78ff; }
+.scan-view-controls .scan-secondary-button,
+.scan-background-heading .scan-secondary-button {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+.scan-view-controls .scan-secondary-button:hover:not(:disabled),
+.scan-background-heading .scan-secondary-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface2);
+  color: var(--text);
+}
 .scan-view-controls button:disabled, .scan-background-heading button:disabled {
   opacity: 0.6;
   cursor: not-allowed;

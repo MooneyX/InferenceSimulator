@@ -26,18 +26,25 @@ select{min-width:100px;max-width:100%;padding:6px 10px;border:1px solid var(--bo
  background:var(--surface2);color:var(--text);font-size:.8rem}
 select:focus{border-color:var(--accent);outline:none}input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
 .role-row{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:10px 0}
-.role-row>label{display:flex;align-items:center;gap:6px;min-width:185px;font-size:.8rem}
+.role-row>label{display:inline-grid;flex:0 0 min(100%,185px);gap:3px;min-width:0;color:var(--text-dim);
+ font-size:.68rem;letter-spacing:.03em}.role-row select{width:100%}
 .role-values,.background-options{display:flex;flex-wrap:wrap;gap:6px;max-height:150px;overflow:auto;flex:1;min-width:min(100%,250px)}
-.role-values label,.background-options label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;
- border:1px solid var(--border);border-radius:5px;background:var(--surface2);font-size:.75rem;cursor:pointer}
-.role-values label:hover,.background-options label:hover{border-color:var(--accent)}
+.role-values label,.background-options label{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 12px;
+ border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text-dim);
+ font-size:.75rem;overflow-wrap:anywhere;cursor:pointer}
+.role-values label:hover:not(:has(input:disabled)),.background-options label:hover:not(:has(input:disabled)){
+ border-color:var(--accent);color:var(--text)}
 .role-values label:has(input:disabled),.background-options label:has(input:disabled){opacity:.4;cursor:not-allowed}
-#selection-notice{margin:8px 0}#background{margin-top:16px}
+.role-values input,.background-options input{margin:0}
+#selection-notice{margin:8px 0}#background{margin-top:16px}#background h3{font-size:.9rem}
 .background-values{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:10px}
 .background-group{min-width:0;margin:0;padding:8px 10px 10px;border:1px solid var(--border);border-radius:6px}
-.background-group legend{padding:0 4px;font-size:.75rem;font-weight:600;overflow-wrap:anywhere}
+.background-group legend{padding:0 4px;color:var(--text);font-size:.75rem;font-weight:600;overflow-wrap:anywhere}
 button{padding:7px 16px;border:0;border-radius:6px;background:var(--accent);color:#fff;
- font-size:.82rem;font-weight:600;cursor:pointer}button:hover{background:#7f78ff}
+ font-size:.82rem;font-weight:600;cursor:pointer}button:hover:not(:disabled):not(.secondary-button){background:#7f78ff}
+.secondary-button{border:1px solid var(--border);background:var(--surface2);color:var(--text-dim);
+ font-size:.75rem;font-weight:400}
+.secondary-button:hover:not(:disabled){border-color:var(--accent);background:var(--surface2);color:var(--text)}
 button:disabled{opacity:.4;cursor:not-allowed}
 #chart{width:100%;min-height:320px;height:45vh;max-height:500px}
 .table-wrap{overflow:auto;max-height:540px}table{border-collapse:collapse;width:100%;font-size:.75rem}
@@ -52,9 +59,9 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <div class="role-row"><label>节点形状 <select id="role-shape"></select></label><div id="values-shape" class="role-values"></div></div>
 <div class="role-row"><label>线样式 <select id="role-line"></select></label><div id="values-line" class="role-values"></div></div>
 <div class="controls"><label>纵轴指标 <select id="metric"></select></label>
-<button id="reset-values" type="button">重置变化参数值</button></div>
-<div id="background"><div class="controls"><h3>背景参数（每项选择一个值）</h3>
-<button id="reset-background" type="button">重新选择背景值</button></div>
+<button id="reset-values" class="secondary-button" type="button">重置变化参数值</button></div>
+<div id="background"><div class="controls"><h3>背景参数</h3>
+<button id="reset-background" class="secondary-button" type="button">重新选择背景值</button></div>
 <div id="background-values" class="background-values"></div></div><p id="selection-notice" role="status"></p></section>
 <section class="panel"><div id="chart"></div><p id="summary"></p></section>
 <section class="panel"><div class="controls"><h2>点级数据</h2><button id="csv" type="button">导出筛选数据 CSV</button></div>

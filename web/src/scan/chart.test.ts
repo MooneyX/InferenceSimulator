@@ -49,6 +49,8 @@ describe("scan projections", () => {
     expect(html).toContain("--bg:#0f1117");
     expect(html).toContain("backgroundColor: '#242837'");
     expect(html).toContain("smooth: true, connectNulls: false");
+    expect(html).toContain('<h3>背景参数</h3>');
+    expect(html).not.toContain('背景参数（每项选择一个值）');
   });
 
   it("renders actual node and line styles in the axis tooltip without interpreting labels as HTML", () => {
@@ -70,6 +72,8 @@ describe("scan projections", () => {
     expect(html).toContain('stroke-dasharray="10,4,2,4"');
     expect(html).toContain('fill="none" stroke="#10b981"');
     expect(html).toContain('second: —');
+    expect(html).toContain('width:max-content');
+    expect(html).toContain('white-space:normal;overflow-wrap:anywhere');
   });
 
   it("applies the report's value and background constraints to the live chart", () => {
@@ -124,8 +128,10 @@ describe("scan projections", () => {
       "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2,
     } };
     const { setOption } = openReport([{ job, points: [point(1, 1, "plain"), other] }]);
-    const option = setOption.mock.lastCall?.[0] as { tooltip: { formatter: (params: unknown) => string };
+    const option = setOption.mock.lastCall?.[0] as { tooltip: { formatter: (params: unknown) => string;
+      extraCssText: string };
       series: { name: string; symbol: string; lineStyle: { color: string; type: string | number[] } }[] };
+    expect(option.tooltip.extraCssText).toContain('white-space:normal');
     expect(option.series).toHaveLength(2);
     const tooltip = option.tooltip.formatter([{ seriesIndex: 0, axisValueLabel: "1", value: 1 },
       { seriesIndex: 1, axisValueLabel: "1", value: 2 }]);

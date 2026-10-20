@@ -339,7 +339,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
           />
         </div>
 
-        <div className="form-grid" style={{ marginTop: 18 }}>
+        <div className="workload-notes">
           <p>每请求生成上限由实际输出长度向上取二次幂自动确定，不可编辑；
             输出长度超过引擎输出上限的请求将失败，不会截断输出。</p>
           <p>{config.workload.arrival_mode === "open_loop"

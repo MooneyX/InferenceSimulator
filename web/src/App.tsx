@@ -139,7 +139,7 @@ export default function App() {
         <SimulationForm onSubmit={handleSubmit} onScanSubmit={(request) => void handleScanSubmit(request)}
           disabled={isClearingCache} />
 
-        {tasks.jobs.length > 0 && <section className="simulation-status job-list" aria-label="后台任务">
+        {tasks.jobs.length > 0 && <section className="simulation-info job-list" aria-label="后台任务">
           <h2>后台任务</h2>
           <ul>{tasks.jobs.map((job) => <li key={job.id}>
             <strong>{job.kind === "scan" ? "扫描" : "仿真"} {job.id.slice(0, 8)}</strong>
@@ -147,10 +147,10 @@ export default function App() {
             <span className="job-progress">{job.completed + job.failed}/{job.total}</span>
             {job.error && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&
-              <button type="button" className="secondary-button" onClick={() => tasks.select(job.id)}>
+              <button type="button" className="secondary-button secondary-button-small" onClick={() => tasks.select(job.id)}>
                 查看结果</button>}
             {(job.status === "queued" || job.status === "running") &&
-              <button type="button" className="secondary-button" onClick={() =>
+              <button type="button" className="secondary-button secondary-button-small" onClick={() =>
                 void tasks.stop(job.id).catch((cause: unknown) => setError(presentError(cause)))}>
                 取消任务</button>}
           </li>)}</ul>
@@ -167,7 +167,7 @@ export default function App() {
             </div>
             <div className="cache-controls">
               <span>相同参数自动复用结果</span>
-              <button className="secondary-button" type="button" onClick={() => void handleClearCache()}
+              <button className="secondary-button secondary-button-small" type="button" onClick={() => void handleClearCache()}
                 disabled={isRunning || isClearingCache}>
                 {isClearingCache ? "正在清空…" : "清空结果缓存"}
               </button>
@@ -175,7 +175,7 @@ export default function App() {
           </div>
           {cacheNotice && <section className={cacheNotice.error ? "simulation-error" : "simulation-status"}
             role={cacheNotice.error ? "alert" : "status"}>{cacheNotice.message}</section>}
-          {cacheInfo && result && <section className="simulation-status" aria-label="结果缓存状态">
+          {cacheInfo && result && <section className={cacheInfo.status === "miss" ? "simulation-info" : "simulation-status"} aria-label="结果缓存状态">
             {cacheInfo.status === "hit" ? "结果缓存命中" : cacheInfo.status === "shared"
               ? "已复用相同参数的进行中计算" : "本次结果为重新计算"}
             {" · "}缓存查找/读取 {cacheInfo.lookupMs.toFixed(2)} ms
@@ -204,7 +204,7 @@ export default function App() {
 
           {result ? (
             <>
-              <section className="simulation-status" aria-label="请求结果状态">
+              <section className="simulation-info" aria-label="请求结果状态">
                 已完成 {result.meta.num_completed} · 失败 {result.meta.num_aborted} · 跳过 {result.meta.num_skipped}
                 <p>引擎输出上限：{(inference?.max_output_tokens ?? 65_536).toLocaleString()} token；
                   每请求生成上限按实际输出长度自动向上取二次幂。</p>
@@ -223,7 +223,7 @@ export default function App() {
                   </ul>
                 ) : null}
               </section>
-              {inference && resolution && <section className="simulation-status" aria-label="解析配置与成本">
+              {inference && resolution && <section className="simulation-info" aria-label="解析配置与成本">
                 <h3>自动解析 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · {(inference.timing?.mode ?? "analytical") === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
                 <p>模型 {inference.model.name} · GPU {inference.hardware.name} ·
                   {result.meta.config.num_instances} 实例 × 每实例 {inference.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * inference.hardware.gpu_count} GPU ·
@@ -260,8 +260,8 @@ export default function App() {
                 </p>}
                 {inference.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
               </section>}
-              <section className="simulation-status" aria-label="实例结果筛选">
-                <label htmlFor="instance-filter">查看范围：</label>{" "}
+              <section className="simulation-info instance-filter" aria-label="实例结果筛选">
+                <label htmlFor="instance-filter">查看范围：</label>
                 <select id="instance-filter" value={selectedInstanceId ?? "all"}
                   onChange={(event) => setSelectedInstanceId(event.target.value === "all" ? null : Number(event.target.value))}>
                   <option value="all">全部实例</option>
@@ -292,7 +292,7 @@ export default function App() {
                     (result.requests ?? []).filter((item) => item.instance_id === selectedInstanceId)} />
                 </Suspense>
               ) : (
-                <section className="simulation-status">本次没有已完成请求，无法绘制生命周期图。</section>
+                <section className="simulation-info">本次没有已完成请求，无法绘制生命周期图。</section>
               )}
             </>
           ) : null}

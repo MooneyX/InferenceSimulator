@@ -293,6 +293,8 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "仿真告警" })).toBeInTheDocument();
     expect(await screen.findByTestId("request-gantt")).toHaveTextContent("1 requests");
     expect(screen.getByLabelText("请求结果状态")).toHaveTextContent("已完成 1 · 失败 0 · 跳过 0");
+    expect(screen.getByLabelText("请求结果状态")).toHaveClass("simulation-info");
+    expect(screen.getByLabelText("实例结果筛选")).toHaveClass("simulation-info", "instance-filter");
     expect(screen.queryByRole("heading", { name: "等待仿真结果" })).not.toBeInTheDocument();
   });
 

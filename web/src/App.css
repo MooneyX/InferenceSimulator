@@ -35,6 +35,7 @@
 }
 
 .results-placeholder,
+.simulation-info,
 .simulation-status,
 .simulation-error {
   padding: 18px 20px;
@@ -61,10 +62,26 @@
   font-size: 0.75rem;
 }
 
+.simulation-info,
 .simulation-status {
-  display: block;
-  color: var(--accent2);
+  color: var(--text);
   font-size: 0.82rem;
+}
+
+.simulation-status {
+  color: var(--accent2);
+}
+
+.simulation-info h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.simulation-info p {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.5;
 }
 
 .simulation-status[role="status"] {
@@ -73,6 +90,7 @@
   gap: 10px;
 }
 
+.simulation-info ul,
 .simulation-status ul {
   margin: 10px 0 0;
   padding-left: 20px;
@@ -81,7 +99,7 @@
 }
 
 .job-list {
-  color: var(--text);
+  margin-top: 16px;
 }
 
 .job-list h2 {
@@ -128,7 +146,37 @@
 .job-list li .secondary-button {
   margin-left: auto;
   white-space: nowrap;
+}
+
+.instance-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.instance-filter label {
+  color: var(--text-dim);
   font-size: 0.75rem;
+}
+
+.instance-filter select {
+  min-width: min(100%, 140px);
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--surface2);
+  font-size: 0.8rem;
+}
+
+.instance-filter select:focus {
+  border-color: var(--accent);
+}
+
+.instance-filter p {
+  margin: 0;
 }
 
 .status-indicator {

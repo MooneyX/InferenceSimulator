@@ -301,7 +301,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
               value={group[field]} onChange={(value) => updateGroups(model.attention_groups!.map((item, i) =>
                 i === index ? { ...item, [field]: value ?? NaN } : item))} />)}
           </div>
-          <button type="button" className="transfer-button" onClick={() => updateGroups(
+          <button type="button" className="secondary-button secondary-button-small model-remove-button" onClick={() => updateGroups(
             model.attention_groups!.length === 1 ? null : model.attention_groups!.filter((_, i) => i !== index)
           )}>删除第 {index + 1} 组</button>
         </div>)}

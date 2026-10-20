@@ -52,6 +52,15 @@ const PHASE_COLORS: Record<GanttPhase, string> = {
   decode: "#6c63ff",
 };
 
+const chartFontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+const sliderStyle = {
+  borderColor: "transparent",
+  backgroundColor: "rgba(46, 51, 71, 0.4)",
+  fillerColor: "rgba(108, 99, 255, 0.25)",
+  handleStyle: { color: "#6c63ff" },
+  textStyle: { color: "#9ca0b0" },
+};
+
 const numberFormatter = new Intl.NumberFormat("zh-CN", {
   maximumFractionDigits: 2,
 });
@@ -112,6 +121,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
     animation: false,
     textStyle: {
       color: "#9ca0b0",
+      fontFamily: chartFontFamily,
     },
     grid: {
       top: 16,
@@ -122,6 +132,9 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
     tooltip: {
       trigger: "item",
       appendToBody: true,
+      backgroundColor: "#242837",
+      borderColor: "#2e3347",
+      textStyle: { color: "#e4e4e7", fontFamily: chartFontFamily },
       formatter: createTooltipFormatter(model),
     },
     xAxis: {
@@ -166,6 +179,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
         filterMode: "weakFilter",
         bottom: 18,
         height: 18,
+        ...sliderStyle,
       },
       {
         type: "inside",
@@ -184,6 +198,7 @@ export function createGanttOption(model: GanttModel): GanttChartOption {
         endValue: initialLastRow,
         right: 8,
         width: 14,
+        ...sliderStyle,
       },
     ],
     series: [

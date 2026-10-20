@@ -79,6 +79,15 @@ describe("RequestGantt", () => {
       encode: { x: [1, 2], y: 0 },
     });
     expect(option.series[0].data).toHaveLength(6);
+    expect(option.tooltip).toMatchObject({
+      backgroundColor: "#242837",
+      borderColor: "#2e3347",
+      textStyle: { color: "#e4e4e7" },
+    });
+    expect(option.dataZoom[1]).toMatchObject({ type: "slider", fillerColor: "rgba(108, 99, 255, 0.25)",
+      handleStyle: { color: "#6c63ff" } });
+    expect(option.dataZoom[3]).toMatchObject({ type: "slider", fillerColor: "rgba(108, 99, 255, 0.25)",
+      handleStyle: { color: "#6c63ff" } });
     expect(option.dataZoom).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ xAxisIndex: 0, filterMode: "weakFilter" }),

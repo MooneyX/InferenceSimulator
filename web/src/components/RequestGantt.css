@@ -55,10 +55,10 @@
   display: grid;
   min-height: 220px;
   margin: 16px 0 0;
-  border: 1px dashed #29405d;
-  border-radius: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
   place-items: center;
-  color: #7f93ad;
+  color: var(--text-dim);
   text-align: center;
 }
 

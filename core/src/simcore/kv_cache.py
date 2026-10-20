@@ -18,6 +18,7 @@ __all__ = [
 ]
 
 _TIER_ORDER = ("L1", "L2", "L3")
+_HEAP_REBUILD_CHECK_INTERVAL = 4096
 
 
 class CacheCapacityError(ValueError):
@@ -78,6 +79,7 @@ class CachePool:
     access_seq: int = field(default=0, init=False)
     heap: list[tuple[int, str]] = field(default_factory=list, init=False)
     queued: set[tuple[int, str]] = field(default_factory=set, init=False)
+    queued_since_check: int = field(default=0, init=False)
     pending_pages: dict[str, int] = field(default_factory=dict, init=False)
 
     def lookup(self, chunk_id: str) -> CacheEntry | None:
@@ -157,7 +159,6 @@ class CachePool:
         self.resident -= 1
         if not page.ref_count:
             self.evictable -= 1
-            self._maybe_rebuild_heap()
         self.evictions += int(evicted)
         return page
 
@@ -165,12 +166,9 @@ class CachePool:
         if not count:
             return
         page = self.entries[chunk_id]
-        was_evictable = not page.ref_count
-        if was_evictable:
+        if not page.ref_count:
             self.evictable -= 1
         page.ref_count += count
-        if was_evictable:
-            self._maybe_rebuild_heap()
 
     def add_ref(self, chunk_id: str, *, refresh: bool = False) -> None:
         self.add_refs(chunk_id, 1)
@@ -196,7 +194,10 @@ class CachePool:
         if key not in self.queued:
             heappush(self.heap, key)
             self.queued.add(key)
-            self._maybe_rebuild_heap()
+            self.queued_since_check += 1
+            if self.queued_since_check >= _HEAP_REBUILD_CHECK_INTERVAL:
+                self.queued_since_check = 0
+                self._maybe_rebuild_heap()
 
     def _maybe_rebuild_heap(self) -> None:
         stale = len(self.heap) - self.evictable

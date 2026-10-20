@@ -168,19 +168,21 @@ def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
 
 
 @pytest.mark.parametrize("change", ["queue", "protect", "remove"])
-def test_candidate_heap_rebuild_discards_stale_entries(change: str) -> None:
+def test_periodic_heap_rebuild_discards_stale_entries(
+    change: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", 514)
     pool = CachePool("L1", 0, 3, 1)
     pool.insert("old")
     pool.insert("recent")
     for _ in range(511):
         pool.touch("recent")
     assert len(pool.heap) == 513
-    if change == "queue":
-        pool.touch("recent")
-    elif change == "protect":
+    if change == "protect":
         pool.add_ref("old")
-    else:
+    elif change == "remove":
         pool.remove("old")
+    pool.touch("recent")
     expected = sorted(
         (page.last_access_seq, page.chunk_id)
         for page in pool.entries.values()
@@ -193,6 +195,20 @@ def test_candidate_heap_rebuild_discards_stale_entries(change: str) -> None:
     if change == "protect":
         pool.drop_ref("old")
         assert pool.heap[0] == (pool.entries["old"].last_access_seq, "old")
+
+
+@pytest.mark.parametrize("interval", [64, 4096])
+def test_periodic_heap_check_bounds_stale_entries_without_eviction(
+    interval: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", interval)
+    pool = CachePool("L2", 0, 1, 1)
+    pool.insert("page")
+    for _ in range(10_000):
+        pool.touch("page")
+    assert len(pool.heap) <= pool.evictable + 512 + interval
+    assert pool.queued == set(pool.heap)
+    assert pool.pop_lru() is pool.entries["page"]
 
 
 def test_page_updates_keep_same_entry_and_current_lru_order() -> None:
@@ -545,7 +561,7 @@ def test_transfer_failed_reservation_restores_source_reference(stale_entries: in
         cache.reserve_transfer(source, "L1")
     assert entry_values(cache) == entries
     assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
-    assert source_pool.heap[0] == (source_pool.entries[source].last_access_seq, source)
+    assert (source_pool.entries[source].last_access_seq, source) in source_pool.queued
     assert all(pool.queued == set(pool.heap) for pool in cache.pools.values())
     assert cache._transfers == {}
     cache.cancel_pin(pinned.request_id)

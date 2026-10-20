@@ -1,4 +1,4 @@
-"""F001 调度器：按 L1 页状态逐队头规划 FCFS 准入。"""
+"""F001 调度器：按到达顺序考虑候选，跳过暂未就绪的请求。"""
 
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -9,7 +9,7 @@ from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
     "AdmissionBatch",
-    "FcfsAdmissionScheduler",
+    "AdmissionScheduler",
     "PrefillCandidate",
     "RunningRequest",
     "WaitingRequest",
@@ -61,10 +61,10 @@ class AdmissionBatch:
     promote_ids: tuple[str, ...] = ()
 
 
-class FcfsAdmissionScheduler:
-    """按当前 KV 状态逐队头准入；只用生成上限与进度估算，不以 output_len 调度。"""
+class AdmissionScheduler:
+    """按队列顺序尝试就绪请求；只用生成上限与进度估算，不以 output_len 调度。"""
 
-    def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:  # 引擎配置与页池 → 初始化 FCFS 队列和预算；无返回值
+    def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:
             raise ValueError("L1 页配置与引擎配置不一致")
         if (
@@ -82,19 +82,22 @@ class FcfsAdmissionScheduler:
         self._ratio = 0.7
 
     @property
-    def num_waiting(self) -> int:  # FCFS 等待队列 → 等待请求数
+    def num_waiting(self) -> int:  # 等待队列 → 等待请求数
         return len(self._waiting)
 
     @property
-    def head_request_id(self) -> int | None:  # FCFS 队头 → 请求 ID，空队列返回 None
+    def head_request_id(self) -> int | None:  # 队列首项 → 请求 ID，空队列返回 None
         return self._waiting[0].request.request_id if self._waiting else None
+
+    def has_ready(self, is_ready: Callable[[int], bool]) -> bool:
+        return any(is_ready(item.request.request_id) for item in self._waiting)
 
     def enqueue(
         self, request: InferenceRequest, now_ms: float, *, generated_tokens: int = 0
-    ) -> bool:  # 请求、到达时刻及已生成数 → 是否成功排入 FCFS 队列
+    ) -> bool:  # 请求、到达时刻及已生成数 → 是否成功排入等待队列
         """返回 False 表示 M<1，调用方须在发送时立即记录请求失败。"""
         if now_ms < self._last_arrival:
-            raise ValueError("FCFS 请求发送时刻不得倒退")
+            raise ValueError("请求发送时刻不得倒退")
         if generated_tokens < 0 or generated_tokens > request.max_new_tokens:
             raise ValueError("已生成 token 数不合法")
         if request.request_id in self._queued:
@@ -105,13 +108,13 @@ class FcfsAdmissionScheduler:
         self._insert(WaitingRequest(request, now_ms, generated_tokens))
         return True
 
-    def requeue(self, request: InferenceRequest, now_ms: float, generated_tokens: int) -> None:  # 回撤请求、步终时刻与输出进度 → 重新按 FCFS 排队；无返回值
+    def requeue(self, request: InferenceRequest, now_ms: float, generated_tokens: int) -> None:
         """回撤请求于步终重新等待；不改变尚在计算中到达请求的发送时钟。"""
         if not 1 <= generated_tokens < request.max_new_tokens:
             raise ValueError("回撤请求的生成进度不合法")
         self._insert(WaitingRequest(request, now_ms, generated_tokens))
 
-    def _insert(self, item: WaitingRequest) -> None:  # 待调度请求 → 按到达时刻与 ID 插入队列；无返回值
+    def _insert(self, item: WaitingRequest) -> None:
         key = item.request.request_id
         if key in self._queued:
             raise ValueError("请求已在等待队列中")
@@ -131,7 +134,7 @@ class FcfsAdmissionScheduler:
         is_ready: Callable[[int], bool] | None = None,
         can_reuse: Callable[[int, str, str], bool] | None = None,
     ) -> AdmissionBatch:  # 运行集与就绪/复用条件 → 本步准入、恢复和失败批次
-        """逐个保护候选命中页，预算失败不跳过队头。"""
+        """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
         block_size = cache.page_size
         for request_id, active in running.items():
@@ -154,11 +157,12 @@ class FcfsAdmissionScheduler:
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
         selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
-        while self._waiting and active_count + len(selected) < self._engine.max_running_requests:
-            item = self._waiting[0]
+        for item in tuple(self._waiting):
+            if active_count + len(selected) >= self._engine.max_running_requests:
+                break
             request = item.request
             if is_ready is not None and not is_ready(request.request_id):
-                break
+                continue
             target = item.target_tokens
             sources = cache.probe(request, target, restoring=item.restoring)
             if can_reuse is not None:
@@ -178,7 +182,7 @@ class FcfsAdmissionScheduler:
             new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
             if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources):
                 cache.admit(request.request_id)
-                self._pop_head()
+                self._pop_item(item)
                 restored.append(item)
                 active_count += 1
                 running_future += (
@@ -221,7 +225,7 @@ class FcfsAdmissionScheduler:
                         > self._engine.max_total_tokens
                     )
                 ):
-                    aborted.append(self._pop_head())
+                    aborted.append(self._pop_item(item))
                     continue
                 break
             if item.restoring and new_tokens == 0:
@@ -234,7 +238,7 @@ class FcfsAdmissionScheduler:
                 )
                 selected_future += future
                 selected_pages_tokens += required_tokens
-            self._pop_head()
+            self._pop_item(item)
             promotions.update(new_promotions)
             current_offset = proposed_current
         return AdmissionBatch(
@@ -245,8 +249,8 @@ class FcfsAdmissionScheduler:
             tuple(sorted(promotions)),
         )
 
-    def rollback_selection(self, selection: AdmissionBatch) -> None:  # 已选准入批次 → 取消保护并还原 FCFS 队列；无返回值
-        """回载容量不足时撤销候选引用，并按原 FCFS 顺序放回队列。"""
+    def rollback_selection(self, selection: AdmissionBatch) -> None:
+        """回载容量不足时撤销候选引用，并按原到达顺序放回队列。"""
         for candidate in selection.admitted:
             self._cache.cancel_pin(candidate.waiting.request.request_id)
             self._insert(candidate.waiting)
@@ -254,8 +258,8 @@ class FcfsAdmissionScheduler:
             self._cache.cancel_pin(item.request.request_id)
             self._insert(item)
 
-    def _pop_head(self) -> WaitingRequest:  # FCFS 队列 → 移除并返回队头请求
-        item = self._waiting.popleft()
+    def _pop_item(self, item: WaitingRequest) -> WaitingRequest:
+        self._waiting.remove(item)
         self._queued.remove(item.request.request_id)
         return item
 

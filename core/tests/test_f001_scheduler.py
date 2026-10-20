@@ -1,10 +1,10 @@
-"""F001 FCFS 准入、物理页预算与动态未来比例的独立验收。"""
+"""F001 准入顺序、物理页预算与动态未来比例的独立验收。"""
 
 import pytest
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import FcfsAdmissionScheduler, RunningRequest
+from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
@@ -15,7 +15,7 @@ def make(
     max_running: int = 8,
     max_prefill: int = 16_384,
     exclusive: bool = True,
-) -> tuple[FcfsAdmissionScheduler, TieredKVCache]:
+) -> tuple[AdmissionScheduler, TieredKVCache]:
     config = EngineConfig(
         max_running_requests=max_running,
         max_total_tokens=capacity,
@@ -24,7 +24,7 @@ def make(
         pd_mutually_exclusive=exclusive,
     )
     cache = TieredKVCache(config.max_total_tokens, config.page_size)
-    return FcfsAdmissionScheduler(config, cache), cache
+    return AdmissionScheduler(config, cache), cache
 
 
 def request(
@@ -80,7 +80,7 @@ def test_first_candidate_can_exceed_compute_quota_but_second_cannot() -> None:
     assert cache.free_pages + cache.resident_pages == cache.capacity_pages
 
 
-def test_fcfs_same_time_sorted_by_id_and_failed_head_not_skipped() -> None:
+def test_same_time_sorted_by_id_and_budget_blocked_candidate_stops_batch() -> None:
     scheduler, cache = make(capacity=512)
     for key in (3, 1, 2):
         scheduler.enqueue(request(key, maximum=200), 0)
@@ -232,16 +232,31 @@ def test_empty_pool_reduces_future_budget_instead_of_rejecting_feasible_input(
     assert cache.resident_pages == 0 and cache.snapshot().reserved_future_blocks == 0
 
 
-def test_prefetch_waiting_head_blocks_later_prefill_without_pinning() -> None:
+def test_prefetch_waiting_head_is_skipped_without_pinning_and_keeps_position() -> None:
     scheduler, cache = make()
-    scheduler.enqueue(request(0), 0)
-    scheduler.enqueue(request(1), 1)
-    assert scheduler.head_request_id == 0
-    blocked = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
-    assert not blocked.admitted
-    assert scheduler.num_waiting == 2 and not cache._pins
+    for key in range(3):
+        scheduler.enqueue(request(key), key)
+    assert scheduler.has_ready(lambda key: key != 0)
+    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
+    assert scheduler.num_waiting == 1 and scheduler.head_request_id == 0
+    assert 0 not in cache._pins and 1 in cache._pins and 2 in cache._pins
+    assert not scheduler.has_ready(lambda key: key != 0)
     ready = scheduler.select_prefill({}, is_ready=lambda _: True)
-    assert [item.waiting.request.request_id for item in ready.admitted] == [0, 1]
+    assert [item.waiting.request.request_id for item in ready.admitted] == [0]
+
+
+def test_skipped_candidate_keeps_order_across_rollback() -> None:
+    scheduler, cache = make()
+    for key in range(3):
+        scheduler.enqueue(request(key), key)
+    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
+    scheduler.rollback_selection(batch)
+    assert scheduler.num_waiting == 3 and scheduler.head_request_id == 0
+    assert not cache._pins
+    retried = scheduler.select_prefill({})
+    assert [item.waiting.request.request_id for item in retried.admitted] == [0, 1, 2]
 
 
 def test_restored_full_hit_requires_no_empty_prefill_step() -> None:
@@ -298,7 +313,7 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     shared = encode(0, 0)
     initial_page = cache.page(shared)
     assert initial_page is not None and initial_page.tier == "L2"
-    scheduler = FcfsAdmissionScheduler(config, cache)
+    scheduler = AdmissionScheduler(config, cache)
     for key in (1, 2):
         scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 1)
     batch = scheduler.select_prefill({})
@@ -342,7 +357,7 @@ def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
     before = cache.page(shared)
     assert before is not None and before.tier == "L2"
     counters = (cache.promotions, cache.demotions)
-    scheduler = FcfsAdmissionScheduler(config, cache)
+    scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1, prompt=5, inherited=(shared,)), 1)
     scheduler.enqueue(request(2, prompt=1), 1)
     batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})

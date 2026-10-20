@@ -10,7 +10,7 @@ from simcore.kv_cache import TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import encode
 from simcore.router import Router
-from simcore.scheduler import FcfsAdmissionScheduler
+from simcore.scheduler import AdmissionScheduler
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -344,7 +344,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
 def test_requeue_after_future_step_end_preserves_fcfs_of_midstep_arrival() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=4)
     cache = TieredKVCache(cfg.max_total_tokens, cfg.page_size)
-    scheduler = FcfsAdmissionScheduler(cfg, cache)
+    scheduler = AdmissionScheduler(cfg, cache)
     first = request(0, maximum=2, output=2)
     scheduler.enqueue(first, 0)
     batch = scheduler.select_prefill({})

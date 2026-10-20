@@ -205,6 +205,96 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     assert run.cache_snapshot.active_blocks == 0
 
 
+@pytest.mark.parametrize("with_ready_root", [False, True])
+@pytest.mark.parametrize("prefetch_threshold", [0, 8])
+def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
+    with_ready_root: bool, prefetch_threshold: int,
+) -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=16, page_size=4,
+        l2_capacity_tokens=8, l3_capacity_tokens=64,
+        l3_prefetch_min_tokens=prefetch_threshold,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1, decode_d1=0, decode_d2=0, kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_lookup_latency_ms=2,
+    )
+    engine = Engine(runtime_config(config, perf))
+    cache = engine._prefix_cache
+    parent = InferenceRequest(90, 90, None, 8, 1, 1, (), 0)
+    cache.pin(parent, 0)
+    cache.admit(90)
+    cache.extend(90, 8)
+    cache.publish(90)
+    cache.finish(90)
+
+    child = InferenceRequest(
+        1, 90, 90, 9, 1, 1, (encode(90, 0), encode(90, 1)), 2,
+    )
+    assert engine.submit(child, 0)
+    if with_ready_root:
+        root = InferenceRequest(2, 2, None, 1, 1, 1, (), 0)
+        assert engine.submit(root, 0)
+    assert not engine._lookup_waiting
+    filler = InferenceRequest(91, 91, None, 16, 1, 1, (), 0)
+    cache.pin(filler, 0)
+    cache.admit(91)
+    cache.ensure_free(4)
+    cache.extend(91, 16)
+    cache.publish(91)
+    cache.finish(91)
+    cache.ensure_free(4)
+    assert all(cache.page(chunk).tier == "L3" for chunk in child.inherited_prefix_ids)
+
+    assert engine.can_step
+    started = engine.start_step(0, 0)
+    assert engine._lookup_waiting == {1}
+    assert engine._prefix_scheduler.head_request_id == 1
+    if with_ready_root:
+        assert started == (1, (2,))
+        assert engine.finish_step(1) == (2,)
+        engine.complete(1, 2)
+    else:
+        assert started is None and not engine.can_step
+        assert engine.num_steps == 0
+    [(lookup_at, kind, key)] = engine.drain_events()
+    assert (lookup_at, kind, key) == (2, EventKind.L3_LOOKUP_DONE, 1)
+    engine.on_l3_lookup(key, lookup_at)
+    prefetch = sorted(engine.drain_events())
+    if prefetch_threshold:
+        assert not prefetch and engine.can_step
+        started = engine.start_step(lookup_at, engine.num_steps)
+        assert started is not None
+        duration, _ = started
+        end = lookup_at + duration
+        assert engine.finish_step(end) == (1,)
+        engine.complete(end, 1)
+        record = next(item for item in engine.finalize().records if item.id == 1)
+        assert record.actual_hit_tokens == 0
+        assert not engine.drain_events()
+        return
+    assert len(prefetch) == 2
+    for time, kind, transfer_id in prefetch:
+        assert kind is EventKind.L3_L2_DONE
+        engine.on_transfer_done(kind, transfer_id, time)
+    assert engine.start_step(prefetch[-1][0], engine.num_steps) is None
+    loads = sorted(engine.drain_events())
+    assert len(loads) == 2
+    for time, kind, transfer_id in loads:
+        assert kind is EventKind.L2_L1_DONE
+        engine.on_transfer_done(kind, transfer_id, time)
+    started = engine.start_step(loads[-1][0], engine.num_steps)
+    assert started is not None
+    duration, _ = started
+    end = loads[-1][0] + duration
+    assert engine.finish_step(end) == (1,)
+    engine.complete(end, 1)
+    child_record = next(item for item in engine.finalize().records if item.id == 1)
+    assert child_record.actual_hit_tokens == child_record.l3_hit_tokens == 8
+
+
 @pytest.mark.parametrize("load_fails", [False, True])
 def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> None:
     config = EngineConfig(

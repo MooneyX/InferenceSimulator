@@ -17,7 +17,7 @@ from simcore.perf_model import (
     workload_time,
 )
 from simcore.runtime import RuntimeConfig
-from simcore.scheduler import AdmissionBatch, FcfsAdmissionScheduler, RunningRequest
+from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
@@ -90,7 +90,7 @@ class Engine:
             shared_l3=shared_l3,
             pool_id_base=instance_id * 2,
         )
-        self._prefix_scheduler = FcfsAdmissionScheduler(engine, self._prefix_cache)
+        self._prefix_scheduler = AdmissionScheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
         self._admission_tiers: dict[
             int, tuple[int, int, int]
@@ -113,6 +113,7 @@ class Engine:
         self._finish: dict[int, float] = {}
         self._num_steps = 0
         self._lookup_waiting: set[int] = set()
+        self._last_local_match: dict[int, int] = {}
         self._prefetch_waiting: dict[int, set[int]] = {}
         self._prefetched_origins: dict[int, set[str]] = {}
         self._unusable_hits: dict[int, set[str]] = {}
@@ -141,11 +142,8 @@ class Engine:
             return True
         if self._pending_selection is not None or self._pending_loads:
             return self._pending_selection is not None and not self._pending_loads
-        head = self._prefix_scheduler.head_request_id
-        return (
-            head is not None
-            and head not in self._lookup_waiting
-            and head not in self._prefetch_waiting
+        return self._prefix_scheduler.has_ready(
+            lambda key: key not in self._lookup_waiting and key not in self._prefetch_waiting
         )
 
     def drain_events(
@@ -216,11 +214,31 @@ class Engine:
         )
         if self._engine_config.l3_capacity_tokens:
             local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+            self._last_local_match[key] = len(local)
             if len(local) < (request.prompt_len - 1) // self._prefix_cache.page_size:
-                self._lookup_waiting.add(key)
-                self._scheduled_events.append(
-                    (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, key)
-                )
+                self._schedule_l3_lookup(key, now_ms)
+        return True
+
+    def _schedule_l3_lookup(self, request_id: int, now_ms: float) -> None:
+        self._lookup_waiting.add(request_id)
+        self._scheduled_events.append(
+            (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, request_id)
+        )
+
+    def _ready_for_prefill(self, request_id: int, now_ms: float) -> bool:
+        if (
+            self._pending_loads
+            or request_id in self._lookup_waiting
+            or request_id in self._prefetch_waiting
+        ):
+            return False
+        if request_id in self._last_local_match:
+            request = self._requests[request_id]
+            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+            if len(local) < self._last_local_match[request_id]:
+                self._last_local_match[request_id] = len(local)
+                self._schedule_l3_lookup(request_id, now_ms)
+                return False
         return True
 
     def on_l3_lookup(
@@ -229,6 +247,7 @@ class Engine:
         self._lookup_waiting.remove(request_id)
         request = self._requests[request_id]
         local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+        self._last_local_match[request_id] = len(local)
         sources = self._prefix_cache.probe(request, request.prompt_len, start_index=len(local))
         remote = [chunk_id for chunk_id, tier in sources if tier == "L3"]
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
@@ -263,6 +282,11 @@ class Engine:
                     remaining.discard(transfer_id)
                     if not remaining:
                         del self._prefetch_waiting[request_id]
+                        request = self._requests[request_id]
+                        local = self._prefix_cache.probe(
+                            request, request.prompt_len, include_l3=False
+                        )
+                        self._last_local_match[request_id] = len(local)
         else:
             self._pending_loads.discard(task.chunk_id)
 
@@ -355,15 +379,20 @@ class Engine:
             }
             selection = self._prefix_scheduler.select_prefill(
                 running,
-                is_ready=lambda key: (
-                    not self._pending_loads
-                    and key not in self._lookup_waiting
-                    and key not in self._prefetch_waiting
-                ),
+                is_ready=lambda key: self._ready_for_prefill(key, now_ms),
                 can_reuse=lambda key, chunk_id, tier: (
                     tier != "L3" and chunk_id not in self._unusable_hits.get(key, ())
                 ),
             )
+            if (
+                not self._running
+                and not selection.admitted
+                and not selection.restored
+                and not selection.restore_only
+                and not selection.aborted
+                and (self._lookup_waiting or self._prefetch_waiting)
+            ):
+                return None
             missing = tuple(
                 chunk_id
                 for chunk_id in selection.promote_ids

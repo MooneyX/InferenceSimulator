@@ -1,15 +1,15 @@
-"""F001 FCFS 准入接入：同批不可互见、队头不跳过和空池失败。"""
+"""F001 准入接入：同批不可互见、预算受阻和空池失败。"""
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import FcfsAdmissionScheduler, RunningRequest
+from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
-def setup(capacity: int = 80) -> tuple[FcfsAdmissionScheduler, TieredKVCache]:
+def setup(capacity: int = 80) -> tuple[AdmissionScheduler, TieredKVCache]:
     engine = EngineConfig(max_running_requests=3, max_total_tokens=capacity, page_size=4)
     cache = TieredKVCache(engine.max_total_tokens, engine.page_size)
-    return FcfsAdmissionScheduler(engine, cache), cache
+    return AdmissionScheduler(engine, cache), cache
 
 
 def request(
@@ -42,7 +42,7 @@ def test_same_batch_new_pages_not_visible_until_publication() -> None:
     assert later.admitted[0].reused_tokens == 4
 
 
-def test_fcfs_failed_head_remains_waiting_while_running_decodes() -> None:
+def test_budget_blocked_candidate_remains_waiting_while_running_decodes() -> None:
     scheduler, cache = setup(capacity=32)
     running = request(0, maximum=2)
     cache.pin(running, 0)

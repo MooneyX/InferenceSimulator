@@ -24,6 +24,17 @@ p{line-height:1.6;color:var(--text-dim);font-size:.75rem}
 select{min-width:100px;max-width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
  background:var(--surface2);color:var(--text);font-size:.8rem}
 select:focus{border-color:var(--accent);outline:none}input[type=checkbox]{accent-color:var(--accent)}
+#filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));align-items:start;gap:10px}
+.filter-group{min-width:0;margin:0;padding:8px 10px 10px;border:1px solid var(--border);border-radius:6px}
+.filter-group legend{padding:0 4px;color:var(--text);font-size:.75rem;font-weight:600;overflow-wrap:anywhere}
+.filter-actions{display:flex;gap:6px;margin-bottom:8px}
+.filter-actions button{padding:4px 10px;border:1px solid var(--border);background:var(--surface2);
+ color:var(--text-dim);font-size:.73rem}
+.filter-actions button:hover{border-color:var(--accent);background:var(--surface2);color:var(--text)}
+.filter-options{display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto}
+.filter-options label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--border);
+ border-radius:5px;background:var(--surface2);color:var(--text);font-size:.75rem;cursor:pointer}
+.filter-options label:hover{border-color:var(--accent)}
 button{padding:7px 16px;border:0;border-radius:6px;background:var(--accent);color:#fff;
  font-size:.82rem;font-weight:600;cursor:pointer}button:hover{background:#7f78ff}
 #chart{width:100%;min-height:320px;height:45vh;max-height:500px}

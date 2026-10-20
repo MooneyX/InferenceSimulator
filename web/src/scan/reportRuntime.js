@@ -53,17 +53,49 @@
   });
   const filters = {};
   keys.forEach(key => {
-    const select = document.createElement('select');
-    select.add(option('', '全部'));
-    const unique = [...new Set(batches.flatMap(batch => batch.points.map(p => value(p, key)))
-      .filter(v => v != null).map(String))].sort((a, b) => Number.isFinite(+a) && Number.isFinite(+b)
-        ? Number(a) - Number(b) : a.localeCompare(b));
-    unique.forEach(v => select.add(option(v, v)));
-    select.addEventListener('change', redraw);
-    filters[key] = select;
-    const wrapper = document.createElement('label');
-    wrapper.append(document.createTextNode(label(key) + ' '), select);
-    byId('filters').append(wrapper);
+    const unique = new Map();
+    batches.forEach(batch => batch.points.forEach(point => {
+      const v = value(point, key) ?? null;
+      unique.set(JSON.stringify(v), v);
+    }));
+    const levels = [...unique].sort(([, a], [, b]) => a === null ? 1 : b === null ? -1
+      : typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)));
+    const selected = new Set(levels.map(([token]) => token));
+    filters[key] = selected;
+    const group = document.createElement('fieldset');
+    group.className = 'filter-group';
+    const title = document.createElement('legend');
+    title.textContent = label(key);
+    const actions = document.createElement('div');
+    actions.className = 'filter-actions';
+    const options = document.createElement('div');
+    options.className = 'filter-options';
+    const checks = [];
+    levels.forEach(([token, v]) => {
+      const item = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.checked = true;
+      input.addEventListener('change', () => {
+        if (input.checked) selected.add(token); else selected.delete(token);
+        redraw();
+      });
+      checks.push(input);
+      item.append(input, document.createTextNode(v === null ? '未设置' : String(v)));
+      options.append(item);
+    });
+    [['全选', true], ['清空', false]].forEach(([text, checked]) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = text;
+      button.addEventListener('click', () => {
+        selected.clear();
+        if (checked) levels.forEach(([token]) => selected.add(token));
+        checks.forEach(input => { input.checked = checked; });
+        redraw();
+      });
+      actions.append(button);
+    });
+    group.append(title, actions, options);
+    byId('filters').append(group);
   });
   const chart = window.echarts && window.echarts.init(byId('chart'));
   if (!chart) byId('chart').textContent = '图表脚本无法加载；下方数据表仍可使用。';
@@ -76,7 +108,7 @@
     const metric = byId('metric').value;
     const seen = new Map();
     batches.filter(batch => active.has(batch.job.id)).forEach(batch => batch.points.forEach(point => {
-      if (keys.some(key => filters[key].value && String(value(point, key)) !== filters[key].value)) return;
+      if (keys.some(key => !filters[key].has(JSON.stringify(value(point, key) ?? null)))) return;
       const signature = point.signature || batch.job.id + ':' + JSON.stringify(point.values);
       const existing = seen.get(signature);
       if (existing) existing.sources.push(batch.job.id);

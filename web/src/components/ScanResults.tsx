@@ -9,6 +9,7 @@ import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
 import { availableKeys, buildChart, metricsOf, palette, symbols, lineStyles,
   type Roles, type Role, type ScanData } from "../scan/chart";
 import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
+import { formatScanTooltip } from "../scan/tooltip.js";
 import "./ScanResults.css";
 
 echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
@@ -34,7 +35,8 @@ function Curve({ data, roles, metric, complete }: { data: ScanData[]; roles: Rol
       grid: { top: 42, left: 66, right: 35, bottom: 105 },
       legend: { type: "scroll", bottom: 0, textStyle: { color: "#9ca0b0", fontSize: 10 } },
       tooltip: { trigger: "axis", backgroundColor: "#242837", borderColor: "#2e3347",
-        textStyle: { color: "#e4e4e7" } },
+        textStyle: { color: "#e4e4e7" },
+        formatter: (params: unknown) => formatScanTooltip(params, model.series) },
       toolbox: { iconStyle: { borderColor: "#9ca0b0" }, feature: { saveAsImage: {}, restore: {} } },
       dataZoom: [{ type: "inside" }, { type: "slider", bottom: 52, borderColor: "#2e3347",
         textStyle: { color: "#9ca0b0" }, fillerColor: "rgba(108,99,255,.18)" }],

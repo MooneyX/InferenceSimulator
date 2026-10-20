@@ -5,8 +5,8 @@ import type { JobSummary } from "../api/types";
 import type { ScanData } from "./chart";
 import { buildChart } from "./chart";
 import { renderReport } from "./report";
-import reportRuntime from "./reportRuntime.js?raw";
 import { resolveSelection } from "./selection";
+import { formatScanTooltip } from "./tooltip.js";
 
 const config = { inference: { tp_size: 1 } } as ScanData["points"][number]["config"];
 const job: JobSummary = { id: "scan-a", kind: "scan", status: "completed", total: 4,
@@ -51,6 +51,27 @@ describe("scan projections", () => {
     expect(html).toContain("smooth: true, connectNulls: false");
   });
 
+  it("renders actual node and line styles in the axis tooltip without interpreting labels as HTML", () => {
+    const html = formatScanTooltip([
+      { axisValueLabel: "<轴>", seriesIndex: 0, value: 12 },
+      { seriesIndex: 1, value: null },
+    ], [
+      { name: '<img src=x onerror=alert(1)>', symbol: "triangle",
+        lineStyle: { color: "#ef4444", type: "dashed" } },
+      { name: "second", symbol: "emptyCircle",
+        lineStyle: { color: "#10b981", type: [10, 4, 2, 4] } },
+    ]);
+    expect(html).toContain('&lt;轴&gt;');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('stroke="#ef4444"');
+    expect(html).toContain('stroke-dasharray="8,5"');
+    expect(html).toContain('d="M28 5 L34 16 H22 Z"');
+    expect(html).toContain('stroke-dasharray="10,4,2,4"');
+    expect(html).toContain('fill="none" stroke="#10b981"');
+    expect(html).toContain('second: —');
+  });
+
   it("applies the report's value and background constraints to the live chart", () => {
     const other = (x: number, color: number, signature: string) => ({
       ...point(x, color, signature), values: { ...point(x, color, signature).values,
@@ -86,15 +107,32 @@ describe("scan projections", () => {
   function openReport(scanData: ScanData[]) {
     const html = new DOMParser().parseFromString(renderReport(scanData, []), "text/html");
     document.body.innerHTML = html.body.innerHTML;
+    const setOption = vi.fn();
     Object.defineProperty(window, "echarts", { configurable: true, value: {
-      init: () => ({ setOption: vi.fn(), resize: vi.fn() }),
+      init: () => ({ setOption, resize: vi.fn() }),
     } });
-    new Function(reportRuntime)();
+    new Function([...document.querySelectorAll("script")].at(-1)!.textContent!)();
     const group = (id: string) => within(document.getElementById(id)!);
     const background = (key: string) => within([...document.querySelectorAll<HTMLElement>(".background-group")]
       .find(item => item.querySelector("legend")?.textContent === key)!);
-    return { group, background, rows: () => document.querySelectorAll("#data-body tr") };
+    return { group, background, setOption, rows: () => document.querySelectorAll("#data-body tr") };
   }
+
+  it("uses the shared shape and dash sample for the offline chart's hover legend", () => {
+    const other = { ...point(1, 2, "styled"), values: {
+      ...point(1, 2, "styled").values,
+      "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2,
+    } };
+    const { setOption } = openReport([{ job, points: [point(1, 1, "plain"), other] }]);
+    const option = setOption.mock.lastCall?.[0] as { tooltip: { formatter: (params: unknown) => string };
+      series: { name: string; symbol: string; lineStyle: { color: string; type: string | number[] } }[] };
+    expect(option.series).toHaveLength(2);
+    const tooltip = option.tooltip.formatter([{ seriesIndex: 0, axisValueLabel: "1", value: 1 },
+      { seriesIndex: 1, axisValueLabel: "1", value: 2 }]);
+    expect(tooltip).toContain('stroke-dasharray="8,5"');
+    expect(tooltip).toContain('<rect x="24" y="7"');
+    expect(tooltip).toContain('stroke="#f59e0b"');
+  });
 
   it("selects one value per background parameter and disables incompatible values", () => {
     const otherPoint = (x: number, color: number, signature: string) => ({

@@ -1,5 +1,6 @@
 import echartsSource from "echarts/dist/echarts.min.js?raw";
 import reportRuntime from "./reportRuntime.js?raw";
+import tooltipSource from "./tooltip.js?raw";
 
 import type { ScanParameter } from "../api/types";
 import type { ScanData } from "./chart";
@@ -61,7 +62,8 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <th>状态</th><th>错误</th><th>实际输入配置</th></tr></thead><tbody id="data-body"></tbody></table></div></section>
 <script>${safeScript(echartsSource)}</script>
 <script type="application/json" id="scan-data">${embeddedData({ data, parameters })}</script>
-<script>${safeScript(reportRuntime)}</script></body></html>`;
+<script>${safeScript(tooltipSource.replace("export function formatScanTooltip", "function formatScanTooltip"))}
+${safeScript(reportRuntime)}</script></body></html>`;
 }
 
 export function downloadReport(data: ScanData[], parameters: ScanParameter[]): void {

@@ -44,6 +44,15 @@ test("后台扫描不锁表单，导出的离线 HTML 可重新透视", async ({
   const report = await context.newPage();
   await report.goto(pathToFileURL(htmlPath).href);
   await expect(report.locator("#chart canvas")).toBeVisible();
+  await report.evaluate(() => {
+    const { echarts } = window as unknown as { echarts: { getInstanceByDom(node: HTMLElement): {
+      dispatchAction(action: { type: string; seriesIndex: number; dataIndex: number }): void;
+    } } };
+    echarts.getInstanceByDom(document.getElementById("chart")!).dispatchAction({
+      type: "showTip", seriesIndex: 0, dataIndex: 0,
+    });
+  });
+  await expect(report.locator("#chart svg[aria-hidden='true']").first()).toBeVisible();
   await expect(report.locator("#summary")).toContainText("6 个独立配置点");
   const count = report.locator("#data-body tr");
   const requests = report.locator("#values-x");

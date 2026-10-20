@@ -5,8 +5,9 @@ import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanPoint } from "../api/types";
 import { ScanResults } from "./ScanResults";
 
+const { setOption } = vi.hoisted(() => ({ setOption: vi.fn() }));
 vi.mock("../api/client", () => ({ getScanParameters: vi.fn(), getScanPoints: vi.fn() }));
-vi.mock("echarts/core", () => ({ use: vi.fn(), init: () => ({ setOption: vi.fn(),
+vi.mock("echarts/core", () => ({ use: vi.fn(), init: () => ({ setOption,
   resize: vi.fn(), dispose: vi.fn() }) }));
 
 const axes = { x: { key: "num_instances", values: [1, 2] },
@@ -21,6 +22,7 @@ const point = (x: number, color: number, shape: boolean, signature: string): Sca
 } as ScanPoint);
 
 beforeEach(() => {
+  setOption.mockClear();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.mocked(getScanParameters).mockResolvedValue([
     { key: "num_instances", label: "实例数" },
@@ -54,5 +56,24 @@ describe("ScanResults", () => {
     fireEvent.click(within(colors).getByRole("checkbox", { name: "1" }));
     expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "分步执行" })).toBeInTheDocument();
+  });
+
+  it("uses the series color and shape in the live hover legend", async () => {
+    vi.mocked(getScanPoints).mockImplementation(async (id) => id === "scan-a"
+      ? [point(1, 1, true, "plain")] : [point(1, 2, false, "styled")]);
+    render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
+    await waitFor(() => expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument());
+    fireEvent.change(screen.getByRole("combobox", { name: /颜色/ }),
+      { target: { value: "scheduler.max_running_requests" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }),
+      { target: { value: "scheduler.pd_mutually_exclusive" } });
+    const option = setOption.mock.lastCall?.[0] as { tooltip: { formatter: (params: unknown) => string };
+      series: { name: string; symbol: string; lineStyle: { color: string; type: string | number[] } }[] };
+    expect(option.series).toHaveLength(2);
+    const tooltip = option.tooltip.formatter([{ seriesIndex: 0, axisValueLabel: "1", value: 1 },
+      { seriesIndex: 1, axisValueLabel: "1", value: 2 }]);
+    expect(tooltip).toContain('stroke="#6c63ff"');
+    expect(tooltip).toContain('<circle cx="28"');
+    expect(tooltip).toContain('<rect x="24" y="7"');
   });
 });

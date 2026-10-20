@@ -67,16 +67,9 @@ export function useJobs(onResult: (response: SimulationResponse) => void,
     const refresh = () => void listJobs().then((all) => {
       if (!active) return;
       snapshot(all);
-      const latest = all.find((item) => item.kind === "single");
-      if (!selected.current && latest) {
-        selected.current = latest.id;
-        setSelectedId(latest.id);
-        if (latest.status === "completed") void loadResult(latest.id);
-      } else {
-        const current = all.find((item) => item.id === selected.current);
-        if (current?.status === "completed" && current.kind === "single"
-            && loaded.current !== current.id) void loadResult(current.id);
-      }
+      const current = all.find((item) => item.id === selected.current);
+      if (current?.status === "completed" && current.kind === "single"
+          && loaded.current !== current.id) void loadResult(current.id);
     }).catch((error: unknown) => { if (active) callbacks.current.onError(error); });
     const startFallback = () => {
       if (fallback !== undefined) return;

@@ -223,6 +223,22 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
   });
 
+  it("keeps results hidden after refresh even when completed tasks are listed", async () => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "previous", kind: "single", status: "completed",
+      total: 1, completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0,
+      axes: null, version: 1 }]);
+    resolveSimulation(result);
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    expect(within(tasks).getByRole("button", { name: "查看结果" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
+    expect(resultMock).not.toHaveBeenCalled();
+
+    fireEvent.click(within(tasks).getByRole("button", { name: "查看结果" }));
+    expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(resultMock).toHaveBeenCalledWith("previous");
+  });
+
   it("routes the configured replica count and filters instance results", async () => {
     resolveSimulation({
       ...result,

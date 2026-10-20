@@ -41,6 +41,22 @@ beforeEach(() => {
   });
 });
 
+it("restores completed jobs after refresh without displaying their results until selected", async () => {
+  vi.mocked(listJobs).mockResolvedValue([finished]);
+  const onResult = vi.fn();
+  const { result, unmount } = renderHook(() => useJobs(onResult, vi.fn()));
+  await waitFor(() => expect(result.current.jobs).toHaveLength(1));
+  act(() => { FakeEvents.current.emit("snapshot", [finished]); });
+  expect(result.current.selectedId).toBeNull();
+  expect(getJobResult).not.toHaveBeenCalled();
+  expect(onResult).not.toHaveBeenCalled();
+
+  act(() => { result.current.select(finished.id); });
+  await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+  expect(result.current.selectedId).toBe(finished.id);
+  unmount();
+});
+
 it("receives SSE completion, loads results and ignores an older status query", async () => {
   const onResult = vi.fn();
   const onError = vi.fn();

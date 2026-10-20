@@ -23,18 +23,15 @@ p{line-height:1.6;color:var(--text-dim);font-size:.75rem}
 .controls label{display:inline-flex;gap:6px;align-items:center;color:var(--text-dim);font-size:.75rem}
 select{min-width:100px;max-width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
  background:var(--surface2);color:var(--text);font-size:.8rem}
-select:focus{border-color:var(--accent);outline:none}input[type=checkbox]{accent-color:var(--accent)}
-#filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));align-items:start;gap:10px}
-.filter-group{min-width:0;margin:0;padding:8px 10px 10px;border:1px solid var(--border);border-radius:6px}
-.filter-group legend{padding:0 4px;color:var(--text);font-size:.75rem;font-weight:600;overflow-wrap:anywhere}
-.filter-actions{display:flex;gap:6px;margin-bottom:8px}
-.filter-actions button{padding:4px 10px;border:1px solid var(--border);background:var(--surface2);
- color:var(--text-dim);font-size:.73rem}
-.filter-actions button:hover{border-color:var(--accent);background:var(--surface2);color:var(--text)}
-.filter-options{display:flex;flex-wrap:wrap;gap:6px;max-height:140px;overflow:auto}
-.filter-options label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--border);
- border-radius:5px;background:var(--surface2);color:var(--text);font-size:.75rem;cursor:pointer}
-.filter-options label:hover{border-color:var(--accent)}
+select:focus{border-color:var(--accent);outline:none}input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
+.role-row{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:10px 0}
+.role-row>label{display:flex;align-items:center;gap:6px;min-width:185px;font-size:.8rem}
+.role-values,.background-values{display:flex;flex-wrap:wrap;gap:6px;max-height:150px;overflow:auto;flex:1;min-width:min(100%,250px)}
+.role-values label,.background-values label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;
+ border:1px solid var(--border);border-radius:5px;background:var(--surface2);font-size:.75rem;cursor:pointer}
+.role-values label:hover,.background-values label:hover{border-color:var(--accent)}
+.role-values label:has(input:disabled),.background-values label:has(input:disabled){opacity:.4;cursor:not-allowed}
+#selection-notice{margin:8px 0}#background{margin-top:16px}#background h3{margin-bottom:6px}
 button{padding:7px 16px;border:0;border-radius:6px;background:var(--accent);color:#fff;
  font-size:.82rem;font-weight:600;cursor:pointer}button:hover{background:#7f78ff}
 #chart{width:100%;min-height:320px;height:45vh;max-height:500px}
@@ -44,11 +41,15 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 @media(max-width:700px){body{padding:14px 16px}.panel{padding:16px 14px}#chart{height:36vh;max-height:340px}}
 </style></head><body>
 <header><h1>参数组合扫描报告</h1><p>跨批次筛选与参数透视 · 离线可用 · 不插值、不补算、不对不同配置求平均</p></header>
-<section class="panel"><div id="batches" class="controls"></div><div class="controls">
-<label>横轴 <select id="role-x"></select></label><label>颜色 <select id="role-color"></select></label>
-<label>节点形状 <select id="role-shape"></select></label><label>线样式 <select id="role-line"></select></label>
-<label>纵轴指标 <select id="metric"></select></label></div>
-<h3>参数值筛选</h3><div id="filters" class="controls"></div></section>
+<section class="panel"><div id="batches" class="controls"></div>
+<div class="role-row"><label>横轴 <select id="role-x"></select></label><div id="values-x" class="role-values"></div></div>
+<div class="role-row"><label>颜色 <select id="role-color"></select></label><div id="values-color" class="role-values"></div></div>
+<div class="role-row"><label>节点形状 <select id="role-shape"></select></label><div id="values-shape" class="role-values"></div></div>
+<div class="role-row"><label>线样式 <select id="role-line"></select></label><div id="values-line" class="role-values"></div></div>
+<div class="controls"><label>纵轴指标 <select id="metric"></select></label>
+<button id="reset-values" type="button">重置变化参数值</button></div>
+<div id="background"><h3>固定背景参数（仅选一组实际存在的组合）</h3>
+<div id="background-values" class="background-values"></div></div><p id="selection-notice" role="status"></p></section>
 <section class="panel"><div id="chart"></div><p id="summary"></p></section>
 <section class="panel"><div class="controls"><h2>点级数据</h2><button id="csv" type="button">导出筛选数据 CSV</button></div>
 <div class="table-wrap"><table><thead><tr><th>来源扫描</th><th>横轴</th><th>颜色</th><th>形状</th><th>线型</th><th>指标</th>

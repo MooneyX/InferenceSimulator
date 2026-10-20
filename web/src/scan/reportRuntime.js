@@ -28,98 +28,157 @@
     return current ?? null;
   };
   const option = (v, text) => new Option(text, v);
+  const tokenOf = v => JSON.stringify(v ?? null);
+  const textOf = v => v == null ? '未设置' : String(v);
+  const limits = { x: Infinity, color: palette.length, shape: symbols.length, line: styles.length };
+  const rows = batches.flatMap(batch => batch.points.map(point => ({ batch, point,
+    tokens: Object.fromEntries(keys.map(key => [key, tokenOf(value(point, key))])) })));
+  const levels = Object.fromEntries(keys.map(key => {
+    const unique = new Map(rows.map(row => [row.tokens[key], value(row.point, key) ?? null]));
+    return [key, [...unique].sort(([, a], [, b]) => a === null ? 1 : b === null ? -1
+      : typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)))];
+  }));
+  let backgroundValues = {};
+  let selected = {};
   roles.forEach((role, index) => {
     const input = byId('role-' + role);
     if (role !== 'x') input.add(option('', '无'));
     keys.forEach(key => input.add(option(key, label(key))));
     const first = batches[0]?.job.axes || {};
     input.value = first[role]?.key || (index === 0 ? keys[0] || '' : '');
-    input.addEventListener('change', () => {
-      for (const other of roles) if (other !== role && byId('role-' + other).value === input.value
-        && input.value) byId('role-' + other).value = '';
-      redraw();
-    });
+    input.addEventListener('change', () => redraw(true));
   });
   metrics.forEach(metric => byId('metric').add(option(metric, metric)));
   byId('metric').value = metrics.includes('throughput') ? 'throughput' : metrics[0] || '';
-  byId('metric').addEventListener('change', redraw);
+  byId('metric').addEventListener('change', () => redraw());
+  byId('reset-values').addEventListener('click', () => redraw(true));
   batches.forEach(batch => {
     const check = document.createElement('label');
     const input = document.createElement('input');
     input.type = 'checkbox'; input.value = batch.job.id; input.checked = true;
-    input.addEventListener('change', redraw);
+    input.addEventListener('change', () => redraw());
     check.append(input, document.createTextNode('扫描 ' + batch.job.id.slice(0, 8)));
     byId('batches').append(check);
-  });
-  const filters = {};
-  keys.forEach(key => {
-    const unique = new Map();
-    batches.forEach(batch => batch.points.forEach(point => {
-      const v = value(point, key) ?? null;
-      unique.set(JSON.stringify(v), v);
-    }));
-    const levels = [...unique].sort(([, a], [, b]) => a === null ? 1 : b === null ? -1
-      : typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b)));
-    const selected = new Set(levels.map(([token]) => token));
-    filters[key] = selected;
-    const group = document.createElement('fieldset');
-    group.className = 'filter-group';
-    const title = document.createElement('legend');
-    title.textContent = label(key);
-    const actions = document.createElement('div');
-    actions.className = 'filter-actions';
-    const options = document.createElement('div');
-    options.className = 'filter-options';
-    const checks = [];
-    levels.forEach(([token, v]) => {
-      const item = document.createElement('label');
-      const input = document.createElement('input');
-      input.type = 'checkbox'; input.checked = true;
-      input.addEventListener('change', () => {
-        if (input.checked) selected.add(token); else selected.delete(token);
-        redraw();
-      });
-      checks.push(input);
-      item.append(input, document.createTextNode(v === null ? '未设置' : String(v)));
-      options.append(item);
-    });
-    [['全选', true], ['清空', false]].forEach(([text, checked]) => {
-      const button = document.createElement('button');
-      button.type = 'button'; button.textContent = text;
-      button.addEventListener('click', () => {
-        selected.clear();
-        if (checked) levels.forEach(([token]) => selected.add(token));
-        checks.forEach(input => { input.checked = checked; });
-        redraw();
-      });
-      actions.append(button);
-    });
-    group.append(title, actions, options);
-    byId('filters').append(group);
   });
   const chart = window.echarts && window.echarts.init(byId('chart'));
   if (!chart) byId('chart').textContent = '图表脚本无法加载；下方数据表仍可使用。';
   window.addEventListener('resize', () => chart?.resize());
   let tableRows = [];
   const cell = (row, text) => { const td = document.createElement('td'); td.textContent = text; row.append(td); };
-  function redraw() {
+  function redraw(reset = false) {
     const active = new Set([...byId('batches').querySelectorAll('input:checked')].map(input => input.value));
     const used = Object.fromEntries(roles.map(role => [role, byId('role-' + role).value]));
+    const roleKeys = roles.filter(role => used[role]).map(role => used[role]);
+    const hidden = keys.filter(key => !roleKeys.includes(key));
     const metric = byId('metric').value;
+    const activeRows = rows.filter(row => active.has(row.batch.job.id));
+    const goodRows = activeRows.filter(row => row.point.status === 'completed'
+      && typeof row.point.metrics?.[metric] === 'number' && value(row.point, used.x) != null);
+    const matchesBackground = row => hidden.every(key => row.tokens[key] === backgroundValues[key]);
+    const anchor = goodRows.find(matchesBackground) || goodRows[0];
+    backgroundValues = anchor ? Object.fromEntries(hidden.map(key => [key, anchor.tokens[key]])) : {};
+    const eligible = goodRows.filter(matchesBackground);
+    const matchesRoles = row => roleKeys.every(key => selected[key]?.has(row.tokens[key]));
+    roles.forEach(role => {
+      const input = byId('role-' + role);
+      [...input.options].forEach(item => {
+        item.disabled = !!item.value && item.value !== input.value && roleKeys.includes(item.value);
+      });
+    });
+    if (reset || !eligible.some(matchesRoles)) {
+      selected = {};
+      roleKeys.forEach(key => {
+        const role = roles.find(item => used[item] === key);
+        const available = levels[key].map(([token]) => token).filter(token =>
+          eligible.some(row => row.tokens[key] === token));
+        const first = anchor?.tokens[key];
+        selected[key] = new Set([first, ...available.filter(token => token !== first)]
+          .filter(token => token !== undefined).slice(0, limits[role]));
+      });
+    } else {
+      roleKeys.forEach(key => {
+        selected[key] = new Set([...selected[key]].filter(token => eligible.some(row =>
+          row.tokens[key] === token && roleKeys.every(other =>
+            other === key || selected[other].has(row.tokens[other])))));
+      });
+    }
+    const backgroundTuples = new Map();
+    rows.forEach(row => {
+      const signature = JSON.stringify(hidden.map(key => row.tokens[key]));
+      if (!backgroundTuples.has(signature)) backgroundTuples.set(signature, row);
+    });
+    const validTuples = new Set(goodRows.map(row => JSON.stringify(hidden.map(key => row.tokens[key]))));
+    const backgroundHost = byId('background-values');
+    backgroundHost.replaceChildren();
+    byId('background').hidden = hidden.length === 0;
+    if (hidden.length) backgroundTuples.forEach((row, signature) => {
+      const item = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'radio'; input.name = 'background'; input.value = signature;
+      input.checked = hidden.every(key => row.tokens[key] === backgroundValues[key]) && !!anchor;
+      input.disabled = !validTuples.has(signature);
+      input.addEventListener('change', () => {
+        backgroundValues = Object.fromEntries(hidden.map(key => [key, row.tokens[key]]));
+        redraw(true);
+      });
+      item.append(input, document.createTextNode(hidden.map(key =>
+        label(key) + '=' + textOf(value(row.point, key))).join(' · ')));
+      backgroundHost.append(item);
+    });
+    roles.forEach(role => {
+      const host = byId('values-' + role);
+      host.replaceChildren();
+      const key = used[role];
+      if (!key) { host.textContent = '未选择参数'; return; }
+      (levels[key] || []).forEach(([token, v]) => {
+        const item = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox'; input.checked = selected[key].has(token);
+        const supported = eligible.some(row => row.tokens[key] === token
+          && roleKeys.every(other => other === key || selected[other].has(row.tokens[other])));
+        const canRemove = selected[key].size > 1 && eligible.some(row => row.tokens[key] !== token
+          && roleKeys.every(other => selected[other].has(row.tokens[other])));
+        input.disabled = !supported || (input.checked && !canRemove)
+          || (!input.checked && selected[key].size >= limits[role]);
+        input.addEventListener('change', () => {
+          const next = new Set(selected[key]);
+          if (input.checked) next.add(token); else next.delete(token);
+          selected[key] = next;
+          if (!next.size || !eligible.some(matchesRoles)) {
+            if (input.checked) next.delete(token); else next.add(token);
+          } else {
+            roleKeys.forEach(other => {
+              selected[other] = new Set([...selected[other]].filter(current => eligible.some(row =>
+                row.tokens[other] === current && roleKeys.every(name =>
+                  name === other || selected[name].has(row.tokens[name])))));
+            });
+          }
+          redraw();
+        });
+        item.append(input, document.createTextNode(textOf(v)));
+        host.append(item);
+      });
+    });
+    const combinations = new Set(eligible.filter(matchesRoles).map(row =>
+      JSON.stringify(roleKeys.map(key => row.tokens[key]))));
+    const total = roleKeys.reduce((count, key) => count * selected[key].size, 1);
+    byId('selection-notice').textContent = !eligible.length
+      ? '当前批次与指标没有可绘制的数据点；无数据的选项已禁用。'
+      : `当前背景下 ${combinations.size} 组实际有数据，${total - combinations.size} 组勾选值组合无数据（不补算）。`;
     const seen = new Map();
-    batches.filter(batch => active.has(batch.job.id)).forEach(batch => batch.points.forEach(point => {
-      if (keys.some(key => !filters[key].has(JSON.stringify(value(point, key) ?? null)))) return;
+    activeRows.forEach(({ batch, point, tokens }) => {
+      if (!anchor || !hidden.every(key => tokens[key] === backgroundValues[key])
+          || !roleKeys.every(key => selected[key].has(tokens[key]))) return;
       const signature = point.signature || batch.job.id + ':' + JSON.stringify(point.values);
       const existing = seen.get(signature);
       if (existing) existing.sources.push(batch.job.id);
       else seen.set(signature, { batch, point, sources: [batch.job.id] });
-    }));
+    });
     const entries = [...seen.values()];
-    const levels = key => [...new Set(entries.map(entry => value(entry.point, key)).filter(v => v != null))];
-    const xValues = levels(used.x).sort((a, b) => typeof a === 'number' && typeof b === 'number'
+    const visibleLevels = key => [...new Set(entries.map(entry => value(entry.point, key)).filter(v => v != null))];
+    const xValues = visibleLevels(used.x).sort((a, b) => typeof a === 'number' && typeof b === 'number'
       ? a - b : String(a).localeCompare(String(b)));
-    const colors = levels(used.color), shapes = levels(used.shape), lines = levels(used.line);
-    const hidden = keys.filter(key => !Object.values(used).includes(key));
+    const colors = visibleLevels(used.color), shapes = visibleLevels(used.shape), lines = visibleLevels(used.line);
     const groups = new Map();
     entries.forEach(({ batch, point, sources }) => {
       const x = value(point, used.x);

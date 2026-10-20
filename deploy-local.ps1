@@ -129,7 +129,20 @@ try {
         }
     } | ConvertTo-Json -Depth 10 -Compress
     $response = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/api/simulate' -Method Post -ContentType 'application/json' -Body $body -UseBasicParsing -TimeoutSec 20
-    if ($response.StatusCode -ne 200) { throw '仿真接口验证失败。' }
+    if ($response.StatusCode -ne 202) { throw '仿真任务提交失败。' }
+    $jobId = ($response.Content | ConvertFrom-Json).id
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        $job = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/jobs/$jobId" -TimeoutSec 5
+        if ($job.status -eq 'completed') { break }
+        if ($job.status -eq 'failed' -or $job.status -eq 'cancelled') {
+            throw "仿真任务 $($job.status)：$($job.error)"
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($job.status -ne 'completed') { throw "仿真任务超时：$jobId" }
+    $result = Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/jobs/$jobId/result" -UseBasicParsing -TimeoutSec 20
+    if ($result.StatusCode -ne 200) { throw '仿真结果验证失败。' }
 
     Write-Host '本地部署完成：'
     Write-Host '  页面：http://127.0.0.1:5173/'

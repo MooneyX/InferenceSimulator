@@ -97,8 +97,13 @@ try {
     Write-Host '同步前端依赖...'
     Push-Location $web
     try {
-        & $npm ci --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw 'npm ci 失败。' }
+        if (Test-Path 'node_modules') {
+            & $npm install --no-save --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'npm install 失败。' }
+        } else {
+            & $npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'npm ci 失败。' }
+        }
     } finally {
         Pop-Location
     }

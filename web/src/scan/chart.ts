@@ -55,8 +55,8 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
   const shapes = values(roles.shape);
   const lines = values(roles.line);
   const hidden = availableKeys(data).filter((key) => !Object.values(roles).includes(key));
-  const seriesMap = new Map<string, { group: string; name: string; color: number; shape: number; line: number;
-    points: Map<string, number | null>; sources: string[] }>();
+  const seriesMap = new Map<string, { group: string; name: string; tooltipValues: string[];
+    color: number; shape: number; line: number; points: Map<string, number | null>; sources: string[] }>();
   for (const { job, point, sources } of entries) {
     const x = valueOf(point, roles.x);
     if (x == null) continue;
@@ -72,7 +72,9 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
         roles.shape && `${roles.shape}=${String(shape)}`,
         roles.line && `${roles.line}=${String(line)}`,
         ...hiddenValues.map(([key, value]) => `${key}=${String(value)}`)].filter(Boolean).join(" · ");
-      item = { group, name, color: Math.max(0, colors.indexOf(color)),
+      const tooltipValues = [roles.color && color, roles.shape && shape, roles.line && line]
+        .filter((value) => value !== "" && value != null).map(String);
+      item = { group, name, tooltipValues, color: Math.max(0, colors.indexOf(color)),
         shape: Math.max(0, shapes.indexOf(shape)), line: Math.max(0, lines.indexOf(line)),
         points: new Map(), sources };
       seriesMap.set(group, item);
@@ -82,7 +84,8 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
     item.points.set(String(x), y);
   }
   const series = [...seriesMap.values()].map((item) => ({
-    name: item.name, type: "line" as const, smooth: true, connectNulls: false, showSymbol: true,
+    name: item.name, tooltipValues: item.tooltipValues,
+    type: "line" as const, smooth: true, connectNulls: false, showSymbol: true,
     symbol: symbols[item.shape % symbols.length], symbolSize: 9,
     itemStyle: { color: palette[item.color % palette.length] },
     lineStyle: { color: palette[item.color % palette.length], type: lineStyles[item.line % lineStyles.length] },

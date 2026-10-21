@@ -31,8 +31,9 @@ export function formatScanTooltip(params, series) {
       + `<line x1="2" y1="11" x2="54" y2="11" stroke="${color}" stroke-width="2"`
       + (dash ? ` stroke-dasharray="${dash}"` : '') + '/>'
       + tooltipSymbol(curve.symbol, color) + '</svg>';
+    const values = curve.tooltipValues.map(escapeTooltip).join(' · ');
     return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;min-width:0">${sample}`
-      + `<span style="min-width:0;white-space:normal;overflow-wrap:anywhere">${escapeTooltip(curve.name)}: `
+      + `<span style="min-width:0;white-space:normal;overflow-wrap:anywhere">${values ? `${values}: ` : ''}`
       + `${escapeTooltip(item.value ?? '—')}</span></div>`;
   });
   return `<div style="width:max-content;max-width:min(640px,calc(100vw - 56px));white-space:normal;overflow-wrap:anywhere">`

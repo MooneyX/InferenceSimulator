@@ -217,6 +217,8 @@
           ...roles.slice(1).filter(role => used[role]).map(role =>
             label(used[role]) + '=' + String(value(point, used[role]))),
           ...remainder.map(([key, v]) => label(key) + '=' + String(v))].join(' · '),
+        tooltipValues: [used.color && color, used.shape && shape, used.line && line]
+          .filter(v => v !== '' && v != null).map(String),
         ci: Math.max(0, colors.indexOf(color)), si: Math.max(0, shapes.indexOf(shape)),
         li: Math.max(0, lines.indexOf(line)), values: new Map(), sources,
       });
@@ -225,7 +227,8 @@
       groups.get(groupKey).values.set(String(x), y);
     });
     const series = [...groups.values()].map(group => ({
-      name: group.name, type: 'line', smooth: true, connectNulls: false, showSymbol: true,
+      name: group.name, tooltipValues: group.tooltipValues,
+      type: 'line', smooth: true, connectNulls: false, showSymbol: true,
       symbol: symbols[group.si % symbols.length], symbolSize: 9,
       itemStyle: { color: palette[group.ci % palette.length] },
       lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },

@@ -1,5 +1,6 @@
 export interface TooltipLine {
   name: string;
+  tooltipValues: string[];
   symbol: string;
   lineStyle: { color: string; type: string | number[] };
 }

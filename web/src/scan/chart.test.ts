@@ -38,6 +38,23 @@ describe("scan projections", () => {
     expect(new Set(chart.series.map((series) => series.itemStyle.color)).size).toBe(2);
   });
 
+  it("uses only four ordered role values for live chart tooltips", () => {
+    const background = "scheduler.max_prefill_tokens";
+    const roles = { x: "num_instances", color: "scheduler.max_running_requests",
+      shape: "scheduler.pd_mutually_exclusive", line: "inference.parallelism" };
+    const scan: ScanData = { job: { ...job, axes: [...job.axes!, { key: background, values: [99] }] },
+      points: [{ ...point(1, 2, "live-tooltip"), values: { ...point(1, 2, "live-tooltip").values,
+        [background]: 99 } }] };
+    const curve = buildChart([scan], roles, "throughput").series[0];
+    expect(curve.name).toContain(background);
+    expect(curve.tooltipValues).toEqual(["2", "true", "1"]);
+    const html = formatScanTooltip({ axisValueLabel: "1", seriesIndex: 0, value: 2 }, [curve]);
+    expect(html).toContain("2 · true · 1: 2");
+    expect(html).not.toContain(background);
+    expect(html).not.toContain("scheduler.pd_mutually_exclusive");
+    expect(html).not.toContain("扫描 scan-a");
+  });
+
   it("embeds all scripts and data inside an offline HTML document", () => {
     const html = renderReport(data, []);
     expect(html).toContain('id="role-line"');
@@ -59,20 +76,24 @@ describe("scan projections", () => {
       { axisValueLabel: "<轴>", seriesIndex: 0, value: 12 },
       { seriesIndex: 1, value: null },
     ], [
-      { name: '<img src=x onerror=alert(1)>', symbol: "triangle",
+      { name: '扫描 <img src=x onerror=alert(1)> · hidden=99',
+        tooltipValues: ["<颜色>", "true", "2"], symbol: "triangle",
         lineStyle: { color: "#ef4444", type: "dashed" } },
-      { name: "second", symbol: "emptyCircle",
+      { name: "second · fixed=99", tooltipValues: ["false", "3"], symbol: "emptyCircle",
         lineStyle: { color: "#10b981", type: [10, 4, 2, 4] } },
     ]);
     expect(html).toContain('&lt;轴&gt;');
-    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
-    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;颜色&gt; · true · 2: 12');
+    expect(html).not.toContain('扫描');
+    expect(html).not.toContain('hidden=99');
+    expect(html).not.toContain('&lt;img');
     expect(html).toContain('stroke="#ef4444"');
     expect(html).toContain('stroke-dasharray="8,5"');
     expect(html).toContain('d="M28 5 L34 16 H22 Z"');
     expect(html).toContain('stroke-dasharray="10,4,2,4"');
     expect(html).toContain('fill="none" stroke="#10b981"');
-    expect(html).toContain('second: —');
+    expect(html).toContain('false · 3: —');
+    expect(html).not.toContain('fixed=99');
     expect(html).toContain('width:max-content');
     expect(html).toContain('white-space:normal;overflow-wrap:anywhere');
   });
@@ -218,7 +239,7 @@ describe("scan projections", () => {
     const scan: ScanData = { job: { ...job, axes: [...job.axes!, { key, values: [1, 2] }] },
       points: [1, 2].map((level) => ({ ...point(1, 1, `fifth-${level}`),
         values: { ...point(1, 1, `fifth-${level}`).values, [key]: level } })) };
-    const { background, rows } = openReport([scan]);
+    const { background, rows, setOption } = openReport([scan]);
     expect((document.getElementById("role-x") as HTMLSelectElement).value).toBe("num_instances");
     expect((document.getElementById("role-color") as HTMLSelectElement).value)
       .toBe("scheduler.max_running_requests");
@@ -228,6 +249,15 @@ describe("scan projections", () => {
       .toBe("inference.parallelism");
     expect(background(key).getByRole("radio", { name: "1" })).toBeChecked();
     expect(rows()).toHaveLength(1);
+    const option = setOption.mock.lastCall?.[0] as { tooltip: { formatter: (params: unknown) => string };
+      series: { name: string; tooltipValues: string[] }[] };
+    expect(option.series[0].name).toContain(key);
+    expect(option.series[0].tooltipValues).toEqual(["1", "true", "1"]);
+    const tooltip = option.tooltip.formatter({ axisValueLabel: "1", seriesIndex: 0, value: 1 });
+    expect(tooltip).toContain("1 · true · 1: 1");
+    expect(tooltip).not.toContain(key);
+    expect(tooltip).not.toContain("num_instances");
+    expect(tooltip).not.toContain("扫描 scan-a");
     fireEvent.click(document.getElementById("reset-background")!);
     fireEvent.click(background(key).getByRole("radio", { name: "2" }));
     expect(rows()).toHaveLength(1);

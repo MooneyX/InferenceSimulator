@@ -171,6 +171,22 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
     }
   }
 
+  function handleScanBaseImport(imported: SimConfig): void {
+    const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
+    setConfig({ ...imported, inference,
+      workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
+    if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
+    setWorkloadMode(imported.workload.mode);
+    if (imported.workload.mode === "trace") {
+      setTraceDraft({ arrival_mode: imported.workload.arrival_mode ?? "closed_loop",
+        session_rate: imported.workload.session_rate ?? 1, seed: imported.workload.seed ?? 0,
+        target_qps: imported.workload.target_qps ?? undefined });
+    }
+    setReplay(null);
+    setTraceKey((key) => key + 1);
+    setShowValidation(false);
+  }
+
   function handleImport(): void {
     try {
       const imported = parseSimConfigJson(paramsJson.trim());
@@ -560,7 +576,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
         {workloadMode === "trace" && !replay &&
           <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}
       </div>
-      {onScanSubmit && <ScanPanel base={config} onSubmit={onScanSubmit} />}
+      {onScanSubmit && <ScanPanel base={config} onSubmit={onScanSubmit}
+        onImportBase={handleScanBaseImport} disabled={disabled} />}
     </form>
   );
 }

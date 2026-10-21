@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getScanParameters, uploadReplayPlan } from "../api/client";
 import type { ScanParameter, ScanRequest, SimConfig } from "../api/types";
+import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import { validateSimConfig } from "../config/simulation";
 import "./ScanPanel.css";
 
@@ -53,12 +54,44 @@ export function parseLevels(text: string, kind: string): (number | boolean | nul
   });
 }
 
+function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "text">[], catalog: ScanParameter[],
+  mode: "synthetic" | "trace", arrival: "open_loop" | "closed_loop", blockSize: number | null = null): ScanRequest["axes"] {
+  if (!entries.length) throw new Error("请至少选择一个扫描参数");
+  const available = catalog.filter((item) => item.modes.includes(`${mode}/${arrival}`));
+  const seen = new Set<string>();
+  return entries.map((axis) => {
+    const item = available.find((candidate) => candidate.key === axis.key);
+    if (!item) throw new Error(`当前负载模式不支持扫描参数：${axis.key || "未选择"}`);
+    if (seen.has(axis.key)) throw new Error(`扫描参数重复：${axis.key}`);
+    seen.add(axis.key);
+    const values = parseLevels(axis.text, item.kind);
+    if (item.key === "inference.parallelism" && config.inference.timing?.mode === "empirical"
+        && values.some((value) => value !== 1)) {
+      throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
+    }
+    if (item.key.startsWith("workload.synthetic.") && item.key.endsWith("_len")) {
+      const name = item.key.split(".")[2] as "prompt_len" | "turn_increment_len" | "output_len";
+      if (config.workload.synthetic?.[name].dist === "fixed" &&
+          values.some((value) => typeof value !== "number" || !Number.isSafeInteger(value))) {
+        throw new Error("固定长度扫描只能填写整数档位");
+      }
+    }
+    if (mode === "trace" && blockSize != null && item.key === "inference.page_size"
+        && values.some((value) => value !== blockSize)) {
+      throw new Error(`Trace 每页 token 数必须等于计划块大小 ${blockSize}`);
+    }
+    return { key: item.key, values };
+  });
+}
+
 interface Props {
   base: SimConfig;
   onSubmit: (request: ScanRequest) => void;
+  onImportBase: (config: SimConfig) => void;
+  disabled?: boolean;
 }
 
-export function ScanPanel({ base, onSubmit }: Props) {
+export function ScanPanel({ base, onSubmit, onImportBase, disabled = false }: Props) {
   const [mode, setMode] = useState<"synthetic" | "trace">("synthetic");
   const [arrival, setArrival] = useState<"open_loop" | "closed_loop">(base.workload.arrival_mode);
   const [planId, setPlanId] = useState<string | null>(null);
@@ -70,6 +103,11 @@ export function ScanPanel({ base, onSubmit }: Props) {
   const nextId = useRef(1);
   const [focused, setFocused] = useState<number | null>(null);
   const [problem, setProblem] = useState("");
+  const [scanJson, setScanJson] = useState("");
+  const [transferNote, setTransferNote] = useState<{ message: string; error: boolean } | null>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+  const [planKey, setPlanKey] = useState(0);
+  const [importedTraceWorkload, setImportedTraceWorkload] = useState<SimConfig["workload"] | null>(null);
   useEffect(() => {
     let active = true;
     void getScanParameters().then((items) => { if (active) setCatalog(items); })
@@ -109,8 +147,12 @@ export function ScanPanel({ base, onSubmit }: Props) {
   function makeBase(): SimConfig {
     const config = structuredClone(base);
     if (mode === "trace") {
-      config.workload = { mode: "trace", arrival_mode: arrival, seed: base.workload.seed,
-        session_rate: base.workload.session_rate ?? 1, trace: { plan_id: planId } };
+      const source = importedTraceWorkload ?? base.workload;
+      config.workload = { mode: "trace", arrival_mode: arrival, seed: source.seed,
+        session_rate: source.session_rate ?? 1,
+        ...(arrival === "open_loop" && importedTraceWorkload?.target_qps != null
+          ? { target_qps: importedTraceWorkload.target_qps } : {}),
+        trace: { plan_id: planId } };
     } else {
       const source = base.workload.synthetic;
       if (!source) throw new Error("请先在普通配置中提供合成负载参数");
@@ -131,32 +173,11 @@ export function ScanPanel({ base, onSubmit }: Props) {
 
   function run() {
     try {
-      if (axes.some((axis) => !selected(axis))) throw new Error("请为每一行选择扫描参数，或删除未使用的行");
       if (mode === "trace" && !planId) throw new Error("请上传回放计划 JSON");
       const config = makeBase();
       const errors = validateSimConfig(config);
       if (errors.length) throw new Error(`基础配置不合法：${errors[0].message}`);
-      const dimensions: ScanRequest["axes"] = [];
-      for (const axis of axes) {
-        const item = selected(axis)!;
-        const values = parseLevels(axis.text, item.kind);
-        if (item.key === "inference.parallelism" && config.inference.timing?.mode === "empirical"
-            && values.some((value) => value !== 1)) {
-          throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
-        }
-        if (item.key.startsWith("workload.synthetic.") && item.key.endsWith("_len")) {
-          const name = item.key.split(".")[2] as "prompt_len" | "turn_increment_len" | "output_len";
-          if (config.workload.synthetic?.[name].dist === "fixed" &&
-              values.some((value) => typeof value !== "number" || !Number.isSafeInteger(value))) {
-            throw new Error("固定长度扫描只能填写整数档位");
-          }
-        }
-        if (mode === "trace" && blockSize != null && item.key === "inference.page_size"
-            && values.some((value) => value !== blockSize)) {
-          throw new Error(`Trace 每页 token 数必须等于计划块大小 ${blockSize}`);
-        }
-        dimensions.push({ key: item.key, values });
-      }
+      const dimensions = scanDimensions(config, axes, catalog, mode, arrival, blockSize);
       if (mode === "trace" && blockSize != null &&
           !dimensions.some((axis) => axis.key === "inference.page_size") &&
           config.inference.page_size !== blockSize) {
@@ -166,6 +187,70 @@ export function ScanPanel({ base, onSubmit }: Props) {
       onSubmit({ base: config, axes: dimensions });
     } catch (error) { setProblem(error instanceof Error ? error.message : "扫描配置无效"); }
   }
+  function exportScan() {
+    try {
+      const config = makeBase();
+      scanDimensions(config, axes, catalog, mode, arrival);
+      const json = JSON.stringify({ version: 1, base: JSON.parse(serializeSimConfig(config)),
+        axes: axes.map(({ key, text }) => ({ key, text })) });
+      setScanJson(json);
+      const message = mode === "trace"
+        ? "已生成扫描方案 JSON；再次使用时请重新上传回放计划"
+        : "已生成扫描方案 JSON，可手动复制";
+      setTransferNote({ message, error: false });
+      scanInputRef.current?.focus();
+      scanInputRef.current?.select();
+      if (navigator.clipboard?.writeText) {
+        try {
+          void navigator.clipboard.writeText(json).then(() => {
+            setTransferNote((note) => note?.message === message
+              ? { message: `已生成并复制扫描方案 JSON${mode === "trace" ? "；再次使用时请重新上传回放计划" : ""}`, error: false }
+              : note);
+          }).catch(() => {});
+        } catch {}
+      }
+    } catch (error) {
+      setTransferNote({ message: `扫描方案导出失败：${error instanceof Error ? error.message : "未知错误"}`, error: true });
+    }
+  }
+
+  function importScan() {
+    try {
+      let parsed: unknown;
+      try { parsed = JSON.parse(scanJson.trim()); } catch { throw new Error("JSON 格式不正确"); }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("扫描方案必须为 JSON 对象");
+      const record = parsed as Record<string, unknown>;
+      if (record.version !== 1 || Object.keys(record).some((key) => !["version", "base", "axes"].includes(key))) {
+        throw new Error("不支持的扫描方案格式或版本");
+      }
+      const imported = parseSimConfigJson(JSON.stringify(record.base));
+      const importedMode = imported.workload.mode;
+      const importedArrival = imported.workload.arrival_mode;
+      if (!Array.isArray(record.axes) || !record.axes.length || record.axes.some((axis: unknown) =>
+        axis === null || typeof axis !== "object" || Array.isArray(axis) ||
+        typeof (axis as Record<string, unknown>).key !== "string" ||
+        typeof (axis as Record<string, unknown>).text !== "string" ||
+        Object.keys(axis).some((key) => !["key", "text"].includes(key)))) {
+        throw new Error("扫描维度必须包含参数 key 和档位 text");
+      }
+      const importedAxes = record.axes as { key: string; text: string }[];
+      scanDimensions(imported, importedAxes, catalog, importedMode, importedArrival);
+      if (importedMode === "trace") imported.workload.trace = { plan_id: null };
+      onImportBase(imported);
+      setImportedTraceWorkload(importedMode === "trace" ? imported.workload : null);
+      setMode(importedMode); setArrival(importedArrival);
+      setAxes(importedAxes.map((axis, index) => ({ ...axis, id: index, search: "" })));
+      nextId.current = importedAxes.length;
+      setPlanId(null); setBlockSize(null); setPlanNotice(""); setPlanKey((key) => key + 1);
+      setFocused(null); setProblem("");
+      setTransferNote({ message: importedMode === "trace"
+        ? "扫描方案已导入，基础配置已更新；请重新上传回放计划"
+        : "扫描方案已导入，基础配置已更新", error: false });
+    } catch (error) {
+      setTransferNote({ message: `扫描方案导入失败：${error instanceof Error ? error.message : "未知错误"}`, error: true });
+    }
+  }
+
   const total = axes.reduce((count, axis) => {
     if (!selected(axis)) return count;
     const text = axis.text.trim();
@@ -182,6 +267,22 @@ export function ScanPanel({ base, onSubmit }: Props) {
     <div className="section-heading"><div><p className="section-kicker">Sensitivity sweep</p>
       <h2 id="scan-heading">参数组合扫描</h2></div>
       <p>按需添加扫描参数；结果中最多选择四个可变参数，其余作为固定背景参数。</p></div>
+    <div className="parameter-transfer scan-transfer" role="group" aria-label="扫描方案导入导出">
+      <button type="button" className="transfer-button" onClick={exportScan} disabled={disabled || planBusy || !catalog.length}>
+        导出扫描方案</button>
+      <button type="button" className="transfer-button" onClick={importScan} disabled={disabled || planBusy || !catalog.length}>
+        导入扫描方案</button>
+      <label className="transfer-label" htmlFor="scan-json">扫描方案 JSON</label>
+      <input id="scan-json" ref={scanInputRef} type="text" value={scanJson}
+        placeholder="扫描方案 JSON 在此粘贴/生成" disabled={disabled}
+        onChange={(event) => { setScanJson(event.currentTarget.value); setTransferNote(null); }}
+        aria-invalid={transferNote?.error || undefined}
+        aria-describedby={transferNote ? "scan-transfer-note" : undefined} />
+      {transferNote && <span id="scan-transfer-note"
+        className={transferNote.error ? "transfer-note transfer-note-error" : "transfer-note"}
+        role={transferNote.error ? "alert" : "status"}>{transferNote.message}</span>}
+    </div>
+    <p className="scan-hint">扫描方案包含当前基础配置和扫描档位；导入会覆盖上方基础配置与当前扫描设置，Trace 回放计划需重新上传。</p>
     <div className="form-grid">
       <div className="form-field"><label htmlFor="scan-mode">负载模式</label>
         <select id="scan-mode" value={mode} onChange={(event) =>
@@ -195,7 +296,7 @@ export function ScanPanel({ base, onSubmit }: Props) {
         </select></div>
       {mode === "trace" && <div className="form-field">
         <label htmlFor="scan-plan">回放计划 JSON 文件</label>
-        <input id="scan-plan" type="file" accept=".json" disabled={planBusy}
+        <input id="scan-plan" key={planKey} type="file" accept=".json" disabled={disabled || planBusy}
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void receivePlan(file); }} />
         {planNotice && <small>{planNotice}</small>}</div>}
     </div>
@@ -246,7 +347,7 @@ export function ScanPanel({ base, onSubmit }: Props) {
     <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
       固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>
     <div className="form-actions"><button type="button" className="run-button" onClick={run}
-      disabled={planBusy || (mode === "trace" && !planId) || !catalog.length}>提交后台扫描</button>
+      disabled={disabled || planBusy || (mode === "trace" && !planId) || !catalog.length}>提交后台扫描</button>
       <span>组合数按所选维度档位的乘积计算；不设置扫描规模上限。{total > 0n ? ` 当前约 ${total.toString()} 点。` : ""}</span></div>
     {problem && <p className="field-error" role="alert">{problem}</p>}
   </section>;

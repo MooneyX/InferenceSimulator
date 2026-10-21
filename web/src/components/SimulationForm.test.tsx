@@ -1,13 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { uploadReplayPlan } from "../api/client";
+import { getScanParameters, uploadReplayPlan } from "../api/client";
 import { createDefaultSimConfig } from "../config/simulation";
 import { SimulationForm } from "./SimulationForm";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
-  return { ...actual, uploadReplayPlan: vi.fn() };
+  return { ...actual, getScanParameters: vi.fn(), uploadReplayPlan: vi.fn() };
 });
 
 afterEach(() => {
@@ -97,6 +97,56 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("会话/秒")).toHaveValue(3);
     expect(screen.getByRole("status")).toHaveTextContent("请重新上传请求计划");
     expect(screen.getByText(/请先选择会话并导出计划/)).toBeInTheDocument();
+  });
+
+  it("imports a synthetic scan plan and updates the ordinary form before running the scan", async () => {
+    vi.mocked(getScanParameters).mockResolvedValue([{ key: "workload.synthetic.num_requests", label: "请求数量",
+      kind: "integer", modes: ["synthetic/open_loop"] }]);
+    const onScanSubmit = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onScanSubmit={onScanSubmit} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入扫描方案" })).toBeEnabled());
+    const base = createDefaultSimConfig();
+    base.workload.synthetic!.num_requests = 24;
+    base.inference.page_size = 128;
+    fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({ version: 1, base,
+      axes: [{ key: "workload.synthetic.num_requests", text: "10:30:10" }] }) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+    expect(screen.getByLabelText("请求数量")).toHaveValue(24);
+    expect(screen.getByLabelText("每页 token 数")).toHaveValue(128);
+    expect(screen.getByLabelText("扫描档位 1")).toHaveValue("10:30:10");
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onScanSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      base: expect.objectContaining({ inference: expect.objectContaining({ page_size: 128 }) }),
+      axes: [{ key: "workload.synthetic.num_requests", values: [10, 20, 30] }],
+    }));
+  });
+
+  it("imports Trace scan settings into both panels without reusing a plan ID", async () => {
+    vi.mocked(getScanParameters).mockResolvedValue([{ key: "workload.target_qps", label: "目标 QPS",
+      kind: "number", modes: ["trace/open_loop"] }]);
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "new-plan", sessions: 1, requests: 2 });
+    const onScanSubmit = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onScanSubmit={onScanSubmit} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入扫描方案" })).toBeEnabled());
+    const base = { ...createDefaultSimConfig(), workload: { mode: "trace", arrival_mode: "open_loop",
+      session_rate: 2, seed: 7, target_qps: 12, trace: { plan_id: "old-plan" } } };
+    fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({ version: 1, base,
+      axes: [{ key: "workload.target_qps", text: "8,16" }] }) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+    expect(screen.getAllByLabelText("负载模式").map((element) => (element as HTMLSelectElement).value))
+      .toEqual(["trace", "trace"]);
+    expect(screen.getByLabelText("会话/秒")).toHaveValue(2);
+    expect(screen.getByLabelText("目标发送 QPS（请求/秒）")).toHaveValue(12);
+    expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("回放计划 JSON 文件"), {
+      target: { files: [new File(["{}"], "new-plan.json")] },
+    });
+    await screen.findByText(/new-plan.json/);
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onScanSubmit.mock.lastCall?.[0]).toMatchObject({ base: { workload: {
+      mode: "trace", session_rate: 2, seed: 7, target_qps: 12, trace: { plan_id: "new-plan" },
+    } }, axes: [{ key: "workload.target_qps", values: [8, 16] }] });
   });
 
   it("starts with model and hardware settings", () => {

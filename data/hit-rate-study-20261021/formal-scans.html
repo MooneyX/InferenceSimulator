@@ -139,7 +139,7 @@ function formatScanTooltip(params, series) {
       + (dash ? ` stroke-dasharray="${dash}"` : '') + '/>'
       + tooltipSymbol(curve.symbol, color) + '</svg>';
     return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;min-width:0">${sample}`
-      + `<span style="min-width:0;white-space:normal;overflow-wrap:anywhere">${escapeTooltip(curve.name)}: `
+      + `<span style="min-width:0;white-space:normal;overflow-wrap:anywhere">${escapeTooltip(curve.tooltipName)}: `
       + `${escapeTooltip(item.value ?? '—')}</span></div>`;
   });
   return `<div style="width:max-content;max-width:min(640px,calc(100vw - 56px));white-space:normal;overflow-wrap:anywhere">`
@@ -360,11 +360,12 @@ function formatScanTooltip(params, series) {
       const color = value(point, used.color), shape = value(point, used.shape), line = value(point, used.line);
       const remainder = hidden.map(key => [key, value(point, key)]);
       const groupKey = JSON.stringify([batch.job.id, color, shape, line, remainder]);
+      const tooltipName = ['扫描 ' + batch.job.id.slice(0, 6),
+        ...roles.slice(1).filter(role => used[role]).map(role =>
+          label(used[role]) + '=' + String(value(point, used[role])))].join(' · ');
       if (!groups.has(groupKey)) groups.set(groupKey, {
-        name: ['扫描 ' + batch.job.id.slice(0, 6),
-          ...roles.slice(1).filter(role => used[role]).map(role =>
-            label(used[role]) + '=' + String(value(point, used[role]))),
-          ...remainder.map(([key, v]) => label(key) + '=' + String(v))].join(' · '),
+        name: [tooltipName, ...remainder.map(([key, v]) => label(key) + '=' + String(v))].join(' · '),
+        tooltipName,
         ci: Math.max(0, colors.indexOf(color)), si: Math.max(0, shapes.indexOf(shape)),
         li: Math.max(0, lines.indexOf(line)), values: new Map(), sources,
       });
@@ -373,7 +374,7 @@ function formatScanTooltip(params, series) {
       groups.get(groupKey).values.set(String(x), y);
     });
     const series = [...groups.values()].map(group => ({
-      name: group.name, type: 'line', smooth: true, connectNulls: false, showSymbol: true,
+      name: group.name, tooltipName: group.tooltipName, type: 'line', smooth: true, connectNulls: false, showSymbol: true,
       symbol: symbols[group.si % symbols.length], symbolSize: 9,
       itemStyle: { color: palette[group.ci % palette.length] },
       lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },

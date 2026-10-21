@@ -91,6 +91,7 @@
   min-width: 0;
   color: var(--text-dim);
   font-size: 0.68rem;
+  line-height: 1.5;
   letter-spacing: 0.03em;
 }
 
@@ -118,6 +119,10 @@
   min-width: min(100%, 250px);
   max-height: 150px;
   overflow: auto;
+}
+
+.scan-role-values {
+  margin-top: calc(0.68rem * 1.5 + 3px);
 }
 
 .scan-role-values label, .scan-background-options label {
@@ -149,6 +154,20 @@
 .scan-role-values input, .scan-background-options input {
   margin: 0;
   accent-color: var(--accent);
+}
+
+.scan-role-values label, .scan-role-empty {
+  min-height: 32px;
+}
+
+.scan-role-empty {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
 }
 .scan-background { margin-top: 16px; }
 .scan-background-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }

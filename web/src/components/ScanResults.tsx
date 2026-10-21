@@ -131,7 +131,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
                 {nameOf(key)}</option>)}
             </select></label>
           <div className="scan-role-values" aria-label={`${({ x: "横轴", color: "颜色", shape: "节点形状", line: "线样式" })[role]}参数值`}>
-            {!chosenRoles[role] ? "未选择参数" : selection.roleChoices[role].map((choice) =>
+            {!chosenRoles[role] ? <span className="scan-role-empty">未选择参数</span> : selection.roleChoices[role].map((choice) =>
               <label key={choice.token} className={choice.disabled ? "unavailable" : ""}>
                 <input type="checkbox" checked={choice.checked} disabled={choice.disabled}
                   onChange={(event) => setSelectedValues({ ...selection.selected,

@@ -148,7 +148,13 @@
       const host = byId('values-' + role);
       host.replaceChildren();
       const key = used[role];
-      if (!key) { host.textContent = '未选择参数'; return; }
+      if (!key) {
+        const empty = document.createElement('span');
+        empty.className = 'role-empty';
+        empty.textContent = '未选择参数';
+        host.append(empty);
+        return;
+      }
       (levels[key] || []).forEach(([token, v]) => {
         const item = document.createElement('label');
         const input = document.createElement('input');

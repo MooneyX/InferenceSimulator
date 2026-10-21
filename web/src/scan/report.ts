@@ -22,13 +22,16 @@ p{line-height:1.6;color:var(--text-dim);font-size:.75rem}
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0}
 .controls{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .controls label{display:inline-flex;gap:6px;align-items:center;color:var(--text-dim);font-size:.75rem}
-select{min-width:100px;max-width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
+select{min-width:100px;max-width:100%;min-height:32px;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
  background:var(--surface2);color:var(--text);font-size:.8rem}
 select:focus{border-color:var(--accent);outline:none}input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
 .role-row{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin:10px 0}
 .role-row>label{display:inline-grid;flex:0 0 min(100%,185px);gap:3px;min-width:0;color:var(--text-dim);
- font-size:.68rem;letter-spacing:.03em}.role-row select{width:100%}
+ font-size:.68rem;line-height:1.5;letter-spacing:.03em}.role-row select{width:100%}
 .role-values,.background-options{display:flex;flex-wrap:wrap;gap:6px;max-height:150px;overflow:auto;flex:1;min-width:min(100%,250px)}
+.role-values{margin-top:calc(.68rem * 1.5 + 3px)}.role-values label,.role-empty{min-height:32px}
+.role-empty{display:inline-flex;align-items:center;padding:5px 12px;border:1px dashed var(--border);border-radius:5px;
+ color:var(--text-dim);font-size:.75rem}
 .role-values label,.background-options label{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 12px;
  border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text-dim);
  font-size:.75rem;overflow-wrap:anywhere;cursor:pointer}

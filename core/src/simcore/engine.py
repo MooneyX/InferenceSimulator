@@ -227,15 +227,15 @@ class Engine:
 
     def _ready_for_prefill(self, request_id: int, now_ms: float) -> bool:
         if (
-            self._pending_loads
-            or request_id in self._lookup_waiting
-            or request_id in self._prefetch_waiting
+            self._pending_loads # 请求的load_back未完成
+            or request_id in self._lookup_waiting # L3的查找
+            or request_id in self._prefetch_waiting # L3的prefetch
         ):
             return False
         if request_id in self._last_local_match:
             request = self._requests[request_id]
-            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
-            if len(local) < self._last_local_match[request_id]:
+            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False) # 准入前再次probe
+            if len(local) < self._last_local_match[request_id]: # 若命中比到达时更少, 说明部分KV被驱逐了, 需要向L3发起查询和prefetch
                 self._last_local_match[request_id] = len(local)
                 self._schedule_l3_lookup(request_id, now_ms)
                 return False
@@ -366,20 +366,20 @@ class Engine:
     ) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
         """回载未就绪时仍可处理已有请求的 Decode；就绪后再执行准入批次。"""
         selection = self._pending_selection
-        if selection is not None and self._pending_loads:
-            if not self._running:
+        if selection is not None and self._pending_loads: # 之前选中了一批请求准备开始prefill, 但是这批请求的load_back未完成, 因此无法进行prefill
+            if not self._running: # 没有等待decode的请求
                 return None
             selection = AdmissionBatch((), (), ())
-        elif selection is not None:
+        elif selection is not None: #  之前选中了一批请求准备开始prefill, 且load_back已完成, 可以开始prefill
             self._pending_selection = None
-        else:
+        else: # 之前没有尝试组织prefill批次, 现在组批
             running = {
                 key: RunningRequest(self._requests[key], generated)
                 for key, generated in self._running.items()
             }
             selection = self._prefix_scheduler.select_prefill(
                 running,
-                is_ready=lambda key: self._ready_for_prefill(key, now_ms),
+                is_ready=lambda key: self._ready_for_prefill(key, now_ms), # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill, 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
                 can_reuse=lambda key, chunk_id, tier: (
                     tier != "L3" and chunk_id not in self._unusable_hits.get(key, ())
                 ),

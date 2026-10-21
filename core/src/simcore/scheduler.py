@@ -143,7 +143,7 @@ class AdmissionScheduler:
                 or not 1 <= active.generated_tokens <= active.request.max_new_tokens
             ):
                 raise ValueError("运行请求身份或生成进度不合法")
-            cache.state(request_id)
+            _ = cache.state(request_id) # 调用state函数, 尝试取出状态信息, 若没有则会报错
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
             for item in running.values()
@@ -157,11 +157,11 @@ class AdmissionScheduler:
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
         selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
-        for item in tuple(self._waiting):
-            if active_count + len(selected) >= self._engine.max_running_requests:
+        for item in tuple(self._waiting): # 遍历等待队列中的所有请求
+            if active_count + len(selected) >= self._engine.max_running_requests: # 同时运行请求数限制
                 break
             request = item.request
-            if is_ready is not None and not is_ready(request.request_id):
+            if is_ready is not None and not is_ready(request.request_id): # 请求未就绪(prefetch未完成, 或者本地命中率比到达时更低, 原因是排队期间有KV被驱逐)
                 continue
             target = item.target_tokens
             sources = cache.probe(request, target, restoring=item.restoring)

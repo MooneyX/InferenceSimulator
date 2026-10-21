@@ -233,13 +233,13 @@ export function ScanPanel({ base, onSubmit }: Props) {
             placeholder="逗号分隔，或 起点:终点:步长"
             onChange={(event) => updateAxis(axis.id, { text: event.target.value })} />
         </div>
-        <button type="button" className="scan-remove-axis" disabled={axes.length === 1}
+        <button type="button" className="secondary-button secondary-button-small scan-remove-axis" disabled={axes.length === 1}
           aria-label={`删除扫描参数 ${index + 1}`}
           onClick={() => { setAxes((current) => current.filter((row) => row.id !== axis.id)); setFocused(null); }}>
           删除</button>
       </div>;
     })}</div>
-    <button type="button" className="scan-add-axis"
+    <button type="button" className="secondary-button scan-add-axis"
       onClick={() => { setAxes((current) => [...current, { id: nextId.current++, key: "", text: "", search: "" }]);
         setFocused(null); }}>添加参数</button>
     <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>

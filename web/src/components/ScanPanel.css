@@ -69,22 +69,7 @@
 
 .scan-axis input:disabled { opacity: 0.55; cursor: not-allowed; }
 
-.scan-add-axis, .scan-remove-axis {
-  min-height: 32px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface2);
-  color: var(--text-dim);
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-.scan-add-axis:hover, .scan-remove-axis:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--text);
-}
-.scan-remove-axis:disabled { opacity: 0.4; cursor: not-allowed; }
+.scan-remove-axis { min-height: 32px; }
 
 .scan-options {
   position: absolute;

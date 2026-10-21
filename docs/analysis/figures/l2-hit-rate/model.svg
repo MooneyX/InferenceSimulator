@@ -89,7 +89,7 @@
 <circle cx="630.0" cy="303.6" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
 <line x1="646" y1="128" x2="674" y2="128" stroke="#DD8452" stroke-width="2" stroke-dasharray="7,4"/>
 <circle cx="660" cy="128" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<text x="682" y="132" fill="#333">L2 模型</text>
+<text x="682" y="132" fill="#333">L2 预测下限</text>
 <polyline points="72.0,370.0 156.0,370.0 217.9,370.0 285.7,370.0 351.0,370.0 424.4,364.8 496.9,306.0 564.7,237.3 630.0,195.1" fill="none" stroke="#55A868" stroke-width="2"/>
 <circle cx="72.0" cy="370.0" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
 <circle cx="156.0" cy="370.0" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>

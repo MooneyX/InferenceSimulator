@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="分层KV缓存命中率的推导模型与仿真验证：容量、复用距离、恢复带宽及运行时负载的联合影响。">
+<title>分层 KV 缓存命中率｜模型推导与数据验证</title>
+<style>
+:root{--ink:#17243c;--muted:#62718a;--purple:#6854d9;--blue:#347fc4;--teal:#12877f;--amber:#bc710e;--red:#bf4558;--line:#e0e5ef;--paper:#fff;--wash:#f4f6fb;--l1:#347fc4;--l2:#6854d9;--l3:#12877f;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--wash);font-synthesis:none}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:88px}body{margin:0;font-size:15px;line-height:1.8}a{color:var(--purple);text-decoration:none}a:hover{text-decoration:underline}button{font:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #a69aef;outline-offset:4px}.shell{max-width:1240px;padding:0 40px;margin:auto}.topbar{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.97);border-bottom:1px solid var(--line)}.topbar .shell{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:64px}.brand{font-weight:750;font-size:14px;letter-spacing:.02em;white-space:nowrap}.brand i{display:inline-block;width:9px;height:20px;background:var(--purple);border-radius:3px;vertical-align:-4px;margin-right:10px}nav{display:flex;gap:24px;font-size:13px}nav a{color:var(--muted)}.print{background:var(--ink);color:#fff;border:0;border-radius:7px;padding:7px 15px;white-space:nowrap;font-size:13px}.hero{background:linear-gradient(120deg,#14213b,#25264b 68%,#373267);color:#fff;overflow:hidden}.hero .shell{padding-top:66px;padding-bottom:60px;position:relative}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:.19em;font-weight:650;color:#b8b1ee}.hero h1{font-size:clamp(34px,4.6vw,54px);line-height:1.23;letter-spacing:-.04em;margin:18px 0 20px;font-weight:750}.hero h1 span{display:block;color:#c5c2ff;font-weight:500;font-size:.69em;letter-spacing:-.02em;margin-top:12px}.hero .lead{max-width:760px;color:#d0d7e8;font-size:17px;line-height:1.95}.tags{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.tags span{border:1px solid #5b5b7b;background:#ffffff08;border-radius:5px;padding:3px 10px;font-size:12px;color:#d9def1}.hero-bottom{margin-top:35px;border-top:1px solid #ffffff26;padding-top:18px;display:flex;justify-content:space-between;color:#b6bfd4;font-size:12px;gap:16px}.hero-bottom strong{color:#e4e9f5}.report{padding-top:36px;padding-bottom:60px}section{margin-bottom:54px;scroll-margin-top:88px}.section-heading{display:flex;align-items:flex-start;gap:16px;margin-bottom:21px}.section-index{flex-shrink:0;white-space:nowrap;font-size:12px;font-weight:750;color:var(--purple);border:1px solid #d7d0f3;border-radius:8px;padding:4px 10px;margin-top:7px;line-height:1.8}.section-heading h2{font-size:27px;line-height:1.45;letter-spacing:-.03em;margin:0}.section-heading p{color:var(--muted);margin:5px 0 0;font-size:14px}h3{font-size:18px;line-height:1.5;margin:0 0 10px}h4{font-size:15px;margin:0 0 6px}p{margin:0 0 14px}p:last-child{margin-bottom:0}.grid{display:grid;gap:20px}.grid>*{min-width:0}.two{grid-template-columns:1fr 1fr}.three{grid-template-columns:repeat(3,1fr)}.card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:24px;min-width:0}.card-top{font-size:11px;color:var(--purple);font-weight:750;letter-spacing:.09em;margin-bottom:10px}.insight{border-top:3px solid var(--purple)}.insight:nth-child(2){border-top-color:var(--teal)}.insight:nth-child(3){border-top-color:var(--blue)}.insight h3{font-size:19px}.insight p{font-size:14px;color:var(--muted)}.metric{display:block;font-size:36px;font-weight:760;letter-spacing:-.04em;line-height:1.3;margin:10px 0;color:var(--ink)}.metric small{font-size:15px;font-weight:500;color:var(--muted);letter-spacing:0}.metric em{font-style:normal;font-size:20px;color:var(--muted);padding:0 4px}.note,.callout{padding:16px 20px;border-radius:9px;line-height:1.8;font-size:14px;margin-top:18px}.note{background:#ebeff8;color:#475877}.callout{background:#efecfb;border-left:3px solid var(--purple)}.warning{background:#fff4e4;border-left-color:var(--amber)}.small{font-size:12px;color:var(--muted);line-height:1.75}.muted{color:var(--muted)}.formula{font-family:"Cambria Math",Cambria,"Times New Roman",serif;background:#f5f4fd;border:1px solid #e3def5;border-radius:8px;padding:17px 18px;font-size:21px;line-height:1.8;margin:14px 0;overflow-x:auto}.formula .math-row{display:block;white-space:nowrap}.formula sub,.formula sup{font-size:.67em}.formula .math-label{font-family:"Segoe UI","Microsoft YaHei",sans-serif;font-size:12px;color:var(--muted);display:block;margin-top:5px;white-space:normal}.symbols{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;margin:14px 0}.symbols dt{font-family:Cambria,serif;font-weight:700}.symbols dd{margin:0;color:var(--muted)}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.step{background:#f7f8fc;border:1px solid var(--line);padding:14px;border-radius:7px}.step strong{display:block;font-size:14px}.step span{display:block;font-size:12px;color:var(--muted)}.tier1{color:var(--l1)}.tier2{color:var(--l2)}.tier3{color:var(--l3)}.figure{margin:0}.figure + .figure{margin-top:24px}.chart{width:100%;min-height:240px;margin:12px 0 3px}.chart svg{width:100%;height:auto;display:block}.chart text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif}.chart .tick{fill:#68758b;font-size:11px}.chart .axis-name{fill:#53627a;font-size:11px}.chart .grid-line{stroke:#e6eaf2;stroke-width:1}.chart .value{fill:#223551;font-size:12px;font-weight:650}.chart .bar-label{fill:#46546b;font-size:12px}.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:12px;margin:10px 0 4px;color:#53627a}.legend span{display:inline-flex;align-items:center;gap:7px}.legend i{width:19px;height:3px;background:var(--color);display:inline-block}.legend i.dashed{height:0;border-top:2px dashed var(--color);background:none}.legend i.block{height:9px;width:9px;border-radius:2px}.figcaption{font-size:12px;color:var(--muted);line-height:1.8;border-top:1px solid var(--line);padding-top:11px;margin-top:10px}.table-wrap{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:9px;margin-top:16px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;font-variant-numeric:tabular-nums}caption{text-align:left;padding:12px 16px;font-weight:650;background:#fafbfe;border-bottom:1px solid var(--line);color:#354760}th{text-align:left;background:#f3f5fa;color:#53627a;font-weight:650;font-size:12px;white-space:nowrap}td,th{padding:11px 15px;border-bottom:1px solid #e9edf4}tr:last-child td{border-bottom:0}tbody tr:hover{background:#f8f7fe}td.num,th.num{text-align:right}td.num{white-space:nowrap}td .unit{font-size:11px;color:var(--muted)}.good{color:#087e6b;font-weight:650}.bad{color:var(--red);font-weight:650}.result-table td:first-child{font-weight:600}.strong-row{background:#f1edfc}.evidence-label{display:inline-block;font-size:11px;color:var(--purple);font-weight:700;letter-spacing:.04em;margin-bottom:5px}.block-space{margin-top:22px}.key-line{font-size:19px;font-weight:650;line-height:1.65;letter-spacing:-.02em;margin:0 0 18px}.config{display:grid;grid-template-columns:1fr 1fr;gap:0 28px;margin:0}.config > div{border-bottom:1px solid var(--line);padding:12px 0}.config dt{font-size:12px;color:var(--muted);margin-bottom:3px}.config dd{margin:0;font-size:14px}.config > div:nth-last-child(-n+2){border-bottom:0}.flow{display:flex;align-items:stretch;gap:8px;margin:18px 0}.flow .node{flex:1;border:1px solid #dcd7ef;background:#f7f5ff;border-radius:7px;padding:11px;font-size:13px;text-align:center}.flow .arrow{align-self:center;color:var(--purple);font-weight:700}.verdict{background:#17243c;color:#e7ecf7;padding:26px;border-radius:11px;margin-top:24px}.verdict h3{color:#fff}.verdict p{color:#cbd4e5;font-size:14px}.checklist{margin:0;padding-left:20px;font-size:14px}.checklist li{padding:5px 0}.checklist li::marker{color:var(--purple);font-weight:700}.scope{font-size:13px}.scope h3{font-size:16px}.scope ul{padding-left:19px;margin:8px 0}.scope li{margin-bottom:8px}.foot{border-top:1px solid var(--line);padding:23px 0;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:20px}.noscript{margin:20px;padding:18px;background:#fff3db;border:1px solid #e4bd71}.chart-error{border:1px solid var(--red);padding:18px;color:var(--red)}.show-on-print{display:none}
+@media(max-width:960px){.shell{padding-left:24px;padding-right:24px}nav{gap:13px}.three{grid-template-columns:1fr}.metric{font-size:32px}.insight{padding:20px}.two{grid-template-columns:1fr}.hero .shell{padding-top:44px;padding-bottom:42px}.steps{gap:8px}.section-heading h2{font-size:24px}.config{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){body{font-size:14px}.shell{padding-left:16px;padding-right:16px}nav{display:none}.topbar .shell{min-height:58px}.hero .lead{font-size:15px}.hero-bottom{display:block}.hero-bottom span{display:block;margin-top:5px}.card{padding:19px}.section-heading{gap:11px}.section-heading h2{font-size:22px}.section-index{padding:3px 7px}.config{grid-template-columns:1fr}.config>div:nth-last-child(2){border-bottom:1px solid var(--line)}.steps{grid-template-columns:1fr}.step{padding:11px}.flow{flex-wrap:wrap}.flow .node{min-width:100px}.formula{font-size:19px;padding:13px}.table-wrap table{min-width:550px}.chart{min-height:160px}.foot{display:block}.foot span{display:block;margin-bottom:5px}}
+@media screen and (max-width:600px){.chart{overflow-x:auto}.chart svg{min-width:520px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{@page{size:A4;margin:14mm 12mm}html{scroll-behavior:auto}body{font-size:10pt;line-height:1.65;background:#fff;color:#17243c;-webkit-print-color-adjust:exact;print-color-adjust:exact}.topbar,.print{display:none!important}.shell{max-width:none;padding-left:0;padding-right:0}.hero{background:#17243c!important;border-radius:8px}.hero .shell{padding:22px 26px}.hero h1{font-size:30pt}.hero .lead{font-size:11pt}.hero-bottom{margin-top:16px}.tags{margin-top:15px}.report{padding-top:22px;padding-bottom:0}section{margin-bottom:25px;break-inside:auto}.section-heading{break-after:avoid;margin-bottom:12px}.section-heading h2{font-size:19pt}.card{padding:15px;border-radius:7px;break-inside:avoid}.grid{gap:13px}.three{grid-template-columns:repeat(3,1fr)}.two{grid-template-columns:1fr}.metric{font-size:24pt}.insight h3{font-size:12pt}.insight p{font-size:9pt}.section-index{margin-top:2px}.chart{min-height:0;max-width:650px;margin-left:auto;margin-right:auto}.figure,table,.callout,.note,.verdict{break-inside:avoid}.table-wrap{overflow:visible;border-radius:5px}.table-wrap table{min-width:0}table{font-size:9pt}th{font-size:8pt}td,th{padding:7px 9px}thead{display:table-header-group}h3,h4{break-after:avoid}.formula{font-size:15pt;overflow:visible}.steps{grid-template-columns:repeat(3,1fr)}.scope{font-size:9pt}.config{grid-template-columns:1fr 1fr}.hero-bottom,.figcaption,.small,.foot{font-size:8pt}.foot{margin-top:12px}.show-on-print{display:inline}a{color:inherit;text-decoration:none}}
+</style>
+</head>
+<body>
+<header class="topbar"><div class="shell"><a class="brand" href="#top"><i aria-hidden="true"></i>KV CACHE / 技术研究</a><nav aria-label="报告目录"><a href="#model">推导模型</a><a href="#capacity">容量验证</a><a href="#bandwidth">带宽与拥塞</a><a href="#runtime">运行时因素</a><a href="#guidance">结论</a></nav><button class="print" type="button" id="print-report">打印报告</button></div></header>
+<div class="hero" id="top"><div class="shell"><div class="eyebrow">Inference Systems · Technical Report</div><h1>分层 KV 缓存命中率<span>从复用距离到恢复链路拥塞</span></h1><p class="lead">缓存容量决定前缀能否留下，恢复带宽与运行时负载决定前缀能否被及时使用。以可解释模型和配对仿真数据，揭示 L1、L2、L3 命中率的变化规律与性能取舍。</p><div class="tags"><span>HY4-Preview / MLA + DSA</span><span>BF16 · B300 配置</span><span>闭环多轮会话</span><span>解析仿真研究</span></div><div class="hero-bottom"><span><strong>核心问题</strong>　如何在命中收益与首 token 延迟之间选择合理配置？</span><span>2026 年 10 月</span></div></div></div>
+<noscript><div class="noscript">请启用 JavaScript 以显示数据图表与完整测试表格。本报告无需联网，图表和数据均内嵌在当前文件中。</div></noscript>
+<main class="shell report">
+<section id="summary"><div class="section-heading"><span class="section-index">摘要</span><div><h2>三个结论，构成统一解释</h2><p>研究对象是仿真系统中的前缀复用行为；下述数据不是实际硬件压测结果。</p></div></div>
+<div class="grid three"><article class="card insight"><div class="card-top">01 / 容量与复用窗口</div><h3>L2 命中率呈单峰，而非越高越好</h3><span class="metric">56.60<small>%</small></span><p>基准配置在测试间隔中，于平均思考时间 550 秒达到最高 L2 命中贡献；更短间隔主要命中 L1，更长间隔转向 L3。</p></article><article class="card insight"><div class="card-top">02 / 容量与带宽耦合</div><h3>慢链路上，扩大 L3 可能反而更差</h3><span class="metric">59.06<em>→</em>36.51<small>%</small></span><p>L3 接入带宽 1 GB/s 时，容量由 2 TB 增至 8 TB，总命中率下降；8000 请求、思考 1750 秒，三种子均值。</p></article><article class="card insight"><div class="card-top">03 / 指标与性能分离</div><h3>高命中率也可能伴随严重排队</h3><span class="metric">597.65<small> 秒</small></span><p>L2 恢复带宽降至 2 GB/s 后，平均 TTFT 接近 600 秒，实际总命中仍约 79.54%。命中率不能替代延迟指标。</p></article></div>
+<div class="callout"><strong>配置目标：</strong>不是最大化某一层命中率，而是在满足延迟要求的前提下，尽可能保留并及时恢复可复用前缀。</div>
+</section>
+<section id="setup"><div class="section-heading"><span class="section-index">01</span><div><h2>实验基准与统计口径</h2><p>除图表明确指出的变量外，均使用下列配置。图中连线仅连接已测试点，不代表中间配置的预测结果。</p></div></div>
+<div class="card"><dl class="config"><div><dt>模型与实例</dt><dd>HY4-Preview，MLA + DSA；BF16 权重与 KV；单实例 8 × B300，TP = EP = 8。</dd></div><div><dt>请求与会话</dt><dd>4000 请求、800 个线性会话，每会话 5 轮；新会话投放率 0.04/s；思考时间为指数分布。</dd></div><div><dt>长度分布</dt><dd>根轮输入 Poisson(16384)，每轮新增 Poisson(256)，输出 Poisson(128)；平均输入上下文约 17161 token。</dd></div><div><dt>存储容量</dt><dd>L1 每卡 260 GB，含权重预算；L2 每实例 2048 GB；共享 L3 总量 40 TB；每页 64 token。</dd></div><div><dt>恢复链路</dt><dd>L2 → L1：256 GB/s、每页 0.01 ms；L3 → L2：50 GB/s、每页 0.1 ms；L3 查找延迟 0.1 ms。</dd></div><div><dt>调度与解析参数</dt><dd>最大运行并发 32、Prefill 额度 16384 token、P/D 分步；L3 预取门槛 256 token。有效算力 100 TFLOPS、HBM 1000 GB/s、互联 600 GB/s。</dd></div></dl></div>
+<div class="grid two block-space"><article class="card"><h3>命中率：必须使用相同分母</h3><div class="formula"><span class="math-row">h<sub>i</sub> = H<sub>i</sub> / P，　H = h<sub>1</sub> + h<sub>2</sub> + h<sub>3</sub></span><span class="math-row">s<sub>i</sub> = h<sub>i</sub> / H，　η = (H<sub>1</sub> + H<sub>2</sub> + H<sub>3</sub>) / I</span></div><p class="small">P 为成功请求总输入 token；H<sub>i</sub> 为各层实际复用 token；I 为同一成功样本的理想可复用 token。h<sub>i</sub> 是<strong>命中贡献率</strong>，不是该层 lookup 成功率；s<sub>i</sub> 是已命中 token 的层占比；η 表示实际捕获了多少理想复用。</p></article><article class="card"><h3>性能与样本：避免错读</h3><p>TTFT 为请求到达至首次 Prefill 完成的时间，表中报告平均值、单位秒。闭环完成吞吐受思考时间和尾部长度影响，不等于系统最大处理能力。</p><p class="small">常规结果采用 seed = 0；标注“三种子”的结果使用 0、1、2 等权汇总，每次运行内部按输入 token 加权。更长时域使用 8000 请求、1600 会话，保持五轮结构与投放率不变。各表均明确样本规模与变量；不同分母的百分比不直接横比。</p></article></div>
+</section>
+<section id="model"><div class="section-heading"><span class="section-index">02</span><div><h2>推导模型：从复用距离到层间分配</h2><p>先解释容量宽裕、排队较轻时的主导规律，再加入运行时与链路约束。</p></div></div>
+<div class="grid two"><article class="card"><div class="card-top">模型 A / 静态近似</div><h3>把缓存寿命换算成时间窗口</h3><p>LRU 下，一个前缀能否保留，取决于两次复用之间经过的<strong>不同缓存页</strong>占用。将其粗略折算为 token 工作量：</p><div class="formula"><span class="math-row">D(t) ≈ λ C̄ t</span><span class="math-row">t<sub>1</sub> = K<sub>1</sub> / (λ C̄)</span><span class="math-row">t<sub>2</sub> = (K<sub>1</sub> + K<sub>2</sub>) / (λ C̄)</span><span class="math-label">K₁、K₂ 均为折算后的 KV token 容量，不能直接把 GB 与 token 相加。</span></div><dl class="symbols"><dt>λ</dt><dd>单实例请求率。基准名义值为 0.04 × 5 = 0.2 请求/s；拥塞时实际值未必达到该值。</dd><dt>C̄</dt><dd>平均输入上下文，基准约 17161 token。</dd><dt>t</dt><dd>父轮完成至子轮准入的复用间隔。轻排队时近似为思考时间。</dd></dl><div class="steps"><div class="step"><strong class="tier1">t &lt; t₁</strong><span>前缀仍在 L1</span></div><div class="step"><strong class="tier2">t₁ &lt; t &lt; t₂</strong><span>前缀转移至 L2</span></div><div class="step"><strong class="tier3">t &gt; t₂</strong><span>需要 L3 或重新计算</span></div></div><p class="small">D 的线性近似会重复计入同一会话的访问，不是精确的不同页复用距离；边界用于解释趋势，不是逐请求的确定性判定。</p></article>
+<article class="card"><div class="card-top">模型 A / 指数思考时间</div><h3>L2 是两个边界之间的概率质量</h3><p>设平均思考时间为 T，对指数分布积分，得到可复用前缀落在各窗口中的近似比例：</p><div class="formula"><span class="math-row">p<sub>1</sub> = 1 − e<sup>−t₁/T</sup></span><span class="math-row">p<sub>2</sub> = e<sup>−t₁/T</sup> − e<sup>−t₂/T</sup></span><span class="math-row">p<sub>3</sub> = e<sup>−t₂/T</sup></span><span class="math-label">p₃ 表示低于 L2 的恢复需求；只有 L3 保留且能成功恢复时，才转化为 L3 实际命中。</span></div><p>对 p₂ 关于 T 求导并令其为零：</p><div class="formula"><span class="math-row">T* = (t<sub>2</sub> − t<sub>1</sub>) / ln(t<sub>2</sub> / t<sub>1</sub>)</span></div><p class="small">基准 L1 = 9254 页、L2 = 39939 页，折算为 592256 与 2556096 token；t₁ ≈ 173 秒、t₂ ≈ 917 秒，简化模型的连续峰值 T* ≈ <strong>446 秒</strong>。测试档位中的 L2 峰值在 <strong>550 秒</strong>；峰值高度需由数据检验，不能由近似式精确保证。</p></article></div>
+<article class="card block-space"><span class="evidence-label">数据验证 A</span><h3>模型解释单峰，但会低估部分区间的 L2 层占比</h3><div class="grid two"><figure class="figure"><div class="legend"><span><i style="--color:#6854d9"></i>仿真：L2 层占比 s₂</span><span><i class="dashed" style="--color:#8190a9"></i>简化模型：p₂</span></div><div class="chart" id="model-chart"></div><figcaption class="figcaption">图 1 · 横轴为平均思考时间，对数刻度；纵轴为 L2 占已命中 token 的比例，不是总输入命中率。单种子、4000 请求。</figcaption></figure><div><p class="key-line">容量与负载能解释曲线方向，不能独立解释所有幅度。</p><ul class="checklist"><li>短间隔下 L1 留存更充分，模型高估不同页复用距离，因而高估早期 L2 占比。</li><li>T = 550 秒时，模型 L2 占比约 54.3%，仿真约 71.2%；定性单峰成立，峰值高度明显不同。</li><li>T ≥ 1750 秒时，约 4T 的会话思考时长与约 20000 秒名义投放时域可比，有限时域不能视作充分稳态。</li></ul><div class="note">五轮会话的理想命中率约为 79.55%。1 − 1/轮数只能作粗估；新增 token、页对齐和输入加权都会改变精确比例。</div></div></div>
+<div class="table-wrap" id="baseline-table"></div><p class="small block-space">表 1 · 基准分层命中贡献。实际总命中为 79.48%–79.55%，接近理想值但不严格恒定；显示值经四舍五入，分层显示值之和可能有 0.01 个百分点差异。</p></article>
+</section>
+<section id="capacity"><div class="section-heading"><span class="section-index">03</span><div><h2>容量与负载：决定命中窗口的位置</h2><p>这一组规律适用于恢复带宽宽裕、运行压力较轻的配置；不能无条件外推到拥塞区。</p></div></div>
+<div class="grid two"><article class="card"><span class="evidence-label">数据验证 B</span><h3>增大 L2，主要延后向 L3 溢出的边界</h3><figure class="figure"><div class="legend"><span><i style="--color:#347fc4"></i>512 GB</span><span><i style="--color:#12877f"></i>1024 GB</span><span><i style="--color:#6854d9"></i>2048 GB</span><span><i style="--color:#bc710e"></i>4096 GB</span></div><div class="chart" id="capacity-chart"></div><figcaption class="figcaption">图 2 · L2 容量变化，其他条件为基准；纵轴为 L2 对总输入的命中贡献。数据精度为 0.1 个百分点，4000 请求、seed = 0。</figcaption></figure><p class="small block-space">T = 100 秒时四档均约 7.1%；T = 1000 秒时则为 15.3%、29.4%、50.2%、65.3%。缓存尚未溢出时，增加低层容量几乎没有收益。</p></article><article class="card"><span class="evidence-label">数据验证 C</span><h3>减小 L1 会提高 L2 命中，却未必改善体验</h3><div class="table-wrap"><table><caption>表 2 · L2 = 2048 GB，T = 550 秒</caption><thead><tr><th>每卡 L1</th><th class="num">可用 KV 页数</th><th class="num">L2 命中贡献</th></tr></thead><tbody><tr><td>215 GB</td><td class="num">2234</td><td class="num">74.0%</td></tr><tr><td>230 GB</td><td class="num">4574</td><td class="num">69.1%</td></tr><tr class="strong-row"><td>260 GB</td><td class="num">9254</td><td class="num">56.6%</td></tr><tr><td>285 GB</td><td class="num">13154</td><td class="num">46.9%</td></tr></tbody></table></div><p class="block-space">L1 越小，前缀越早落到 L2，但也压缩运行请求所需的 KV 空间。215 GB 档在不同思考时间下的平均 TTFT 为 <strong>9–42 秒</strong>，260 GB 档约为 <strong>2.5–2.7 秒</strong>。</p><div class="callout">L2 命中率提高，可能只是命中从更快的 L1 下移，而不是更多计算被省掉。</div></article></div>
+<article class="card block-space"><h3>负载的三种等效变化：只在近似条件下成立</h3><p>在 D ≈ λC̄T 中，请求率、上下文与思考时间以乘积出现；容量同比放大，近似等价于负载乘积缩小。但有限时域、根请求比例及运行压力会打破这种等价。</p><div class="table-wrap"><table><caption>表 3 · 曲线位置与等效负载对照，4000 请求、seed = 0</caption><thead><tr><th>控制变量</th><th>对照数据</th><th>解释</th></tr></thead><tbody><tr><td>根输入均值</td><td>4K / 8K / 16K 在 T = 1000 秒的 L2 贡献：31.9% / 51.1% / 50.2%</td><td>上下文增大使整条单峰曲线左移；当前位置的命中率不必单调。</td></tr><tr><td>新会话投放率</td><td>0.01 / 0.02 / 0.04 会话/s，在 T = 550 秒：8.8% / 36.7% / 56.6%</td><td>投放率越高，复用窗口越早越过 L1 边界。</td></tr><tr><td>实例数与分流</td><td>2 实例、总 rate = 0.04：35.2%；1 实例、rate = 0.02：36.7%（T = 550 秒）</td><td>单实例名义请求率相同，曲线接近；长间隔下还受投放时域差异影响。</td></tr></tbody></table></div></article>
+</section>
+<section id="bandwidth"><div class="section-heading"><span class="section-index">04</span><div><h2>恢复链路：命中是否可用的第二道约束</h2><p>“页还在缓存里”与“请求能够及时用上该页”是两件事。</p></div></div>
+<div class="grid two"><article class="card"><div class="card-top">模型 B / 有效容量与等待</div><h3>标称 L1 容量，不等于可淘汰缓存容量</h3><div class="formula"><span class="math-row">K<sub>1,eff</sub>(t) = K<sub>1</sub> − A<sub>1</sub>(t) − I<sub>1</sub>(t)</span><span class="math-row">t<sub>reuse</sub> = t<sub>think</sub> + t<sub>wait</sub></span><span class="math-label">A₁：运行中请求占用、且不含在途占位的受保护 KV；I₁：在途目的占位。两者不重复计数，单位均为 token 等价量。</span></div><p>更慢的计算、Decode 或恢复链路，既延长请求等待，也使活动 KV 与传输保护占用维持更久。因此，静态模型中的容量和间隔都会改变。</p><div class="flow" aria-label="拥塞反馈链"><div class="node">恢复流量上升</div><span class="arrow">→</span><div class="node">排队与占位增加</div><span class="arrow">→</span><div class="node">可用缓存减少</div></div><p class="small">这是一组机制解释，不是已经校准的动态闭式预测器。在途来源保护、部分预取与重新计算之间的反馈，不能用单一容量比例充分描述。</p></article><article class="card"><div class="card-top">模型 B / 恢复需求与服务能力</div><h3>带宽必须覆盖有固定开销的逐页服务</h3><div class="formula"><span class="math-row">q<sub>2</sub> ≈ λC̄b(h<sub>2</sub> + h<sub>3</sub>)， q<sub>3</sub> ≈ λC̄bh<sub>3</sub></span><span class="math-row">τ<sub>j</sub> = ℓ<sub>j</sub> + bB / W<sub>j</sub></span><span class="math-row">ρ<sub>j</sub> ≈ [q<sub>j</sub> / (bB)] · τ<sub>j</sub></span><span class="math-label">b：整组 KV 字节/token；B：页 token 数；W：链路字节/s；ℓ：每页固定秒数；q：字节/s。ρ 为近似负载强度，不是实测利用率。</span></div><p class="small">用低压力配置的 h 估算需求。ρ 接近 1 时应关注突发与排队；ρ 小于 1 也不能保证低延迟。该近似忽略重复传输、重算反馈与时间非平稳性，不把拥塞后的低命中率代回公式来“证明”链路稳定。</p><div class="note">基准 b = 801216 字节/token。T = 550 / 1750 秒时，估算 L2 恢复需求约 <strong>1.59 / 1.93 GB/s</strong>，L3 约 <strong>0.035 / 0.907 GB/s</strong>。</div></article></div>
+<article class="card block-space"><span class="evidence-label">数据验证 D</span><h3>L2 带宽下降：延迟先恶化，总命中并非同步下降</h3><div class="grid two"><figure class="figure"><div class="chart" id="l2-bandwidth-chart"></div><figcaption class="figcaption">图 3 · 平均 TTFT，横轴采用对数刻度。4000 请求、T = 1750 秒、L1 = 260 GB、L2 = 2048 GB、L3 = 40 TB；仅改变 L2 → L1 带宽。</figcaption></figure><div><div class="table-wrap" id="l2-bandwidth-table"></div><div class="callout warning">2 GB/s 时，命中贡献大量转向 L3；总命中约 79.54%，但平均 TTFT 已达 597.65 秒。单看命中指标会漏掉恢复瓶颈。</div></div></div></article>
+<article class="card block-space"><span class="evidence-label">数据验证 E · 三种子</span><h3>容量 × 带宽：同样的扩容，可能走向完全不同的结果</h3><p class="small">8000 请求、1600 会话、T = 1750 秒、L1 = 260 GB、L2 = 2048 GB、L2 → L1 = 256 GB/s；改变 L3 容量与 L3 → L2 带宽。三种子均值；括号为三次结果最小–最大值，不是置信区间。</p><div class="grid two"><figure class="figure"><div class="legend"><span><i class="block" style="--color:#347fc4"></i>L1</span><span><i class="block" style="--color:#6854d9"></i>L2</span><span><i class="block" style="--color:#12877f"></i>L3</span></div><div class="chart" id="l3-hit-chart"></div><figcaption class="figcaption">图 4 · 各层对总输入的命中贡献，横轴为 0–100%。未着色部分为未被实际复用的输入，不全是本可避免的重算。</figcaption></figure><figure class="figure"><div class="chart" id="l3-latency-chart"></div><figcaption class="figcaption">图 5 · 同配置平均 TTFT，横轴为对数刻度。容量收益需要足够恢复能力支撑；带宽不足时，大量恢复流量可能主导延迟。</figcaption></figure></div><div class="table-wrap" id="robustness-table"></div><div class="callout"><strong>关键观察：</strong>8 TB + 1 GB/s 不但比 2 TB + 1 GB/s 延迟更高，总命中也更低；将带宽提高到 4 GB/s 后，总命中恢复至约 79.21%，平均 TTFT 为 4.38 秒。三个种子均呈现这一方向。</div></article>
+<article class="card block-space"><h3>更长运行时域会暴露累积拥塞</h3><div class="table-wrap" id="horizon-table"></div><p class="small block-space">表 6 · L3 = 8 TB，其余同上；每会话 5 轮、投放率 0.04/s，三种子均值。请求数 4000 → 8000 对应名义会话投放时域约 20000 → 40000 秒，实际总时长还包含等待及会话尾部。</p><div class="note">较长运行不是“稳态已收敛”的证明。尤其在瓶颈附近，必须保留时域条件，不能把短时域结果外推到持续运行。</div></article>
+</section>
+<section id="runtime"><div class="section-heading"><span class="section-index">05</span><div><h2>运行时因素：为何相同容量会得到不同命中率</h2><p>计算、上下文增长、并行布局与预取策略，分别改变活动占用、复用上限或恢复需求。</p></div></div>
+<div class="card"><span class="evidence-label">数据验证 F</span><h3>HBM 与并发相互影响：降低并发不一定“腾出缓存”</h3><p class="small">4000 请求、T = 550 秒、有效算力 100 TFLOPS；仅改变 HBM 有效带宽和最大运行并发，其余为基准。</p><div class="table-wrap" id="gpu-table"></div><p class="block-space">HBM = 500 GB/s 时，最大并发从 8 增至 32，平均 TTFT 从约 3006 秒降至 6.11 秒；L1 贡献也从 1.54% 升至 13.40%。并发限制、吞吐和请求在系统内的驻留时间共同决定缓存压力。</p></div>
+<div class="card block-space"><span class="evidence-label">数据验证 G</span><h3>长输出与上下文增长的联合影响远大于各自影响</h3><p class="small">4000 请求、T = 550 秒，P/D 分步、Prefill 额度 16384 token；改变 Poisson 输出均值与每轮新增长度均值。</p><div class="table-wrap" id="growth-table"></div><div class="callout warning">输出 512 + 新增 4096 时，平均 TTFT 达 1756.10 秒。此时理想命中率也改变，必须同时比较“实际 / 理想”捕获比例，而不能把不同负载的总命中率直接当作缓存效率排名。</div></div>
+<div class="grid two block-space"><article class="card"><span class="evidence-label">数据验证 H</span><h3>预取门槛：少恢复与多重算之间的取舍</h3><div class="table-wrap" id="prefetch-table"></div><p class="small block-space">表 9 · 4000 请求、T = 1750 秒、L3 = 40 TB，其余基准。门槛单位 token；总命中率对总输入加权。</p><p class="block-space">慢链路下适度提高门槛，可以同时减少排队和改善实际复用；门槛高于当前可复用前缀时，L3 贡献为零。快链路上如此抑制预取反而显著增加延迟。</p></article><article class="card"><span class="evidence-label">数据验证 I</span><h3>大页：摊薄固定开销，牺牲页尾复用</h3><div class="table-wrap" id="page-table"></div><p class="small block-space">表 10 · 4000 请求、T = 1750 秒，L2/L3 每页固定延迟均设为 10 ms，其余为基准。各档理想命中率随页对齐改变。</p><p class="block-space">页从 64 增至 1024 token 时，平均 TTFT 从 8.33 秒降至 3.14 秒；理想命中率同时由约 79.55% 降至 77.59%。性能收益并不等于更多 token 得到复用。</p></article></div>
+<article class="card block-space"><h3>其他因素：机制与数据摘要</h3><div class="table-wrap"><table><caption>表 11 · 配对仿真证据；除注明外为 4000 请求、seed = 0</caption><thead><tr><th>因素</th><th>条件与观测</th><th>模型解释</th></tr></thead><tbody><tr><td>根输入长尾</td><td>T = 1750 秒；输入均值 16384 不变，Poisson → 对数正态 σ = 1：TTFT 2.72 → 6.92 秒，L3 贡献 32.98% → 35.48%。</td><td>同名义均值不保证相同的上尾、活动 KV 占用或计算时间；有限样本均值也会变化。</td></tr><tr><td>会话轮数</td><td>T = 550 秒；保持名义请求率 0.2/s，2 / 5 / 10 轮的理想率约 49.71% / 79.55% / 89.52%，L2 贡献约 38.49% / 56.60% / 62.05%。</td><td>轮数同时改变冷根流量、理想复用及会话持续时间，不完全等价于仅改变 λ。</td></tr><tr><td>TP / EP / GPU 数</td><td>TP = EP = 8 → 16，每卡 L1 = 260 GB、L2 = 2048 GB；L1 页数 9254 → 24181，L2 页数 39939 → 19969。</td><td>权重分片与 KV 整组字节成本一起改变，不能按卡数线性推算各层 token 容量。</td></tr><tr><td>通信与 kernel 固定开销</td><td>T = 550 秒；TP / EP / kernel 开销从 0.01 / 0.02 / 0.005 ms 一起增至 1 / 1 / 0.5 ms：L1 贡献 21.66% → 7.47%，TTFT 2.73 → 11.29 秒。</td><td>累计开销延长运行时间，使活动 KV 挤占有效 L1 缓存。</td></tr><tr><td>运行时预留</td><td>T = 550 秒；每卡预留从 0 增至 20 GB，L1 贡献 21.66% → 12.78%，L2 贡献 56.60% → 64.64%。</td><td>通过减少可用 L1 KV 容量移动边界，并非独立的复用机制。</td></tr><tr><td>未触发的硬件或输出上限</td><td>固定 L1 = 260 GB，物理显存上限 260 / 320 GB；输出均值 128、引擎输出上限 256 / 4096：各自指标与基准一致。</td><td>约束没有生效时，上限不是主导变量；结论不覆盖触发容量或长度约束的情况。</td></tr></tbody></table></div></article>
+</section>
+<section id="guidance"><div class="section-heading"><span class="section-index">06</span><div><h2>结论：用两类约束指导容量与性能判断</h2><p>先估算复用窗口，再核对恢复能力和运行时占用；同时看命中贡献与延迟。</p></div></div>
+<div class="grid three"><article class="card"><div class="card-top">容量约束</div><h3>前缀能否保留？</h3><p class="small">统一换算为 token 或页容量，扣除权重、预留与活动占用。使用 λC̄T 与有效容量的相对大小，定位 L1 主导、L2 主导和 L3 需求区。</p></article><article class="card"><div class="card-top">服务约束</div><h3>保留的前缀能否及时取回？</h3><p class="small">按低压力命中分配估算逐链路流量，并计入每页固定开销。扩大低层缓存时同步评估恢复需求，避免容量收益被排队抵消。</p></article><article class="card"><div class="card-top">统计约束</div><h3>观察窗口是否足够？</h3><p class="small">明确请求数、会话结构、随机种子和投放时域。瓶颈附近的结果应同时报告较长时域表现，而不是仅给出一次短运行的高命中率。</p></article></div>
+<div class="verdict"><h3>最终判断</h3><p>分层命中率由<strong>复用距离、有效容量、恢复服务能力与运行时反馈</strong>共同决定。静态模型能解释主要趋势；在拥塞区域，容量更大、L2 命中更高或并发更低，都不必然意味着更好的端到端体验。</p></div>
+</section>
+<section id="scope"><div class="section-heading"><span class="section-index">边界</span><div><h2>如何使用这些结论</h2><p>保留必要的实验条件与不确定性，避免把仿真结论误作实际部署承诺。</p></div></div><div class="grid two"><article class="card scope"><h3>结论支持的范围</h3><ul><li>针对 HY4-Preview 结构、给定有效硬件参数、BF16 与合成闭环会话的解析仿真；配置数值不代表 B300 实际测量。</li><li>容量与带宽关键对照的三种子结果给出了均值与极值范围；其余主要为 seed = 0，不能据小幅变化推断普遍显著性。</li><li>所有百分比均按说明的分母计算。实际与理想命中只在同一成功样本上比较；完整组合实验没有请求失败或跳过。</li><li>表中毫秒输入已统一换算为秒，GB/TB 采用十进制。L1 为每卡含权重预算，L2 为单实例整组 KV，L3 为共享总量。</li></ul></article><article class="card scope"><h3>模型没有覆盖的现实因素</h3><ul><li>固定 LRU；本地 L1/L2 为迁移而非长期备份；不支持跨会话公共前缀，思考时间采用指数分布。</li><li>每实例每条恢复链路串行，两条链路与 GPU 可以重叠；未模拟共享 L3 的全局带宽竞争，下行降级不计写回耗时。</li><li>L3 没有淘汰也不保证理想复用全部实现：在途保护、目的占位和部分预取均可能影响准入。内部原因的精确贡献比例未被量化。</li><li>未覆盖 FP8 的专门量化布局；8000 请求也不等于已经验证稳态收敛。恢复服务时长之和不能直接加到总完成时间。</li></ul></article></div></section>
+<footer class="foot"><span>分层 KV 缓存命中率 · 模型推导与数据验证</span><span>2026.10　/　单文件离线报告 · 数据、图表与样式均内嵌</span></footer>
+</main>
+<script id="report-data" type="application/json">
+{
+  "baseline":[
+    [30,79.55086000661213,0,0,79.55086000661213,2.5449208745839798],
+    [60,79.11703623918475,0.433823767427386,0,79.55086000661213,2.6251596852579637],
+    [100,72.43393122108996,7.11692878552217,0,79.55086000661213,2.66387882702677],
+    [175,53.23585429201774,26.31500571459439,0,79.55086000661213,2.664038000111936],
+    [300,35.3038192580447,44.24704074856743,0,79.55086000661213,2.7412830329813267],
+    [550,21.662844845622914,56.6015547391188,1.2864604218704216,79.55086000661213,2.726091043606942],
+    [1000,13.37450797629295,50.23955203244028,15.896988532439074,79.5110485411723,2.7090239341780804],
+    [1750,9.161392050544245,37.382220165736785,32.978624558738534,79.52223677501956,2.723723011464783],
+    [3000,6.854564701803995,29.194484165750073,43.431884677512705,79.48093354506678,2.6261272338919266]
+  ],
+  "capacity":[
+    {"name":"512 GB","color":"#347fc4","y":[0,0.4,7.1,25.4,32,22.9,15.3,10.8,8]},
+    {"name":"1024 GB","color":"#12877f","y":[0,0.4,7.1,26.3,42.9,41,29.4,20.9,15.7]},
+    {"name":"2048 GB","color":"#6854d9","y":[0,0.4,7.1,26.3,44.2,56.6,50.2,37.4,29.2]},
+    {"name":"4096 GB","color":"#bc710e","y":[0,0.4,7.1,26.3,44.2,57.9,65.3,59.7,49.7]}
+  ],
+  "l2Bandwidth":[
+    [256,9.1614,37.3822,32.9786,79.5222,2.7237],
+    [4,8.8926,37.3373,33.256,79.4859,10.5672],
+    [2,4.3467,20.075,55.1192,79.541,597.6487],
+    [1,1.3365,8.7263,54.5973,64.6601,3179.269]
+  ],
+  "robustness":[
+    {"n":4000,"cap":2,"bw":1,"hit":[62.67977927120234,63.15628183394482,63.776000850060676],"ttft":[8.591998087986456,9.11811446632376,9.543558201628814],"tiers":[7.935120447488965,38.08948387259287,17.131677513862975]},
+    {"n":4000,"cap":2,"bw":4,"hit":[62.74752606255398,63.261100001600234,63.80351241355115],"ttft":[6.127890978143613,6.56350523011258,7.216300602749401],"tiers":[7.965439023151509,38.14329289460651,17.152368083842216]},
+    {"n":4000,"cap":8,"bw":1,"hit":[75.6727384493067,77.08148101823197,77.89042697187793],"ttft":[378.17439153389665,400.89511783069196,425.9581580284585],"tiers":[10.10170319310568,28.42539942607302,38.55437839905327]},
+    {"n":4000,"cap":8,"bw":4,"hit":[79.30303155518516,79.37189715792115,79.46514606214008],"ttft":[3.9293072249209673,4.022344358517322,4.154426490328457],"tiers":[9.101196118546802,37.62716402888371,32.64353701049065]},
+    {"n":8000,"cap":2,"bw":1,"hit":[58.8332453692074,59.063790959554005,59.24881759134212],"ttft":[11.217930284712121,11.512233714692677,11.810293115225589],"tiers":[6.027999521613955,34.742705153593064,18.29308628434699]},
+    {"n":8000,"cap":2,"bw":4,"hit":[58.98542138757372,59.24522956182353,59.40999691449343],"ttft":[8.59314707487068,8.83300212928832,9.009674340111102],"tiers":[6.03040198851865,34.91572201711867,18.299105556186213]},
+    {"n":8000,"cap":8,"bw":1,"hit":[35.837096880804424,36.50609844005971,37.24078013084911],"ttft":[1625.5161939761863,1632.6759895891075,1639.2948204319707],"tiers":[4.480804309204264,13.039016320249603,18.98627781060584]},
+    {"n":8000,"cap":8,"bw":4,"hit":[79.13308696149058,79.21124689895326,79.25142298003954],"ttft":[4.293300646443386,4.379973280184164,4.444516909575065],"tiers":[7.746749293210141,34.54186427852624,36.92263332721689]}
+  ],
+  "gpu":[
+    [1000,32,21.6628,56.6016,1.2865,79.5509,2.7261],
+    [1000,8,18.3269,59.5067,1.7123,79.5458,26.9508],
+    [500,32,13.3986,64.0402,2.0871,79.5259,6.113],
+    [500,8,1.5426,11.5383,56.2165,69.2974,3005.8736]
+  ],
+  "growth":[
+    [128,256,79.5509,79.5509,2.7261],
+    [512,256,80.4251,80.3551,28.2985],
+    [128,4096,73.5048,73.4901,5.8272],
+    [512,4096,74.2999,64.1078,1756.0955]
+  ],
+  "prefetch":[
+    [1,0,75.4032,437.5002],[1,16384,76.8229,229.8071],[1,32768,41.9596,85.5628],
+    [50,0,79.5222,2.7237],[50,16384,76.965,3.0675],[50,32768,41.9596,85.5628]
+  ],
+  "page":[[64,79.5509,79.504,8.3297],[256,79.1034,79.0605,3.6786],[1024,77.5867,77.5509,3.1385]]
+}
+</script>
+<script>
+'use strict';
+const data = JSON.parse(document.getElementById('report-data').textContent);
+const NS = 'http://www.w3.org/2000/svg';
+const colors = ['#347fc4', '#6854d9', '#12877f'];
+const num = (n, digits = 2) => Number(n).toFixed(digits);
+const pct = n => num(n) + '%';
+function svgNode(tag, attrs = {}, text) {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function chartRoot(id, title, height) {
+  const root = svgNode('svg', {viewBox: `0 0 620 ${height}`, role: 'img', 'aria-labelledby': id + '-title'});
+  root.append(svgNode('title', {id: id + '-title'}, title));
+  document.getElementById(id).append(root);
+  return root;
+}
+function lineChart(id, series, title) {
+  const root = chartRoot(id, title, 330);
+  const box = {left: 54, right: 591, top: 35, bottom: 270};
+  const x = t => box.left + Math.log10(t / 30) / 2 * (box.right - box.left);
+  const y = p => box.bottom - p / 80 * (box.bottom - box.top);
+  root.append(svgNode('text', {x: box.left, y: 17, class: 'axis-name'}, '比例（%）'));
+  for (const tick of [0, 20, 40, 60, 80]) {
+    root.append(svgNode('line', {x1: box.left, y1: y(tick), x2: box.right, y2: y(tick), class: 'grid-line'}));
+    root.append(svgNode('text', {x: box.left - 10, y: y(tick) + 4, 'text-anchor': 'end', class: 'tick'}, tick));
+  }
+  for (const t of data.baseline.map(row => row[0])) root.append(svgNode('text', {x: x(t), y: box.bottom + 21, 'text-anchor': 'middle', class: 'tick'}, t));
+  root.append(svgNode('text', {x: (box.left + box.right) / 2, y: 318, 'text-anchor': 'middle', class: 'axis-name'}, '平均思考时间 T（秒，对数刻度）'));
+  for (const seriesItem of series) {
+    const points = seriesItem.points || data.baseline.map((row, i) => [row[0], seriesItem.y[i]]);
+    root.append(svgNode('polyline', {points: points.map(([t, p]) => `${x(t)},${y(p)}`).join(' '), fill: 'none', stroke: seriesItem.color, 'stroke-width': 2.7, 'stroke-dasharray': seriesItem.dashed ? '7 5' : 'none', 'stroke-linejoin': 'round'}));
+    if (!seriesItem.dashed) for (const [t, p] of points) {
+      const point = svgNode('circle', {cx: x(t), cy: y(p), r: 3.5, fill: '#fff', stroke: seriesItem.color, 'stroke-width': 2});
+      point.append(svgNode('title', {}, `${seriesItem.name}；T = ${t} 秒；${num(p)}%`));
+      root.append(point);
+    }
+  }
+}
+function logBars(id, rows, title) {
+  const height = 98 + rows.length * 54;
+  const root = chartRoot(id, title, height);
+  const left = 140, right = 544, top = 35, bottom = top + rows.length * 54;
+  const x = value => left + Math.log10(value) / 4 * (right - left);
+  root.append(svgNode('text', {x: left, y: 15, class: 'axis-name'}, '平均 TTFT（秒，对数刻度）'));
+  for (const tick of [1, 10, 100, 1000, 10000]) {
+    root.append(svgNode('line', {x1: x(tick), y1: top - 9, x2: x(tick), y2: bottom - 12, class: 'grid-line'}));
+    root.append(svgNode('text', {x: x(tick), y: bottom + 8, 'text-anchor': 'middle', class: 'tick'}, tick));
+  }
+  rows.forEach((row, i) => {
+    const cy = top + i * 54;
+    root.append(svgNode('text', {x: left - 13, y: cy + 17, 'text-anchor': 'end', class: 'bar-label'}, row.label));
+    const rect = svgNode('rect', {x: left, y: cy, width: x(row.value) - left, height: 26, rx: 4, fill: row.color || '#6854d9'});
+    rect.append(svgNode('title', {}, `${row.label}：${num(row.value)} 秒`));
+    root.append(rect, svgNode('text', {x: x(row.value) + 8, y: cy + 18, class: 'value'}, num(row.value)));
+  });
+}
+function stackedBars(id, rows) {
+  const root = chartRoot(id, '不同 L3 容量与带宽下的 L1、L2、L3 命中贡献', 314);
+  const left = 130, right = 583, top = 34, x = n => left + n / 100 * (right - left);
+  for (const tick of [0, 20, 40, 60, 80, 100]) {
+    root.append(svgNode('line', {x1: x(tick), y1: top - 7, x2: x(tick), y2: 261, class: 'grid-line'}));
+    root.append(svgNode('text', {x: x(tick), y: 281, class: 'tick', 'text-anchor': 'middle'}, tick + '%'));
+  }
+  rows.forEach((row, i) => {
+    const cy = top + i * 56;
+    root.append(svgNode('text', {x: left - 11, y: cy + 18, class: 'bar-label', 'text-anchor': 'end'}, `${row.cap} TB / ${row.bw} GB/s`));
+    let total = 0;
+    row.tiers.forEach((value, j) => {
+      const rect = svgNode('rect', {x: x(total), y: cy, width: value / 100 * (right - left), height: 28, fill: colors[j]});
+      rect.append(svgNode('title', {}, `L${j + 1}：${num(value)}%`));
+      root.append(rect);
+      total += value;
+    });
+    root.append(svgNode('text', {x: x(total) + 6, y: cy + 19, class: 'value'}, num(total) + '%'));
+  });
+}
+function makeTable(id, caption, headers, rows, numericFrom = 1) {
+  const table = document.createElement('table');
+  table.className = 'result-table';
+  const cap = document.createElement('caption'); cap.textContent = caption; table.append(cap);
+  const head = document.createElement('thead'), hr = document.createElement('tr');
+  headers.forEach((header, i) => {
+    const th = document.createElement('th'); th.scope = 'col'; th.textContent = header;
+    if (i >= numericFrom) th.className = 'num';
+    hr.append(th);
+  });
+  head.append(hr); table.append(head);
+  const body = document.createElement('tbody');
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    row.forEach((value, i) => {
+      const td = document.createElement('td'); td.textContent = value;
+      if (i >= numericFrom) td.className = 'num';
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+  table.append(body); document.getElementById(id).append(table);
+}
+const t1 = 9254 * 64 / (0.2 * 17161);
+const t2 = (9254 + 39939) * 64 / (0.2 * 17161);
+lineChart('model-chart', [
+  {name: '仿真 L2 层占比', color: '#6854d9', y: data.baseline.map(row => row[2] / row[4] * 100)},
+  {name: '简化模型', color: '#8190a9', dashed: true, points: Array.from({length: 101}, (_, i) => {const t = 30 * 100 ** (i / 100); return [t, (Math.exp(-t1 / t) - Math.exp(-t2 / t)) * 100];})}
+], 'L2 层占比的简化模型与仿真数据对照');
+lineChart('capacity-chart', data.capacity, 'L2 容量与平均思考时间对 L2 命中贡献的影响');
+logBars('l2-bandwidth-chart', data.l2Bandwidth.map(row => ({label: `${row[0]} GB/s`, value: row[5], color: row[0] <= 2 ? '#bf4558' : '#6854d9'})), 'L2 恢复带宽与平均 TTFT');
+const longRuns = data.robustness.filter(row => row.n === 8000);
+stackedBars('l3-hit-chart', longRuns);
+logBars('l3-latency-chart', longRuns.map(row => ({label: `${row.cap} TB / ${row.bw} GB/s`, value: row.ttft[1], color: row.cap === 8 && row.bw === 1 ? '#bf4558' : '#12877f'})), 'L3 容量与带宽组合下的平均 TTFT');
+makeTable('baseline-table', '表 1 · 4000 请求下的基准命中分配', ['T（秒）', 'L1', 'L2', 'L3', '实际总命中', 'TTFT（秒）'], data.baseline.map(row => [row[0], ...row.slice(1, 5).map(pct), num(row[5])]));
+makeTable('l2-bandwidth-table', '表 4 · 恢复带宽与分层命中', ['带宽（GB/s）', 'L1', 'L2', 'L3', '总命中'], data.l2Bandwidth.map(row => [row[0], ...row.slice(1, 5).map(pct)]));
+makeTable('robustness-table', '表 5 · 8000 请求，三种子平均与范围', ['L3 容量 / 带宽', '总命中均值', '总命中范围', 'TTFT 均值（秒）', 'TTFT 范围（秒）'], longRuns.map(row => [`${row.cap} TB / ${row.bw} GB/s`, pct(row.hit[1]), `${num(row.hit[0])}–${num(row.hit[2])}%`, num(row.ttft[1]), `${num(row.ttft[0])}–${num(row.ttft[2])}`]));
+makeTable('horizon-table', '表 6 · 保持负载强度，延长投放时域', ['L3 带宽', '请求数量', '总命中均值', 'L1 / L2 / L3 均值', 'TTFT 均值（秒）'], data.robustness.filter(row => row.cap === 8).sort((a, b) => a.bw - b.bw || a.n - b.n).map(row => [`${row.bw} GB/s`, row.n, pct(row.hit[1]), row.tiers.map(pct).join(' / '), num(row.ttft[1])]));
+makeTable('gpu-table', '表 7 · HBM 带宽 × 最大运行并发', ['HBM（GB/s）', '并发上限', 'L1', 'L2', 'L3', '总命中', 'TTFT（秒）'], data.gpu.map(row => [row[0], row[1], ...row.slice(2, 6).map(pct), num(row[6])]));
+makeTable('growth-table', '表 8 · 输出与上下文增长的联合影响', ['输出均值', '新增均值', '理想命中', '实际命中', '实际 / 理想', 'TTFT（秒）'], data.growth.map(row => [row[0], row[1], pct(row[2]), pct(row[3]), pct(row[3] / row[2] * 100), num(row[4])]));
+makeTable('prefetch-table', '表 9 · L3 预取门槛与恢复带宽', ['带宽（GB/s）', '门槛（token）', '总命中', 'TTFT（秒）'], data.prefetch.map(row => [row[0], row[1], pct(row[2]), num(row[3])]));
+makeTable('page-table', '表 10 · 每页 10 ms 固定链路开销下的页大小', ['页（token）', '理想命中', '实际命中', 'TTFT（秒）'], data.page.map(row => [row[0], pct(row[1]), pct(row[2]), num(row[3])]));
+document.getElementById('print-report').addEventListener('click', () => window.print());
+</script>
+</body>
+</html>

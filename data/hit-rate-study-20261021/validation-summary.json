@@ -1,0 +1,76 @@
+{
+  "completed_at": "2026-10-21T13:41:39.253109+08:00",
+  "submitted_points": 318,
+  "successful_points": 310,
+  "rejected_points": 8,
+  "unique_successful_configurations": 258,
+  "formal_subspaces": 17,
+  "formal_points": 220,
+  "formal_all_jobs_completed": true,
+  "formal_request_aborts": 0,
+  "formal_request_skips": 0,
+  "metric_invariant_violations": [],
+  "duplicate_metric_conflicts": [],
+  "engine_fingerprints": {
+    "846f56866e91a713fc042ff89484a34704bdfc36a13b8315f87d55cf4f085e59": 258
+  },
+  "missing_cached_provenance": 0,
+  "failures": [
+    {
+      "label": "kv-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 550000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "kv-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 1750000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "weight-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 550000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "weight-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 1750000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "both-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 550000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "both-fp8",
+      "values": {
+        "workload.synthetic.session.think_time_ms": 1750000
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "fp8-compute",
+      "values": {
+        "inference.hardware.effective_fp8_tflops": 25
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    },
+    {
+      "label": "fp8-compute",
+      "values": {
+        "inference.hardware.effective_fp8_tflops": 400
+      },
+      "error": "首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局"
+    }
+  ]
+}

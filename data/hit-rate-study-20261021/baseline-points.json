@@ -1,0 +1,608 @@
+[
+    {
+        "values":  {
+                       "workload.synthetic.session.think_time_ms":  100000
+                   },
+        "status":  "completed",
+        "signature":  "29997cf41a3d2c1c033064cfbbe0da93f88c1b2a2a6b4573b79ca66344f12b31",
+        "config":  {
+                       "workload":  {
+                                        "mode":  "synthetic",
+                                        "arrival_mode":  "closed_loop",
+                                        "seed":  0,
+                                        "session_rate":  0.04,
+                                        "target_qps":  null,
+                                        "synthetic":  {
+                                                          "num_requests":  4000,
+                                                          "prompt_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  16384.0
+                                                                         },
+                                                          "turn_increment_len":  {
+                                                                                     "dist":  "poisson",
+                                                                                     "mean":  256.0
+                                                                                 },
+                                                          "output_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  128.0
+                                                                         },
+                                                          "session":  {
+                                                                          "num_sessions":  800,
+                                                                          "topology":  "linear",
+                                                                          "think_time_ms":  100000.0
+                                                                      }
+                                                      },
+                                        "trace":  null
+                                    },
+                       "scheduler":  {
+                                         "max_running_requests":  32,
+                                         "max_prefill_tokens":  16384,
+                                         "pd_mutually_exclusive":  true,
+                                         "l3_prefetch_min_tokens":  256
+                                     },
+                       "inference":  {
+                                         "page_size":  64,
+                                         "max_output_tokens":  65536,
+                                         "model":  {
+                                                       "name":  "tencent/Hy4-preview",
+                                                       "revision":  "705d81ee51566a186d645b74c974d642ef2828fe",
+                                                       "num_layers":  78,
+                                                       "hidden_size":  6144,
+                                                       "num_attention_heads":  64,
+                                                       "num_kv_heads":  8,
+                                                       "head_dim":  256,
+                                                       "ffn_intermediate_size":  18432,
+                                                       "vocab_size":  120832,
+                                                       "tie_word_embeddings":  false,
+                                                       "weight_dtype":  "bf16",
+                                                       "kv_dtype":  "bf16",
+                                                       "moe_layers":  77,
+                                                       "num_experts":  256,
+                                                       "experts_per_token":  8,
+                                                       "expert_intermediate_size":  2048,
+                                                       "num_shared_experts":  1,
+                                                       "shared_expert_intermediate_size":  2048,
+                                                       "attention_layout":  "grouped",
+                                                       "attention_groups":  [
+                                                                                {
+                                                                                    "kind":  "mla_dsa",
+                                                                                    "layers":  78,
+                                                                                    "num_attention_heads":  64,
+                                                                                    "num_kv_heads":  null,
+                                                                                    "head_dim":  null,
+                                                                                    "q_rank":  2048,
+                                                                                    "kv_rank":  512,
+                                                                                    "rope_dim":  64,
+                                                                                    "nope_dim":  192,
+                                                                                    "value_dim":  256,
+                                                                                    "index_heads":  32,
+                                                                                    "index_dim":  128,
+                                                                                    "topk":  2048,
+                                                                                    "full_indexer_layers":  21,
+                                                                                    "output_gate":  true,
+                                                                                    "qk_norm":  true,
+                                                                                    "norm_dtype":  null,
+                                                                                    "index_norm":  "layer",
+                                                                                    "index_norm_dtype":  "fp32",
+                                                                                    "sink_dtype":  "fp32"
+                                                                                }
+                                                                            ],
+                                                       "norms":  {
+                                                                     "kind":  "rms",
+                                                                     "block_per_layer":  2,
+                                                                     "final_norm":  true,
+                                                                     "dtype":  null
+                                                                 },
+                                                       "router":  {
+                                                                      "dtype":  "fp32",
+                                                                      "correction_bias":  true,
+                                                                      "correction_dtype":  "fp32"
+                                                                  },
+                                                       "ihc":  {
+                                                                   "mult":  4,
+                                                                   "dtype":  "fp32"
+                                                               }
+                                                   },
+                                         "hardware":  {
+                                                          "name":  "NVIDIA B300",
+                                                          "gpu_count":  8,
+                                                          "memory_bytes_per_gpu":  288000000000,
+                                                          "effective_fp16_tflops":  100.0,
+                                                          "effective_fp8_tflops":  null,
+                                                          "effective_hbm_gb_s":  1000.0,
+                                                          "effective_interconnect_gb_s":  600.0,
+                                                          "collective_latency_ms":  0.01,
+                                                          "ep_communication_latency_ms":  0.02,
+                                                          "kernel_overhead_ms":  0.005
+                                                      },
+                                         "storage":  {
+                                                         "l1_available_gb":  260.0,
+                                                         "l2_available_gb":  2048.0,
+                                                         "runtime_reserve_bytes":  0,
+                                                         "l2_to_l1_gb_s":  256.0,
+                                                         "l3_to_l2_gb_s":  50.0,
+                                                         "l2_latency_ms":  0.01,
+                                                         "l3_latency_ms":  0.1
+                                                     },
+                                         "timing":  {
+                                                        "mode":  "analytical"
+                                                    },
+                                         "tp_size":  8,
+                                         "ep_size":  8
+                                     },
+                       "num_instances":  1,
+                       "shared_l3":  {
+                                         "available_gb":  40000.0,
+                                         "lookup_latency_ms":  0.1
+                                     }
+                   },
+        "metrics":  {
+                        "ttft_mean":  2663.87882702677,
+                        "ttft_p50":  491.4228133391589,
+                        "ttft_p99":  12699.212276114875,
+                        "tpot_mean":  299.945517650769,
+                        "throughput":  0.1898451702870924,
+                        "makespan":  21069801.217228863,
+                        "constructed_ideal_prefix_hit_rate":  0.7955086000661213,
+                        "arrival_qps":  0.19002387181752248,
+                        "num_sessions":  800,
+                        "root_request_ratio":  0.2,
+                        "mean_prompt_tokens":  17160.8855,
+                        "mean_output_tokens":  127.7125,
+                        "child_ideal_prefix_hit_rate":  0.9834046708730945,
+                        "child_actual_prefix_hit_rate":  0.9834046708730945,
+                        "actual_prefix_hit_rate":  0.7955086000661213,
+                        "l1_prefix_hit_rate":  0.7243393122108996,
+                        "l2_prefix_hit_rate":  0.0711692878552217,
+                        "l3_prefix_hit_rate":  0.0,
+                        "requests_with_hit_ratio":  0.8,
+                        "requests_fully_cached_ratio":  0.0,
+                        "total_input_tokens":  68643542,
+                        "ideal_hit_tokens":  54606528,
+                        "matched_cache_tokens":  54606528,
+                        "actual_hit_tokens":  54606528,
+                        "l1_hit_tokens":  49721216,
+                        "l2_hit_tokens":  4885312,
+                        "l3_hit_tokens":  0,
+                        "restore_bytes":  3914190139392,
+                        "restore_time_ms":  16053.135232011531,
+                        "promotions":  76333,
+                        "demotions":  468444,
+                        "actual_prefill_tokens":  14037014,
+                        "replayed_prefill_tokens":  0,
+                        "saved_prefill_tokens":  54606528,
+                        "l1_evictions":  292358,
+                        "l1_peak_resident_blocks":  9254,
+                        "l1_capacity_blocks":  9254,
+                        "l1_resident_blocks":  9253,
+                        "l1_active_blocks":  0,
+                        "l1_evictable_blocks":  9253,
+                        "l1_free_blocks":  1,
+                        "l1_reserved_future_blocks":  0,
+                        "l1_internal_fragmentation_tokens":  0,
+                        "l2_evictions":  176086,
+                        "l2_peak_resident_blocks":  39939,
+                        "l2_capacity_blocks":  39939,
+                        "l2_resident_blocks":  39939,
+                        "l2_active_blocks":  0,
+                        "l2_evictable_blocks":  39939,
+                        "l2_free_blocks":  0,
+                        "l3_evictions":  0,
+                        "l3_peak_resident_blocks":  176086,
+                        "l3_capacity_blocks":  780064,
+                        "l3_resident_blocks":  176086,
+                        "l3_active_blocks":  0,
+                        "l3_evictable_blocks":  176086,
+                        "l3_free_blocks":  603978
+                    },
+        "num_completed":  4000,
+        "num_aborted":  0,
+        "num_skipped":  0,
+        "wall_clock_ms":  21748.15919995308,
+        "error":  null
+    },
+    {
+        "values":  {
+                       "workload.synthetic.session.think_time_ms":  550000
+                   },
+        "status":  "completed",
+        "signature":  "1ffc6434277910e0e74923c6ac6390a2fd4ff86d005f411198ec4d090042ce37",
+        "config":  {
+                       "workload":  {
+                                        "mode":  "synthetic",
+                                        "arrival_mode":  "closed_loop",
+                                        "seed":  0,
+                                        "session_rate":  0.04,
+                                        "target_qps":  null,
+                                        "synthetic":  {
+                                                          "num_requests":  4000,
+                                                          "prompt_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  16384.0
+                                                                         },
+                                                          "turn_increment_len":  {
+                                                                                     "dist":  "poisson",
+                                                                                     "mean":  256.0
+                                                                                 },
+                                                          "output_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  128.0
+                                                                         },
+                                                          "session":  {
+                                                                          "num_sessions":  800,
+                                                                          "topology":  "linear",
+                                                                          "think_time_ms":  550000.0
+                                                                      }
+                                                      },
+                                        "trace":  null
+                                    },
+                       "scheduler":  {
+                                         "max_running_requests":  32,
+                                         "max_prefill_tokens":  16384,
+                                         "pd_mutually_exclusive":  true,
+                                         "l3_prefetch_min_tokens":  256
+                                     },
+                       "inference":  {
+                                         "page_size":  64,
+                                         "max_output_tokens":  65536,
+                                         "model":  {
+                                                       "name":  "tencent/Hy4-preview",
+                                                       "revision":  "705d81ee51566a186d645b74c974d642ef2828fe",
+                                                       "num_layers":  78,
+                                                       "hidden_size":  6144,
+                                                       "num_attention_heads":  64,
+                                                       "num_kv_heads":  8,
+                                                       "head_dim":  256,
+                                                       "ffn_intermediate_size":  18432,
+                                                       "vocab_size":  120832,
+                                                       "tie_word_embeddings":  false,
+                                                       "weight_dtype":  "bf16",
+                                                       "kv_dtype":  "bf16",
+                                                       "moe_layers":  77,
+                                                       "num_experts":  256,
+                                                       "experts_per_token":  8,
+                                                       "expert_intermediate_size":  2048,
+                                                       "num_shared_experts":  1,
+                                                       "shared_expert_intermediate_size":  2048,
+                                                       "attention_layout":  "grouped",
+                                                       "attention_groups":  [
+                                                                                {
+                                                                                    "kind":  "mla_dsa",
+                                                                                    "layers":  78,
+                                                                                    "num_attention_heads":  64,
+                                                                                    "num_kv_heads":  null,
+                                                                                    "head_dim":  null,
+                                                                                    "q_rank":  2048,
+                                                                                    "kv_rank":  512,
+                                                                                    "rope_dim":  64,
+                                                                                    "nope_dim":  192,
+                                                                                    "value_dim":  256,
+                                                                                    "index_heads":  32,
+                                                                                    "index_dim":  128,
+                                                                                    "topk":  2048,
+                                                                                    "full_indexer_layers":  21,
+                                                                                    "output_gate":  true,
+                                                                                    "qk_norm":  true,
+                                                                                    "norm_dtype":  null,
+                                                                                    "index_norm":  "layer",
+                                                                                    "index_norm_dtype":  "fp32",
+                                                                                    "sink_dtype":  "fp32"
+                                                                                }
+                                                                            ],
+                                                       "norms":  {
+                                                                     "kind":  "rms",
+                                                                     "block_per_layer":  2,
+                                                                     "final_norm":  true,
+                                                                     "dtype":  null
+                                                                 },
+                                                       "router":  {
+                                                                      "dtype":  "fp32",
+                                                                      "correction_bias":  true,
+                                                                      "correction_dtype":  "fp32"
+                                                                  },
+                                                       "ihc":  {
+                                                                   "mult":  4,
+                                                                   "dtype":  "fp32"
+                                                               }
+                                                   },
+                                         "hardware":  {
+                                                          "name":  "NVIDIA B300",
+                                                          "gpu_count":  8,
+                                                          "memory_bytes_per_gpu":  288000000000,
+                                                          "effective_fp16_tflops":  100.0,
+                                                          "effective_fp8_tflops":  null,
+                                                          "effective_hbm_gb_s":  1000.0,
+                                                          "effective_interconnect_gb_s":  600.0,
+                                                          "collective_latency_ms":  0.01,
+                                                          "ep_communication_latency_ms":  0.02,
+                                                          "kernel_overhead_ms":  0.005
+                                                      },
+                                         "storage":  {
+                                                         "l1_available_gb":  260.0,
+                                                         "l2_available_gb":  2048.0,
+                                                         "runtime_reserve_bytes":  0,
+                                                         "l2_to_l1_gb_s":  256.0,
+                                                         "l3_to_l2_gb_s":  50.0,
+                                                         "l2_latency_ms":  0.01,
+                                                         "l3_latency_ms":  0.1
+                                                     },
+                                         "timing":  {
+                                                        "mode":  "analytical"
+                                                    },
+                                         "tp_size":  8,
+                                         "ep_size":  8
+                                     },
+                       "num_instances":  1,
+                       "shared_l3":  {
+                                         "available_gb":  40000.0,
+                                         "lookup_latency_ms":  0.1
+                                     }
+                   },
+        "metrics":  {
+                        "ttft_mean":  2726.091043606942,
+                        "ttft_p50":  675.0334656119812,
+                        "ttft_p99":  13147.841917875143,
+                        "tpot_mean":  297.53001202819684,
+                        "throughput":  0.14912980483064178,
+                        "makespan":  26822270.736172237,
+                        "constructed_ideal_prefix_hit_rate":  0.7955086000661213,
+                        "arrival_qps":  0.1492354447519762,
+                        "num_sessions":  800,
+                        "root_request_ratio":  0.2,
+                        "mean_prompt_tokens":  17160.8855,
+                        "mean_output_tokens":  127.7125,
+                        "child_ideal_prefix_hit_rate":  0.9834046708730945,
+                        "child_actual_prefix_hit_rate":  0.9834046708730945,
+                        "actual_prefix_hit_rate":  0.7955086000661213,
+                        "l1_prefix_hit_rate":  0.21662844845622914,
+                        "l2_prefix_hit_rate":  0.566015547391188,
+                        "l3_prefix_hit_rate":  0.012864604218704216,
+                        "requests_with_hit_ratio":  0.8,
+                        "requests_fully_cached_ratio":  0.0,
+                        "total_input_tokens":  68643542,
+                        "ideal_hit_tokens":  54606528,
+                        "matched_cache_tokens":  54606528,
+                        "actual_hit_tokens":  54606528,
+                        "l1_hit_tokens":  14870144,
+                        "l2_hit_tokens":  38853312,
+                        "l3_hit_tokens":  883072,
+                        "restore_bytes":  32544958058496,
+                        "restore_time_ms":  146104.18613364018,
+                        "promotions":  634679,
+                        "demotions":  1027046,
+                        "actual_prefill_tokens":  14037014,
+                        "replayed_prefill_tokens":  0,
+                        "saved_prefill_tokens":  54606528,
+                        "l1_evictions":  836906,
+                        "l1_peak_resident_blocks":  9254,
+                        "l1_capacity_blocks":  9254,
+                        "l1_resident_blocks":  9253,
+                        "l1_active_blocks":  0,
+                        "l1_evictable_blocks":  9253,
+                        "l1_free_blocks":  1,
+                        "l1_reserved_future_blocks":  0,
+                        "l1_internal_fragmentation_tokens":  0,
+                        "l2_evictions":  190140,
+                        "l2_peak_resident_blocks":  39939,
+                        "l2_capacity_blocks":  39939,
+                        "l2_resident_blocks":  39683,
+                        "l2_active_blocks":  0,
+                        "l2_evictable_blocks":  39683,
+                        "l2_free_blocks":  256,
+                        "l3_evictions":  0,
+                        "l3_peak_resident_blocks":  179772,
+                        "l3_capacity_blocks":  780064,
+                        "l3_resident_blocks":  179772,
+                        "l3_active_blocks":  0,
+                        "l3_evictable_blocks":  179772,
+                        "l3_free_blocks":  600292
+                    },
+        "num_completed":  4000,
+        "num_aborted":  0,
+        "num_skipped":  0,
+        "wall_clock_ms":  42857.16299992055,
+        "error":  null
+    },
+    {
+        "values":  {
+                       "workload.synthetic.session.think_time_ms":  1750000
+                   },
+        "status":  "completed",
+        "signature":  "4182ef86d7e24b49513c367f59dd94b07b61d470a86210c1a2eb39220a142d39",
+        "config":  {
+                       "workload":  {
+                                        "mode":  "synthetic",
+                                        "arrival_mode":  "closed_loop",
+                                        "seed":  0,
+                                        "session_rate":  0.04,
+                                        "target_qps":  null,
+                                        "synthetic":  {
+                                                          "num_requests":  4000,
+                                                          "prompt_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  16384.0
+                                                                         },
+                                                          "turn_increment_len":  {
+                                                                                     "dist":  "poisson",
+                                                                                     "mean":  256.0
+                                                                                 },
+                                                          "output_len":  {
+                                                                             "dist":  "poisson",
+                                                                             "mean":  128.0
+                                                                         },
+                                                          "session":  {
+                                                                          "num_sessions":  800,
+                                                                          "topology":  "linear",
+                                                                          "think_time_ms":  1750000.0
+                                                                      }
+                                                      },
+                                        "trace":  null
+                                    },
+                       "scheduler":  {
+                                         "max_running_requests":  32,
+                                         "max_prefill_tokens":  16384,
+                                         "pd_mutually_exclusive":  true,
+                                         "l3_prefetch_min_tokens":  256
+                                     },
+                       "inference":  {
+                                         "page_size":  64,
+                                         "max_output_tokens":  65536,
+                                         "model":  {
+                                                       "name":  "tencent/Hy4-preview",
+                                                       "revision":  "705d81ee51566a186d645b74c974d642ef2828fe",
+                                                       "num_layers":  78,
+                                                       "hidden_size":  6144,
+                                                       "num_attention_heads":  64,
+                                                       "num_kv_heads":  8,
+                                                       "head_dim":  256,
+                                                       "ffn_intermediate_size":  18432,
+                                                       "vocab_size":  120832,
+                                                       "tie_word_embeddings":  false,
+                                                       "weight_dtype":  "bf16",
+                                                       "kv_dtype":  "bf16",
+                                                       "moe_layers":  77,
+                                                       "num_experts":  256,
+                                                       "experts_per_token":  8,
+                                                       "expert_intermediate_size":  2048,
+                                                       "num_shared_experts":  1,
+                                                       "shared_expert_intermediate_size":  2048,
+                                                       "attention_layout":  "grouped",
+                                                       "attention_groups":  [
+                                                                                {
+                                                                                    "kind":  "mla_dsa",
+                                                                                    "layers":  78,
+                                                                                    "num_attention_heads":  64,
+                                                                                    "num_kv_heads":  null,
+                                                                                    "head_dim":  null,
+                                                                                    "q_rank":  2048,
+                                                                                    "kv_rank":  512,
+                                                                                    "rope_dim":  64,
+                                                                                    "nope_dim":  192,
+                                                                                    "value_dim":  256,
+                                                                                    "index_heads":  32,
+                                                                                    "index_dim":  128,
+                                                                                    "topk":  2048,
+                                                                                    "full_indexer_layers":  21,
+                                                                                    "output_gate":  true,
+                                                                                    "qk_norm":  true,
+                                                                                    "norm_dtype":  null,
+                                                                                    "index_norm":  "layer",
+                                                                                    "index_norm_dtype":  "fp32",
+                                                                                    "sink_dtype":  "fp32"
+                                                                                }
+                                                                            ],
+                                                       "norms":  {
+                                                                     "kind":  "rms",
+                                                                     "block_per_layer":  2,
+                                                                     "final_norm":  true,
+                                                                     "dtype":  null
+                                                                 },
+                                                       "router":  {
+                                                                      "dtype":  "fp32",
+                                                                      "correction_bias":  true,
+                                                                      "correction_dtype":  "fp32"
+                                                                  },
+                                                       "ihc":  {
+                                                                   "mult":  4,
+                                                                   "dtype":  "fp32"
+                                                               }
+                                                   },
+                                         "hardware":  {
+                                                          "name":  "NVIDIA B300",
+                                                          "gpu_count":  8,
+                                                          "memory_bytes_per_gpu":  288000000000,
+                                                          "effective_fp16_tflops":  100.0,
+                                                          "effective_fp8_tflops":  null,
+                                                          "effective_hbm_gb_s":  1000.0,
+                                                          "effective_interconnect_gb_s":  600.0,
+                                                          "collective_latency_ms":  0.01,
+                                                          "ep_communication_latency_ms":  0.02,
+                                                          "kernel_overhead_ms":  0.005
+                                                      },
+                                         "storage":  {
+                                                         "l1_available_gb":  260.0,
+                                                         "l2_available_gb":  2048.0,
+                                                         "runtime_reserve_bytes":  0,
+                                                         "l2_to_l1_gb_s":  256.0,
+                                                         "l3_to_l2_gb_s":  50.0,
+                                                         "l2_latency_ms":  0.01,
+                                                         "l3_latency_ms":  0.1
+                                                     },
+                                         "timing":  {
+                                                        "mode":  "analytical"
+                                                    },
+                                         "tp_size":  8,
+                                         "ep_size":  8
+                                     },
+                       "num_instances":  1,
+                       "shared_l3":  {
+                                         "available_gb":  40000.0,
+                                         "lookup_latency_ms":  0.1
+                                     }
+                   },
+        "metrics":  {
+                        "ttft_mean":  2723.723011464783,
+                        "ttft_p50":  899.797075709328,
+                        "ttft_p99":  13206.962124919499,
+                        "tpot_mean":  285.755915925902,
+                        "throughput":  0.09387230770037922,
+                        "makespan":  42611075.59821757,
+                        "constructed_ideal_prefix_hit_rate":  0.7955086000661213,
+                        "arrival_qps":  0.09390544948249685,
+                        "num_sessions":  800,
+                        "root_request_ratio":  0.2,
+                        "mean_prompt_tokens":  17160.8855,
+                        "mean_output_tokens":  127.7125,
+                        "child_ideal_prefix_hit_rate":  0.9834046708730945,
+                        "child_actual_prefix_hit_rate":  0.9830508315853574,
+                        "actual_prefix_hit_rate":  0.7952223677501956,
+                        "l1_prefix_hit_rate":  0.09161392050544245,
+                        "l2_prefix_hit_rate":  0.37382220165736785,
+                        "l3_prefix_hit_rate":  0.32978624558738534,
+                        "requests_with_hit_ratio":  0.8,
+                        "requests_fully_cached_ratio":  0.0,
+                        "total_input_tokens":  68643542,
+                        "ideal_hit_tokens":  54606528,
+                        "matched_cache_tokens":  54586880,
+                        "actual_hit_tokens":  54586880,
+                        "l1_hit_tokens":  6288704,
+                        "l2_hit_tokens":  25660480,
+                        "l3_hit_tokens":  22637696,
+                        "restore_bytes":  56834955620352,
+                        "restore_time_ms":  556832.8911067502,
+                        "promotions":  1108373,
+                        "demotions":  1501341,
+                        "actual_prefill_tokens":  14056662,
+                        "replayed_prefill_tokens":  0,
+                        "saved_prefill_tokens":  54586880,
+                        "l1_evictions":  970991,
+                        "l1_peak_resident_blocks":  9254,
+                        "l1_capacity_blocks":  9254,
+                        "l1_resident_blocks":  9253,
+                        "l1_active_blocks":  0,
+                        "l1_evictable_blocks":  9253,
+                        "l1_free_blocks":  1,
+                        "l1_reserved_future_blocks":  0,
+                        "l1_internal_fragmentation_tokens":  0,
+                        "l2_evictions":  530363,
+                        "l2_peak_resident_blocks":  39939,
+                        "l2_capacity_blocks":  39939,
+                        "l2_resident_blocks":  39683,
+                        "l2_active_blocks":  0,
+                        "l2_evictable_blocks":  39683,
+                        "l2_free_blocks":  256,
+                        "l3_evictions":  0,
+                        "l3_peak_resident_blocks":  221512,
+                        "l3_capacity_blocks":  780064,
+                        "l3_resident_blocks":  221512,
+                        "l3_active_blocks":  0,
+                        "l3_evictable_blocks":  221512,
+                        "l3_free_blocks":  558552
+                    },
+        "num_completed":  4000,
+        "num_aborted":  0,
+        "num_skipped":  0,
+        "wall_clock_ms":  62254.75770002231,
+        "error":  null
+    }
+]

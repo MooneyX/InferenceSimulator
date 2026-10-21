@@ -1,0 +1,152 @@
+{
+    "engine_sha256":  "1BFEB760A48CC2A200B314AD38E192E41AFF1F7D6C1FFFA213FBB5278A42727B",
+    "label":  "baseline",
+    "request":  {
+                    "base":  {
+                                 "num_instances":  1,
+                                 "workload":  {
+                                                  "mode":  "synthetic",
+                                                  "arrival_mode":  "closed_loop",
+                                                  "seed":  0,
+                                                  "synthetic":  {
+                                                                    "num_requests":  4000,
+                                                                    "prompt_len":  {
+                                                                                       "dist":  "poisson",
+                                                                                       "mean":  16384
+                                                                                   },
+                                                                    "turn_increment_len":  {
+                                                                                               "dist":  "poisson",
+                                                                                               "mean":  256
+                                                                                           },
+                                                                    "output_len":  {
+                                                                                       "dist":  "poisson",
+                                                                                       "mean":  128
+                                                                                   },
+                                                                    "session":  {
+                                                                                    "num_sessions":  800,
+                                                                                    "topology":  "linear",
+                                                                                    "think_time_ms":  550000
+                                                                                }
+                                                                },
+                                                  "session_rate":  0.04
+                                              },
+                                 "scheduler":  {
+                                                   "max_running_requests":  32,
+                                                   "l3_prefetch_min_tokens":  256,
+                                                   "max_prefill_tokens":  16384,
+                                                   "pd_mutually_exclusive":  true
+                                               },
+                                 "shared_l3":  {
+                                                   "available_gb":  40000,
+                                                   "lookup_latency_ms":  0.1
+                                               },
+                                 "inference":  {
+                                                   "page_size":  64,
+                                                   "max_output_tokens":  65536,
+                                                   "model":  {
+                                                                 "name":  "tencent/Hy4-preview",
+                                                                 "revision":  "705d81ee51566a186d645b74c974d642ef2828fe",
+                                                                 "num_layers":  78,
+                                                                 "hidden_size":  6144,
+                                                                 "num_attention_heads":  64,
+                                                                 "num_kv_heads":  8,
+                                                                 "head_dim":  256,
+                                                                 "ffn_intermediate_size":  18432,
+                                                                 "vocab_size":  120832,
+                                                                 "tie_word_embeddings":  false,
+                                                                 "weight_dtype":  "bf16",
+                                                                 "kv_dtype":  "bf16",
+                                                                 "moe_layers":  77,
+                                                                 "num_experts":  256,
+                                                                 "experts_per_token":  8,
+                                                                 "expert_intermediate_size":  2048,
+                                                                 "num_shared_experts":  1,
+                                                                 "shared_expert_intermediate_size":  2048,
+                                                                 "attention_layout":  "grouped",
+                                                                 "attention_groups":  [
+                                                                                          {
+                                                                                              "kind":  "mla_dsa",
+                                                                                              "layers":  78,
+                                                                                              "num_attention_heads":  64,
+                                                                                              "num_kv_heads":  null,
+                                                                                              "head_dim":  null,
+                                                                                              "q_rank":  2048,
+                                                                                              "kv_rank":  512,
+                                                                                              "rope_dim":  64,
+                                                                                              "nope_dim":  192,
+                                                                                              "value_dim":  256,
+                                                                                              "index_heads":  32,
+                                                                                              "index_dim":  128,
+                                                                                              "topk":  2048,
+                                                                                              "full_indexer_layers":  21,
+                                                                                              "output_gate":  true,
+                                                                                              "qk_norm":  true,
+                                                                                              "norm_dtype":  null,
+                                                                                              "index_norm":  "layer",
+                                                                                              "index_norm_dtype":  "fp32",
+                                                                                              "sink_dtype":  "fp32"
+                                                                                          }
+                                                                                      ],
+                                                                 "norms":  {
+                                                                               "kind":  "rms",
+                                                                               "block_per_layer":  2,
+                                                                               "final_norm":  true,
+                                                                               "dtype":  null
+                                                                           },
+                                                                 "router":  {
+                                                                                "dtype":  "fp32",
+                                                                                "correction_bias":  true,
+                                                                                "correction_dtype":  "fp32"
+                                                                            },
+                                                                 "ihc":  {
+                                                                             "mult":  4,
+                                                                             "dtype":  "fp32"
+                                                                         }
+                                                             },
+                                                   "hardware":  {
+                                                                    "name":  "NVIDIA B300",
+                                                                    "gpu_count":  8,
+                                                                    "memory_bytes_per_gpu":  288000000000,
+                                                                    "effective_fp16_tflops":  100,
+                                                                    "effective_fp8_tflops":  null,
+                                                                    "effective_hbm_gb_s":  1000,
+                                                                    "effective_interconnect_gb_s":  600,
+                                                                    "collective_latency_ms":  0.01,
+                                                                    "ep_communication_latency_ms":  0.02,
+                                                                    "kernel_overhead_ms":  0.005
+                                                                },
+                                                   "storage":  {
+                                                                   "l1_available_gb":  260,
+                                                                   "l2_available_gb":  2048,
+                                                                   "runtime_reserve_bytes":  0,
+                                                                   "l2_to_l1_gb_s":  256,
+                                                                   "l3_to_l2_gb_s":  50,
+                                                                   "l2_latency_ms":  0.01,
+                                                                   "l3_latency_ms":  0.1
+                                                               },
+                                                   "tp_size":  8,
+                                                   "ep_size":  8,
+                                                   "timing":  {
+                                                                  "mode":  "analytical"
+                                                              }
+                                               }
+                             },
+                    "axes":  [
+                                 {
+                                     "key":  "workload.synthetic.session.think_time_ms",
+                                     "values":  [
+                                                    100000,
+                                                    550000,
+                                                    1750000
+                                                ]
+                                 }
+                             ]
+                },
+    "git_status":  [
+                       " M core/src/simcore/engine.py",
+                       "?? data/"
+                   ],
+    "job_id":  "f677d6b80ce842a3a2dbc037b67d3b36",
+    "submitted":  "2026-10-21T12:41:32.2988196+08:00",
+    "git_head":  "0654d77d1d4ec683279bdca3db5a9abac0820596"
+}

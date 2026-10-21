@@ -15,10 +15,11 @@ import "./ScanResults.css";
 echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
   ToolboxComponent, TooltipComponent]);
 
-function Curve({ data, roles, metric, complete }: { data: ScanData[]; roles: Roles; metric: string; complete: boolean }) {
+function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; roles: Roles;
+  metric: string; complete: boolean; keys: string[] }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
-  const model = useMemo(() => buildChart(data, roles, metric), [data, roles, metric]);
+  const model = useMemo(() => buildChart(data, roles, metric, keys), [data, roles, metric, keys]);
   useEffect(() => {
     if (!host.current) return;
     const instance = echarts.init(host.current);
@@ -90,7 +91,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   }, [ids]);
   const data = useMemo(() => finished.filter((job) => points[job.id]).map((job) =>
     ({ job, points: points[job.id] })), [finished.map((job) => job.id).join(","), points]);
-  const keys = availableKeys(data);
+  const keys = useMemo(() => availableKeys(data, parameters), [data, parameters]);
   const measures = metricsOf(data);
   const initialRoles: Roles = { x: keys[0] ?? "", color: keys[1] ?? "",
     shape: keys[2] ?? "", line: keys[3] ?? "" };
@@ -100,7 +101,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
     line: roles ? (keys.includes(roles.line) ? roles.line : "") : initialRoles.line };
   const currentMetric = measures.includes(metric) ? metric : measures[0] ?? "";
   const selection = resolveSelection(data, chosenRoles, currentMetric,
-    background, selectedValues, choosingBackground);
+    background, selectedValues, choosingBackground, keys);
   const nameOf = (key: string) => parameters.find((item) => item.key === key)?.label ?? key;
 
   async function exportHtml() {
@@ -167,7 +168,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
           </div></fieldset>)}</div>
       </div>}
       <p className="scan-selection-notice" role="status">{selection.notice}</p>
-      <Curve data={selection.visible} roles={chosenRoles} metric={currentMetric} complete={selection.complete} />
+      <Curve data={selection.visible} roles={chosenRoles} metric={currentMetric} complete={selection.complete} keys={keys} />
     </>}
     {error && <p role="alert" className="field-error">{error}</p>}
   </section>;

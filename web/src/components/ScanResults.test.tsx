@@ -48,9 +48,9 @@ describe("ScanResults", () => {
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
     await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
     expect(screen.getByRole("combobox", { name: /颜色/ })).toHaveValue("scheduler.max_running_requests");
-    expect(screen.getByRole("combobox", { name: /节点形状/ })).toHaveValue("scheduler.pd_mutually_exclusive");
+    expect(screen.getByRole("combobox", { name: /节点形状/ })).toHaveValue("");
+    expect(screen.queryByRole("option", { name: "分步执行" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: /颜色/ }), { target: { value: "" } });
-    fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }), { target: { value: "" } });
     expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
     const background = () => within(screen.getByRole("group", { name: "同时运行请求" }));
     expect(background().getByRole("radio", { name: "1" })).toBeChecked();
@@ -58,8 +58,6 @@ describe("ScanResults", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新选择背景值" }));
     expect(screen.getByText("背景参数尚未选齐，图表暂不显示。")).toBeInTheDocument();
     fireEvent.click(background().getByRole("radio", { name: "2" }));
-    fireEvent.click(within(screen.getByRole("group", { name: "分步执行" }))
-      .getByRole("radio", { name: "true" }));
     expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
     const colorSelect = screen.getByRole("combobox", { name: /颜色/ });
     fireEvent.change(colorSelect, { target: { value: "scheduler.max_running_requests" } });
@@ -69,15 +67,15 @@ describe("ScanResults", () => {
     expect(within(colors).getByRole("checkbox", { name: "2" })).toBeChecked();
     fireEvent.click(within(colors).getByRole("checkbox", { name: "1" }));
     expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "分步执行" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "分步执行" })).not.toBeInTheDocument();
   });
 
   it("keeps the fifth scan parameter as a single-choice background value", async () => {
     const key = "scheduler.max_prefill_tokens";
     vi.mocked(getScanPoints).mockResolvedValue([1, 2].map((value) => ({
-      ...point(1, 1, true, `background-${value}`),
-      values: { ...point(1, 1, true, `background-${value}`).values,
-        "inference.parallelism": 1, [key]: value },
+      ...point(value, value, value === 1, `background-${value}`),
+      values: { ...point(value, value, value === 1, `background-${value}`).values,
+        "inference.parallelism": value, [key]: value },
     })));
     render(<ScanResults jobs={[{ ...job("scan-a"), axes: [...axes,
       { key: "inference.parallelism", values: [1] }, { key, values: [1, 2] }] }]} />);
@@ -88,6 +86,34 @@ describe("ScanResults", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新选择背景值" }));
     fireEvent.click(group.getByRole("radio", { name: "2" }));
     expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument();
+  });
+
+  it("shows varying base settings as selectable roles and filters scans when used as background", async () => {
+    vi.mocked(getScanPoints).mockImplementation(async (id) => [1, 2].map((x) => ({
+      ...point(x, 1, true, `${id}-${x}`), values: { num_instances: x },
+      config: { num_instances: x, scheduler: { max_prefill_tokens: id === "scan-a" ? 10 : 20 },
+        workload: { seed: id === "scan-a" ? 7 : 8 } } as ScanPoint["config"],
+    })));
+    vi.mocked(getScanParameters).mockResolvedValue([{ key: "scheduler.max_prefill_tokens",
+      label: "单次 Prefill 额度" }] as Awaited<ReturnType<typeof getScanParameters>>);
+    render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
+    await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
+    const color = screen.getByRole("combobox", { name: /颜色/ });
+    const shape = screen.getByRole("combobox", { name: /节点形状/ });
+    expect(color).toHaveValue("scheduler.max_prefill_tokens");
+    expect(shape).toHaveValue("workload.seed");
+    expect(within(screen.getByLabelText("颜色参数值")).getByRole("checkbox", { name: "20" }))
+      .toBeChecked();
+    fireEvent.change(color, { target: { value: "" } });
+    fireEvent.change(shape, { target: { value: "" } });
+    expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新选择背景值" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "单次 Prefill 额度" }))
+      .getByRole("radio", { name: "20" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "workload.seed" }))
+      .getByRole("radio", { name: "8" }));
+    expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
+    expect(setOption.mock.lastCall?.[0].series[0].name).toContain("scan-b");
   });
 
   it("uses the series color and shape in the live hover legend", async () => {

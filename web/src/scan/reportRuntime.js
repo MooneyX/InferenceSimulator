@@ -7,7 +7,7 @@
   const palette = ['#6c63ff', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#8b5cf6', '#84cc16'];
   const symbols = ['circle', 'rect', 'triangle', 'diamond', 'pin', 'arrow', 'roundRect', 'emptyCircle'];
   const styles = ['solid', 'dashed', 'dotted', [10, 4, 2, 4]];
-  const keys = [...new Set(batches.flatMap(batch => (batch.job.axes || []).map(axis => axis.key)))];
+  const keys = report.keys;
   const metrics = [...new Set(batches.flatMap(batch => batch.points.flatMap(point =>
     Object.keys(point.metrics || {}).filter(key => typeof point.metrics[key] === 'number'))))].sort();
   const byId = id => document.getElementById(id);
@@ -29,7 +29,7 @@
   };
   const option = (v, text) => new Option(text, v);
   const tokenOf = v => JSON.stringify(v ?? null);
-  const textOf = v => v == null ? '未设置' : String(v);
+  const textOf = v => v == null ? '未设置' : typeof v === 'object' ? JSON.stringify(v) : String(v);
   const limits = { x: Infinity, color: palette.length, shape: symbols.length, line: styles.length };
   const rows = batches.flatMap(batch => batch.points.map(point => ({ batch, point,
     tokens: Object.fromEntries(keys.map(key => [key, tokenOf(value(point, key))])) })));
@@ -201,9 +201,10 @@
       else seen.set(signature, { batch, point, sources: [batch.job.id] });
     });
     const entries = [...seen.values()];
-    const visibleLevels = key => [...new Set(entries.map(entry => value(entry.point, key)).filter(v => v != null))];
+    const visibleLevels = key => [...new Map(entries.map(entry => value(entry.point, key))
+      .filter(v => v != null).map(v => [tokenOf(v), v])).values()];
     const xValues = visibleLevels(used.x).sort((a, b) => typeof a === 'number' && typeof b === 'number'
-      ? a - b : String(a).localeCompare(String(b)));
+      ? a - b : textOf(a).localeCompare(textOf(b)));
     const colors = visibleLevels(used.color), shapes = visibleLevels(used.shape), lines = visibleLevels(used.line);
     const groups = new Map();
     entries.forEach(({ batch, point, sources }) => {
@@ -215,16 +216,17 @@
       if (!groups.has(groupKey)) groups.set(groupKey, {
         name: ['扫描 ' + batch.job.id.slice(0, 6),
           ...roles.slice(1).filter(role => used[role]).map(role =>
-            label(used[role]) + '=' + String(value(point, used[role]))),
-          ...remainder.map(([key, v]) => label(key) + '=' + String(v))].join(' · '),
+            label(used[role]) + '=' + textOf(value(point, used[role]))),
+          ...remainder.map(([key, v]) => label(key) + '=' + textOf(v))].join(' · '),
         tooltipValues: [used.color && color, used.shape && shape, used.line && line]
-          .filter(v => v !== '' && v != null).map(String),
-        ci: Math.max(0, colors.indexOf(color)), si: Math.max(0, shapes.indexOf(shape)),
-        li: Math.max(0, lines.indexOf(line)), values: new Map(), sources,
+          .filter(v => v !== '' && v != null).map(textOf),
+        ci: Math.max(0, colors.findIndex(v => tokenOf(v) === tokenOf(color))),
+        si: Math.max(0, shapes.findIndex(v => tokenOf(v) === tokenOf(shape))),
+        li: Math.max(0, lines.findIndex(v => tokenOf(v) === tokenOf(line))), values: new Map(), sources,
       });
       const y = point.status === 'completed' && typeof point.metrics?.[metric] === 'number'
         ? point.metrics[metric] : null;
-      groups.get(groupKey).values.set(String(x), y);
+      groups.get(groupKey).values.set(tokenOf(x), y);
     });
     const series = [...groups.values()].map(group => ({
       name: group.name, tooltipValues: group.tooltipValues,
@@ -232,7 +234,7 @@
       symbol: symbols[group.si % symbols.length], symbolSize: 9,
       itemStyle: { color: palette[group.ci % palette.length] },
       lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },
-      data: xValues.map(x => group.values.get(String(x)) ?? null),
+      data: xValues.map(x => group.values.get(tokenOf(x)) ?? null),
     }));
     chart?.setOption({
       animation: false, backgroundColor: 'transparent', textStyle: { color: '#9ca0b0' },
@@ -245,7 +247,7 @@
       toolbox: { iconStyle: { borderColor: '#9ca0b0' }, feature: { saveAsImage: {}, restore: {} } },
       dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 50, borderColor: '#2e3347',
         textStyle: { color: '#9ca0b0' }, fillerColor: 'rgba(108,99,255,.18)' }],
-      xAxis: { type: 'category', name: label(used.x), data: xValues.map(String),
+      xAxis: { type: 'category', name: label(used.x), data: xValues.map(textOf),
         nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
         axisLine: { lineStyle: { color: '#2e3347' } } },
       yAxis: { type: 'value', name: metric, scale: true,

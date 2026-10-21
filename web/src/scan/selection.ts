@@ -3,7 +3,8 @@ import { availableKeys, lineStyles, palette, symbols, valueOf,
   type Role, type Roles, type ScanData } from "./chart";
 
 export const tokenOf = (value: unknown): string => JSON.stringify(value ?? null);
-export const textOf = (value: unknown): string => value == null ? "未设置" : String(value);
+export const textOf = (value: unknown): string => value == null ? "未设置"
+  : typeof value === "object" ? JSON.stringify(value) : String(value);
 
 export type SelectedValues = Record<string, string[]>;
 export type BackgroundValues = Record<string, string>;
@@ -11,8 +12,8 @@ export type BackgroundValues = Record<string, string>;
 type Row = { job: JobSummary; point: ScanPoint; tokens: Record<string, string> };
 
 export function resolveSelection(data: ScanData[], roles: Roles, metric: string,
-  backgroundDraft: BackgroundValues = {}, selectedDraft: SelectedValues = {}, choosing = false) {
-  const keys = availableKeys(data);
+  backgroundDraft: BackgroundValues = {}, selectedDraft: SelectedValues = {}, choosing = false,
+  keys: string[] = availableKeys(data)) {
   const roleKeys = (Object.values(roles) as string[]).filter(Boolean);
   const hidden = keys.filter((key) => !roleKeys.includes(key));
   const rows: Row[] = data.flatMap(({ job, points }) => points.map((point) => ({ job, point,

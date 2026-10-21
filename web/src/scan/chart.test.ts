@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { JobSummary } from "../api/types";
 import type { ScanData } from "./chart";
-import { buildChart } from "./chart";
+import { availableKeys, buildChart } from "./chart";
 import { renderReport } from "./report";
 import { resolveSelection } from "./selection";
 import { formatScanTooltip } from "./tooltip.js";
@@ -25,8 +25,53 @@ const point = (x: number, color: number, signature: string) => ({
 const data: ScanData[] = [{ job, points: [point(1, 1, "first"), point(2, 1, "second"),
   point(1, 2, "third"), { ...point(2, 2, "fourth"), status: "failed", metrics: null }] },
 { job: { ...job, id: "scan-b" }, points: [point(1, 1, "first")] }];
+const differentBases: ScanData[] = [10, 20].map((limit, index) => ({
+  job: { ...job, id: `scan-${index}`, axes: [job.axes![0]] },
+  points: [1, 2].map((x) => ({ ...point(x, 1, `base-${index}-${x}`),
+    values: { num_instances: x },
+    config: { num_instances: x, inference: { tp_size: 1 },
+      scheduler: { max_prefill_tokens: limit }, workload: { seed: index + 7 } } as ScanData["points"][number]["config"],
+  })),
+}));
 
 describe("scan projections", () => {
+  it("includes changed background config fields, not constant axis or config fields", () => {
+    const keys = availableKeys(differentBases);
+    expect(keys).toEqual(["num_instances", "scheduler.max_prefill_tokens", "workload.seed"]);
+    const roles = { x: "num_instances", color: "", shape: "", line: "" };
+    const first = resolveSelection(differentBases, roles, "throughput", {}, {}, false, keys);
+    expect(first.hidden).toEqual(keys.slice(1));
+    expect(first.visible.map((batch) => batch.points.length)).toEqual([2, 0]);
+    expect(buildChart(first.visible, roles, "throughput", keys).entries).toHaveLength(2);
+    const next = resolveSelection(differentBases, roles, "throughput",
+      { "scheduler.max_prefill_tokens": "20", "workload.seed": "8" }, {}, false, keys);
+    expect(next.visible.map((batch) => batch.points.length)).toEqual([0, 2]);
+    const asRoles = resolveSelection(differentBases, { x: "num_instances",
+      color: "scheduler.max_prefill_tokens", shape: "workload.seed", line: "" },
+    "throughput", {}, {}, false, keys);
+    expect(asRoles.visible.flatMap((batch) => batch.points)).toHaveLength(4);
+  });
+  it("distinguishes array-valued background configuration by value in chart roles", () => {
+    const scans: ScanData[] = differentBases.map(({ job: scan, points }, index) => ({ job: scan,
+      points: points.map((entry) => ({ ...entry, config: {
+        ...entry.config, inference: { model: { attention_groups: [index + 1] } },
+      } as unknown as ScanData["points"][number]["config"] })),
+    }));
+    const key = "inference.model.attention_groups";
+    expect(availableKeys(scans)).toContain(key);
+    const chart = buildChart(scans, { x: "num_instances", color: key, shape: "", line: "" }, "throughput");
+    expect(chart.series).toHaveLength(2);
+    expect(new Set(chart.series.map((series) => series.itemStyle.color)).size).toBe(2);
+    expect(chart.series[0].tooltipValues).toEqual(["[1]"]);
+  });
+
+  it("keeps a single-value scan viewable when no parameter varies", () => {
+    const one: ScanData[] = [{ job: { ...job, axes: [job.axes![0]] }, points: [point(1, 1, "only")] }];
+    expect(availableKeys(one)).toEqual(["num_instances"]);
+    expect(resolveSelection(one, { x: "num_instances", color: "", shape: "", line: "" },
+      "throughput").visible[0].points).toHaveLength(1);
+  });
+
   it("deduplicates identical points across scans and leaves failed points empty", () => {
     const chart = buildChart(data, { x: "num_instances", color: "scheduler.max_running_requests",
       shape: "scheduler.pd_mutually_exclusive", line: "inference.parallelism" }, "throughput");
@@ -45,7 +90,7 @@ describe("scan projections", () => {
     const scan: ScanData = { job: { ...job, axes: [...job.axes!, { key: background, values: [99] }] },
       points: [{ ...point(1, 2, "live-tooltip"), values: { ...point(1, 2, "live-tooltip").values,
         [background]: 99 } }] };
-    const curve = buildChart([scan], roles, "throughput").series[0];
+    const curve = buildChart([scan], roles, "throughput", [...scan.job.axes!.map((axis) => axis.key)]).series[0];
     expect(curve.name).toContain(background);
     expect(curve.tooltipValues).toEqual(["2", "true", "1"]);
     const html = formatScanTooltip({ axisValueLabel: "1", seriesIndex: 0, value: 2 }, [curve]);
@@ -144,9 +189,29 @@ describe("scan projections", () => {
     return { group, background, setOption, rows: () => document.querySelectorAll("#data-body tr") };
   }
 
+  it("filters identical scan axes by distinct base configs in the offline table and CSV selection", () => {
+    const { group, background, rows } = openReport(differentBases);
+    expect(group("role-color").getByRole("option", { name: "scheduler.max_prefill_tokens" }))
+      .toBeInTheDocument();
+    expect(group("role-shape").getByRole("option", { name: "workload.seed" }))
+      .toBeInTheDocument();
+    expect(rows()).toHaveLength(4);
+    fireEvent.change(document.getElementById("role-color")!, { target: { value: "" } });
+    fireEvent.change(document.getElementById("role-shape")!, { target: { value: "" } });
+    expect(rows()).toHaveLength(2);
+    expect(rows()[0]).toHaveTextContent("scan-0");
+    fireEvent.click(document.getElementById("reset-background")!);
+    expect(rows()).toHaveLength(0);
+    fireEvent.click(background("scheduler.max_prefill_tokens").getByRole("radio", { name: "20" }));
+    fireEvent.click(background("workload.seed").getByRole("radio", { name: "8" }));
+    expect(rows()).toHaveLength(2);
+    expect(rows()[0]).toHaveTextContent("scan-1");
+    expect(document.getElementById("csv")).toBeEnabled();
+  });
+
   it("uses the shared shape and dash sample for the offline chart's hover legend", () => {
-    const other = { ...point(1, 2, "styled"), values: {
-      ...point(1, 2, "styled").values,
+    const other = { ...point(2, 2, "styled"), values: {
+      ...point(2, 2, "styled").values,
       "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2,
     } };
     const { setOption } = openReport([{ job, points: [point(1, 1, "plain"), other] }]);
@@ -237,8 +302,10 @@ describe("scan projections", () => {
   it("defaults to four roles and requires a single value for a fifth parameter offline", () => {
     const key = "scheduler.max_prefill_tokens";
     const scan: ScanData = { job: { ...job, axes: [...job.axes!, { key, values: [1, 2] }] },
-      points: [1, 2].map((level) => ({ ...point(1, 1, `fifth-${level}`),
-        values: { ...point(1, 1, `fifth-${level}`).values, [key]: level } })) };
+      points: [1, 2].map((level) => ({ ...point(level, level, `fifth-${level}`),
+        values: { ...point(level, level, `fifth-${level}`).values,
+          "scheduler.pd_mutually_exclusive": level === 1,
+          "inference.parallelism": level, [key]: level } })) };
     const { background, rows, setOption } = openReport([scan]);
     expect((document.getElementById("role-x") as HTMLSelectElement).value).toBe("num_instances");
     expect((document.getElementById("role-color") as HTMLSelectElement).value)
@@ -266,7 +333,7 @@ describe("scan projections", () => {
   it("limits selected visual levels to distinguishable styles", () => {
     const scans: ScanData[] = [{ job: { ...job, axes: [job.axes![0],
       { key: "scheduler.max_running_requests", values: [1, 2, 3, 4, 5, 6, 7, 8] }] },
-      points: Array.from({ length: 8 }, (_, index) => point(1, index + 1, `color-${index}`)) }];
+      points: Array.from({ length: 8 }, (_, index) => point(index % 2 + 1, index + 1, `color-${index}`)) }];
     const { group } = openReport(scans);
     const colors = group("values-color").getAllByRole("checkbox");
     expect(colors.filter(input => (input as HTMLInputElement).checked)).toHaveLength(7);

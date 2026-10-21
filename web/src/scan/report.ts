@@ -3,7 +3,7 @@ import reportRuntime from "./reportRuntime.js?raw";
 import tooltipSource from "./tooltip.js?raw";
 
 import type { ScanParameter } from "../api/types";
-import type { ScanData } from "./chart";
+import { availableKeys, type ScanData } from "./chart";
 
 const safeScript = (value: string) => value.replace(/<\/script/gi, "<\\/script");
 const embeddedData = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c")
@@ -71,7 +71,7 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <div class="table-wrap"><table><thead><tr><th>来源扫描</th><th>横轴</th><th>颜色</th><th>形状</th><th>线型</th><th>指标</th>
 <th>状态</th><th>错误</th><th>实际输入配置</th></tr></thead><tbody id="data-body"></tbody></table></div></section>
 <script>${safeScript(echartsSource)}</script>
-<script type="application/json" id="scan-data">${embeddedData({ data, parameters })}</script>
+<script type="application/json" id="scan-data">${embeddedData({ data, parameters, keys: availableKeys(data, parameters) })}</script>
 <script>${safeScript(tooltipSource.replace("export function formatScanTooltip", "function formatScanTooltip"))}
 ${safeScript(reportRuntime)}</script></body></html>`;
 }

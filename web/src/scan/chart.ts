@@ -1,4 +1,4 @@
-import type { JobSummary, ScanPoint } from "../api/types";
+import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
 
 export type Role = "x" | "color" | "shape" | "line";
 export type Roles = Record<Role, string>;
@@ -27,8 +27,32 @@ export function valueOf(point: ScanPoint, key: string): unknown {
   return value ?? null;
 }
 
-export function availableKeys(data: ScanData[]): string[] {
-  return [...new Set(data.flatMap(({ job }) => (job.axes ?? []).map((axis) => axis.key)))];
+function configPaths(config: unknown, prefix = ""): string[] {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return prefix ? [prefix] : [];
+  return Object.entries(config).flatMap(([key, value]) => configPaths(value, prefix ? `${prefix}.${key}` : key));
+}
+
+export function availableKeys(data: ScanData[], parameters: ScanParameter[] = []): string[] {
+  const axes = data.flatMap(({ job }) => (job.axes ?? []).map((axis) => axis.key));
+  const configs = data.map(({ points }) => points.find((point) => point.config)?.config).filter(Boolean);
+  const paths = new Set(configs.flatMap((config) => configPaths(config)));
+  for (const key of [...axes, ...parameters.map((parameter) => parameter.key)]) {
+    if (key.endsWith("_len")) {
+      paths.delete(`${key}.value`);
+      paths.delete(`${key}.mean`);
+    }
+  }
+  if (paths.has("inference.tp_size")) {
+    paths.delete("inference.tp_size");
+    paths.delete("inference.hardware.gpu_count");
+    paths.delete("inference.ep_size");
+    paths.add("inference.parallelism");
+  }
+  const candidates = [...new Set([...axes, ...parameters.map((parameter) => parameter.key), ...paths])];
+  const points = data.flatMap(({ points }) => points);
+  const varying = candidates.filter((key) => new Set(points.filter((point) =>
+    point.config || key in point.values).map((point) => JSON.stringify(valueOf(point, key)))).size > 1);
+  return varying.length ? varying : points.length ? axes.slice(0, 1) : [];
 }
 
 export function metricsOf(data: ScanData[]): string[] {
@@ -36,7 +60,8 @@ export function metricsOf(data: ScanData[]): string[] {
     Object.keys(point.metrics ?? {}).filter((key) => typeof point.metrics?.[key] === "number"))))].sort();
 }
 
-export function buildChart(data: ScanData[], roles: Roles, metric: string) {
+export function buildChart(data: ScanData[], roles: Roles, metric: string,
+  keys: string[] = availableKeys(data)) {
   const candidates = data.flatMap(({ job, points }) => points.map((point) => ({ job, point })));
   const seen = new Map<string, { job: JobSummary; point: ScanPoint; sources: string[] }>();
   for (const { job, point } of candidates) {
@@ -46,15 +71,17 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
     else seen.set(key, { job, point, sources: [job.id] });
   }
   const entries = [...seen.values()];
-  const values = (key: string): unknown[] => [...new Set<unknown>(
-    entries.map(({ point }) => valueOf(point, key)).filter((v) => v != null),
-  )];
+  const token = (value: unknown) => JSON.stringify(value ?? null);
+  const label = (value: unknown) => value !== null && typeof value === "object"
+    ? JSON.stringify(value) : String(value);
+  const values = (key: string): unknown[] => [...new Map(entries.map(({ point }) => valueOf(point, key))
+    .filter((value) => value != null).map((value) => [token(value), value])).values()];
   const xValues = values(roles.x).sort((a, b) => typeof a === "number" && typeof b === "number"
-    ? a - b : String(a).localeCompare(String(b), "zh-CN"));
+    ? a - b : label(a).localeCompare(label(b), "zh-CN"));
   const colors = values(roles.color);
   const shapes = values(roles.shape);
   const lines = values(roles.line);
-  const hidden = availableKeys(data).filter((key) => !Object.values(roles).includes(key));
+  const hidden = keys.filter((key) => !Object.values(roles).includes(key));
   const seriesMap = new Map<string, { group: string; name: string; tooltipValues: string[];
     color: number; shape: number; line: number; points: Map<string, number | null>; sources: string[] }>();
   for (const { job, point, sources } of entries) {
@@ -68,20 +95,21 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
     let item = seriesMap.get(group);
     if (!item) {
       const name = [`扫描 ${job.id.slice(0, 6)}`,
-        roles.color && `${roles.color}=${String(color)}`,
-        roles.shape && `${roles.shape}=${String(shape)}`,
-        roles.line && `${roles.line}=${String(line)}`,
-        ...hiddenValues.map(([key, value]) => `${key}=${String(value)}`)].filter(Boolean).join(" · ");
+        roles.color && `${roles.color}=${label(color)}`,
+        roles.shape && `${roles.shape}=${label(shape)}`,
+        roles.line && `${roles.line}=${label(line)}`,
+        ...hiddenValues.map(([key, value]) => `${key}=${label(value)}`)].filter(Boolean).join(" · ");
       const tooltipValues = [roles.color && color, roles.shape && shape, roles.line && line]
-        .filter((value) => value !== "" && value != null).map(String);
-      item = { group, name, tooltipValues, color: Math.max(0, colors.indexOf(color)),
-        shape: Math.max(0, shapes.indexOf(shape)), line: Math.max(0, lines.indexOf(line)),
+        .filter((value) => value !== "" && value != null).map(label);
+      item = { group, name, tooltipValues, color: Math.max(0, colors.findIndex((v) => token(v) === token(color))),
+        shape: Math.max(0, shapes.findIndex((v) => token(v) === token(shape))),
+        line: Math.max(0, lines.findIndex((v) => token(v) === token(line))),
         points: new Map(), sources };
       seriesMap.set(group, item);
     }
     const measured = point.metrics?.[metric];
     const y = point.status === "completed" && typeof measured === "number" ? measured : null;
-    item.points.set(String(x), y);
+    item.points.set(token(x), y);
   }
   const series = [...seriesMap.values()].map((item) => ({
     name: item.name, tooltipValues: item.tooltipValues,
@@ -89,7 +117,7 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string) {
     symbol: symbols[item.shape % symbols.length], symbolSize: 9,
     itemStyle: { color: palette[item.color % palette.length] },
     lineStyle: { color: palette[item.color % palette.length], type: lineStyles[item.line % lineStyles.length] },
-    data: xValues.map((x) => item.points.get(String(x)) ?? null),
+    data: xValues.map((x) => item.points.get(token(x)) ?? null),
   }));
-  return { xValues: xValues.map(String), entries, series, deduplicated: candidates.length - entries.length };
+  return { xValues: xValues.map(label), entries, series, deduplicated: candidates.length - entries.length };
 }

@@ -110,7 +110,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 
 ## 参数组合扫描与后台调度
 
-`GET /api/scans/parameters` 返回可选参数的键、名称、数值/整数/布尔类型和适用的合成/Trace、开环/闭环组合。不包含模型配置字段、GPU 预设名及派生 KV 容量；`inference.parallelism` 代表必须同步写入的每实例 GPU 卡数与 TP 数（MoE 时 EP 数，Dense 固定 EP1）。`POST /api/scans` 以 `{ "base": SimConfig, "axes": { "x": { "key": "num_instances", "values": [1, 2] }, "color": { "key": "scheduler.pd_mutually_exclusive", "values": [true, false] } } }` 提交扫描，`shape` 与 `line` 为可选的独立参数轴。提交必须有横轴，其余轴不重复，参数键由服务端白名单及负载模式检查；每点构建完整配置并重新执行模型校验/容量解析，不可运行点独立失败，不中断其他点。
+`GET /api/scans/parameters` 返回可选参数的键、名称、数值/整数/布尔类型和适用的合成/Trace、开环/闭环组合。不包含模型配置字段、GPU 预设名及派生 KV 容量；`inference.parallelism` 代表必须同步写入的每实例 GPU 卡数与 TP 数（MoE 时 EP 数，Dense 固定 EP1）。`POST /api/scans` 以 `{ "base": SimConfig, "axes": [{ "key": "num_instances", "values": [1, 2] }, { "key": "scheduler.pd_mutually_exclusive", "values": [true, false] }] }` 提交扫描。`axes` 为至少一项的有序参数列表，参数不能重复，键由服务端白名单及负载模式检查；每点构建完整配置并重新执行模型校验/容量解析，不可运行点独立失败，不中断其他点。
 
 `GET /api/jobs/{id}/points` 返回已完成的点级指标、实际 `SimConfig`、同一配置/Trace 内容/引擎指纹的去重签名或失败原因。所有普通任务和扫描点共享单条严格 FIFO 队列；先提交扫描的全部点在后提交普通任务之前领取空闲 worker，不预留容量或按任务类型抢占。使用自行管理的计算进程，`SIMULATOR_WORKERS` 默认 8；取消整个扫描移除排队点、终止正在运行该扫描的 worker 并补建进程。扫描点数量不设软件上限，调度器以组合迭代器保存队列；任务状态与扫描摘要留在单一服务进程内存中，不单独持久化或自动设置期限，服务重启后不恢复。已有完整仿真结果仍遵循 `ResultCache` 容量限制，Trace 上传资源保持原临时存储策略。
 

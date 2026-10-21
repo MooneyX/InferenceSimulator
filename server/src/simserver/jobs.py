@@ -76,7 +76,7 @@ class Job:
     plan: TracePlan | None
     force: bool
     total: int
-    axes: dict[str, Any] = field(default_factory=dict)
+    axes: list[dict[str, Any]] = field(default_factory=list)
     status: str = "queued"
     completed: int = 0
     failed: int = 0
@@ -138,16 +138,15 @@ class JobManager:
         return job.id
 
     def submit_scan(self, request: ScanRequest, plan: TracePlan | None) -> str:
-        axes = {role: axis.model_dump(mode="json") for role, axis in request.axes.items()}
-        ordered = [(role, axes[role]) for role in ("x", "color", "shape", "line") if role in axes]
+        axes = [axis.model_dump(mode="json") for axis in request.axes]
         total = 1
-        for _, axis in ordered:
+        for axis in axes:
             total *= len(axis["values"])
         job = Job(uuid4().hex, "scan", request.base, plan, False, total, axes=axes)
 
         def combinations() -> Iterator[dict[str, Any]]:
-            for values in product(*(axis["values"] for _, axis in ordered)):
-                yield {axis["key"]: value for (_, axis), value in zip(ordered, values, strict=True)}
+            for values in product(*(axis["values"] for axis in axes)):
+                yield {axis["key"]: value for axis, value in zip(axes, values, strict=True)}
 
         with self._condition:
             self._started = True

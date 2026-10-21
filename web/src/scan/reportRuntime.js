@@ -7,7 +7,7 @@
   const palette = ['#6c63ff', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#8b5cf6', '#84cc16'];
   const symbols = ['circle', 'rect', 'triangle', 'diamond', 'pin', 'arrow', 'roundRect', 'emptyCircle'];
   const styles = ['solid', 'dashed', 'dotted', [10, 4, 2, 4]];
-  const keys = [...new Set(batches.flatMap(batch => Object.values(batch.job.axes || {}).map(axis => axis.key)))];
+  const keys = [...new Set(batches.flatMap(batch => (batch.job.axes || []).map(axis => axis.key)))];
   const metrics = [...new Set(batches.flatMap(batch => batch.points.flatMap(point =>
     Object.keys(point.metrics || {}).filter(key => typeof point.metrics[key] === 'number'))))].sort();
   const byId = id => document.getElementById(id);
@@ -45,8 +45,7 @@
     const input = byId('role-' + role);
     if (role !== 'x') input.add(option('', '无'));
     keys.forEach(key => input.add(option(key, label(key))));
-    const first = batches[0]?.job.axes || {};
-    input.value = first[role]?.key || (index === 0 ? keys[0] || '' : '');
+    input.value = keys[index] || '';
     input.addEventListener('change', () => { choosingBackground = false; redraw(true); });
   });
   metrics.forEach(metric => byId('metric').add(option(metric, metric)));

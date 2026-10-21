@@ -11,10 +11,10 @@ import { formatScanTooltip } from "./tooltip.js";
 const config = { inference: { tp_size: 1 } } as ScanData["points"][number]["config"];
 const job: JobSummary = { id: "scan-a", kind: "scan", status: "completed", total: 4,
   completed: 4, failed: 0, error: null, cache: null, lookup_ms: null, version: 1,
-  axes: { x: { key: "num_instances", values: [1, 2] },
-    color: { key: "scheduler.max_running_requests", values: [1, 2] },
-    shape: { key: "scheduler.pd_mutually_exclusive", values: [true] },
-    line: { key: "inference.parallelism", values: [1] } } };
+  axes: [{ key: "num_instances", values: [1, 2] },
+    { key: "scheduler.max_running_requests", values: [1, 2] },
+    { key: "scheduler.pd_mutually_exclusive", values: [true] },
+    { key: "inference.parallelism", values: [1] }] };
 const point = (x: number, color: number, signature: string) => ({
   status: "completed" as const, signature, config,
   values: { num_instances: x, "scheduler.max_running_requests": color,
@@ -194,7 +194,7 @@ describe("scan projections", () => {
   });
 
   it("restricts background values by the currently selected axis levels", () => {
-    const axes = { x: job.axes!.x!, shape: job.axes!.shape! };
+    const axes = [job.axes![0], job.axes![2]];
     const first: ScanData = { job: { ...job, axes }, points: [point(1, 1, "axis-first")] };
     const second: ScanData = { job: { ...job, id: "scan-b", axes }, points: [{
       ...point(2, 1, "axis-second"), values: { ...point(2, 1, "axis-second").values,
@@ -202,7 +202,7 @@ describe("scan projections", () => {
     }] };
     const { group, background, rows } = openReport([first, second]);
     const shape = () => background("scheduler.pd_mutually_exclusive");
-    fireEvent.change(document.getElementById("role-shape")!, { target: { value: "" } });
+    fireEvent.change(document.getElementById("role-color")!, { target: { value: "" } });
     expect(shape().getByRole("radio", { name: "false" })).toBeDisabled();
     fireEvent.click(document.getElementById("reset-background")!);
     expect(shape().getByRole("radio", { name: "false" })).toBeEnabled();
@@ -212,9 +212,29 @@ describe("scan projections", () => {
     expect(shape().getByRole("radio", { name: "true" })).toBeDisabled();
   });
 
+  it("defaults to four roles and requires a single value for a fifth parameter offline", () => {
+    const key = "scheduler.max_prefill_tokens";
+    const scan: ScanData = { job: { ...job, axes: [...job.axes!, { key, values: [1, 2] }] },
+      points: [1, 2].map((level) => ({ ...point(1, 1, `fifth-${level}`),
+        values: { ...point(1, 1, `fifth-${level}`).values, [key]: level } })) };
+    const { background, rows } = openReport([scan]);
+    expect((document.getElementById("role-x") as HTMLSelectElement).value).toBe("num_instances");
+    expect((document.getElementById("role-color") as HTMLSelectElement).value)
+      .toBe("scheduler.max_running_requests");
+    expect((document.getElementById("role-shape") as HTMLSelectElement).value)
+      .toBe("scheduler.pd_mutually_exclusive");
+    expect((document.getElementById("role-line") as HTMLSelectElement).value)
+      .toBe("inference.parallelism");
+    expect(background(key).getByRole("radio", { name: "1" })).toBeChecked();
+    expect(rows()).toHaveLength(1);
+    fireEvent.click(document.getElementById("reset-background")!);
+    fireEvent.click(background(key).getByRole("radio", { name: "2" }));
+    expect(rows()).toHaveLength(1);
+  });
+
   it("limits selected visual levels to distinguishable styles", () => {
-    const scans: ScanData[] = [{ job: { ...job, axes: { x: job.axes!.x!,
-      color: { key: "scheduler.max_running_requests", values: [1, 2, 3, 4, 5, 6, 7, 8] } } },
+    const scans: ScanData[] = [{ job: { ...job, axes: [job.axes![0],
+      { key: "scheduler.max_running_requests", values: [1, 2, 3, 4, 5, 6, 7, 8] }] },
       points: Array.from({ length: 8 }, (_, index) => point(1, index + 1, `color-${index}`)) }];
     const { group } = openReport(scans);
     const colors = group("values-color").getAllByRole("checkbox");

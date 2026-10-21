@@ -25,26 +25,32 @@
 
 .scan-axes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
-  gap: 12px;
-  margin: 16px 0;
+  gap: 10px;
+  margin: 16px 0 10px;
 }
 
 .scan-axis {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  min-width: 0;
+}
+
+.scan-axis-parameter, .scan-axis-levels {
   position: relative;
   display: grid;
-  align-content: start;
   gap: 3px;
   min-width: 0;
 }
 
-.scan-axis > label {
+.scan-axis label {
   color: var(--text-dim);
   font-size: 0.68rem;
   letter-spacing: 0.03em;
 }
 
-.scan-axis > input {
+.scan-axis input {
   width: 100%;
   min-width: 0;
   min-height: 32px;
@@ -56,10 +62,29 @@
   font-size: 0.8rem;
 }
 
-.scan-axis > input:focus {
+.scan-axis input:focus {
   border-color: var(--accent);
   outline: none;
 }
+
+.scan-axis input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.scan-add-axis, .scan-remove-axis {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.scan-add-axis:hover, .scan-remove-axis:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.scan-remove-axis:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .scan-options {
   position: absolute;
@@ -111,4 +136,6 @@
 
 @media (max-width: 640px) {
   .scan-panel { padding: 16px 14px; }
+  .scan-axis { grid-template-columns: minmax(0, 1fr) auto; }
+  .scan-axis-levels { grid-column: 1 / -1; grid-row: 2; }
 }

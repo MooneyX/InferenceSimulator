@@ -32,7 +32,7 @@ class JobSummary(BaseModel):
     cache: str | None
     lookup_ms: float | None
     version: int
-    axes: dict[str, ScanAxis] | None
+    axes: list[ScanAxis] | None
 
 
 class ScanPoint(BaseModel):

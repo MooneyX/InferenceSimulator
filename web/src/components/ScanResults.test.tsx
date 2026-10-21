@@ -10,9 +10,9 @@ vi.mock("../api/client", () => ({ getScanParameters: vi.fn(), getScanPoints: vi.
 vi.mock("echarts/core", () => ({ use: vi.fn(), init: () => ({ setOption,
   resize: vi.fn(), dispose: vi.fn() }) }));
 
-const axes = { x: { key: "num_instances", values: [1, 2] },
-  color: { key: "scheduler.max_running_requests", values: [1, 2] },
-  shape: { key: "scheduler.pd_mutually_exclusive", values: [true, false] } };
+const axes = [{ key: "num_instances", values: [1, 2] },
+  { key: "scheduler.max_running_requests", values: [1, 2] },
+  { key: "scheduler.pd_mutually_exclusive", values: [true, false] }];
 const job = (id: string): JobSummary => ({ id, kind: "scan", status: "completed", total: 2,
   completed: 2, failed: 0, error: null, cache: null, lookup_ms: null, version: 1, axes });
 const point = (x: number, color: number, shape: boolean, signature: string): ScanPoint => ({
@@ -37,7 +37,12 @@ beforeEach(() => {
 describe("ScanResults", () => {
   it("filters selected batches by a single background value and restores multi-value roles", async () => {
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
-    await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
+    expect(screen.getByRole("combobox", { name: /颜色/ })).toHaveValue("scheduler.max_running_requests");
+    expect(screen.getByRole("combobox", { name: /节点形状/ })).toHaveValue("scheduler.pd_mutually_exclusive");
+    fireEvent.change(screen.getByRole("combobox", { name: /颜色/ }), { target: { value: "" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }), { target: { value: "" } });
+    expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
     const background = () => within(screen.getByRole("group", { name: "同时运行请求" }));
     expect(background().getByRole("radio", { name: "1" })).toBeChecked();
     expect(background().getByRole("radio", { name: "2" })).toBeEnabled();
@@ -58,11 +63,29 @@ describe("ScanResults", () => {
     expect(screen.getByRole("group", { name: "分步执行" })).toBeInTheDocument();
   });
 
+  it("keeps the fifth scan parameter as a single-choice background value", async () => {
+    const key = "scheduler.max_prefill_tokens";
+    vi.mocked(getScanPoints).mockResolvedValue([1, 2].map((value) => ({
+      ...point(1, 1, true, `background-${value}`),
+      values: { ...point(1, 1, true, `background-${value}`).values,
+        "inference.parallelism": 1, [key]: value },
+    })));
+    render(<ScanResults jobs={[{ ...job("scan-a"), axes: [...axes,
+      { key: "inference.parallelism", values: [1] }, { key, values: [1, 2] }] }]} />);
+    await waitFor(() => expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument());
+    expect(screen.getByRole("combobox", { name: /线样式/ })).toHaveValue("inference.parallelism");
+    const group = within(screen.getByRole("group", { name: key }));
+    expect(group.getByRole("radio", { name: "1" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "重新选择背景值" }));
+    fireEvent.click(group.getByRole("radio", { name: "2" }));
+    expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument();
+  });
+
   it("uses the series color and shape in the live hover legend", async () => {
     vi.mocked(getScanPoints).mockImplementation(async (id) => id === "scan-a"
       ? [point(1, 1, true, "plain")] : [point(1, 2, false, "styled")]);
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
-    await waitFor(() => expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
     fireEvent.change(screen.getByRole("combobox", { name: /颜色/ }),
       { target: { value: "scheduler.max_running_requests" } });
     fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }),

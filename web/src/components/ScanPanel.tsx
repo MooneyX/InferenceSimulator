@@ -1,20 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getScanParameters, uploadReplayPlan } from "../api/client";
 import type { ScanParameter, ScanRequest, SimConfig } from "../api/types";
 import { validateSimConfig } from "../config/simulation";
 import "./ScanPanel.css";
 
-type Role = "x" | "color" | "shape" | "line";
-type AxisDraft = { key: string; text: string };
-const roles: { id: Role; label: string }[] = [
-  { id: "x", label: "横轴" }, { id: "color", label: "颜色" },
-  { id: "shape", label: "节点形状" }, { id: "line", label: "线样式" },
-];
-const empty = (): Record<Role, AxisDraft> => ({
-  x: { key: "", text: "" }, color: { key: "", text: "" },
-  shape: { key: "", text: "" }, line: { key: "", text: "" },
-});
+type AxisDraft = { id: number; key: string; text: string; search: string };
 
 function initialValue(config: SimConfig, key: string, fallbackQps = 64): string {
   if (key === "inference.parallelism") return String(config.inference.tp_size);
@@ -75,9 +66,9 @@ export function ScanPanel({ base, onSubmit }: Props) {
   const [planNotice, setPlanNotice] = useState("");
   const [planBusy, setPlanBusy] = useState(false);
   const [catalog, setCatalog] = useState<ScanParameter[]>([]);
-  const [axes, setAxes] = useState<Record<Role, AxisDraft>>(empty);
-  const [search, setSearch] = useState<Record<Role, string>>({ x: "", color: "", shape: "", line: "" });
-  const [focused, setFocused] = useState<Role | null>(null);
+  const [axes, setAxes] = useState<AxisDraft[]>([{ id: 0, key: "", text: "", search: "" }]);
+  const nextId = useRef(1);
+  const [focused, setFocused] = useState<number | null>(null);
   const [problem, setProblem] = useState("");
   useEffect(() => {
     let active = true;
@@ -88,15 +79,17 @@ export function ScanPanel({ base, onSubmit }: Props) {
 
   const context = `${mode}/${arrival}`;
   const available = catalog.filter((item) => item.modes.includes(context));
-  const selected = (role: Role) => available.find((item) => item.key === axes[role].key);
-  const usable = (role: Role) => available.filter((item) =>
-    !roles.some((other) => other.id !== role && axes[other.id].key === item.key));
+  const selected = (axis: AxisDraft) => available.find((item) => item.key === axis.key);
+  const usable = (id: number) => available.filter((item) =>
+    !axes.some((other) => other.id !== id && other.key === item.key));
+  function updateAxis(id: number, update: Partial<AxisDraft>) {
+    setAxes((current) => current.map((axis) => axis.id === id ? { ...axis, ...update } : axis));
+  }
   function changeContext(nextMode: "synthetic" | "trace", nextArrival: "open_loop" | "closed_loop") {
     setMode(nextMode); setArrival(nextArrival);
     const valid = new Set(catalog.filter((item) => item.modes.includes(`${nextMode}/${nextArrival}`)).map((item) => item.key));
-    setAxes((current) => Object.fromEntries(roles.map(({ id }) => [id,
-      valid.has(current[id].key) ? current[id] : { key: "", text: "" }])) as Record<Role, AxisDraft>);
-    setSearch({ x: "", color: "", shape: "", line: "" });
+    setAxes((current) => current.map((axis) => valid.has(axis.key)
+      ? { ...axis, search: "" } : { id: axis.id, key: "", text: "", search: "" }));
     setProblem("");
   }
 
@@ -138,16 +131,15 @@ export function ScanPanel({ base, onSubmit }: Props) {
 
   function run() {
     try {
-      if (!selected("x")) throw new Error("请先选择横轴参数");
+      if (axes.some((axis) => !selected(axis))) throw new Error("请为每一行选择扫描参数，或删除未使用的行");
       if (mode === "trace" && !planId) throw new Error("请上传回放计划 JSON");
       const config = makeBase();
       const errors = validateSimConfig(config);
       if (errors.length) throw new Error(`基础配置不合法：${errors[0].message}`);
-      const dimensions: ScanRequest["axes"] = {};
-      for (const { id } of roles) {
-        const item = selected(id);
-        if (!item) continue;
-        const values = parseLevels(axes[id].text, item.kind);
+      const dimensions: ScanRequest["axes"] = [];
+      for (const axis of axes) {
+        const item = selected(axis)!;
+        const values = parseLevels(axis.text, item.kind);
         if (item.key === "inference.parallelism" && config.inference.timing?.mode === "empirical"
             && values.some((value) => value !== 1)) {
           throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
@@ -163,10 +155,10 @@ export function ScanPanel({ base, onSubmit }: Props) {
             && values.some((value) => value !== blockSize)) {
           throw new Error(`Trace 每页 token 数必须等于计划块大小 ${blockSize}`);
         }
-        dimensions[id] = { key: item.key, values };
+        dimensions.push({ key: item.key, values });
       }
       if (mode === "trace" && blockSize != null &&
-          !Object.values(dimensions).some((axis) => axis.key === "inference.page_size") &&
+          !dimensions.some((axis) => axis.key === "inference.page_size") &&
           config.inference.page_size !== blockSize) {
         throw new Error(`当前每页 token 数必须等于 Trace 计划块大小 ${blockSize}`);
       }
@@ -174,9 +166,9 @@ export function ScanPanel({ base, onSubmit }: Props) {
       onSubmit({ base: config, axes: dimensions });
     } catch (error) { setProblem(error instanceof Error ? error.message : "扫描配置无效"); }
   }
-  const total = roles.reduce((count, { id }) => {
-    if (!selected(id)) return count;
-    const text = axes[id].text.trim();
+  const total = axes.reduce((count, axis) => {
+    if (!selected(axis)) return count;
+    const text = axis.text.trim();
     const range = text.match(/^(-?[\d.]+):(-?[\d.]+):(-?[\d.]+)$/);
     if (range) {
       const [start, end, step] = range.slice(1).map(Number);
@@ -189,7 +181,7 @@ export function ScanPanel({ base, onSubmit }: Props) {
   return <section className="scan-panel" aria-labelledby="scan-heading">
     <div className="section-heading"><div><p className="section-kicker">Sensitivity sweep</p>
       <h2 id="scan-heading">参数组合扫描</h2></div>
-      <p>独立于普通仿真；横轴与颜色、形状、线型构成参数组合。</p></div>
+      <p>按需添加扫描参数；结果中最多选择四个可变参数，其余作为固定背景参数。</p></div>
     <div className="form-grid">
       <div className="form-field"><label htmlFor="scan-mode">负载模式</label>
         <select id="scan-mode" value={mode} onChange={(event) =>
@@ -207,43 +199,49 @@ export function ScanPanel({ base, onSubmit }: Props) {
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void receivePlan(file); }} />
         {planNotice && <small>{planNotice}</small>}</div>}
     </div>
-    <div className="scan-axes">{roles.map(({ id, label }) => {
-      const options = usable(id).filter((item) =>
-        `${item.label} ${item.key}`.toLowerCase().includes(search[id].trim().toLowerCase()));
-      return <div className="scan-axis" key={id}>
-        <label htmlFor={`scan-search-${id}`}>{label}参数{id === "x" ? "（必选）" : "（可选）"}</label>
-        <input id={`scan-search-${id}`} role="combobox" aria-expanded={focused === id}
-          aria-controls={`scan-options-${id}`} autoComplete="off" placeholder="输入中文名或字段路径搜索"
-          value={focused === id ? search[id] : (selected(id)?.label ?? search[id])}
-          onFocus={() => { setFocused(id); setSearch((current) => ({ ...current, [id]: "" })); }}
-          onBlur={() => window.setTimeout(() => setFocused((current) => current === id ? null : current), 140)}
-          onChange={(event) => { setSearch((current) => ({ ...current, [id]: event.target.value }));
-            setAxes((current) => ({ ...current, [id]: { key: "", text: "" } })); }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setFocused(null);
-            if (event.key === "Enter" && options.length) {
-              event.preventDefault(); setAxes((current) => ({ ...current, [id]: {
-                key: options[0].key, text: initialValue(makeBase(), options[0].key) } }));
-              setFocused(null);
-            }
-          }} />
-        {focused === id && <div id={`scan-options-${id}`} className="scan-options" role="listbox">
-          {id !== "x" && <button type="button" role="option" aria-selected={!axes[id].key}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => { setAxes((current) => ({ ...current, [id]: { key: "", text: "" } })); setFocused(null); }}>
-            不使用此维度</button>}
-          {options.map((item) => <button type="button" role="option" aria-selected={axes[id].key === item.key}
-            key={item.key} onMouseDown={(event) => event.preventDefault()}
-            onClick={() => { setAxes((current) => ({ ...current, [id]: {
-              key: item.key, text: initialValue(makeBase(), item.key) } })); setFocused(null); }}>
-            {item.label}<small>{item.key}</small></button>)}
-          {!options.length && <p>没有匹配参数</p>}</div>}
-        {selected(id) && <><label htmlFor={`scan-values-${id}`}>{label}档位</label>
-          <input id={`scan-values-${id}`} value={axes[id].text} placeholder="逗号分隔，或 起点:终点:步长"
-            onChange={(event) => setAxes((current) => ({ ...current, [id]: {
-              ...current[id], text: event.target.value } }))} /></>}
+    <div className="scan-axes">{axes.map((axis, index) => {
+      const options = usable(axis.id).filter((item) =>
+        `${item.label} ${item.key}`.toLowerCase().includes(axis.search.trim().toLowerCase()));
+      return <div className="scan-axis" key={axis.id}>
+        <div className="scan-axis-parameter">
+          <label htmlFor={`scan-search-${axis.id}`}>扫描参数 {index + 1}</label>
+          <input id={`scan-search-${axis.id}`} role="combobox" aria-expanded={focused === axis.id}
+            aria-controls={`scan-options-${axis.id}`} autoComplete="off" placeholder="输入中文名或字段路径搜索"
+            value={focused === axis.id ? axis.search : (selected(axis)?.label ?? axis.search)}
+            onFocus={() => { setFocused(axis.id); updateAxis(axis.id, { search: "" }); }}
+            onBlur={() => window.setTimeout(() => setFocused((current) => current === axis.id ? null : current), 140)}
+            onChange={(event) => updateAxis(axis.id, { search: event.target.value, key: "", text: "" })}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setFocused(null);
+              if (event.key === "Enter" && options.length) {
+                event.preventDefault(); updateAxis(axis.id, { key: options[0].key,
+                  text: initialValue(makeBase(), options[0].key), search: "" });
+                setFocused(null);
+              }
+            }} />
+          {focused === axis.id && <div id={`scan-options-${axis.id}`} className="scan-options" role="listbox">
+            {options.map((item) => <button type="button" role="option" aria-selected={axis.key === item.key}
+              key={item.key} onMouseDown={(event) => event.preventDefault()}
+              onClick={() => { updateAxis(axis.id, { key: item.key,
+                text: initialValue(makeBase(), item.key), search: "" }); setFocused(null); }}>
+              {item.label}<small>{item.key}</small></button>)}
+            {!options.length && <p>没有匹配参数</p>}</div>}
+        </div>
+        <div className="scan-axis-levels">
+          <label htmlFor={`scan-values-${axis.id}`}>扫描档位 {index + 1}</label>
+          <input id={`scan-values-${axis.id}`} value={axis.text} disabled={!selected(axis)}
+            placeholder="逗号分隔，或 起点:终点:步长"
+            onChange={(event) => updateAxis(axis.id, { text: event.target.value })} />
+        </div>
+        <button type="button" className="scan-remove-axis" disabled={axes.length === 1}
+          aria-label={`删除扫描参数 ${index + 1}`}
+          onClick={() => { setAxes((current) => current.filter((row) => row.id !== axis.id)); setFocused(null); }}>
+          删除</button>
       </div>;
     })}</div>
+    <button type="button" className="scan-add-axis"
+      onClick={() => { setAxes((current) => [...current, { id: nextId.current++, key: "", text: "", search: "" }]);
+        setFocused(null); }}>添加参数</button>
     <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>
     <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
       固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>

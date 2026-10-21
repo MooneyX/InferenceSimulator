@@ -6,13 +6,13 @@ test("后台扫描不锁表单，导出的离线 HTML 可重新透视", async ({
   test.setTimeout(60_000);
   await page.goto("/");
   await page.getByLabel("请求数量", { exact: true }).fill("2");
-  const selector = page.getByLabel("横轴参数（必选）");
-  await selector.fill("最多同时运行请求");
+  await page.getByLabel("扫描参数 1").fill("最多同时运行请求");
   await page.getByRole("listbox").getByRole("option", { name: /最多同时运行请求/ }).click();
-  await page.getByLabel("横轴档位").fill("1,2,3");
-  await page.getByLabel("颜色参数（可选）").fill("Prefill / Decode");
+  await page.getByLabel("扫描档位 1").fill("1,2,3");
+  await page.getByRole("button", { name: "添加参数" }).click();
+  await page.getByLabel("扫描参数 2").fill("Prefill / Decode");
   await page.getByRole("listbox").getByRole("option", { name: /Prefill \/ Decode 分步执行/ }).click();
-  await page.getByLabel("颜色档位").fill("true,false");
+  await page.getByLabel("扫描档位 2").fill("true,false");
   const submitted = page.waitForResponse((response) => response.url().endsWith("/api/scans")
     && response.request().method() === "POST");
   await page.getByRole("button", { name: "提交后台扫描" }).click();
@@ -26,8 +26,11 @@ test("后台扫描不锁表单，导出的离线 HTML 可重新透视", async ({
     const batch = batches.nth(index);
     if (!(await batch.textContent())?.includes(jobId.slice(0, 8))) await batch.locator("input").uncheck();
   }
-  await expect(page.getByText(/独立配置点 3/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/独立配置点 6/)).toBeVisible({ timeout: 30_000 });
   const colorRole = page.locator(".scan-role-row").filter({ has: page.locator(".scan-role-values[aria-label='颜色参数值']") }).locator("select");
+  await expect(colorRole).toHaveValue("scheduler.pd_mutually_exclusive");
+  await colorRole.selectOption("");
+  await expect(page.getByText(/独立配置点 3/)).toBeVisible();
   const background = page.locator(".scan-background-groups fieldset").filter({ hasText: "Prefill / Decode 分步执行" });
   await expect(background.getByRole("radio", { name: "true" })).toBeChecked();
   await page.getByRole("button", { name: "重新选择背景值" }).click();

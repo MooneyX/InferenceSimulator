@@ -709,9 +709,7 @@ export interface components {
             /** Version */
             version: number;
             /** Axes */
-            axes: {
-                [key: string]: components["schemas"]["ScanAxis"];
-            } | null;
+            axes: components["schemas"]["ScanAxis"][] | null;
         };
         /**
          * LognormalLength
@@ -1342,9 +1340,7 @@ export interface components {
         ScanRequest: {
             base: components["schemas"]["SimConfig"];
             /** Axes */
-            axes: {
-                [key: string]: components["schemas"]["ScanAxis"];
-            };
+            axes: components["schemas"]["ScanAxis"][];
         };
         /**
          * SchedulerConfig

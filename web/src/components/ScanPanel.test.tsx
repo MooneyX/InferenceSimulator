@@ -38,21 +38,48 @@ describe("ScanPanel", () => {
     render(<ScanPanel base={createDefaultSimConfig()} onSubmit={onSubmit} />);
     expect(screen.getByLabelText("负载模式")).toHaveValue("synthetic");
     await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
-    fireEvent.focus(screen.getByLabelText("横轴参数（必选）"));
-    fireEvent.change(screen.getByLabelText("横轴参数（必选）"), { target: { value: "请求" } });
+    fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+    fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "请求" } });
     const options = screen.getByRole("listbox");
     fireEvent.click(within(options).getByRole("option", { name: /请求数量/ }));
-    fireEvent.change(screen.getByLabelText("横轴档位"), { target: { value: "10,20" } });
+    fireEvent.change(screen.getByLabelText("扫描档位 1"), { target: { value: "10,20" } });
     fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      axes: { x: { key: "workload.synthetic.num_requests", values: [10, 20] } },
+      axes: [{ key: "workload.synthetic.num_requests", values: [10, 20] }],
     }));
+  });
+
+  it("adds more than four parameters, preserves order and removes unused rows", async () => {
+    const onSubmit = vi.fn();
+    render(<ScanPanel base={createDefaultSimConfig()} onSubmit={onSubmit} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+    const names = ["请求数量", "目标 QPS", "平均输入长度", "平均新增长度", "平均输出长度"];
+    for (const [index, name] of names.entries()) {
+      if (index) fireEvent.click(screen.getByRole("button", { name: "添加参数" }));
+      const search = screen.getByLabelText(`扫描参数 ${index + 1}`);
+      fireEvent.focus(search);
+      if (index) expect(within(screen.getByRole("listbox"))
+        .queryByRole("option", { name: /请求数量/ })).not.toBeInTheDocument();
+      fireEvent.change(search, { target: { value: name } });
+      fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: new RegExp(name) }));
+      fireEvent.change(screen.getByLabelText(`扫描档位 ${index + 1}`),
+        { target: { value: index ? "2,4" : "10,20" } });
+    }
+    expect(screen.getByText(/当前约 32 点/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onSubmit.mock.lastCall?.[0].axes.map((axis: { key: string }) => axis.key)).toEqual([
+      "workload.synthetic.num_requests", "workload.target_qps", "workload.synthetic.prompt_len",
+      "workload.synthetic.turn_increment_len", "workload.synthetic.output_len",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "删除扫描参数 3" }));
+    expect(screen.getByText(/当前约 16 点/)).toBeInTheDocument();
+    expect(screen.getByLabelText("扫描参数 4")).toHaveValue("平均输出长度");
   });
 
   it("offers request parameters as scan axes instead of separate inputs for each mode", async () => {
     render(<ScanPanel base={createDefaultSimConfig()} onSubmit={vi.fn()} />);
     await waitFor(() => expect(getScanParameters).toHaveBeenCalled());
-    const search = screen.getByLabelText("横轴参数（必选）");
+    const search = screen.getByLabelText("扫描参数 1");
     fireEvent.focus(search);
     expect(screen.queryByLabelText("目标发送 QPS")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("会话投放频率（会话/秒）")).not.toBeInTheDocument();
@@ -83,14 +110,14 @@ describe("ScanPanel", () => {
       target: { files: [new File(["{}"], "replay-plan.json")] },
     });
     await screen.findByText(/replay-plan.json/);
-    fireEvent.focus(screen.getByLabelText("横轴参数（必选）"));
-    fireEvent.change(screen.getByLabelText("横轴参数（必选）"), { target: { value: "目标 QPS" } });
+    fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+    fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "目标 QPS" } });
     fireEvent.click(screen.getByRole("option", { name: /目标 QPS/ }));
-    fireEvent.change(screen.getByLabelText("横轴档位"), { target: { value: "8,16" } });
+    fireEvent.change(screen.getByLabelText("扫描档位 1"), { target: { value: "8,16" } });
     fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       base: expect.objectContaining({ workload: expect.not.objectContaining({ target_qps: expect.anything() }) }),
-      axes: { x: { key: "workload.target_qps", values: [8, 16] } },
+      axes: [{ key: "workload.target_qps", values: [8, 16] }],
     }));
   });
 
@@ -107,10 +134,10 @@ describe("ScanPanel", () => {
       target: { files: [new File(["{}"], "replay-plan.json")] },
     });
     await screen.findByText(/replay-plan.json/);
-    fireEvent.focus(screen.getByLabelText("横轴参数（必选）"));
-    fireEvent.change(screen.getByLabelText("横轴参数（必选）"), { target: { value: "会话" } });
+    fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+    fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "会话" } });
     fireEvent.click(screen.getByRole("option", { name: /会话投放频率/ }));
-    fireEvent.change(screen.getByLabelText("横轴档位"), { target: { value: "1,2" } });
+    fireEvent.change(screen.getByLabelText("扫描档位 1"), { target: { value: "1,2" } });
     fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       base: expect.objectContaining({ workload: expect.objectContaining({

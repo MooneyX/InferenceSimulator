@@ -80,17 +80,15 @@ class ScanAxis(BaseModel):
 
 class ScanRequest(BaseModel):
     base: SimConfig
-    axes: dict[str, ScanAxis]
+    axes: list[ScanAxis] = Field(min_length=1)
 
     @model_validator(mode="after")
     def check_axes(self) -> ScanRequest:
-        if "x" not in self.axes or any(k not in ("x", "color", "shape", "line") for k in self.axes):
-            raise ValueError("扫描须指定横轴，可选颜色、形状、线样式")
-        selected = [axis.key for axis in self.axes.values()]
+        selected = [axis.key for axis in self.axes]
         if len(selected) != len(set(selected)):
             raise ValueError("各维度不能选择同一参数")
         mode = f"{self.base.workload.mode}/{self.base.workload.arrival_mode}"
-        for axis in self.axes.values():
+        for axis in self.axes:
             parameter = PARAMETERS.get(axis.key)
             if parameter is None or mode not in parameter.modes:
                 raise ValueError(f"当前负载模式不支持参数 {axis.key}")

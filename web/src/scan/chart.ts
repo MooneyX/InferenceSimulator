@@ -28,8 +28,7 @@ export function valueOf(point: ScanPoint, key: string): unknown {
 }
 
 export function availableKeys(data: ScanData[]): string[] {
-  return [...new Set(data.flatMap(({ job }) =>
-    Object.values(job.axes ?? {}).map((axis) => axis.key)))];
+  return [...new Set(data.flatMap(({ job }) => (job.axes ?? []).map((axis) => axis.key)))];
 }
 
 export function metricsOf(data: ScanData[]): string[] {

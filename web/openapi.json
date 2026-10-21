@@ -1577,10 +1577,10 @@
           "axes": {
             "anyOf": [
               {
-                "additionalProperties": {
+                "items": {
                   "$ref": "#/components/schemas/ScanAxis"
                 },
-                "type": "object"
+                "type": "array"
               },
               {
                 "type": "null"
@@ -2877,10 +2877,11 @@
             "$ref": "#/components/schemas/SimConfig"
           },
           "axes": {
-            "additionalProperties": {
+            "items": {
               "$ref": "#/components/schemas/ScanAxis"
             },
-            "type": "object",
+            "type": "array",
+            "minItems": 1,
             "title": "Axes"
           }
         },

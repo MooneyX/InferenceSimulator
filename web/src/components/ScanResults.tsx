@@ -64,7 +64,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [selected, setSelected] = useState<string[] | null>(null);
   const [points, setPoints] = useState<Record<string, ScanPoint[]>>({});
   const [parameters, setParameters] = useState<ScanParameter[]>([]);
-  const [roles, setRoles] = useState<Roles>({ x: "", color: "", shape: "", line: "" });
+  const [roles, setRoles] = useState<Roles | null>(null);
   const [metric, setMetric] = useState("throughput");
   const [background, setBackground] = useState<BackgroundValues>({});
   const [choosingBackground, setChoosingBackground] = useState(false);
@@ -92,10 +92,12 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
     ({ job, points: points[job.id] })), [finished.map((job) => job.id).join(","), points]);
   const keys = availableKeys(data);
   const measures = metricsOf(data);
-  const chosenRoles: Roles = { x: roles.x && keys.includes(roles.x) ? roles.x : keys[0] ?? "",
-    color: keys.includes(roles.color) ? roles.color : "",
-    shape: keys.includes(roles.shape) ? roles.shape : "",
-    line: keys.includes(roles.line) ? roles.line : "" };
+  const initialRoles: Roles = { x: keys[0] ?? "", color: keys[1] ?? "",
+    shape: keys[2] ?? "", line: keys[3] ?? "" };
+  const chosenRoles: Roles = { x: roles?.x && keys.includes(roles.x) ? roles.x : initialRoles.x,
+    color: roles ? (keys.includes(roles.color) ? roles.color : "") : initialRoles.color,
+    shape: roles ? (keys.includes(roles.shape) ? roles.shape : "") : initialRoles.shape,
+    line: roles ? (keys.includes(roles.line) ? roles.line : "") : initialRoles.line };
   const currentMetric = measures.includes(metric) ? metric : measures[0] ?? "";
   const selection = resolveSelection(data, chosenRoles, currentMetric,
     background, selectedValues, choosingBackground);

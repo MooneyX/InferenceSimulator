@@ -6,11 +6,11 @@ test("后台扫描不锁表单，导出的离线 HTML 可重新透视", async ({
   test.setTimeout(60_000);
   await page.goto("/");
   await page.getByLabel("请求数量", { exact: true }).fill("2");
-  await page.getByLabel("扫描参数 1").fill("最多同时运行请求");
+  await page.getByLabel("扫描参数 1", { exact: true }).fill("最多同时运行请求");
   await page.getByRole("listbox").getByRole("option", { name: /最多同时运行请求/ }).click();
   await page.getByLabel("扫描档位 1").fill("1,2,3");
   await page.getByRole("button", { name: "添加参数" }).click();
-  await page.getByLabel("扫描参数 2").fill("Prefill / Decode");
+  await page.getByLabel("扫描参数 2", { exact: true }).fill("Prefill / Decode");
   await page.getByRole("listbox").getByRole("option", { name: /Prefill \/ Decode 分步执行/ }).click();
   await page.getByLabel("扫描档位 2").fill("true,false");
   const submitted = page.waitForResponse((response) => response.url().endsWith("/api/scans")

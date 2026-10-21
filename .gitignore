@@ -33,6 +33,6 @@ Thumbs.db
 /refs/cc-traces/
 
 # Local simulation input configurations
-/data/input-2000requests.json
-/data/input-4000requests.json
-/data/input-4000requests-0.2qps.json
+/data/inputs/input-2000requests.json
+/data/inputs/input-4000requests.json
+/data/inputs/input-4000requests-0.2qps.json

@@ -36,6 +36,57 @@ beforeEach(() => {
 });
 
 describe("ScanResults", () => {
+  it("paginates scan checkboxes and applies global or page-only selection across pages", async () => {
+    render(<ScanResults jobs={Array.from({ length: 12 }, (_, index) =>
+      job(`scan-${String(index + 1).padStart(2, "0")}`))} />);
+    const list = () => within(screen.getByRole("group", { name: "扫描结果列表" }));
+    const checkboxes = () => list().getAllByRole("checkbox");
+    const previous = screen.getByRole("button", { name: "上一页" });
+    const next = screen.getByRole("button", { name: "下一页" });
+    expect(checkboxes()).toHaveLength(10);
+    expect(checkboxes().every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    expect(previous).toBeDisabled();
+    expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "当页全不选" }));
+    expect(screen.getByText("已选 2 / 12 项")).toBeInTheDocument();
+    fireEvent.click(next);
+    expect(checkboxes()).toHaveLength(2);
+    expect(checkboxes().every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    expect(next).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "当页全不选" }));
+    expect(screen.getByText("已选 0 / 12 项")).toBeInTheDocument();
+    fireEvent.click(checkboxes()[0]);
+    expect(screen.getByText("已选 1 / 12 项")).toBeInTheDocument();
+    fireEvent.click(previous);
+    expect(checkboxes().every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "当页全选" }));
+    expect(screen.getByText("已选 11 / 12 项")).toBeInTheDocument();
+    fireEvent.click(next);
+    expect(checkboxes()[0]).toBeChecked();
+    expect(checkboxes()[1]).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    expect(screen.getByText("已选 12 / 12 项")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "全不选" }));
+    expect(screen.getByText("已选 0 / 12 项")).toBeInTheDocument();
+    expect(checkboxes().every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "当页全选" }));
+    expect(screen.getByText("已选 2 / 12 项")).toBeInTheDocument();
+    fireEvent.click(previous);
+    expect(checkboxes().every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
+  });
+
+  it("clamps the current page when scans are removed", () => {
+    const jobs = Array.from({ length: 12 }, (_, index) => job(`scan-${index + 1}`));
+    const { rerender } = render(<ScanResults jobs={jobs} />);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    rerender(<ScanResults jobs={jobs.slice(0, 2)} />);
+    expect(screen.getByText("第 1 / 1 页")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+    expect(within(screen.getByRole("group", { name: "扫描结果列表" })).getAllByRole("checkbox"))
+      .toHaveLength(2);
+  });
+
   it("shows archived points and export for an interrupted older scan", async () => {
     render(<ScanResults jobs={[{ ...job("scan-a"), status: "interrupted", completed: 2,
       total: 4, code_version_status: "stale" }]} />);

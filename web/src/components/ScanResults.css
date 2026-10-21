@@ -22,22 +22,64 @@
   margin: 14px 0;
 }
 
-.scan-batches {
-  max-height: 180px;
-  overflow: auto;
+.scan-batch-toolbar, .scan-batch-pagination, .scan-batch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.scan-batches label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 5px 12px;
+.scan-batch-toolbar {
+  justify-content: space-between;
+  margin: 14px 0 10px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.scan-batch-pagination {
+  justify-content: flex-end;
+  margin: 10px 0 14px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.scan-batch-actions button, .scan-batch-pagination button {
+  padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface2);
   color: var(--text-dim);
   font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.scan-batch-actions button:hover:not(:disabled), .scan-batch-pagination button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.scan-batch-actions button:disabled, .scan-batch-pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scan-batches {
+  display: grid;
+  gap: 6px;
+}
+
+.scan-batches label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 

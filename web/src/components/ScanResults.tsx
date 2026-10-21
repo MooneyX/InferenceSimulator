@@ -15,6 +15,8 @@ import "./ScanResults.css";
 echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
   ToolboxComponent, TooltipComponent]);
 
+const SCANS_PER_PAGE = 10;
+
 function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; roles: Roles;
   metric: string; complete: boolean; keys: string[] }) {
   const host = useRef<HTMLDivElement>(null);
@@ -63,6 +65,13 @@ function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; role
 export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const scans = jobs.filter((job) => job.kind === "scan");
   const [selected, setSelected] = useState<string[] | null>(null);
+  const [page, setPage] = useState(0);
+  const pageCount = Math.ceil(scans.length / SCANS_PER_PAGE);
+  const currentPage = Math.min(page, Math.max(0, pageCount - 1));
+  const pageScans = scans.slice(currentPage * SCANS_PER_PAGE, (currentPage + 1) * SCANS_PER_PAGE);
+  const selectedIds = new Set(selected ?? scans.map((job) => job.id));
+  const selectedCount = scans.filter((job) => selectedIds.has(job.id)).length;
+  const pageSelectedCount = pageScans.filter((job) => selectedIds.has(job.id)).length;
   const [points, setPoints] = useState<Record<string, ScanPoint[]>>({});
   const [parameters, setParameters] = useState<ScanParameter[]>([]);
   const [roles, setRoles] = useState<Roles | null>(null);
@@ -71,8 +80,18 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [choosingBackground, setChoosingBackground] = useState(false);
   const [selectedValues, setSelectedValues] = useState<SelectedValues>({});
   const [error, setError] = useState("");
-  const chosen = scans.filter((job) => selected === null || selected.includes(job.id));
+  const chosen = scans.filter((job) => selectedIds.has(job.id));
   const finished = chosen.filter((job) => ["completed", "cancelled", "interrupted", "failed"].includes(job.status));
+  function updateSelected(ids: string[], checked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current ?? scans.map((job) => job.id));
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return [...next];
+    });
+  }
   const ids = finished.map((job) => job.id).join(",");
 
   useEffect(() => {
@@ -114,12 +133,29 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   return <section className="scan-results" aria-labelledby="scan-results-heading">
     <div className="section-heading"><div><p className="section-kicker">Scan results</p>
       <h2 id="scan-results-heading">扫描结果组合</h2></div></div>
-    <div className="scan-batches">{scans.map((job) => <label key={job.id}>
-      <input type="checkbox" checked={selected === null || selected.includes(job.id)}
-        onChange={(event) => { const all = selected ?? scans.map((item) => item.id);
-          setSelected(event.target.checked ? [...all, job.id] : all.filter((id) => id !== job.id)); }} />
+    <div className="scan-batch-toolbar">
+      <span>已选 {selectedCount} / {scans.length} 项</span>
+      <div className="scan-batch-actions">
+        <button type="button" disabled={selectedCount === scans.length} onClick={() => setSelected(null)}>全选</button>
+        <button type="button" disabled={selectedCount === 0} onClick={() => setSelected([])}>全不选</button>
+        <button type="button" disabled={pageSelectedCount === pageScans.length}
+          onClick={() => updateSelected(pageScans.map((job) => job.id), true)}>当页全选</button>
+        <button type="button" disabled={pageSelectedCount === 0}
+          onClick={() => updateSelected(pageScans.map((job) => job.id), false)}>当页全不选</button>
+      </div>
+    </div>
+    <div className="scan-batches" role="group" aria-label="扫描结果列表">{pageScans.map((job) => <label key={job.id}>
+      <input type="checkbox" checked={selectedIds.has(job.id)}
+        onChange={(event) => updateSelected([job.id], event.target.checked)} />
       扫描 {job.id.slice(0, 8)} · {job.status} · {job.code_version_status === "current" ? "当前代码版本" : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"} · {job.completed + job.failed}/{job.total}
       {job.failed > 0 && ` · ${job.failed} 点失败`}</label>)}</div>
+    <nav className="scan-batch-pagination" aria-label="扫描结果分页">
+      <button type="button" disabled={currentPage === 0}
+        onClick={() => setPage(currentPage - 1)}>上一页</button>
+      <span>第 {currentPage + 1} / {pageCount} 页</span>
+      <button type="button" disabled={currentPage + 1 === pageCount}
+        onClick={() => setPage(currentPage + 1)}>下一页</button>
+    </nav>
     {keys.length > 0 && <>
       {(["x", "color", "shape", "line"] as Role[]).map((role) =>
         <div className="scan-role-row" key={role}>

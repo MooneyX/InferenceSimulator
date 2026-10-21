@@ -162,7 +162,8 @@ beforeEach(() => {
   vi.mocked(getScanParameters).mockReset();
   vi.mocked(getScanParameters).mockResolvedValue([]);
   jobMock.mockResolvedValue({ id: "job-1", kind: "single", status: "completed", total: 1,
-    completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0, axes: null, version: 1 });
+    completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0, axes: null, version: 1,
+    code_fingerprint: "engine-1", code_version_status: "current" });
   vi.restoreAllMocks();
 });
 
@@ -226,17 +227,34 @@ describe("App", () => {
   it("keeps results hidden after refresh even when completed tasks are listed", async () => {
     vi.mocked(listJobs).mockResolvedValue([{ id: "previous", kind: "single", status: "completed",
       total: 1, completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0,
-      axes: null, version: 1 }]);
+      axes: null, version: 1, code_fingerprint: "engine-old", code_version_status: "stale" }]);
     resolveSimulation(result);
     render(<App />);
     const tasks = await screen.findByLabelText("后台任务");
     expect(within(tasks).getByRole("button", { name: "查看结果" })).toBeInTheDocument();
+    expect(within(tasks).getByText("旧代码版本")).toHaveAttribute("title", "engine-old");
+    expect(within(tasks).getByRole("link", { name: "查看原始 JSON" }))
+      .toHaveAttribute("href", "/api/jobs/previous/result");
+    expect(within(tasks).getByRole("link", { name: "导出 JSON" }))
+      .toHaveAttribute("href", "/api/jobs/previous/result");
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
     expect(resultMock).not.toHaveBeenCalled();
 
     fireEvent.click(within(tasks).getByRole("button", { name: "查看结果" }));
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(resultMock).toHaveBeenCalledWith("previous");
+  });
+
+  it("keeps legacy imported results downloadable when the code version is unknown", async () => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "legacy", kind: "single", status: "completed",
+      total: 1, completed: 1, failed: 0, error: null, cache: "hit", lookup_ms: 1,
+      axes: null, version: 1, code_fingerprint: "", code_version_status: "unknown" }]);
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    expect(within(tasks).getByText("代码版本未知")).toBeInTheDocument();
+    expect(within(tasks).getByRole("link", { name: "查看原始 JSON" })).toBeInTheDocument();
+    expect(within(tasks).getByRole("link", { name: "导出 JSON" }))
+      .toHaveAttribute("download", "simulation-legacy.json");
   });
 
   it("routes the configured replica count and filters instance results", async () => {

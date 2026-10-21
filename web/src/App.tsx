@@ -144,11 +144,21 @@ export default function App() {
           <ul>{tasks.jobs.map((job) => <li key={job.id}>
             <strong>{job.kind === "scan" ? "扫描" : "仿真"} {job.id.slice(0, 8)}</strong>
             <span className={`job-status job-status-${job.status}`}>{job.status}</span>
+            <span className={`job-code-version job-code-version-${job.code_version_status}`}
+              title={job.code_fingerprint || "首次升级前的任务，无法追溯代码版本"}>
+              {job.code_version_status === "current" ? "当前代码版本"
+                : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"}</span>
             <span className="job-progress">{job.completed + job.failed}/{job.total}</span>
             {job.error && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&
               <button type="button" className="secondary-button secondary-button-small" onClick={() => tasks.select(job.id)}>
                 查看结果</button>}
+            {job.kind === "single" && job.status === "completed" && job.code_version_status !== "current" &&
+              <a className="secondary-button secondary-button-small job-download" href={`/api/jobs/${encodeURIComponent(job.id)}/result`}
+                target="_blank" rel="noopener noreferrer">查看原始 JSON</a>}
+            {job.kind === "single" && job.status === "completed" &&
+              <a className="secondary-button secondary-button-small job-download" href={`/api/jobs/${encodeURIComponent(job.id)}/result`}
+                download={`simulation-${job.id}.json`}>导出 JSON</a>}
             {(job.status === "queued" || job.status === "running") &&
               <button type="button" className="secondary-button secondary-button-small" onClick={() =>
                 void tasks.stop(job.id).catch((cause: unknown) => setError(presentError(cause)))}>

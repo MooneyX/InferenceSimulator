@@ -87,6 +87,10 @@ $originalPath = $env:PATH
 $env:PATH = "$nodeDir;$env:PATH"
 Push-Location $root
 try {
+    Write-Host '归档旧版服务的内存任务（如有）...'
+    & $uv run python -m simserver.legacy_jobs
+    if ($LASTEXITCODE -ne 0) { throw '旧任务归档失败，服务保持运行，未执行部署。' }
+
     Stop-ProjectService 5173 'frontend'
     Stop-ProjectService 8000 'backend'
 

@@ -136,7 +136,11 @@
 
 .job-status-running { color: var(--accent3); }
 .job-status-completed { color: var(--accent2); }
-.job-status-failed, .job-status-cancelled { color: var(--accent4); }
+.job-status-failed, .job-status-cancelled, .job-status-interrupted { color: var(--accent4); }
+
+.job-code-version { color: var(--accent2); }
+.job-code-version-stale { color: var(--accent4); }
+.job-code-version-unknown { color: var(--text-dim); }
 
 .job-progress {
   color: var(--text-dim);
@@ -144,8 +148,17 @@
 }
 
 .job-list li .secondary-button {
-  margin-left: auto;
   white-space: nowrap;
+}
+
+.job-list li button.secondary-button {
+  margin-left: auto;
+}
+
+.job-download {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
 }
 
 .instance-filter {

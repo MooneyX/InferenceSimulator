@@ -46,7 +46,9 @@ def create_app(*, cache_path: Path | None = None) -> FastAPI:
     )
     max_bytes = int(os.environ.get("SIMULATOR_CACHE_MAX_BYTES", str(DEFAULT_MAX_BYTES)))
     app.state.result_cache = ResultCache(path, max_bytes=max_bytes)
-    app.state.jobs = JobManager(path, cache_size=max_bytes)
+    history_path = os.environ.get("SIMULATOR_JOBS_PATH")
+    app.state.jobs = JobManager(path, cache_size=max_bytes,
+                                history_path=Path(history_path) if history_path else None)
     app.include_router(router)
     app.include_router(job_router)
     app.include_router(trace_router)

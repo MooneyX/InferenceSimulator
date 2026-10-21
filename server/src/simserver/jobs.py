@@ -18,7 +18,8 @@ from uuid import uuid4
 
 from simcore import SimConfig, simulate
 from simcore.schemas import TracePlan
-from simserver.result_cache import DEFAULT_MAX_BYTES, ResultCache
+from simserver.job_store import JobStore
+from simserver.result_cache import DEFAULT_MAX_BYTES, ResultCache, engine_fingerprint
 from simserver.sweep import ScanRequest, build_point
 
 
@@ -72,7 +73,7 @@ def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
 class Job:
     id: str
     kind: str
-    base: SimConfig
+    base: SimConfig | None
     plan: TracePlan | None
     force: bool
     total: int
@@ -84,13 +85,14 @@ class Job:
     result: str | None = None
     cache: str | None = None
     lookup_ms: float | None = None
-    points: list[dict[str, Any]] = field(default_factory=list)
     version: int = 0
+    code_fingerprint: str = ""
 
     def summary(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "status": self.status, "total": self.total,
                 "completed": self.completed, "failed": self.failed, "error": self.error,
                 "cache": self.cache, "lookup_ms": self.lookup_ms, "version": self.version,
+                "code_fingerprint": self.code_fingerprint,
                 "axes": self.axes if self.kind == "scan" else None}
 
 
@@ -103,9 +105,11 @@ class Slot:
 
 class JobManager:
     def __init__(self, cache_path: Path, cache_size: int = DEFAULT_MAX_BYTES,
-                 workers: int | None = None) -> None:
+                 workers: int | None = None, history_path: Path | None = None) -> None:
         self.cache_path = cache_path
         self.cache_size = cache_size
+        self.store = JobStore(history_path or cache_path.with_name("jobs.sqlite3"))
+        self.code_fingerprint = engine_fingerprint()
         self.workers = workers if workers is not None else int(os.getenv("SIMULATOR_WORKERS", "8"))
         if self.workers < 1:
             raise ValueError("SIMULATOR_WORKERS 必须至少为 1")
@@ -117,24 +121,54 @@ class JobManager:
         self._version = 0
         self._closed = False
         self._started = False
+        for record in reversed(self.store.list()):
+            job = Job(record["id"], record["kind"], None, None, False, record["total"],
+                      axes=record["axes"] or [], status=record["status"],
+                      completed=record["completed"], failed=record["failed"],
+                      error=record["error"], cache=record["cache"],
+                      lookup_ms=record["lookup_ms"], version=record["version"],
+                      code_fingerprint=record["code_fingerprint"])
+            self._jobs[job.id] = job
+            self._version = max(self._version, job.version)
+        with self._condition:
+            for job in self._jobs.values():
+                if job.status in ("queued", "running"):
+                    job.status = "interrupted"
+                    job.error = "服务重启，任务已中断"
+                    self._changed(job)
         self._dispatcher = threading.Thread(
             target=self._dispatch, name="simulation-dispatch", daemon=True
         )
         self._dispatcher.start()
         atexit.register(self.close)
 
-    def _changed(self, job: Job) -> None:
-        self._version += 1
-        job.version = self._version
+    def _present(self, summary: dict[str, Any]) -> dict[str, Any]:
+        fingerprint = summary["code_fingerprint"]
+        status = "unknown" if not fingerprint else (
+            "current" if fingerprint == self.code_fingerprint else "stale"
+        )
+        return {**summary, "code_version_status": status}
+
+    def _changed(self, job: Job, *, point: dict[str, Any] | None = None) -> None:
+        version = self._version + 1
+        job.version = version
+        try:
+            self.store.save(job.summary(), result=job.result, point=point)
+        except Exception:
+            job.version = self._version
+            raise
+        self._version = version
         self._condition.notify_all()
 
     def submit(self, config: SimConfig, plan: TracePlan | None, *, force: bool = False) -> str:
-        job = Job(uuid4().hex, "single", config, plan, force, 1)
+        job = Job(uuid4().hex, "single", config, plan, force, 1,
+                  code_fingerprint=self.code_fingerprint)
         with self._condition:
-            self._started = True
+            self._changed(job)
             self._jobs[job.id] = job
             self._queue.append((job.id, iter(({},))))
-            self._changed(job)
+            self._started = True
+            self._condition.notify_all()
         return job.id
 
     def submit_scan(self, request: ScanRequest, plan: TracePlan | None) -> str:
@@ -142,17 +176,19 @@ class JobManager:
         total = 1
         for axis in axes:
             total *= len(axis["values"])
-        job = Job(uuid4().hex, "scan", request.base, plan, False, total, axes=axes)
+        job = Job(uuid4().hex, "scan", request.base, plan, False, total, axes=axes,
+                  code_fingerprint=self.code_fingerprint)
 
         def combinations() -> Iterator[dict[str, Any]]:
             for values in product(*(axis["values"] for axis in axes)):
                 yield {axis["key"]: value for axis, value in zip(axes, values, strict=True)}
 
         with self._condition:
-            self._started = True
+            self._changed(job)
             self._jobs[job.id] = job
             self._queue.append((job.id, combinations()))
-            self._changed(job)
+            self._started = True
+            self._condition.notify_all()
         return job.id
 
     def _spawn(self) -> Slot:
@@ -186,7 +222,6 @@ class JobManager:
     def _finish_if_done(self, job: Job) -> None:
         if job.status != "cancelled" and job.completed + job.failed == job.total:
             job.status = "completed" if job.kind == "scan" or job.failed == 0 else "failed"
-            self._changed(job)
 
     def _dispatch(self) -> None:
         while True:
@@ -213,6 +248,7 @@ class JobManager:
                     if job_and_values is None:
                         continue
                     job, values = job_and_values
+                    assert job.base is not None
                     config = (build_point(job.base, values, job.plan)
                               if job.kind == "scan" else job.base)
                     slot.pipe.send({"kind": job.kind, "config": config.model_dump(mode="json"),
@@ -231,21 +267,22 @@ class JobManager:
     def _record(self, job: Job, values: dict[str, Any], message: dict[str, Any]) -> None:
         if job.status == "cancelled":
             return
+        point = None
         if message["ok"]:
             if job.kind == "single":
                 job.result = message["payload"]["result"]
                 job.cache = message["cache"]
                 job.lookup_ms = message["lookup_ms"]
             else:
-                job.points.append({"values": values, "status": "completed", **message["payload"]})
+                point = {"values": values, "status": "completed", **message["payload"]}
             job.completed += 1
         else:
             job.error = message["error"]
             job.failed += 1
             if job.kind == "scan":
-                job.points.append({"values": values, "status": "failed", "error": message["error"]})
-        self._changed(job)
+                point = {"values": values, "status": "failed", "error": message["error"]}
         self._finish_if_done(job)
+        self._changed(job, point=point)
 
     def _watch(self, slot: Slot) -> None:
         while not self._closed:
@@ -278,31 +315,31 @@ class JobManager:
 
     def get(self, job_id: str) -> dict[str, Any]:
         with self._condition:
-            return self._jobs[job_id].summary()
+            return self._present(self.store.get(job_id))
 
     def list(self) -> list[dict[str, Any]]:
         with self._condition:
-            return [job.summary() for job in reversed(self._jobs.values())]
+            return [self._present(item) for item in self.store.list()]
 
     def result(self, job_id: str) -> tuple[str, str | None, float | None]:
         with self._condition:
-            job = self._jobs[job_id]
-            if job.kind != "single" or job.status != "completed" or job.result is None:
+            job = self.store.get(job_id)
+            content = self.store.result(job_id)
+            if job["kind"] != "single" or job["status"] != "completed" or content is None:
                 raise ValueError("仿真结果尚未就绪")
-            return job.result, job.cache, job.lookup_ms
+            return content, job["cache"], job["lookup_ms"]
 
     def points(self, job_id: str) -> list[dict[str, Any]]:
         with self._condition:
-            job = self._jobs[job_id]
-            if job.kind != "scan":
+            if self.store.get(job_id)["kind"] != "scan":
                 raise ValueError("这不是参数扫描任务")
-            return list(job.points)
+            return self.store.points(job_id)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._condition:
             job = self._jobs[job_id]
-            if job.status in ("completed", "failed", "cancelled"):
-                return job.summary()
+            if job.status in ("completed", "failed", "cancelled", "interrupted"):
+                return self.get(job_id)
             job.status = "cancelled"
             self._queue = deque(
                 (ident, iterator) for ident, iterator in self._queue if ident != job_id
@@ -317,14 +354,14 @@ class JobManager:
                         slot.process.join()
                     slot.pipe.close()
             self._changed(job)
-            return job.summary()
+            return self.get(job_id)
 
     def changes(self, version: int, timeout: float = 15.0) -> tuple[int, list[dict[str, Any]]]:
         with self._condition:
             if self._version <= version and not self._closed:
                 self._condition.wait(timeout=timeout)
             current = self._version
-            return current, [job.summary() for job in self._jobs.values() if job.version > version]
+            return current, [self._present(item) for item in self.store.changes(version)]
 
     def close(self) -> None:
         with self._condition:

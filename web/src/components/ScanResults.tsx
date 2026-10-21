@@ -71,7 +71,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [selectedValues, setSelectedValues] = useState<SelectedValues>({});
   const [error, setError] = useState("");
   const chosen = scans.filter((job) => selected === null || selected.includes(job.id));
-  const finished = chosen.filter((job) => job.status === "completed" || job.status === "cancelled");
+  const finished = chosen.filter((job) => ["completed", "cancelled", "interrupted", "failed"].includes(job.status));
   const ids = finished.map((job) => job.id).join(",");
 
   useEffect(() => {
@@ -117,7 +117,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
       <input type="checkbox" checked={selected === null || selected.includes(job.id)}
         onChange={(event) => { const all = selected ?? scans.map((item) => item.id);
           setSelected(event.target.checked ? [...all, job.id] : all.filter((id) => id !== job.id)); }} />
-      扫描 {job.id.slice(0, 8)} · {job.status} · {job.completed + job.failed}/{job.total}
+      扫描 {job.id.slice(0, 8)} · {job.status} · {job.code_version_status === "current" ? "当前代码版本" : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"} · {job.completed + job.failed}/{job.total}
       {job.failed > 0 && ` · ${job.failed} 点失败`}</label>)}</div>
     {keys.length > 0 && <>
       {(["x", "color", "shape", "line"] as Role[]).map((role) =>

@@ -1521,7 +1521,8 @@
               "running",
               "completed",
               "failed",
-              "cancelled"
+              "cancelled",
+              "interrupted"
             ],
             "title": "Status"
           },
@@ -1574,6 +1575,19 @@
             "type": "integer",
             "title": "Version"
           },
+          "code_fingerprint": {
+            "type": "string",
+            "title": "Code Fingerprint"
+          },
+          "code_version_status": {
+            "type": "string",
+            "enum": [
+              "current",
+              "stale",
+              "unknown"
+            ],
+            "title": "Code Version Status"
+          },
           "axes": {
             "anyOf": [
               {
@@ -1601,6 +1615,8 @@
           "cache",
           "lookup_ms",
           "version",
+          "code_fingerprint",
+          "code_version_status",
           "axes"
         ],
         "title": "JobSummary"

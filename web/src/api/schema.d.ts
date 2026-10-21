@@ -693,7 +693,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running" | "completed" | "failed" | "cancelled";
+            status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
             /** Total */
             total: number;
             /** Completed */
@@ -708,6 +708,13 @@ export interface components {
             lookup_ms: number | null;
             /** Version */
             version: number;
+            /** Code Fingerprint */
+            code_fingerprint: string;
+            /**
+             * Code Version Status
+             * @enum {string}
+             */
+            code_version_status: "current" | "stale" | "unknown";
             /** Axes */
             axes: components["schemas"]["ScanAxis"][] | null;
         };

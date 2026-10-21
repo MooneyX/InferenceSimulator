@@ -1,11 +1,15 @@
 """后台调度接口与参数扫描的端到端测试。"""
 
+import json
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from simserver import create_app
+from simserver.job_store import JobStore
+from simserver.legacy_jobs import main as migrate_legacy_jobs
 from test_routes import make_payload
 
 
@@ -39,6 +43,79 @@ def test_single_task_and_cache(tmp_path: Path, monkeypatch) -> None:
         assert second.headers["X-Simulation-Cache"] == "hit"
         assert second.json() == first.json()
         assert client.get("/api/jobs/not-found").status_code == 404
+
+
+def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SIMULATOR_WORKERS", "1")
+    path = tmp_path / "results.sqlite3"
+    with TestClient(create_app(cache_path=path)) as client:
+        single_id = client.post("/api/simulate", json=make_payload(num_requests=2)).json()["id"]
+        assert wait_job(client, single_id)["code_version_status"] == "current"
+        original = client.get(f"/api/jobs/{single_id}/result").content
+        scan_id = client.post("/api/scans", json={"base": make_payload(num_requests=1),
+            "axes": [{"key": "num_instances", "values": [1, 2]}]}).json()["id"]
+        assert wait_job(client, scan_id)["status"] == "completed"
+        points = client.get(f"/api/jobs/{scan_id}/points").json()
+        client.delete("/api/simulation-cache")
+    with patch("simserver.jobs.engine_fingerprint", return_value="new-engine"):
+        with TestClient(create_app(cache_path=path)) as restarted:
+            assert [item["id"] for item in restarted.get("/api/jobs").json()] == [scan_id, single_id]
+            summary = restarted.get(f"/api/jobs/{single_id}").json()
+            assert summary["code_version_status"] == "stale"
+            assert summary["code_fingerprint"] != "new-engine"
+            assert restarted.get(f"/api/jobs/{single_id}/result").content == original
+            assert restarted.get(f"/api/jobs/{scan_id}/points").json() == points
+            assert restarted.get(f"/api/jobs/{scan_id}").json()["code_version_status"] == "stale"
+
+
+def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path: Path) -> None:
+    path = tmp_path / "results.sqlite3"
+    store = JobStore(path.with_name("jobs.sqlite3"))
+    summary = {"id": "unfinished", "kind": "scan", "status": "running", "total": 3,
+               "completed": 1, "failed": 0, "error": None, "cache": None, "lookup_ms": None,
+               "version": 4, "axes": [{"key": "num_instances", "values": [1, 2, 3]}],
+               "code_fingerprint": "old-engine"}
+    point = {"values": {"num_instances": 1}, "status": "completed", "signature": "old"}
+    store.save(summary, point=point)
+    with TestClient(create_app(cache_path=path)) as client:
+        recovered = client.get("/api/jobs/unfinished").json()
+        assert recovered["status"] == "interrupted"
+        assert recovered["completed"] == 1
+        assert recovered["failed"] == 0
+        assert recovered["version"] > 4
+        assert recovered["code_version_status"] == "stale"
+        assert client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
+        assert client.delete("/api/jobs/unfinished").json()["status"] == "interrupted"
+    with TestClient(create_app(cache_path=path)) as client:
+        assert client.get("/api/jobs/unfinished").json()["status"] == "interrupted"
+        assert client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
+
+
+def test_first_deployment_imports_legacy_memory_jobs(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "results.sqlite3"
+    monkeypatch.setenv("SIMULATOR_CACHE_PATH", str(path))
+    old = {"id": "legacy-single", "kind": "single", "status": "completed", "total": 1,
+           "completed": 1, "failed": 0, "error": None, "cache": "hit", "lookup_ms": 2,
+           "version": 2, "axes": None}
+    scan = {**old, "id": "legacy-scan", "kind": "scan", "total": 2, "completed": 2,
+            "cache": None, "lookup_ms": None, "version": 5,
+            "axes": [{"key": "num_instances", "values": [1, 2]}]}
+    point = {"status": "completed", "values": {"num_instances": 1}, "signature": "old"}
+    result = '{"meta":{"num_requests":1}}'
+    responses = {"/api/jobs": [scan, old], "/api/jobs/legacy-single": old,
+                 "/api/jobs/legacy-single/result": result, "/api/jobs/legacy-scan": scan,
+                 "/api/jobs/legacy-scan/points": [point, {**point, "values": {"num_instances": 2}}]}
+    monkeypatch.setattr("simserver.legacy_jobs.fetch", lambda url: (
+        responses[url].encode() if isinstance(responses[url], str) else json.dumps(responses[url]).encode()
+    ))
+    assert migrate_legacy_jobs() == 0
+    assert migrate_legacy_jobs() == 0
+    with TestClient(create_app(cache_path=path)) as client:
+        assert [item["id"] for item in client.get("/api/jobs").json()] == ["legacy-scan", "legacy-single"]
+        assert client.get("/api/jobs/legacy-single").json()["code_version_status"] == "unknown"
+        assert client.get("/api/jobs/legacy-single/result").text == result
+        assert [item["values"] for item in client.get("/api/jobs/legacy-scan/points").json()] == [
+            {"num_instances": 1}, {"num_instances": 2}]
 
 
 def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:

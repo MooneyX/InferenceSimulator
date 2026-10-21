@@ -11,6 +11,7 @@ import { formatScanTooltip } from "./tooltip.js";
 const config = { inference: { tp_size: 1 } } as ScanData["points"][number]["config"];
 const job: JobSummary = { id: "scan-a", kind: "scan", status: "completed", total: 4,
   completed: 4, failed: 0, error: null, cache: null, lookup_ms: null, version: 1,
+  code_fingerprint: "engine-1", code_version_status: "current",
   axes: [{ key: "num_instances", values: [1, 2] },
     { key: "scheduler.max_running_requests", values: [1, 2] },
     { key: "scheduler.pd_mutually_exclusive", values: [true] },

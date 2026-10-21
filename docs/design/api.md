@@ -87,7 +87,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 ### 结果缓存
 
 - 配置先完成校验和默认值补齐；Trace 先加载并校验计划。以稳定 JSON 配置、规范化计划内容的 SHA-256、缓存格式及源代码/运行时版本指纹生成缓存键，保留数组顺序，用计划哈希替换临时 `plan_id`。缓存命中仍回显本次完整配置。
-- 默认使用 SQLite 持久保存压缩完整结果；路径及容量见 README。任务调度与扫描摘要仅在服务进程内存中，不跨服务重启保留；已完成同参数结果可复用，并行 worker 之间不合并正在进行的计算；计算时不占用数据库事务。请求级失败的完整结果可缓存。
+- 默认使用 SQLite 持久保存压缩完整结果；路径及容量见 README。计算队列仅在服务进程内存中，任务摘要、完整单场结果和扫描点另存于独立 `jobs.sqlite3` 归档，跨服务重启保留且不随缓存清空；已完成同参数结果可复用，并行 worker 之间不合并正在进行的计算；计算时不占用数据库事务。请求级失败的完整结果可缓存。
 - `POST /api/simulate?force=true` 提交跳过已完成缓存的重算任务，默认 `force=false`。结果接口响应头 `X-Simulation-Cache` 为 `hit` / `miss` / `shared`，`X-Simulation-Cache-Lookup-Ms` 为查找/读取耗时，`meta.wall_clock_ms` 保留原计算耗时。
 - `DELETE /api/simulation-cache` 返回 204；跨进程共享缓存代际防止清空前开始的计算重新写入。单条超容量仍返回但不保存，容量超限按最久未使用记录清理。
 - 不改变 Trace 临时资源的有效期；失效计划仍返回 404，重新上传相同计划后可复用缓存。
@@ -112,7 +112,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 
 `GET /api/scans/parameters` 返回可选参数的键、名称、数值/整数/布尔类型和适用的合成/Trace、开环/闭环组合。不包含模型配置字段、GPU 预设名及派生 KV 容量；`inference.parallelism` 代表必须同步写入的每实例 GPU 卡数与 TP 数（MoE 时 EP 数，Dense 固定 EP1）。`POST /api/scans` 以 `{ "base": SimConfig, "axes": [{ "key": "num_instances", "values": [1, 2] }, { "key": "scheduler.pd_mutually_exclusive", "values": [true, false] }] }` 提交扫描。`axes` 为至少一项的有序参数列表，参数不能重复，键由服务端白名单及负载模式检查；每点构建完整配置并重新执行模型校验/容量解析，不可运行点独立失败，不中断其他点。
 
-`GET /api/jobs/{id}/points` 返回已完成的点级指标、实际 `SimConfig`、同一配置/Trace 内容/引擎指纹的去重签名或失败原因。所有普通任务和扫描点共享单条严格 FIFO 队列；先提交扫描的全部点在后提交普通任务之前领取空闲 worker，不预留容量或按任务类型抢占。使用自行管理的计算进程，`SIMULATOR_WORKERS` 默认 8；取消整个扫描移除排队点、终止正在运行该扫描的 worker 并补建进程。扫描点数量不设软件上限，调度器以组合迭代器保存队列；任务状态与扫描摘要留在单一服务进程内存中，不单独持久化或自动设置期限，服务重启后不恢复。已有完整仿真结果仍遵循 `ResultCache` 容量限制，Trace 上传资源保持原临时存储策略。
+`GET /api/jobs/{id}/points` 返回已完成的点级指标、实际 `SimConfig`、同一配置/Trace 内容/引擎指纹的去重签名或失败原因。所有普通任务和扫描点共享单条严格 FIFO 队列；先提交扫描的全部点在后提交普通任务之前领取空闲 worker，不预留容量或按任务类型抢占。使用自行管理的计算进程，`SIMULATOR_WORKERS` 默认 8；取消整个扫描移除排队点、终止正在运行该扫描的 worker 并补建进程。扫描点数量不设软件上限，调度器以组合迭代器保存队列；任务状态、完整单场结果和已完成扫描点以独立 SQLite 数据库归档，跨服务重启保留，不自动过期，也不受 `ResultCache` 容量或清空操作影响。每个任务保存源代码指纹；`JobSummary.code_version_status` 基于当前部署指纹返回 `current` / `stale`；首次从旧版运行中服务迁入但无法追溯指纹的任务返回 `unknown`，现有 `version` 仍是 SSE 变更序号。重启前未完成的任务转为 `interrupted`，已归档扫描点仍可查看、导出，不自动续跑；未产生结果的单场无法导出。Trace 上传资源保持原临时存储策略。
 
 浏览器可以勾选多项已完成扫描、切换指标与四种参数角色，将相同输入身份的点去重；对缺失的组合不插值、不对未显示参数差异求平均。导出 HTML 在单文件中内嵌 ECharts、可筛选的点级数据和图表脚本，无网络时仍能选择批次、重新透视、缩放和下载数据 CSV。
 

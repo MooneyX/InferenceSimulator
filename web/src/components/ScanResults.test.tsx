@@ -14,7 +14,8 @@ const axes = [{ key: "num_instances", values: [1, 2] },
   { key: "scheduler.max_running_requests", values: [1, 2] },
   { key: "scheduler.pd_mutually_exclusive", values: [true, false] }];
 const job = (id: string): JobSummary => ({ id, kind: "scan", status: "completed", total: 2,
-  completed: 2, failed: 0, error: null, cache: null, lookup_ms: null, version: 1, axes });
+  completed: 2, failed: 0, error: null, cache: null, lookup_ms: null, version: 1, axes,
+  code_fingerprint: "engine-1", code_version_status: "current" });
 const point = (x: number, color: number, shape: boolean, signature: string): ScanPoint => ({
   status: "completed", signature, values: { num_instances: x,
     "scheduler.max_running_requests": color, "scheduler.pd_mutually_exclusive": shape },
@@ -35,6 +36,14 @@ beforeEach(() => {
 });
 
 describe("ScanResults", () => {
+  it("shows archived points and export for an interrupted older scan", async () => {
+    render(<ScanResults jobs={[{ ...job("scan-a"), status: "interrupted", completed: 2,
+      total: 4, code_version_status: "stale" }]} />);
+    await waitFor(() => expect(getScanPoints).toHaveBeenCalledWith("scan-a"));
+    expect(screen.getByText(/旧代码版本/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出离线可操作 HTML" })).toBeEnabled();
+  });
+
   it("filters selected batches by a single background value and restores multi-value roles", async () => {
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
     await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());

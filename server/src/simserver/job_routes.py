@@ -24,7 +24,7 @@ class JobReceipt(BaseModel):
 class JobSummary(BaseModel):
     id: str
     kind: Literal["single", "scan"]
-    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    status: Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"]
     total: int
     completed: int
     failed: int
@@ -32,6 +32,8 @@ class JobSummary(BaseModel):
     cache: str | None
     lookup_ms: float | None
     version: int
+    code_fingerprint: str
+    code_version_status: Literal["current", "stale", "unknown"]
     axes: list[ScanAxis] | None
 
 

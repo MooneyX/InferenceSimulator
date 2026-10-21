@@ -11,7 +11,7 @@ export type BackgroundValues = Record<string, string>;
 
 type Row = { job: JobSummary; point: ScanPoint; tokens: Record<string, string> };
 
-export function resolveSelection(data: ScanData[], roles: Roles, metric: string,
+export function resolveSelection(data: ScanData[], roles: Roles, metrics: string | string[],
   backgroundDraft: BackgroundValues = {}, selectedDraft: SelectedValues = {}, choosing = false,
   keys: string[] = availableKeys(data)) {
   const roleKeys = (Object.values(roles) as string[]).filter(Boolean);
@@ -24,8 +24,10 @@ export function resolveSelection(data: ScanData[], roles: Roles, metric: string,
     return [key, [...unique].sort(([, a], [, b]) => a === null ? 1 : b === null ? -1
       : typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b)))];
   })) as Record<string, [string, unknown][]>;
+  const selectedMetrics = typeof metrics === "string" ? [metrics] : metrics;
   const goodRows = rows.filter(({ point }) => point.status === "completed"
-    && typeof point.metrics?.[metric] === "number" && valueOf(point, roles.x) != null);
+    && selectedMetrics.some((metric) => typeof point.metrics?.[metric] === "number")
+    && valueOf(point, roles.x) != null);
   const matchesBackground = (row: Row, values: BackgroundValues) => hidden.every((key) =>
     values[key] === undefined || row.tokens[key] === values[key]);
   let background = { ...backgroundDraft };

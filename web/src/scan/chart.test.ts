@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { JobSummary } from "../api/types";
 import type { ScanData } from "./chart";
-import { availableKeys, buildChart } from "./chart";
+import { availableKeys, buildChart, metricChannel, metricCharts, metricUnit } from "./chart";
 import { renderReport } from "./report";
 import { resolveSelection } from "./selection";
 import { formatScanTooltip } from "./tooltip.js";
@@ -83,6 +83,24 @@ describe("scan projections", () => {
     expect(new Set(chart.series.map((series) => series.itemStyle.color)).size).toBe(2);
   });
 
+  it("uses available metrics from deduplicated scans without averaging", () => {
+    const scans: ScanData[] = [
+      { job, points: [{ ...point(1, 1, "shared"), metrics: { throughput: 2 } }] },
+      { job: { ...job, id: "scan-b" }, points: [{ ...point(1, 1, "shared"),
+        metrics: { ttft_mean: 12 } }] },
+    ];
+    const roles = { x: "num_instances", color: "", shape: "", line: "" };
+    const chart = buildChart(scans, roles, ["throughput", "ttft_mean"]);
+    expect(chart.deduplicated).toBe(1);
+    expect(chart.series.map((series) => series.data)).toEqual([[2], [12]]);
+    const { group, rows, setOption } = openReport(scans);
+    fireEvent.click(group("metric-options").getByRole("checkbox", { name: /ttft_mean/ }));
+    expect(rows()).toHaveLength(2);
+    expect(rows()[1]).toHaveTextContent("12");
+    expect((setOption.mock.lastCall?.[0] as { series: { data: number[] }[] }).series
+      .map((series) => series.data)).toEqual([[2], [12]]);
+  });
+
   it("uses only four ordered role values for live chart tooltips", () => {
     const background = "scheduler.max_prefill_tokens";
     const roles = { x: "num_instances", color: "scheduler.max_running_requests",
@@ -98,6 +116,45 @@ describe("scan projections", () => {
     expect(html).not.toContain(background);
     expect(html).not.toContain("scheduler.pd_mutually_exclusive");
     expect(html).not.toContain("扫描 scan-a");
+  });
+
+  it("shares axes by unit, uses an unused style and keeps missing metrics as gaps", () => {
+    const roles = { x: "num_instances", color: "scheduler.max_running_requests", shape: "", line: "" };
+    const scans: ScanData[] = [{ job, points: [
+      { ...point(1, 1, "a"), metrics: { throughput: 2, arrival_qps: 3, ttft_mean: 12,
+        actual_prefix_hit_rate: 0.25 } },
+      { ...point(2, 1, "b"), metrics: { throughput: 4, arrival_qps: 6,
+        actual_prefix_hit_rate: 0.5 } },
+    ] }];
+    expect(metricUnit("actual_prefix_hit_rate")).toBe("%");
+    expect(metricUnit("l3_capacity_blocks")).toBe("页");
+    expect(metricUnit("restore_bytes")).toBe("字节");
+    expect(metricCharts(["throughput", "arrival_qps", "ttft_mean"], roles))
+      .toEqual([["throughput", "arrival_qps", "ttft_mean"]]);
+    const metrics = ["throughput", "arrival_qps", "ttft_mean"];
+    const model = buildChart(scans, roles, metrics);
+    expect(model.series.map((series) => series.yAxisIndex)).toEqual([0, 0, 1]);
+    expect(model.series.map((series) => series.lineStyle.type)).toEqual(["solid", "dashed", "dotted"]);
+    expect(model.series[2].data).toEqual([12, null]);
+    expect(model.series[1].name).toContain("arrival_qps");
+    expect(model.series[1].tooltipValues[0]).toBe("arrival_qps (请求/秒)");
+    expect(buildChart(scans, roles, "actual_prefix_hit_rate").series[0].data).toEqual([25, 50]);
+    expect(resolveSelection(scans, roles, ["ttft_mean", "throughput"], {}, {}, false,
+      [roles.x, roles.color]).visible[0].points).toHaveLength(2);
+  });
+
+  it("splits by unit or per metric without an available or sufficient style channel", () => {
+    const roles = { x: "num_instances", color: "scheduler.max_running_requests", shape: "", line: "" };
+    expect(metricCharts(["throughput", "ttft_mean", "restore_bytes"], roles))
+      .toEqual([["throughput"], ["ttft_mean"], ["restore_bytes"]]);
+    expect(metricChannel(roles, 5)).toBe("shape");
+    expect(metricCharts(["throughput", "arrival_qps"],
+      { ...roles, shape: "scheduler.pd_mutually_exclusive", line: "inference.parallelism" }))
+      .toEqual([["throughput"], ["arrival_qps"]]);
+    const stable = buildChart([{ job, points: [{ ...point(1, 1, "stable"),
+      metrics: { throughput: 3, arrival_qps: 4 } }] }], roles,
+    ["throughput", "arrival_qps"], undefined, { throughput: 1, arrival_qps: 3 });
+    expect(stable.series.map((series) => series.lineStyle.type)).toEqual(["dashed", [10, 4, 2, 4]]);
   });
 
   it("embeds all scripts and data inside an offline HTML document", () => {
@@ -328,6 +385,45 @@ describe("scan projections", () => {
     fireEvent.click(document.getElementById("reset-background")!);
     fireEvent.click(background(key).getByRole("radio", { name: "2" }));
     expect(rows()).toHaveLength(1);
+  });
+
+  it("renders offline dual axes and then splits three units while keeping every selected metric in the table", () => {
+    const scans: ScanData[] = [{ job, points: [{ ...point(1, 1, "multi"), metrics: {
+      throughput: 2, ttft_mean: 10, restore_bytes: 2048,
+    } }] }];
+    const { group, setOption, rows } = openReport(scans);
+    const metrics = () => group("metric-options");
+    expect(metrics().getByRole("checkbox", { name: /throughput/ })).toBeDisabled();
+    fireEvent.click(metrics().getByRole("checkbox", { name: /ttft_mean/ }));
+    let option = setOption.mock.lastCall?.[0] as { yAxis: { name: string }[];
+      series: { name: string; yAxisIndex: number; lineStyle: { type: string } }[] };
+    expect(document.querySelectorAll(".chart")).toHaveLength(1);
+    expect(option.yAxis.map((axis) => axis.name)).toEqual(["请求/秒", "ms"]);
+    expect(option.series.map((series) => series.yAxisIndex)).toEqual([0, 1]);
+    expect(option.series.map((series) => series.lineStyle.type)).toEqual(["solid", "dashed"]);
+    expect(rows()).toHaveLength(2);
+    fireEvent.click(metrics().getByRole("checkbox", { name: /restore_bytes/ }));
+    expect(document.querySelectorAll(".chart")).toHaveLength(3);
+    expect(rows()).toHaveLength(3);
+    expect(rows()[2]).toHaveTextContent("restore_bytes (字节)");
+    expect(document.getElementById("metric-summary")).toHaveTextContent("已选 3 项");
+    fireEvent.click(metrics().getByRole("checkbox", { name: /ttft_mean/ }));
+    expect(document.querySelectorAll(".chart")).toHaveLength(1);
+    option = setOption.mock.lastCall?.[0] as typeof option;
+    expect(option.yAxis.map((axis) => axis.name)).toEqual(["请求/秒", "字节"]);
+  });
+
+  it("splits offline metrics when all styles are assigned to parameters", () => {
+    const scans: ScanData[] = [{ job, points: [
+      { ...point(1, 1, "all-a"), metrics: { throughput: 1, arrival_qps: 2 } },
+      { ...point(2, 2, "all-b"), values: { ...point(2, 2, "all-b").values,
+        "scheduler.pd_mutually_exclusive": false, "inference.parallelism": 2 },
+      metrics: { throughput: 3, arrival_qps: 4 } },
+    ] }];
+    const { group } = openReport(scans);
+    fireEvent.click(group("metric-options").getByRole("checkbox", { name: /arrival_qps/ }));
+    expect(document.querySelectorAll(".chart")).toHaveLength(2);
+    expect(document.getElementById("selection-notice")).not.toHaveTextContent("释放通道");
   });
 
   it("limits selected visual levels to distinguishable styles", () => {

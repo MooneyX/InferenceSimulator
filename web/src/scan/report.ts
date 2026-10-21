@@ -3,7 +3,7 @@ import reportRuntime from "./reportRuntime.js?raw";
 import tooltipSource from "./tooltip.js?raw";
 
 import type { ScanParameter } from "../api/types";
-import { availableKeys, type ScanData } from "./chart";
+import { availableKeys, metricUnit, metricsOf, type ScanData } from "./chart";
 
 const safeScript = (value: string) => value.replace(/<\/script/gi, "<\\/script");
 const embeddedData = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c")
@@ -49,11 +49,21 @@ button{padding:7px 16px;border:0;border-radius:6px;background:var(--accent);colo
  font-size:.75rem;font-weight:400}
 .secondary-button:hover:not(:disabled){border-color:var(--accent);background:var(--surface2);color:var(--text)}
 button:disabled{opacity:.4;cursor:not-allowed}
-#chart{width:100%;min-height:320px;height:45vh;max-height:500px}
+.metric-picker{position:relative;align-self:flex-start;min-width:180px}
+.metric-picker summary{padding:7px 10px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);
+ color:var(--text);font-size:.8rem;cursor:pointer}.metric-picker[open] summary{border-color:var(--accent)}
+.metric-options{position:absolute;z-index:5;top:calc(100% + 4px);left:0;width:min(400px,calc(100vw - 56px));
+ max-height:260px;overflow:auto;padding:6px;border:1px solid var(--border);border-radius:6px;
+ background:var(--surface2);box-shadow:0 12px 30px rgba(0,0,0,.25)}
+.controls .metric-options label{display:flex;min-width:0;padding:6px 8px;cursor:pointer;overflow-wrap:anywhere}
+.metric-options label:hover{background:var(--surface)}.metric-options small{margin-left:auto;white-space:nowrap}
+.chart-panel+.chart-panel{margin-top:24px;padding-top:14px;border-top:1px solid var(--border)}
+.chart-panel h3{font-size:.85rem;overflow-wrap:anywhere}
+.chart{width:100%;min-height:320px;height:45vh;max-height:500px}
 .table-wrap{overflow:auto;max-height:540px}table{border-collapse:collapse;width:100%;font-size:.75rem}
 th,td{border-bottom:1px solid var(--border);text-align:left;padding:8px;white-space:nowrap}
 th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400px;overflow:hidden;text-overflow:ellipsis}
-@media(max-width:700px){body{padding:14px 16px}.panel{padding:16px 14px}#chart{height:36vh;max-height:340px}}
+@media(max-width:700px){body{padding:14px 16px}.panel{padding:16px 14px}.chart{height:36vh;max-height:340px}}
 </style></head><body>
 <header><h1>参数组合扫描报告</h1><p>跨批次筛选与参数透视 · 离线可用 · 不插值、不补算、不对不同配置求平均</p></header>
 <section class="panel"><div id="batches" class="controls"></div>
@@ -61,17 +71,20 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <div class="role-row"><label>颜色 <select id="role-color"></select></label><div id="values-color" class="role-values"></div></div>
 <div class="role-row"><label>节点形状 <select id="role-shape"></select></label><div id="values-shape" class="role-values"></div></div>
 <div class="role-row"><label>线样式 <select id="role-line"></select></label><div id="values-line" class="role-values"></div></div>
-<div class="controls"><label>纵轴指标 <select id="metric"></select></label>
+<div class="controls"><details class="metric-picker"><summary id="metric-summary">纵轴指标 · 已选 1 项</summary>
+<div id="metric-options" class="metric-options" role="group" aria-label="纵轴指标"></div></details>
 <button id="reset-values" class="secondary-button" type="button">重置变化参数值</button></div>
 <div id="background"><div class="controls"><h3>背景参数</h3>
 <button id="reset-background" class="secondary-button" type="button">重新选择背景值</button></div>
 <div id="background-values" class="background-values"></div></div><p id="selection-notice" role="status"></p></section>
-<section class="panel"><div id="chart"></div><p id="summary"></p></section>
+<section class="panel"><div id="charts"></div><p id="summary"></p></section>
 <section class="panel"><div class="controls"><h2>点级数据</h2><button id="csv" type="button">导出筛选数据 CSV</button></div>
-<div class="table-wrap"><table><thead><tr><th>来源扫描</th><th>横轴</th><th>颜色</th><th>形状</th><th>线型</th><th>指标</th>
+<div class="table-wrap"><table><thead><tr><th>来源扫描</th><th>横轴</th><th>颜色</th><th>形状</th><th>线型</th><th>指标名</th><th>指标值</th>
 <th>状态</th><th>错误</th><th>实际输入配置</th></tr></thead><tbody id="data-body"></tbody></table></div></section>
 <script>${safeScript(echartsSource)}</script>
-<script type="application/json" id="scan-data">${embeddedData({ data, parameters, keys: availableKeys(data, parameters) })}</script>
+<script type="application/json" id="scan-data">${embeddedData({ data, parameters,
+      keys: availableKeys(data, parameters), units: Object.fromEntries(metricsOf(data).map((metric) =>
+        [metric, metricUnit(metric)])) })}</script>
 <script>${safeScript(tooltipSource.replace("export function formatScanTooltip", "function formatScanTooltip"))}
 ${safeScript(reportRuntime)}</script></body></html>`;
 }

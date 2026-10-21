@@ -6,7 +6,7 @@ import { DataZoomComponent, GridComponent, LegendComponent, ToolboxComponent, To
 
 import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
-import { availableKeys, buildChart, metricsOf, palette, symbols, lineStyles,
+import { availableKeys, buildChart, metricCharts, metricUnit, metricsOf, palette, symbols, lineStyles,
   type Roles, type Role, type ScanData } from "../scan/chart";
 import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
 import { formatScanTooltip } from "../scan/tooltip.js";
@@ -17,11 +17,13 @@ echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, Legend
 
 const SCANS_PER_PAGE = 10;
 
-function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; roles: Roles;
-  metric: string; complete: boolean; keys: string[] }) {
+function Curve({ data, roles, metrics, complete, keys, styleSlots, summary }: { data: ScanData[]; roles: Roles;
+  metrics: string[]; complete: boolean; keys: string[]; styleSlots: Record<string, number>; summary: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<ReturnType<typeof echarts.init> | null>(null);
-  const model = useMemo(() => buildChart(data, roles, metric, keys), [data, roles, metric, keys]);
+  const model = useMemo(() => buildChart(data, roles, metrics, keys, styleSlots),
+    [data, roles, metrics, keys, styleSlots]);
+  const units = [...new Set(metrics.map(metricUnit))];
   useEffect(() => {
     if (!host.current) return;
     const instance = echarts.init(host.current);
@@ -35,7 +37,7 @@ function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; role
       animation: false,
       backgroundColor: "transparent",
       textStyle: { color: "#9ca0b0" },
-      grid: { top: 42, left: 66, right: 35, bottom: 105 },
+      grid: { top: 42, left: 80, right: units.length > 1 ? 85 : 35, bottom: 105 },
       legend: { type: "scroll", bottom: 0, textStyle: { color: "#9ca0b0", fontSize: 10 } },
       tooltip: { trigger: "axis", backgroundColor: "#242837", borderColor: "#2e3347",
         textStyle: { color: "#e4e4e7" },
@@ -47,19 +49,24 @@ function Curve({ data, roles, metric, complete, keys }: { data: ScanData[]; role
       xAxis: { type: "category", name: roles.x, data: model.xValues,
         nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
         axisLine: { lineStyle: { color: "#2e3347" } } },
-      yAxis: { type: "value", name: metric, scale: true,
+      yAxis: units.map((unit, index) => ({ type: "value" as const,
+        name: metrics.length === 1 ? `${metrics[0]} (${unit})` : unit,
+        position: index === 0 ? "left" as const : "right" as const, scale: true,
         nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
-        splitLine: { lineStyle: { color: "#2e3347" } } }, series: model.series,
+        splitLine: { show: index === 0, lineStyle: { color: "#2e3347" } } })), series: model.series,
     }, true);
-  }, [model, roles.x, metric]);
+  }, [model, roles.x, metrics, units.join(",")]);
   const used = data.reduce((sum, batch) => sum + batch.points.length, 0);
   const levels = (key: string) => new Set(model.entries.map(({ point }) => key && point.values[key])).size;
-  return <><div ref={host} className="scan-chart" role="img" aria-label="参数敏感性扫描折线图" />
-    <p>{complete ? <>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
-      缺失点断线，不插值、不平均。</> : "背景参数尚未选齐，图表暂不显示。"}</p>
-    {(levels(roles.color) > palette.length || levels(roles.shape) > symbols.length ||
+  return <section className="scan-chart-panel">
+    {metrics.length > 1 || !summary ? <h3>{metrics.join(" · ")}</h3> : null}
+    <div ref={host} className="scan-chart" role="img" aria-label={`${metrics.join("、")}参数扫描折线图`} />
+    {summary && <p>{complete ? <>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
+      缺失点断线，不插值、不平均。</> : "背景参数尚未选齐，图表暂不显示。"}</p>}
+    {summary && (levels(roles.color) > palette.length || levels(roles.shape) > symbols.length ||
       levels(roles.line) > lineStyles.length) &&
-      <p role="status">部分视觉样式循环复用，建议减少相应档位以便区分。</p>}</>;
+      <p role="status">部分视觉样式循环复用，建议减少相应档位以便区分。</p>}
+  </section>;
 }
 
 export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
@@ -75,7 +82,8 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [points, setPoints] = useState<Record<string, ScanPoint[]>>({});
   const [parameters, setParameters] = useState<ScanParameter[]>([]);
   const [roles, setRoles] = useState<Roles | null>(null);
-  const [metric, setMetric] = useState("throughput");
+  const [selectedMetrics, setSelectedMetrics] = useState(["throughput"]);
+  const [styleSlots, setStyleSlots] = useState<Record<string, number>>({ throughput: 0 });
   const [background, setBackground] = useState<BackgroundValues>({});
   const [choosingBackground, setChoosingBackground] = useState(false);
   const [selectedValues, setSelectedValues] = useState<SelectedValues>({});
@@ -118,9 +126,29 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
     color: roles ? (keys.includes(roles.color) ? roles.color : "") : initialRoles.color,
     shape: roles ? (keys.includes(roles.shape) ? roles.shape : "") : initialRoles.shape,
     line: roles ? (keys.includes(roles.line) ? roles.line : "") : initialRoles.line };
-  const currentMetric = measures.includes(metric) ? metric : measures[0] ?? "";
-  const selection = resolveSelection(data, chosenRoles, currentMetric,
+  const activeMetrics = selectedMetrics.filter((metric) => measures.includes(metric));
+  if (!activeMetrics.length && measures.length) activeMetrics.push(measures[0]);
+  const selection = resolveSelection(data, chosenRoles, activeMetrics,
     background, selectedValues, choosingBackground, keys);
+  const charts = metricCharts(activeMetrics, chosenRoles);
+  function toggleMetric(metric: string, checked: boolean) {
+    if (!checked && activeMetrics.length === 1) return;
+    if (checked && !roles) setRoles(chosenRoles);
+    if (checked) {
+      const slots = { ...styleSlots };
+      for (const key of activeMetrics) {
+        if (slots[key] === undefined) slots[key] = Array.from({ length: activeMetrics.length }, (_, index) => index)
+          .find((index) => !activeMetrics.some((item) => slots[item] === index)) ?? activeMetrics.length;
+      }
+      const occupied = new Set(activeMetrics.map((key) => slots[key]));
+      const previous = slots[metric];
+      const next = previous !== undefined && !occupied.has(previous) ? previous
+        : Array.from({ length: activeMetrics.length + 1 }, (_, index) => index)
+          .find((index) => !occupied.has(index)) ?? activeMetrics.length;
+      setStyleSlots({ ...slots, [metric]: next });
+    }
+    setSelectedMetrics(checked ? [...activeMetrics, metric] : activeMetrics.filter((key) => key !== metric));
+  }
   const nameOf = (key: string) => parameters.find((item) => item.key === key)?.label ?? key;
 
   async function exportHtml() {
@@ -181,8 +209,17 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
           </div>
         </div>)}
       <div className="scan-view-controls">
-        <label>纵轴指标 <select value={currentMetric} onChange={(event) => setMetric(event.target.value)}>
-          {measures.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
+        <details className="scan-metric-picker">
+          <summary>纵轴指标 · 已选 {activeMetrics.length} 项</summary>
+          <div className="scan-metric-options" role="group" aria-label="纵轴指标">
+            {measures.map((key) => <label key={key}>
+              <input type="checkbox" checked={activeMetrics.includes(key)}
+                disabled={activeMetrics.length === 1 && activeMetrics.includes(key)}
+                onChange={(event) => toggleMetric(key, event.target.checked)} />
+              <span>{key}</span><small>{metricUnit(key)}</small>
+            </label>)}
+          </div>
+        </details>
         <button className="scan-secondary-button" type="button" onClick={() => setSelectedValues({})}>重置变化参数值</button>
         <button type="button" onClick={() => void exportHtml()} disabled={!data.length}>
           导出离线可操作 HTML</button></div>
@@ -204,7 +241,9 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
           </div></fieldset>)}</div>
       </div>}
       <p className="scan-selection-notice" role="status">{selection.notice}</p>
-      <Curve data={selection.visible} roles={chosenRoles} metric={currentMetric} complete={selection.complete} keys={keys} />
+      {charts.map((group, index) => <Curve key={group.join("|")} data={selection.visible}
+        roles={chosenRoles} metrics={group} complete={selection.complete} keys={keys}
+        styleSlots={styleSlots} summary={index === 0} />)}
     </>}
     {error && <p role="alert" className="field-error">{error}</p>}
   </section>;

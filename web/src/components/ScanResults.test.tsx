@@ -167,6 +167,34 @@ describe("ScanResults", () => {
     expect(setOption.mock.lastCall?.[0].series[0].name).toContain("scan-b");
   });
 
+  it("compares two units on dual axes and splits three units into separate charts", async () => {
+    vi.mocked(getScanPoints).mockResolvedValue([1, 2].map((x) => ({
+      ...point(x, x, x === 1, `multi-${x}`),
+      metrics: { throughput: x, ttft_mean: x * 10, restore_bytes: x * 100 },
+    })));
+    render(<ScanResults jobs={[job("scan-a")]} />);
+    await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
+    const picker = within(screen.getByRole("group", { name: "纵轴指标" }));
+    expect(picker.getByRole("checkbox", { name: /throughput/ })).toBeDisabled();
+    fireEvent.click(picker.getByRole("checkbox", { name: /ttft_mean/ }));
+    let option = setOption.mock.lastCall?.[0] as { yAxis: { name: string }[];
+      series: { name: string; yAxisIndex: number; lineStyle: { type: string } }[] };
+    expect(option.yAxis.map((axis) => axis.name)).toEqual(["请求/秒", "ms"]);
+    expect(option.series.some((item) => item.lineStyle.type === "dashed")).toBe(true);
+    expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(1);
+    fireEvent.click(picker.getByRole("checkbox", { name: /restore_bytes/ }));
+    expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(3);
+    expect(screen.queryByText(/释放通道/)).not.toBeInTheDocument();
+    fireEvent.click(picker.getByRole("checkbox", { name: /restore_bytes/ }));
+    expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(1);
+    fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }),
+      { target: { value: "" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /线样式/ }),
+      { target: { value: "scheduler.pd_mutually_exclusive" } });
+    option = setOption.mock.lastCall?.[0] as typeof option;
+    expect(option.series.some((item) => item.name.includes("ttft_mean"))).toBe(true);
+  });
+
   it("uses the series color and shape in the live hover legend", async () => {
     vi.mocked(getScanPoints).mockImplementation(async (id) => id === "scan-a"
       ? [point(1, 1, true, "plain")] : [point(1, 2, false, "styled")]);

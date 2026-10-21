@@ -60,15 +60,59 @@ export function metricsOf(data: ScanData[]): string[] {
     Object.keys(point.metrics ?? {}).filter((key) => typeof point.metrics?.[key] === "number"))))].sort();
 }
 
-export function buildChart(data: ScanData[], roles: Roles, metric: string,
-  keys: string[] = availableKeys(data)) {
+export function metricUnit(metric: string): string {
+  if (["ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "makespan", "restore_time_ms"].includes(metric)) return "ms";
+  if (["throughput", "arrival_qps"].includes(metric)) return "请求/秒";
+  if (metric.endsWith("_rate") || metric.endsWith("_ratio")) return "%";
+  if (metric.endsWith("_tokens")) return "token";
+  if (metric.endsWith("_blocks")) return "页";
+  if (metric === "restore_bytes") return "字节";
+  if (["num_sessions", "promotions", "demotions"].includes(metric) || metric.endsWith("_evictions")) return "次";
+  return `${metric}（单位未知）`;
+}
+
+export type StyleChannel = "color" | "shape" | "line";
+export function metricChannel(roles: Roles, count: number): StyleChannel | null {
+  if (count < 2) return null;
+  if (!roles.line && count <= lineStyles.length) return "line";
+  if (!roles.shape && count <= symbols.length) return "shape";
+  if (!roles.color && count <= palette.length) return "color";
+  return null;
+}
+
+export function metricCharts(metrics: string[], roles: Roles): string[][] {
+  const groups = new Map<string, string[]>();
+  for (const metric of metrics) {
+    const unit = metricUnit(metric);
+    groups.set(unit, [...(groups.get(unit) ?? []), metric]);
+  }
+  const units = [...groups.values()];
+  const charts = units.length <= 2 ? [metrics] : units;
+  return charts.flatMap((items) => items.length > 1 && !metricChannel(roles, items.length)
+    ? items.map((item) => [item]) : [items]);
+}
+
+export function buildChart(data: ScanData[], roles: Roles, metrics: string | string[],
+  keys: string[] = availableKeys(data), styleSlots: Record<string, number> = {}) {
+  const selectedMetrics = typeof metrics === "string" ? [metrics] : metrics;
+  const channel = metricChannel(roles, selectedMetrics.length);
+  const capacity = channel === "line" ? lineStyles.length : channel === "shape" ? symbols.length : palette.length;
+  const occupied = new Set<number>();
+  const slots = Object.fromEntries(selectedMetrics.map((metric) => {
+    const preferred = styleSlots[metric];
+    const slot = preferred !== undefined && preferred < capacity && !occupied.has(preferred)
+      ? preferred : Array.from({ length: capacity }, (_, index) => index).find((index) => !occupied.has(index)) ?? 0;
+    occupied.add(slot);
+    return [metric, slot];
+  }));
+  const units = [...new Set(selectedMetrics.map(metricUnit))];
   const candidates = data.flatMap(({ job, points }) => points.map((point) => ({ job, point })));
-  const seen = new Map<string, { job: JobSummary; point: ScanPoint; sources: string[] }>();
+  const seen = new Map<string, { job: JobSummary; point: ScanPoint; sources: string[]; copies: ScanPoint[] }>();
   for (const { job, point } of candidates) {
     const key = point.signature ?? `${job.id}:${JSON.stringify(point.values)}`;
     const prior = seen.get(key);
-    if (prior) prior.sources.push(job.id);
-    else seen.set(key, { job, point, sources: [job.id] });
+    if (prior) { prior.sources.push(job.id); prior.copies.push(point); }
+    else seen.set(key, { job, point, sources: [job.id], copies: [point] });
   }
   const entries = [...seen.values()];
   const token = (value: unknown) => JSON.stringify(value ?? null);
@@ -82,37 +126,45 @@ export function buildChart(data: ScanData[], roles: Roles, metric: string,
   const shapes = values(roles.shape);
   const lines = values(roles.line);
   const hidden = keys.filter((key) => !Object.values(roles).includes(key));
-  const seriesMap = new Map<string, { group: string; name: string; tooltipValues: string[];
-    color: number; shape: number; line: number; points: Map<string, number | null>; sources: string[] }>();
-  for (const { job, point, sources } of entries) {
+  const seriesMap = new Map<string, { name: string; metric: string; tooltipValues: string[];
+    color: number; shape: number; line: number; points: Map<string, number | null> }>();
+  for (const { job, point, copies } of entries) {
     const x = valueOf(point, roles.x);
     if (x == null) continue;
     const color = valueOf(point, roles.color);
     const shape = valueOf(point, roles.shape);
     const line = valueOf(point, roles.line);
     const hiddenValues = hidden.map((key) => [key, valueOf(point, key)]);
-    const group = JSON.stringify([job.id, color, shape, line, hiddenValues]);
-    let item = seriesMap.get(group);
-    if (!item) {
-      const name = [`扫描 ${job.id.slice(0, 6)}`,
-        roles.color && `${roles.color}=${label(color)}`,
-        roles.shape && `${roles.shape}=${label(shape)}`,
-        roles.line && `${roles.line}=${label(line)}`,
-        ...hiddenValues.map(([key, value]) => `${key}=${label(value)}`)].filter(Boolean).join(" · ");
-      const tooltipValues = [roles.color && color, roles.shape && shape, roles.line && line]
-        .filter((value) => value !== "" && value != null).map(label);
-      item = { group, name, tooltipValues, color: Math.max(0, colors.findIndex((v) => token(v) === token(color))),
-        shape: Math.max(0, shapes.findIndex((v) => token(v) === token(shape))),
-        line: Math.max(0, lines.findIndex((v) => token(v) === token(line))),
-        points: new Map(), sources };
-      seriesMap.set(group, item);
+    for (const metric of selectedMetrics) {
+      const group = JSON.stringify([job.id, color, shape, line, hiddenValues, metric]);
+      let item = seriesMap.get(group);
+      if (!item) {
+        const name = [selectedMetrics.length > 1 && metric, `扫描 ${job.id.slice(0, 6)}`,
+          roles.color && `${roles.color}=${label(color)}`,
+          roles.shape && `${roles.shape}=${label(shape)}`,
+          roles.line && `${roles.line}=${label(line)}`,
+          ...hiddenValues.map(([key, value]) => `${key}=${label(value)}`)].filter(Boolean).join(" · ");
+        const tooltipValues = [selectedMetrics.length > 1 ? `${metric} (${metricUnit(metric)})` : "",
+          roles.color && color, roles.shape && shape, roles.line && line]
+          .filter((value) => value !== "" && value != null).map(label);
+        const style = slots[metric];
+        item = { name, metric, tooltipValues,
+          color: channel === "color" ? style : Math.max(0, colors.findIndex((v) => token(v) === token(color))),
+          shape: channel === "shape" ? style : Math.max(0, shapes.findIndex((v) => token(v) === token(shape))),
+          line: channel === "line" ? style : Math.max(0, lines.findIndex((v) => token(v) === token(line))),
+          points: new Map() };
+        seriesMap.set(group, item);
+      }
+      const source = copies.find((entry) => entry.status === "completed"
+        && typeof entry.metrics?.[metric] === "number");
+      const measured = source?.metrics?.[metric];
+      const y = typeof measured === "number" ? measured * (metricUnit(metric) === "%" ? 100 : 1) : null;
+      item.points.set(token(x), y);
     }
-    const measured = point.metrics?.[metric];
-    const y = point.status === "completed" && typeof measured === "number" ? measured : null;
-    item.points.set(token(x), y);
   }
   const series = [...seriesMap.values()].map((item) => ({
-    name: item.name, tooltipValues: item.tooltipValues,
+    name: item.name, metric: item.metric, tooltipValues: item.tooltipValues,
+    yAxisIndex: units.indexOf(metricUnit(item.metric)),
     type: "line" as const, smooth: true, connectNulls: false, showSymbol: true,
     symbol: symbols[item.shape % symbols.length], symbolSize: 9,
     itemStyle: { color: palette[item.color % palette.length] },

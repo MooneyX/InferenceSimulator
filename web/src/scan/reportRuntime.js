@@ -41,6 +41,9 @@
   let backgroundValues = {};
   let choosingBackground = false;
   let selected = {};
+  let selectedMetrics = [metrics.includes('throughput') ? 'throughput' : metrics[0]].filter(Boolean);
+  const styleSlots = { [selectedMetrics[0]]: 0 };
+  let chartInstances = [];
   roles.forEach((role, index) => {
     const input = byId('role-' + role);
     if (role !== 'x') input.add(option('', '无'));
@@ -48,9 +51,25 @@
     input.value = keys[index] || '';
     input.addEventListener('change', () => { choosingBackground = false; redraw(true); });
   });
-  metrics.forEach(metric => byId('metric').add(option(metric, metric)));
-  byId('metric').value = metrics.includes('throughput') ? 'throughput' : metrics[0] || '';
-  byId('metric').addEventListener('change', () => redraw());
+  metrics.forEach(metric => {
+    const item = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.checked = selectedMetrics.includes(metric);
+    input.addEventListener('change', () => {
+      if (input.checked) {
+        const occupied = new Set(selectedMetrics.map(key => styleSlots[key]));
+        const previous = styleSlots[metric];
+        styleSlots[metric] = previous !== undefined && !occupied.has(previous) ? previous
+          : Array.from({ length: selectedMetrics.length + 1 }, (_, index) => index)
+            .find(index => !occupied.has(index));
+        selectedMetrics.push(metric);
+      } else selectedMetrics = selectedMetrics.filter(key => key !== metric);
+      redraw();
+    });
+    const unit = document.createElement('small'); unit.textContent = report.units[metric];
+    item.append(input, document.createTextNode(metric), unit);
+    byId('metric-options').append(item);
+  });
   byId('reset-values').addEventListener('click', () => redraw(true));
   byId('reset-background').addEventListener('click', () => {
     backgroundValues = {};
@@ -65,9 +84,7 @@
     check.append(input, document.createTextNode('扫描 ' + batch.job.id.slice(0, 8)));
     byId('batches').append(check);
   });
-  const chart = window.echarts && window.echarts.init(byId('chart'));
-  if (!chart) byId('chart').textContent = '图表脚本无法加载；下方数据表仍可使用。';
-  window.addEventListener('resize', () => chart?.resize());
+  window.addEventListener('resize', () => chartInstances.forEach(chart => chart.resize()));
   let tableRows = [];
   const cell = (row, text) => { const td = document.createElement('td'); td.textContent = text; row.append(td); };
   function redraw(reset = false) {
@@ -75,10 +92,15 @@
     const used = Object.fromEntries(roles.map(role => [role, byId('role-' + role).value]));
     const roleKeys = roles.filter(role => used[role]).map(role => used[role]);
     const hidden = keys.filter(key => !roleKeys.includes(key));
-    const metric = byId('metric').value;
+    byId('metric-summary').textContent = '纵轴指标 · 已选 ' + selectedMetrics.length + ' 项';
+    [...byId('metric-options').querySelectorAll('input')].forEach((input, index) => {
+      input.checked = selectedMetrics.includes(metrics[index]);
+      input.disabled = input.checked && selectedMetrics.length === 1;
+    });
     const activeRows = rows.filter(row => active.has(row.batch.job.id));
     const goodRows = activeRows.filter(row => row.point.status === 'completed'
-      && typeof row.point.metrics?.[metric] === 'number' && value(row.point, used.x) != null);
+      && selectedMetrics.some(metric => typeof row.point.metrics?.[metric] === 'number')
+      && value(row.point, used.x) != null);
     const matchesBackground = row => hidden.every(key =>
       !Object.prototype.hasOwnProperty.call(backgroundValues, key) || row.tokens[key] === backgroundValues[key]);
     if (choosingBackground && goodRows.length && !goodRows.some(matchesBackground)) backgroundValues = {};
@@ -197,8 +219,8 @@
           || !roleKeys.every(key => selected[key].has(tokens[key]))) return;
       const signature = point.signature || batch.job.id + ':' + JSON.stringify(point.values);
       const existing = seen.get(signature);
-      if (existing) existing.sources.push(batch.job.id);
-      else seen.set(signature, { batch, point, sources: [batch.job.id] });
+      if (existing) { existing.sources.push(batch.job.id); existing.copies.push(point); }
+      else seen.set(signature, { batch, point, sources: [batch.job.id], copies: [point] });
     });
     const entries = [...seen.values()];
     const visibleLevels = key => [...new Map(entries.map(entry => value(entry.point, key))
@@ -206,64 +228,120 @@
     const xValues = visibleLevels(used.x).sort((a, b) => typeof a === 'number' && typeof b === 'number'
       ? a - b : textOf(a).localeCompare(textOf(b)));
     const colors = visibleLevels(used.color), shapes = visibleLevels(used.shape), lines = visibleLevels(used.line);
-    const groups = new Map();
-    entries.forEach(({ batch, point, sources }) => {
-      const x = value(point, used.x);
-      if (x == null) return;
-      const color = value(point, used.color), shape = value(point, used.shape), line = value(point, used.line);
-      const remainder = hidden.map(key => [key, value(point, key)]);
-      const groupKey = JSON.stringify([batch.job.id, color, shape, line, remainder]);
-      if (!groups.has(groupKey)) groups.set(groupKey, {
-        name: ['扫描 ' + batch.job.id.slice(0, 6),
-          ...roles.slice(1).filter(role => used[role]).map(role =>
-            label(used[role]) + '=' + textOf(value(point, used[role]))),
-          ...remainder.map(([key, v]) => label(key) + '=' + textOf(v))].join(' · '),
-        tooltipValues: [used.color && color, used.shape && shape, used.line && line]
-          .filter(v => v !== '' && v != null).map(textOf),
-        ci: Math.max(0, colors.findIndex(v => tokenOf(v) === tokenOf(color))),
-        si: Math.max(0, shapes.findIndex(v => tokenOf(v) === tokenOf(shape))),
-        li: Math.max(0, lines.findIndex(v => tokenOf(v) === tokenOf(line))), values: new Map(), sources,
-      });
-      const y = point.status === 'completed' && typeof point.metrics?.[metric] === 'number'
-        ? point.metrics[metric] : null;
-      groups.get(groupKey).values.set(tokenOf(x), y);
+    const unitGroups = new Map();
+    selectedMetrics.forEach(metric => {
+      const unit = report.units[metric];
+      unitGroups.set(unit, [...(unitGroups.get(unit) || []), metric]);
     });
-    const series = [...groups.values()].map(group => ({
-      name: group.name, tooltipValues: group.tooltipValues,
-      type: 'line', smooth: true, connectNulls: false, showSymbol: true,
-      symbol: symbols[group.si % symbols.length], symbolSize: 9,
-      itemStyle: { color: palette[group.ci % palette.length] },
-      lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },
-      data: xValues.map(x => group.values.get(tokenOf(x)) ?? null),
-    }));
-    chart?.setOption({
-      animation: false, backgroundColor: 'transparent', textStyle: { color: '#9ca0b0' },
-      grid: { left: 64, right: 38, top: 40, bottom: 95 },
-      legend: { type: 'scroll', bottom: 0, textStyle: { color: '#9ca0b0', fontSize: 10 } },
-      tooltip: { trigger: 'axis', backgroundColor: '#242837', borderColor: '#2e3347',
-        textStyle: { color: '#e4e4e7' },
-        extraCssText: 'max-width:calc(100vw - 32px);white-space:normal;box-sizing:border-box;',
-        formatter: params => formatScanTooltip(params, series) },
-      toolbox: { iconStyle: { borderColor: '#9ca0b0' }, feature: { saveAsImage: {}, restore: {} } },
-      dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 50, borderColor: '#2e3347',
-        textStyle: { color: '#9ca0b0' }, fillerColor: 'rgba(108,99,255,.18)' }],
-      xAxis: { type: 'category', name: label(used.x), data: xValues.map(textOf),
-        nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
-        axisLine: { lineStyle: { color: '#2e3347' } } },
-      yAxis: { type: 'value', name: metric, scale: true,
-        nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
-        splitLine: { lineStyle: { color: '#2e3347' } } }, series,
-    }, true);
+    const channelFor = items => {
+      if (items.length < 2) return null;
+      if (!used.line && items.length <= styles.length) return 'line';
+      if (!used.shape && items.length <= symbols.length) return 'shape';
+      if (!used.color && items.length <= palette.length) return 'color';
+      return null;
+    };
+    const candidates = !unitGroups.size ? [] : unitGroups.size <= 2 ? [selectedMetrics] : [...unitGroups.values()];
+    const viewGroups = candidates.flatMap(items => items.length > 1 && !channelFor(items)
+      ? items.map(item => [item]) : [items]);
+    chartInstances.forEach(chart => chart.dispose?.());
+    chartInstances = [];
+    const chartsHost = byId('charts'); chartsHost.replaceChildren();
+    if (!viewGroups.length) chartsHost.textContent = '暂无可查看指标。';
+    viewGroups.forEach(items => {
+      const panel = document.createElement('div'); panel.className = 'chart-panel';
+      if (items.length > 1 || viewGroups.length > 1) {
+        const title = document.createElement('h3'); title.textContent = items.join(' · '); panel.append(title);
+      }
+      const host = document.createElement('div'); host.className = 'chart'; panel.append(host);
+      chartsHost.append(panel);
+      const chart = window.echarts && window.echarts.init(host);
+      if (!chart) { host.textContent = '图表脚本无法加载；下方数据表仍可使用。'; return; }
+      chartInstances.push(chart);
+      const channel = channelFor(items);
+      const capacity = channel === 'line' ? styles.length : channel === 'shape' ? symbols.length : palette.length;
+      const taken = new Set();
+      const assigned = Object.fromEntries(items.map(metric => {
+        const preferred = styleSlots[metric];
+        const slot = preferred !== undefined && preferred < capacity && !taken.has(preferred)
+          ? preferred : Array.from({ length: capacity }, (_, index) => index).find(index => !taken.has(index)) ?? 0;
+        taken.add(slot); return [metric, slot];
+      }));
+      const units = [...new Set(items.map(metric => report.units[metric]))];
+      const groups = new Map();
+      entries.forEach(({ batch, point, copies }) => {
+        const x = value(point, used.x);
+        if (x == null) return;
+        const color = value(point, used.color), shape = value(point, used.shape), line = value(point, used.line);
+        const remainder = hidden.map(key => [key, value(point, key)]);
+        items.forEach(metric => {
+          const groupKey = JSON.stringify([batch.job.id, color, shape, line, remainder, metric]);
+          if (!groups.has(groupKey)) groups.set(groupKey, {
+            metric, name: [items.length > 1 && metric, '扫描 ' + batch.job.id.slice(0, 6),
+              ...roles.slice(1).filter(role => used[role]).map(role =>
+                label(used[role]) + '=' + textOf(value(point, used[role]))),
+              ...remainder.map(([key, v]) => label(key) + '=' + textOf(v))].filter(Boolean).join(' · '),
+            tooltipValues: [items.length > 1 ? metric + ' (' + report.units[metric] + ')' : '',
+              used.color && color, used.shape && shape, used.line && line]
+              .filter(v => v !== '' && v != null).map(textOf),
+            ci: channel === 'color' ? assigned[metric] : Math.max(0, colors.findIndex(v => tokenOf(v) === tokenOf(color))),
+            si: channel === 'shape' ? assigned[metric] : Math.max(0, shapes.findIndex(v => tokenOf(v) === tokenOf(shape))),
+            li: channel === 'line' ? assigned[metric] : Math.max(0, lines.findIndex(v => tokenOf(v) === tokenOf(line))),
+            values: new Map(),
+          });
+          const measured = copies.find(copy => copy.status === 'completed'
+            && typeof copy.metrics?.[metric] === 'number')?.metrics[metric];
+          const y = typeof measured === 'number'
+            ? measured * (report.units[metric] === '%' ? 100 : 1) : null;
+          groups.get(groupKey).values.set(tokenOf(x), y);
+        });
+      });
+      const series = [...groups.values()].map(group => ({
+        name: group.name, tooltipValues: group.tooltipValues,
+        yAxisIndex: units.indexOf(report.units[group.metric]),
+        type: 'line', smooth: true, connectNulls: false, showSymbol: true,
+        symbol: symbols[group.si % symbols.length], symbolSize: 9,
+        itemStyle: { color: palette[group.ci % palette.length] },
+        lineStyle: { type: styles[group.li % styles.length], color: palette[group.ci % palette.length] },
+        data: xValues.map(x => group.values.get(tokenOf(x)) ?? null),
+      }));
+      chart.setOption({
+        animation: false, backgroundColor: 'transparent', textStyle: { color: '#9ca0b0' },
+        grid: { left: 80, right: units.length > 1 ? 85 : 38, top: 40, bottom: 95 },
+        legend: { type: 'scroll', bottom: 0, textStyle: { color: '#9ca0b0', fontSize: 10 } },
+        tooltip: { trigger: 'axis', backgroundColor: '#242837', borderColor: '#2e3347',
+          textStyle: { color: '#e4e4e7' },
+          extraCssText: 'max-width:calc(100vw - 32px);white-space:normal;box-sizing:border-box;',
+          formatter: params => formatScanTooltip(params, series) },
+        toolbox: { iconStyle: { borderColor: '#9ca0b0' }, feature: { saveAsImage: {}, restore: {} } },
+        dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 50, borderColor: '#2e3347',
+          textStyle: { color: '#9ca0b0' }, fillerColor: 'rgba(108,99,255,.18)' }],
+        xAxis: { type: 'category', name: label(used.x), data: xValues.map(textOf),
+          nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
+          axisLine: { lineStyle: { color: '#2e3347' } } },
+        yAxis: units.map((unit, index) => ({ type: 'value',
+          name: items.length === 1 ? items[0] + ' (' + unit + ')' : unit,
+          position: index === 0 ? 'left' : 'right', scale: true,
+          nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
+          splitLine: { show: index === 0, lineStyle: { color: '#2e3347' } } })), series,
+      }, true);
+    });
     const body = byId('data-body'); body.replaceChildren();
-    tableRows = entries.map(({ batch, point, sources }) => ({
-      scan: sources.map(id => id.slice(0, 8)).join(','), x: value(point, used.x),
-      color: value(point, used.color), shape: value(point, used.shape),
-      line: value(point, used.line), metric: point.metrics?.[metric] ?? null,
-      status: point.status, error: point.error || '', config: JSON.stringify(point.config || point.values),
+    tableRows = entries.flatMap(({ point, sources, copies }) => selectedMetrics.map(metric => {
+      const source = copies.find(copy => copy.status === 'completed'
+        && typeof copy.metrics?.[metric] === 'number');
+      const measured = source?.metrics[metric];
+      return {
+        scan: sources.map(id => id.slice(0, 8)).join(','), x: value(point, used.x),
+        color: value(point, used.color), shape: value(point, used.shape),
+        line: value(point, used.line), metricName: metric + ' (' + report.units[metric] + ')',
+        metric: typeof measured === 'number' ? measured * (report.units[metric] === '%' ? 100 : 1) : null,
+        status: (source || point).status, error: (source || point).error || '',
+        config: JSON.stringify(point.config || point.values),
+      };
     }));
     tableRows.forEach(data => {
       const row = document.createElement('tr');
-      for (const key of ['scan', 'x', 'color', 'shape', 'line', 'metric', 'status', 'error', 'config']) {
+      for (const key of ['scan', 'x', 'color', 'shape', 'line', 'metricName', 'metric', 'status', 'error', 'config']) {
         cell(row, data[key] == null ? '—' : String(data[key]));
       }
       body.append(row);
@@ -274,7 +352,7 @@
         + ' 个相同输入点。缺失结果不插值或平均。';
   }
   byId('csv').addEventListener('click', () => {
-    const fields = ['scan', 'x', 'color', 'shape', 'line', 'metric', 'status', 'error', 'config'];
+    const fields = ['scan', 'x', 'color', 'shape', 'line', 'metricName', 'metric', 'status', 'error', 'config'];
     const csv = [fields.join(','), ...tableRows.map(row => fields.map(key =>
       '"' + String(row[key] ?? '').replaceAll('"', '""') + '"').join(','))].join('\r\n');
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob(['\ufeff', csv],

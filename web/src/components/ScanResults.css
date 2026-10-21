@@ -269,6 +269,29 @@
   cursor: not-allowed;
 }
 
+.scan-metric-picker { position: relative; align-self: flex-start; min-width: min(100%, 180px); }
+.scan-metric-picker summary {
+  min-height: 32px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface2); color: var(--text); font-size: 0.8rem; cursor: pointer;
+}
+.scan-metric-picker[open] summary { border-color: var(--accent); }
+.scan-metric-options {
+  position: absolute; z-index: 5; top: calc(100% + 4px); left: 0;
+  width: min(400px, calc(100vw - 56px)); max-height: 260px; overflow: auto;
+  padding: 6px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface2); box-shadow: 0 12px 30px rgba(0, 0, 0, .25);
+}
+.scan-view-controls .scan-metric-options label {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 6px 8px; font-size: 0.75rem; cursor: pointer; overflow-wrap: anywhere;
+}
+.scan-metric-options label:hover { background: var(--surface); }
+.scan-metric-options input { accent-color: var(--accent); }
+.scan-metric-options small { margin-left: auto; white-space: nowrap; color: var(--text-dim); }
+.scan-chart-panel + .scan-chart-panel { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 14px; }
+.scan-chart-panel h3 { font-size: 0.85rem; margin: 10px 0 0; overflow-wrap: anywhere; }
+.scan-chart-panel > p { color: var(--text-dim); font-size: 0.75rem; line-height: 1.6; }
+
 .scan-chart {
   width: 100%;
   min-height: 320px;

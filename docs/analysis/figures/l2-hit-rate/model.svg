@@ -38,6 +38,7 @@
 <text x="288.0" y="64" fill="#666">t1≈173 s</text>
 <line x1="486.4" y1="50" x2="486.4" y2="370" stroke="#888" stroke-dasharray="4,4"/>
 <text x="490.4" y="64" fill="#666">t2≈917 s</text>
+<polygon points="72.0,369.0 156.0,352.0 217.9,313.1 285.7,252.3 351.0,205.0 424.4,196.5 496.9,228.6 564.7,269.5 630.0,303.6 630.0,290.0 564.7,232.3 496.9,127.2 424.4,136.2 351.0,190.0 285.7,250.6 217.9,313.0 156.0,352.0 72.0,369.0" fill="#DD8452" fill-opacity="0.18" stroke="#DD8452" stroke-opacity="0.5" stroke-dasharray="4,3"/>
 <polyline points="72.0,50.0 156.0,51.7 217.9,78.6 285.7,155.9 351.0,228.0 424.4,282.9 496.9,316.2 564.7,333.1 630.0,342.4" fill="none" stroke="#4C72B0" stroke-width="2"/>
 <circle cx="72.0" cy="50.0" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
 <circle cx="156.0" cy="51.7" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
@@ -77,19 +78,8 @@
 <line x1="646" y1="106" x2="674" y2="106" stroke="#DD8452" stroke-width="2"/>
 <circle cx="660" cy="106" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
 <text x="682" y="110" fill="#333">L2 实测</text>
-<polyline points="72.0,369.0 156.0,352.0 217.9,313.1 285.7,252.3 351.0,205.0 424.4,196.5 496.9,228.6 564.7,269.5 630.0,303.6" fill="none" stroke="#DD8452" stroke-width="2" stroke-dasharray="7,4"/>
-<circle cx="72.0" cy="369.0" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="156.0" cy="352.0" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="217.9" cy="313.1" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="285.7" cy="252.3" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="351.0" cy="205.0" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="424.4" cy="196.5" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="496.9" cy="228.6" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="564.7" cy="269.5" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<circle cx="630.0" cy="303.6" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<line x1="646" y1="128" x2="674" y2="128" stroke="#DD8452" stroke-width="2" stroke-dasharray="7,4"/>
-<circle cx="660" cy="128" r="3.5" fill="#ffffff" stroke="#DD8452" stroke-width="1.5"/>
-<text x="682" y="132" fill="#333">L2 预测下限</text>
+<rect x="646" y="122" width="28" height="12" fill="#DD8452" fill-opacity="0.18" stroke="#DD8452" stroke-opacity="0.5" stroke-dasharray="4,3"/>
+<text x="682" y="132" fill="#333">L2 预测区间</text>
 <polyline points="72.0,370.0 156.0,370.0 217.9,370.0 285.7,370.0 351.0,370.0 424.4,364.8 496.9,306.0 564.7,237.3 630.0,195.1" fill="none" stroke="#55A868" stroke-width="2"/>
 <circle cx="72.0" cy="370.0" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
 <circle cx="156.0" cy="370.0" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="840" height="430" viewBox="0 0 840 430" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif" font-size="12">
 <rect width="840" height="430" fill="#ffffff"/>
-<text x="72" y="28" font-size="15" font-weight="bold" fill="#222">图 10  每会话轮数对 L2 命中率的影响</text>
+<text x="72" y="28" font-size="15" font-weight="bold" fill="#222">图 9  每会话轮数对 L2 命中率的影响</text>
 <line x1="72" y1="370.0" x2="630" y2="370.0" stroke="#e6e6e6"/>
 <text x="64" y="374.0" text-anchor="end" fill="#555">0</text>
 <line x1="72" y1="294.7" x2="630" y2="294.7" stroke="#e6e6e6"/>

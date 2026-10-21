@@ -44,24 +44,26 @@ describe("ScanResults", () => {
     const previous = screen.getByRole("button", { name: "上一页" });
     const next = screen.getByRole("button", { name: "下一页" });
     expect(checkboxes()).toHaveLength(10);
-    expect(checkboxes().every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    expect(checkboxes().every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
+    expect(screen.getByText("已选 0 / 12 项")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "全不选" })).toBeDisabled();
+    expect(screen.queryByRole("img", { name: /参数扫描折线图/ })).not.toBeInTheDocument();
+    expect(getScanPoints).not.toHaveBeenCalled();
     expect(previous).toBeDisabled();
     expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "当页全不选" }));
-    expect(screen.getByText("已选 2 / 12 项")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "当页全选" }));
+    expect(screen.getByText("已选 10 / 12 项")).toBeInTheDocument();
     fireEvent.click(next);
     expect(checkboxes()).toHaveLength(2);
-    expect(checkboxes().every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
-    expect(next).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "当页全不选" }));
-    expect(screen.getByText("已选 0 / 12 项")).toBeInTheDocument();
-    fireEvent.click(checkboxes()[0]);
-    expect(screen.getByText("已选 1 / 12 项")).toBeInTheDocument();
-    fireEvent.click(previous);
     expect(checkboxes().every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "当页全选" }));
+    expect(next).toBeDisabled();
+    fireEvent.click(checkboxes()[0]);
     expect(screen.getByText("已选 11 / 12 项")).toBeInTheDocument();
+    fireEvent.click(previous);
+    expect(checkboxes().every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "当页全不选" }));
+    expect(screen.getByText("已选 1 / 12 项")).toBeInTheDocument();
     fireEvent.click(next);
     expect(checkboxes()[0]).toBeChecked();
     expect(checkboxes()[1]).not.toBeChecked();
@@ -90,6 +92,7 @@ describe("ScanResults", () => {
   it("shows archived points and export for an interrupted older scan", async () => {
     render(<ScanResults jobs={[{ ...job("scan-a"), status: "interrupted", completed: 2,
       total: 4, code_version_status: "stale" }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(getScanPoints).toHaveBeenCalledWith("scan-a"));
     expect(screen.getByText(/旧代码版本/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导出离线可操作 HTML" })).toBeEnabled();
@@ -97,6 +100,7 @@ describe("ScanResults", () => {
 
   it("filters selected batches by a single background value and restores multi-value roles", async () => {
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
     expect(screen.getByRole("combobox", { name: /颜色/ })).toHaveValue("scheduler.max_running_requests");
     expect(screen.getByRole("combobox", { name: /节点形状/ })).toHaveValue("");
@@ -130,6 +134,7 @@ describe("ScanResults", () => {
     })));
     render(<ScanResults jobs={[{ ...job("scan-a"), axes: [...axes,
       { key: "inference.parallelism", values: [1] }, { key, values: [1, 2] }] }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 1/)).toBeInTheDocument());
     expect(screen.getByRole("combobox", { name: /线样式/ })).toHaveValue("inference.parallelism");
     const group = within(screen.getByRole("group", { name: key }));
@@ -148,6 +153,7 @@ describe("ScanResults", () => {
     vi.mocked(getScanParameters).mockResolvedValue([{ key: "scheduler.max_prefill_tokens",
       label: "单次 Prefill 额度" }] as Awaited<ReturnType<typeof getScanParameters>>);
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
     const color = screen.getByRole("combobox", { name: /颜色/ });
     const shape = screen.getByRole("combobox", { name: /节点形状/ });
@@ -173,6 +179,7 @@ describe("ScanResults", () => {
       metrics: { throughput: x, ttft_mean: x * 10, restore_bytes: x * 100 },
     })));
     render(<ScanResults jobs={[job("scan-a")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
     const picker = within(screen.getByRole("group", { name: "纵轴指标" }));
     expect(picker.getByRole("checkbox", { name: /throughput/ })).toBeDisabled();
@@ -199,6 +206,7 @@ describe("ScanResults", () => {
     vi.mocked(getScanPoints).mockImplementation(async (id) => id === "scan-a"
       ? [point(1, 1, true, "plain")] : [point(1, 2, false, "styled")]);
     render(<ScanResults jobs={[job("scan-a"), job("scan-b")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
     fireEvent.change(screen.getByRole("combobox", { name: /颜色/ }),
       { target: { value: "scheduler.max_running_requests" } });

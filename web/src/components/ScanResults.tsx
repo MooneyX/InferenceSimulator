@@ -71,12 +71,12 @@ function Curve({ data, roles, metrics, complete, keys, styleSlots, summary }: { 
 
 export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const scans = jobs.filter((job) => job.kind === "scan");
-  const [selected, setSelected] = useState<string[] | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const pageCount = Math.ceil(scans.length / SCANS_PER_PAGE);
   const currentPage = Math.min(page, Math.max(0, pageCount - 1));
   const pageScans = scans.slice(currentPage * SCANS_PER_PAGE, (currentPage + 1) * SCANS_PER_PAGE);
-  const selectedIds = new Set(selected ?? scans.map((job) => job.id));
+  const selectedIds = new Set(selected);
   const selectedCount = scans.filter((job) => selectedIds.has(job.id)).length;
   const pageSelectedCount = pageScans.filter((job) => selectedIds.has(job.id)).length;
   const [points, setPoints] = useState<Record<string, ScanPoint[]>>({});
@@ -92,7 +92,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const finished = chosen.filter((job) => ["completed", "cancelled", "interrupted", "failed"].includes(job.status));
   function updateSelected(ids: string[], checked: boolean) {
     setSelected((current) => {
-      const next = new Set(current ?? scans.map((job) => job.id));
+      const next = new Set(current);
       for (const id of ids) {
         if (checked) next.add(id);
         else next.delete(id);
@@ -164,7 +164,7 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
     <div className="scan-batch-toolbar">
       <span>已选 {selectedCount} / {scans.length} 项</span>
       <div className="scan-batch-actions">
-        <button type="button" disabled={selectedCount === scans.length} onClick={() => setSelected(null)}>全选</button>
+        <button type="button" disabled={selectedCount === scans.length} onClick={() => setSelected(scans.map((job) => job.id))}>全选</button>
         <button type="button" disabled={selectedCount === 0} onClick={() => setSelected([])}>全不选</button>
         <button type="button" disabled={pageSelectedCount === pageScans.length}
           onClick={() => updateSelected(pageScans.map((job) => job.id), true)}>当页全选</button>

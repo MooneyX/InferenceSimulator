@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="430" viewBox="0 0 840 430" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',sans-serif" font-size="12">
+<rect width="840" height="430" fill="#ffffff"/>
+<text x="72" y="28" font-size="15" font-weight="bold" fill="#222">图 10  每会话轮数对 L2 命中率的影响</text>
+<line x1="72" y1="370.0" x2="630" y2="370.0" stroke="#e6e6e6"/>
+<text x="64" y="374.0" text-anchor="end" fill="#555">0</text>
+<line x1="72" y1="294.7" x2="630" y2="294.7" stroke="#e6e6e6"/>
+<text x="64" y="298.7" text-anchor="end" fill="#555">0.2</text>
+<line x1="72" y1="219.4" x2="630" y2="219.4" stroke="#e6e6e6"/>
+<text x="64" y="223.4" text-anchor="end" fill="#555">0.4</text>
+<line x1="72" y1="144.1" x2="630" y2="144.1" stroke="#e6e6e6"/>
+<text x="64" y="148.1" text-anchor="end" fill="#555">0.6</text>
+<line x1="72" y1="68.8" x2="630" y2="68.8" stroke="#e6e6e6"/>
+<text x="64" y="72.8" text-anchor="end" fill="#555">0.8</text>
+<line x1="72.0" y1="50" x2="72.0" y2="370" stroke="#f0f0f0"/>
+<text x="72.0" y="388" text-anchor="middle" fill="#555">30</text>
+<line x1="156.0" y1="50" x2="156.0" y2="370" stroke="#f0f0f0"/>
+<text x="156.0" y="388" text-anchor="middle" fill="#555">60</text>
+<line x1="217.9" y1="50" x2="217.9" y2="370" stroke="#f0f0f0"/>
+<text x="217.9" y="388" text-anchor="middle" fill="#555">100</text>
+<line x1="285.7" y1="50" x2="285.7" y2="370" stroke="#f0f0f0"/>
+<text x="285.7" y="388" text-anchor="middle" fill="#555">175</text>
+<line x1="351.0" y1="50" x2="351.0" y2="370" stroke="#f0f0f0"/>
+<text x="351.0" y="388" text-anchor="middle" fill="#555">300</text>
+<line x1="424.4" y1="50" x2="424.4" y2="370" stroke="#f0f0f0"/>
+<text x="424.4" y="388" text-anchor="middle" fill="#555">550</text>
+<line x1="496.9" y1="50" x2="496.9" y2="370" stroke="#f0f0f0"/>
+<text x="496.9" y="388" text-anchor="middle" fill="#555">1000</text>
+<line x1="564.7" y1="50" x2="564.7" y2="370" stroke="#f0f0f0"/>
+<text x="564.7" y="388" text-anchor="middle" fill="#555">1750</text>
+<line x1="630.0" y1="50" x2="630.0" y2="370" stroke="#f0f0f0"/>
+<text x="630.0" y="388" text-anchor="middle" fill="#555">3000</text>
+<rect x="72" y="50" width="558" height="320" fill="none" stroke="#999"/>
+<text x="351.0" y="416" text-anchor="middle" fill="#333">平均思考时间 T（s，对数刻度）</text>
+<text transform="translate(20,210.0) rotate(-90)" text-anchor="middle" fill="#333">L2 命中率</text>
+<polyline points="72.0,325.7 156.0,302.6 217.9,273.7 285.7,244.6 351.0,224.5 424.4,225.1 496.9,258.7 564.7,292.6 630.0,318.8" fill="none" stroke="#4C72B0" stroke-width="2"/>
+<circle cx="72.0" cy="325.7" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="156.0" cy="302.6" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="217.9" cy="273.7" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="285.7" cy="244.6" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="351.0" cy="224.5" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="424.4" cy="225.1" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="496.9" cy="258.7" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="564.7" cy="292.6" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<circle cx="630.0" cy="318.8" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<line x1="646" y1="62" x2="674" y2="62" stroke="#4C72B0" stroke-width="2"/>
+<circle cx="660" cy="62" r="3.5" fill="#4C72B0" stroke="#4C72B0" stroke-width="1.5"/>
+<text x="682" y="66" fill="#333">2 轮（2000 会话）</text>
+<polyline points="72.0,370.0 156.0,368.4 217.9,343.2 285.7,270.9 351.0,203.4 424.4,156.9 496.9,180.9 564.7,229.3 630.0,260.1" fill="none" stroke="#DD8452" stroke-width="2"/>
+<circle cx="72.0" cy="370.0" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="156.0" cy="368.4" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="217.9" cy="343.2" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="285.7" cy="270.9" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="351.0" cy="203.4" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="424.4" cy="156.9" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="496.9" cy="180.9" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="564.7" cy="229.3" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<circle cx="630.0" cy="260.1" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<line x1="646" y1="84" x2="674" y2="84" stroke="#DD8452" stroke-width="2"/>
+<circle cx="660" cy="84" r="3.5" fill="#DD8452" stroke="#DD8452" stroke-width="1.5"/>
+<text x="682" y="88" fill="#333">5 轮（800 会话）</text>
+<polyline points="72.0,370.0 156.0,369.4 217.9,352.2 285.7,271.6 351.0,192.3 424.4,136.4 496.9,151.2 564.7,187.7 630.0,212.1" fill="none" stroke="#55A868" stroke-width="2"/>
+<circle cx="72.0" cy="370.0" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="156.0" cy="369.4" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="217.9" cy="352.2" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="285.7" cy="271.6" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="351.0" cy="192.3" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="424.4" cy="136.4" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="496.9" cy="151.2" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="564.7" cy="187.7" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<circle cx="630.0" cy="212.1" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<line x1="646" y1="106" x2="674" y2="106" stroke="#55A868" stroke-width="2"/>
+<circle cx="660" cy="106" r="3.5" fill="#55A868" stroke="#55A868" stroke-width="1.5"/>
+<text x="682" y="110" fill="#333">10 轮（400 会话）</text>
+<polyline points="72.0,370.0 156.0,370.0 217.9,342.1 285.7,255.6 351.0,183.3 424.4,131.6 496.9,127.5 564.7,133.8 630.0,140.0" fill="none" stroke="#C44E52" stroke-width="2"/>
+<circle cx="72.0" cy="370.0" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="156.0" cy="370.0" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="217.9" cy="342.1" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="285.7" cy="255.6" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="351.0" cy="183.3" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="424.4" cy="131.6" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="496.9" cy="127.5" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="564.7" cy="133.8" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<circle cx="630.0" cy="140.0" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<line x1="646" y1="128" x2="674" y2="128" stroke="#C44E52" stroke-width="2"/>
+<circle cx="660" cy="128" r="3.5" fill="#C44E52" stroke="#C44E52" stroke-width="1.5"/>
+<text x="682" y="132" fill="#333">20 轮（200 会话）</text>
+</svg>

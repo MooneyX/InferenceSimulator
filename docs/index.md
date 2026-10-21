@@ -27,7 +27,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [analysis/l2-hit-rate-factors.md](analysis/l2-hit-rate-factors.md) | 以 4000 请求闭环负载为基准的 L2 命中率影响因素：过载诊断、复用距离模型与扫描佐证 |
+| [analysis/l2-hit-rate-factors.md](analysis/l2-hit-rate-factors.md) | 以 4000 请求闭环负载为基准的 L2 命中率影响因素：复用距离模型与扫描佐证 |
 
 ## 规划文档
 

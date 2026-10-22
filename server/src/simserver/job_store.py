@@ -57,22 +57,6 @@ class JobStore:
                 """, (summary["id"], summary["completed"] + summary["failed"],
                       json.dumps(point, ensure_ascii=False)))
 
-    def import_legacy(self, summary: dict[str, Any], result: str | None,
-                      points: list[dict[str, Any]]) -> bool:
-        with self._database() as connection:
-            inserted = connection.execute(
-                "INSERT OR IGNORE INTO jobs (id, summary, version, result) VALUES (?, ?, ?, ?)",
-                (summary["id"], json.dumps(summary, ensure_ascii=False), summary["version"], result),
-            )
-            if inserted.rowcount == 0:
-                return False
-            for sequence, point in enumerate(points, start=1):
-                connection.execute(
-                    "INSERT INTO job_points (job_id, sequence, point) VALUES (?, ?, ?)",
-                    (summary["id"], sequence, json.dumps(point, ensure_ascii=False)),
-                )
-        return True
-
     def list(self) -> list[dict[str, Any]]:
         with self._database() as connection:
             return [json.loads(row[0]) for row in connection.execute(

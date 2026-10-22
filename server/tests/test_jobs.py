@@ -1,6 +1,5 @@
 """后台调度接口与参数扫描的端到端测试。"""
 
-import json
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from simserver import create_app
 from simserver.job_store import JobStore
-from simserver.legacy_jobs import main as migrate_legacy_jobs
 from test_routes import make_payload
 
 
@@ -89,33 +87,6 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
     with TestClient(create_app(cache_path=path)) as client:
         assert client.get("/api/jobs/unfinished").json()["status"] == "interrupted"
         assert client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
-
-
-def test_first_deployment_imports_legacy_memory_jobs(tmp_path: Path, monkeypatch) -> None:
-    path = tmp_path / "results.sqlite3"
-    monkeypatch.setenv("SIMULATOR_CACHE_PATH", str(path))
-    old = {"id": "legacy-single", "kind": "single", "status": "completed", "total": 1,
-           "completed": 1, "failed": 0, "error": None, "cache": "hit", "lookup_ms": 2,
-           "version": 2, "axes": None}
-    scan = {**old, "id": "legacy-scan", "kind": "scan", "total": 2, "completed": 2,
-            "cache": None, "lookup_ms": None, "version": 5,
-            "axes": [{"key": "num_instances", "values": [1, 2]}]}
-    point = {"status": "completed", "values": {"num_instances": 1}, "signature": "old"}
-    result = '{"meta":{"num_requests":1}}'
-    responses = {"/api/jobs": [scan, old], "/api/jobs/legacy-single": old,
-                 "/api/jobs/legacy-single/result": result, "/api/jobs/legacy-scan": scan,
-                 "/api/jobs/legacy-scan/points": [point, {**point, "values": {"num_instances": 2}}]}
-    monkeypatch.setattr("simserver.legacy_jobs.fetch", lambda url: (
-        responses[url].encode() if isinstance(responses[url], str) else json.dumps(responses[url]).encode()
-    ))
-    assert migrate_legacy_jobs() == 0
-    assert migrate_legacy_jobs() == 0
-    with TestClient(create_app(cache_path=path)) as client:
-        assert [item["id"] for item in client.get("/api/jobs").json()] == ["legacy-scan", "legacy-single"]
-        assert client.get("/api/jobs/legacy-single").json()["code_version_status"] == "unknown"
-        assert client.get("/api/jobs/legacy-single/result").text == result
-        assert [item["values"] for item in client.get("/api/jobs/legacy-scan/points").json()] == [
-            {"num_instances": 1}, {"num_instances": 2}]
 
 
 def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:

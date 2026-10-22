@@ -11,7 +11,7 @@ function Normalize-CommandLine($process) {
     return $process.CommandLine.Replace('/', '\').ToLowerInvariant()
 }
 
-function Stop-ProjectService([int]$port, [string]$role) {
+function Get-ProjectService([int]$port, [string]$role) {
     $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
 
@@ -33,8 +33,31 @@ function Stop-ProjectService([int]$port, [string]$role) {
             throw "端口 $port 被非本项目进程占用（PID $ownerId），未停止该进程。"
         }
 
-        Write-Host "停止 $role 服务（PID $ownerId）..."
-        Stop-Process -Id $ownerId -ErrorAction Stop
+        [pscustomobject]@{ Process = $process; Parent = $parent }
+    }
+}
+
+function Assert-NoActiveJobs {
+    $backendServices = @(Get-ProjectService 8000 'backend')
+    if ($backendServices.Count -eq 0) {
+        Write-Host '本项目后端未运行，无需检查遗留任务状态。'
+        return
+    }
+
+    $python = Join-Path $root '.venv\Scripts\python.exe'
+    if (-not (Test-Path $python)) { throw '找不到本项目 Python，无法确认任务状态，未执行部署。' }
+    Write-Host '只读检查本地任务状态...'
+    & $python -X utf8 (Join-Path $root 'deploy-local-state.py')
+    if ($LASTEXITCODE -ne 0) { throw '任务检查未通过，服务保持运行，未执行部署。' }
+}
+
+function Stop-ProjectService([int]$port, [string]$role) {
+    foreach ($service in @(Get-ProjectService $port $role)) {
+        $process = $service.Process
+        $parent = $service.Parent
+        $parentCommand = Normalize-CommandLine $parent
+        Write-Host "停止 $role 服务（PID $($process.ProcessId)）..."
+        Stop-Process -Id $process.ProcessId -ErrorAction Stop
         if ($role -eq 'backend' -and $parent -and
             $parentCommand.Contains($backendPath) -and
             $parentCommand.Contains('uvicorn')) {
@@ -87,9 +110,7 @@ $originalPath = $env:PATH
 $env:PATH = "$nodeDir;$env:PATH"
 Push-Location $root
 try {
-    Write-Host '归档旧版服务的内存任务（如有）...'
-    & $uv run python -m simserver.legacy_jobs
-    if ($LASTEXITCODE -ne 0) { throw '旧任务归档失败，服务保持运行，未执行部署。' }
+    Assert-NoActiveJobs
 
     Stop-ProjectService 5173 'frontend'
     Stop-ProjectService 8000 'backend'

@@ -73,6 +73,16 @@ class TestOrdering:
                 heapq.heappush(heap, e)
             assert [heapq.heappop(heap) for _ in range(len(heap))] == expected
 
+    def test_heap_matches_complete_tuple_key(self) -> None:
+        rng = random.Random(0)
+        events = [
+            Event(float(rng.randrange(3)), rng.choice(list(EventKind)), rng.randrange(4), seq)
+            for seq in range(500)
+        ]
+        expected = sorted(events, key=lambda event: (event.time, event.kind, event.ref, event.seq))
+        heapq.heapify(events)
+        assert [heapq.heappop(events) for _ in range(len(events))] == expected
+
     def test_kind_priority_values(self) -> None:
         assert list(EventKind) == [
             EventKind.STEP_DONE,
@@ -100,6 +110,14 @@ class TestEventFactory:
 
     def test_independent_factories(self) -> None:
         assert EventFactory().client_send(0.0, 0).seq == EventFactory().client_send(0.0, 0).seq == 0
+
+    def test_event_uses_native_tuple_comparison(self) -> None:
+        event = EventFactory().l2_l1_done(1.0, 7)
+        assert isinstance(event, tuple)
+        assert tuple(event) == (event.time, event.kind, event.ref, event.seq)
+        assert event.kind is EventKind.L2_L1_DONE
+        assert Event.__lt__ is tuple.__lt__
+        assert not hasattr(event, "__dict__")
 
     def test_event_is_immutable(self) -> None:
         e = EventFactory().client_send(0.0, 0)

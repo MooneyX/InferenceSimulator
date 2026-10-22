@@ -13,8 +13,8 @@
 依赖层级：仅依赖标准库。
 """
 
-from dataclasses import dataclass
 from enum import IntEnum
+from typing import NamedTuple
 
 __all__ = ["Event", "EventFactory", "EventKind"]
 
@@ -31,8 +31,7 @@ class EventKind(IntEnum):
     ENGINE_STEP = 6
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class Event:
+class Event(NamedTuple):
     """调度事件。按 ``(time, kind, ref, seq)`` 排序，可直接入 ``heapq``。
 
     同一时间同类事件按引用 ID 排序；引用可指请求、副本或传输。

@@ -246,6 +246,39 @@ def test_prefetch_waiting_head_is_skipped_without_pinning_and_keeps_position() -
     assert [item.waiting.request.request_id for item in ready.admitted] == [0]
 
 
+@pytest.mark.parametrize("restoring", [False, True])
+@pytest.mark.parametrize("remote_index", [0, 2])
+def test_admission_stops_at_first_l3_only_page(
+    restoring: bool, remote_index: int,
+) -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=32, page_size=4,
+        l2_capacity_tokens=8, l3_capacity_tokens=8,
+    )
+    cache = TieredKVCache(32, 4, 8, 8)
+    ids = tuple(encode(0, index) for index in range(4))
+    tiers = ("L1", "L2", "L3", "L1") if remote_index == 2 else ("L3", "L1", "L2", "L1")
+    for chunk_id, tier in zip(ids, tiers, strict=True):
+        cache.pools[tier].insert(chunk_id)
+    scheduler = AdmissionScheduler(config, cache)
+    item = request(1, prompt=17, maximum=2, output=2, inherited=ids)
+    scheduler.enqueue(item, 0, generated_tokens=int(restoring))
+
+    batch = scheduler.select_prefill({})
+
+    assert len(batch.admitted) == 1
+    candidate = batch.admitted[0]
+    assert candidate.hit_sources == tuple(zip(ids[:remote_index], tiers[:remote_index], strict=True))
+    assert candidate.reused_tokens == remote_index * 4
+    assert candidate.new_tokens == 17 - remote_index * 4
+    assert candidate.required_pages == 5 - remote_index
+    assert batch.promote_ids == ((ids[1],) if remote_index == 2 else ())
+    assert not batch.restored and not batch.restore_only and not batch.aborted
+    for index, (chunk_id, tier) in enumerate(zip(ids, tiers, strict=True)):
+        page = cache.pools[tier].lookup(chunk_id)
+        assert page is not None and page.ref_count == int(index < remote_index)
+
+
 @pytest.mark.parametrize("capacity, restores", [(16, False), (20, True)])
 def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
     capacity: int, restores: bool,

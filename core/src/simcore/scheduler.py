@@ -132,8 +132,7 @@ class AdmissionScheduler:
         running: Mapping[int, RunningRequest],
         *,
         is_ready: Callable[[int], bool] | None = None,
-        can_reuse: Callable[[int, str, str], bool] | None = None,
-    ) -> AdmissionBatch:  # 运行集与就绪/复用条件 → 本步准入、恢复和失败批次
+    ) -> AdmissionBatch:  # 运行集与就绪条件 → 本步准入、恢复和失败批次
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
         block_size = cache.page_size
@@ -164,18 +163,9 @@ class AdmissionScheduler:
             if is_ready is not None and not is_ready(request.request_id): # 请求未就绪(prefetch未完成, 或者本地命中率比到达时更低, 原因是排队期间有KV被驱逐)
                 continue
             target = item.target_tokens
-            sources = cache.probe(request, target, restoring=item.restoring)
-            if can_reuse is not None:
-                sources = sources[
-                    : next(
-                        (
-                            index
-                            for index, (chunk_id, tier) in enumerate(sources)
-                            if not can_reuse(request.request_id, chunk_id, tier)
-                        ),
-                        len(sources),
-                    )
-                ]
+            sources = cache.probe(
+                request, target, restoring=item.restoring, include_l3=False
+            )
             hit = len(sources) * block_size
             cache.pin(request, sources)
             new_tokens = target - hit

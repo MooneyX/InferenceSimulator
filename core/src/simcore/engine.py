@@ -379,7 +379,6 @@ class Engine:
             selection = self._prefix_scheduler.select_prefill(
                 running,
                 is_ready=lambda key: self._ready_for_prefill(key, now_ms), # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill, 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
-                can_reuse=lambda key, chunk_id, tier: tier != "L3",
             )
             if (
                 not self._running

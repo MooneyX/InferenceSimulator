@@ -145,11 +145,13 @@ class AdmissionScheduler:
             ):
                 raise ValueError("运行请求身份或生成进度不合法")
             _ = cache.state(request_id)  # 调用state函数, 尝试取出状态信息, 若没有则会报错
+        active_count = len(running)
+        if active_count >= self._engine.max_running_requests:
+            return AdmissionBatch((), (), ())
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
             for item in running.values()
         )  # 未来输出只用于预算估算，不预占物理页
-        active_count = len(running)
         selected: list[PrefillCandidate] = []
         restored: list[WaitingRequest] = []
         restore_only: list[WaitingRequest] = []

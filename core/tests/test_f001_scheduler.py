@@ -1,12 +1,14 @@
 """F001 准入顺序、物理页预算与动态未来比例的独立验收。"""
 
-from unittest.mock import patch
+from collections import deque
+from collections.abc import Iterator
+from unittest.mock import Mock, patch
 
 import pytest
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import AdmissionScheduler, RunningRequest, WaitingRequest
+from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
@@ -218,6 +220,67 @@ def test_max_running_requests_is_residency_limit_not_prefill_batch_limit() -> No
     batch = scheduler.select_prefill({0: RunningRequest(active, 1)})
     assert [item.waiting.request.request_id for item in batch.admitted] == [1]
     assert scheduler.num_waiting == 1
+
+
+@pytest.mark.parametrize("waiting_count", [0, 1024])
+def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) -> None:
+    class TrackedWaitingQueue(deque[WaitingRequest]):
+        iterations = 0
+
+        def __iter__(self) -> Iterator[WaitingRequest]:
+            self.iterations += 1
+            return super().__iter__()
+
+    scheduler, cache = make(max_running=1)
+    active = request(0, maximum=32)
+    hold(cache, active)
+    running = {0: RunningRequest(active, 1)}
+    for key in range(1, waiting_count + 1):
+        scheduler.enqueue(request(key), 1)
+    expected_waiting = tuple(scheduler._waiting)
+    expected_queued = scheduler._queued.copy()
+    waiting = TrackedWaitingQueue(scheduler._waiting)
+    scheduler._waiting = waiting
+    is_ready = Mock(return_value=True)
+    accept_probe = Mock(return_value=True)
+
+    with (
+        patch.object(cache, "state", wraps=cache.state) as states,
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+    ):
+        for _ in range(3):
+            batch = scheduler.select_prefill(
+                running, is_ready=is_ready, accept_probe=accept_probe
+            )
+            assert batch == AdmissionBatch((), (), ())
+
+    assert states.call_count == 3
+    states.assert_called_with(0)
+    assert waiting.iterations == 0
+    assert tuple(waiting) == expected_waiting
+    assert scheduler._queued == expected_queued
+    is_ready.assert_not_called()
+    accept_probe.assert_not_called()
+    probes.assert_not_called()
+    pins.assert_not_called()
+
+    cache.finish(0)
+    batch = scheduler.select_prefill({})
+    assert [item.waiting.request.request_id for item in batch.admitted] == (
+        [1] if waiting_count else []
+    )
+    assert scheduler.num_waiting == max(waiting_count - 1, 0)
+
+
+@pytest.mark.parametrize("key, generated", [(1, 1), (0, 0), (0, 3)])
+def test_full_running_pool_still_validates_running_requests(key: int, generated: int) -> None:
+    scheduler, cache = make(max_running=1)
+    active = request(0, maximum=2)
+    hold(cache, active)
+
+    with pytest.raises(ValueError, match="运行请求身份或生成进度不合法"):
+        scheduler.select_prefill({key: RunningRequest(active, generated)})
 
 
 @pytest.mark.parametrize("maximum", [100, 65_536])

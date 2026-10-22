@@ -66,12 +66,8 @@ class Client:
                 self._plan = build_synthetic_closed_loop_plan(workload, self.engine)
             else:
                 self._roots_rng = random.Random(stable_derive(workload.seed, "root-length"))
-                self._increments_rng = random.Random(
-                    stable_derive(workload.seed, "turn-increment")
-                )
-                self._outputs_rng = random.Random(
-                    stable_derive(workload.seed, "output-length")
-                )
+                self._increments_rng = random.Random(stable_derive(workload.seed, "turn-increment"))
+                self._outputs_rng = random.Random(stable_derive(workload.seed, "output-length"))
                 self._ready: list[tuple[float, int, int]] = []
                 self._turns: dict[int, TurnPlan] = {}
                 self._roots: list[int] = []
@@ -106,7 +102,7 @@ class Client:
 
     def _prepare_trace(
         self, source: TracePlan, workload: WorkloadConfig
-    ) -> None: #将trace转化为请求计划
+    ) -> None:  # 将trace转化为请求计划
         if source.block_size != self.engine.page_size:
             raise ValueError("trace 块大小必须与引擎 page_size 一致")
         self._trace_turns = {item.request_id: item for item in source.requests}
@@ -202,9 +198,7 @@ class Client:
         if self._ready:
             _, session_id, parent_id = heapq.heappop(self._ready)
             parent = self._turns[parent_id]
-            increment = sample_length(
-                self._synthetic_cfg.turn_increment_len, self._increments_rng
-            )
+            increment = sample_length(self._synthetic_cfg.turn_increment_len, self._increments_rng)
             prompt_len = parent.prompt_len + parent.output_len + increment
             inherited = min(
                 (parent.prompt_len + parent.output_len - 1) // self.engine.page_size,

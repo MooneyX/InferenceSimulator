@@ -95,11 +95,15 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
     assert build_synthetic_closed_loop_plan(cfg, engine()) == plan
 
     assert cfg.synthetic is not None
-    changed = cfg.model_copy(update={
-        "synthetic": cfg.synthetic.model_copy(update={
-            "session": cfg.synthetic.session.model_copy(update={"think_time_ms": 60.0}),
-        }),
-    })
+    changed = cfg.model_copy(
+        update={
+            "synthetic": cfg.synthetic.model_copy(
+                update={
+                    "session": cfg.synthetic.session.model_copy(update={"think_time_ms": 60.0}),
+                }
+            ),
+        }
+    )
     changed_plan = build_synthetic_closed_loop_plan(changed, engine())
     for request_id, turn in plan.turns.items():
         other = changed_plan.turns[request_id]
@@ -112,11 +116,15 @@ def test_think_time_is_sampled_per_child_with_independent_seeded_stream() -> Non
         if turn.think_time_ms is not None:
             assert other.think_time_ms == pytest.approx(2 * turn.think_time_ms)
 
-    zero = cfg.model_copy(update={
-        "synthetic": cfg.synthetic.model_copy(update={
-            "session": cfg.synthetic.session.model_copy(update={"think_time_ms": 0.0}),
-        }),
-    })
+    zero = cfg.model_copy(
+        update={
+            "synthetic": cfg.synthetic.model_copy(
+                update={
+                    "session": cfg.synthetic.session.model_copy(update={"think_time_ms": 0.0}),
+                }
+            ),
+        }
+    )
     zero_plan = build_synthetic_closed_loop_plan(zero, engine())
     assert all(
         turn.think_time_ms == 0.0
@@ -202,28 +210,37 @@ def test_output_is_not_clamped_and_is_bound_to_request() -> None:
     assert request.output_len == 100 and request.max_new_tokens == 128
     assert cfg.synthetic is not None
     short_plan = build_synthetic_closed_loop_plan(
-        cfg.model_copy(update={
-            "synthetic": cfg.synthetic.model_copy(update={"output_len": FixedLength(value=2)}),
-        }), runtime,
+        cfg.model_copy(
+            update={
+                "synthetic": cfg.synthetic.model_copy(update={"output_len": FixedLength(value=2)}),
+            }
+        ),
+        runtime,
     )
     assert (short_plan.turns[0].output_len, short_plan.turns[0].max_new_tokens) == (2, 2)
     small = build_synthetic_closed_loop_plan(cfg, engine(page_size=64, capacity=192))
     assert small.turns == plan.turns
     assert build_synthetic_closed_loop_plan(cfg, runtime) == plan
-    result = simulate(resolved_config(
-        workload=cfg, engine=runtime,
-        perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
-    ))
+    result = simulate(
+        resolved_config(
+            workload=cfg,
+            engine=runtime,
+            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        )
+    )
     assert result.requests[0].output_len == 100
 
 
 def test_full_parent_output_drives_child_context_even_beyond_kv_capacity() -> None:
     cfg = WorkloadConfig(
-        session_rate=1, seed=7,
+        session_rate=1,
+        seed=7,
         synthetic=SyntheticWorkloadConfig(
             num_requests=3,
-            prompt_len=FixedLength(value=65), turn_increment_len=FixedLength(value=1),
-            output_len=FixedLength(value=100), session=SessionConfig(num_sessions=1),
+            prompt_len=FixedLength(value=65),
+            turn_increment_len=FixedLength(value=1),
+            output_len=FixedLength(value=100),
+            session=SessionConfig(num_sessions=1),
         ),
     )
     runtime = engine(page_size=64, capacity=256)
@@ -233,10 +250,13 @@ def test_full_parent_output_drives_child_context_even_beyond_kv_capacity() -> No
     assert (child.prompt_len, child.max_new_tokens, child.output_len) == (166, 128, 100)
     assert child.ideal_reuse_blocks == 2
     assert descendant.prompt_len == 267 and descendant.ideal_reuse_blocks == 4
-    result = simulate(resolved_config(
-        workload=cfg, engine=runtime,
-        perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
-    ))
+    result = simulate(
+        resolved_config(
+            workload=cfg,
+            engine=runtime,
+            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        )
+    )
     assert result.requests[0].output_len == 100
     assert result.aborted_requests[0].id == child.request_id
     assert result.aborted_requests[0].reason == "decode_kv_exhausted"
@@ -249,18 +269,23 @@ def test_engine_completes_at_actual_output_not_rounded_request_limit() -> None:
     cfg = WorkloadConfig(
         session_rate=1,
         synthetic=SyntheticWorkloadConfig(
-            num_requests=1, prompt_len=FixedLength(value=5),
-            turn_increment_len=FixedLength(value=1), output_len=FixedLength(value=3),
+            num_requests=1,
+            prompt_len=FixedLength(value=5),
+            turn_increment_len=FixedLength(value=1),
+            output_len=FixedLength(value=3),
         ),
     )
     plan = build_synthetic_closed_loop_plan(cfg, runtime)
     client = planned_client(plan, runtime)
     request = client.on_wakeup(client.initial_wakeups()[0])
     assert request.output_len == 3 and request.max_new_tokens == 4
-    result = simulate(resolved_config(
-        workload=cfg, engine=runtime,
-        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
-    ))
+    result = simulate(
+        resolved_config(
+            workload=cfg,
+            engine=runtime,
+            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+        )
+    )
     assert result.requests[0].output_len == 3
     assert result.meta.num_engine_steps == 3
 
@@ -268,29 +293,42 @@ def test_engine_completes_at_actual_output_not_rounded_request_limit() -> None:
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
 @pytest.mark.parametrize("cap", [64, 100])
 def test_synthetic_output_over_engine_cap_aborts_without_truncation(mode: str, cap: int) -> None:
-    workload = WorkloadConfig.model_validate({
-        "arrival_mode": mode, "session_rate" if mode == "closed_loop" else "target_qps": 1,
-        "synthetic": {
-            "num_requests": 2, "prompt_len": {"dist": "fixed", "value": 1},
-            "turn_increment_len": {"dist": "fixed", "value": 1},
-            "output_len": {"dist": "fixed", "value": cap + 1},
-            "session": {"num_sessions": 1} if mode == "closed_loop" else {},
-        },
-    })
+    workload = WorkloadConfig.model_validate(
+        {
+            "arrival_mode": mode,
+            "session_rate" if mode == "closed_loop" else "target_qps": 1,
+            "synthetic": {
+                "num_requests": 2,
+                "prompt_len": {"dist": "fixed", "value": 1},
+                "turn_increment_len": {"dist": "fixed", "value": 1},
+                "output_len": {"dist": "fixed", "value": cap + 1},
+                "session": {"num_sessions": 1} if mode == "closed_loop" else {},
+            },
+        }
+    )
     runtime = engine().model_copy(update={"max_output_tokens": cap})
-    result = simulate(resolved_config(
-        workload=workload, engine=runtime,
-        perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
-    ))
+    result = simulate(
+        resolved_config(
+            workload=workload,
+            engine=runtime,
+            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        )
+    )
     assert result.meta.num_completed == 0
     assert result.meta.num_aborted == (1 if mode == "closed_loop" else 2)
     assert result.meta.num_skipped == (1 if mode == "closed_loop" else 0)
-    assert all(item.reason == "output_exceeds_engine_limit" and item.generated_tokens == 0
-               and item.failed_at == item.arrival for item in result.aborted_requests)
+    assert all(
+        item.reason == "output_exceeds_engine_limit"
+        and item.generated_tokens == 0
+        and item.failed_at == item.arrival
+        for item in result.aborted_requests
+    )
     if mode == "closed_loop":
         plan = build_synthetic_closed_loop_plan(workload, runtime)
-        assert all(turn.output_len == cap + 1 and turn.max_new_tokens == cap
-                   for turn in plan.turns.values())
+        assert all(
+            turn.output_len == cap + 1 and turn.max_new_tokens == cap
+            for turn in plan.turns.values()
+        )
         assert plan.turns[1].prompt_len == cap + 3
 
 
@@ -299,15 +337,20 @@ def test_synthetic_output_at_engine_cap_completes_uncut(cap: int) -> None:
     workload = WorkloadConfig(
         session_rate=1,
         synthetic=SyntheticWorkloadConfig(
-            num_requests=1, prompt_len=FixedLength(value=1),
-            turn_increment_len=FixedLength(value=1), output_len=FixedLength(value=cap),
+            num_requests=1,
+            prompt_len=FixedLength(value=1),
+            turn_increment_len=FixedLength(value=1),
+            output_len=FixedLength(value=cap),
         ),
     )
     runtime = engine(page_size=64, capacity=128).model_copy(update={"max_output_tokens": cap})
     plan = build_synthetic_closed_loop_plan(workload, runtime)
     assert (plan.turns[0].output_len, plan.turns[0].max_new_tokens) == (cap, cap)
-    result = simulate(resolved_config(
-        workload=workload, engine=runtime,
-        perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
-    ))
+    result = simulate(
+        resolved_config(
+            workload=workload,
+            engine=runtime,
+            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        )
+    )
     assert result.meta.num_completed == 1 and result.requests[0].output_len == cap

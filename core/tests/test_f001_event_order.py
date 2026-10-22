@@ -55,7 +55,8 @@ def test_parent_done_callback_precedes_sends_including_immediate_children() -> N
     with (
         patch.object(engine, "complete", wraps=engine.complete) as completions,
         patch.object(
-            coordinator.client, "on_request_completed",
+            coordinator.client,
+            "on_request_completed",
             wraps=coordinator.client.on_request_completed,
         ) as callbacks,
         patch.object(engine, "submit", wraps=engine.submit) as submissions,
@@ -67,23 +68,28 @@ def test_parent_done_callback_precedes_sends_including_immediate_children() -> N
     assert [
         (
             call[0],
-            call.args[1] if call[0] == "complete"
-            else call.args[0] if call[0] == "callback"
+            call.args[1]
+            if call[0] == "complete"
+            else call.args[0]
+            if call[0] == "callback"
             else call.args[0].request_id,
         )
         for call in order.mock_calls[:9]
     ] == [
-        ("send", 0), ("send", 1),
-        ("complete", 0), ("callback", 0),
-        ("complete", 1), ("callback", 1),
-        ("send", 2), ("send", 3), ("send", 4),
+        ("send", 0),
+        ("send", 1),
+        ("complete", 0),
+        ("callback", 0),
+        ("complete", 1),
+        ("callback", 1),
+        ("send", 2),
+        ("send", 3),
+        ("send", 4),
     ]
     assert [
         call.args[0].request_id for call in submissions.call_args_list if call.args[1] == 8
     ] == [2, 3, 4]
-    assert [
-        call.args[0] for call in callbacks.call_args_list if call.args[1] == 8
-    ] == [0, 1]
+    assert [call.args[0] for call in callbacks.call_args_list if call.args[1] == 8] == [0, 1]
     assert [run.records[key].prefill_start for key in (2, 3, 4)] == [8, 8, 8]
     assert run.records[3].actual_hit_tokens == run.records[4].actual_hit_tokens == 4
     assert run.records[3].arrival == run.records[0].finish == 8
@@ -116,45 +122,74 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     lookup_ms: float, l2_pages: int
 ) -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=64, page_size=4,
-        l2_capacity_tokens=l2_pages * 4, l3_capacity_tokens=256,
+        max_running_requests=2,
+        max_total_tokens=64,
+        page_size=4,
+        l2_capacity_tokens=l2_pages * 4,
+        l3_capacity_tokens=256,
         l3_prefetch_min_tokens=0,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=0, decode_d2=0, kv_bytes_per_token=2,
-        l2_to_l1_bandwidth_bytes_per_ms=4, l3_to_l2_bandwidth_bytes_per_ms=2,
-        l2_latency_ms=3, l3_latency_ms=5, l3_lookup_latency_ms=lookup_ms,
+        prefill_c1=1,
+        decode_d1=0,
+        decode_d2=0,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l2_latency_ms=3,
+        l3_latency_ms=5,
+        l3_lookup_latency_ms=lookup_ms,
     )
     send_ms = 1
     source = TracePlan(
-        sessions=("competition",), block_size=4,
+        sessions=("competition",),
+        block_size=4,
         requests=(
             TraceTurn(
-                request_id=0, session_id=0, arrival_offset_ms=0,
-                prompt_len=1, output_len=1, hash_ids=(),
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=1,
+                output_len=1,
+                hash_ids=(),
             ),
             TraceTurn(
-                request_id=1, session_id=0, arrival_offset_ms=send_ms,
-                prompt_len=5, output_len=1, hash_ids=(20,),
+                request_id=1,
+                session_id=0,
+                arrival_offset_ms=send_ms,
+                prompt_len=5,
+                output_len=1,
+                hash_ids=(20,),
             ),
             TraceTurn(
-                request_id=2, session_id=0, parent_request_id=0,
-                arrival_offset_ms=send_ms, think_time_ms=0,
-                prompt_len=5, output_len=1, hash_ids=(10,),
+                request_id=2,
+                session_id=0,
+                parent_request_id=0,
+                arrival_offset_ms=send_ms,
+                think_time_ms=0,
+                prompt_len=5,
+                output_len=1,
+                hash_ids=(10,),
             ),
             TraceTurn(
-                request_id=3, session_id=0, arrival_offset_ms=1000,
-                prompt_len=5, output_len=1, hash_ids=(20,),
+                request_id=3,
+                session_id=0,
+                arrival_offset_ms=1000,
+                prompt_len=5,
+                output_len=1,
+                hash_ids=(20,),
             ),
             TraceTurn(
-                request_id=4, session_id=0, arrival_offset_ms=1000,
-                prompt_len=5, output_len=1, hash_ids=(10,),
+                request_id=4,
+                session_id=0,
+                arrival_offset_ms=1000,
+                prompt_len=5,
+                output_len=1,
+                hash_ids=(10,),
             ),
         ),
     )
-    workload = WorkloadConfig(
-        mode="trace", session_rate=10, trace=TraceWorkloadConfig()
-    )
+    workload = WorkloadConfig(mode="trace", session_rate=10, trace=TraceWorkloadConfig())
     with patch("simcore.client.random.Random.expovariate", return_value=0.0):
         client = Client(workload, config, trace_plan=source)
     engine = Engine(runtime_config(config, perf))
@@ -186,14 +221,17 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         run = Coordinator((engine,), client, Router(1, session_affinity=True)).run()[0]
     assert [call.args[0].request_id for call in submissions.call_args_list] == [0, 1, 2, 3, 4]
     assert [(call.args[0], call.args[1]) for call in lookups.call_args_list[:2]] == [
-        (1, send_ms + lookup_ms), (2, send_ms + lookup_ms),
+        (1, send_ms + lookup_ms),
+        (2, send_ms + lookup_ms),
     ]
     assert [call[0] for call in order.mock_calls[:5]] == (
-        ["send", "send", "lookup", "send", "lookup"] if lookup_ms == 0
+        ["send", "send", "lookup", "send", "lookup"]
+        if lookup_ms == 0
         else ["send", "send", "send", "lookup", "lookup"]
     )
     assert [call.args for call in reserves.call_args_list if call.args[1] == "L2"] == [
-        ("trace:0:20", "L2"), ("trace:0:10", "L2"),
+        ("trace:0:20", "L2"),
+        ("trace:0:10", "L2"),
     ]
     records = {item.id: item for item in run.records}
     assert records[0].finish == records[1].arrival == records[2].arrival == send_ms
@@ -209,15 +247,22 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
 @pytest.mark.parametrize("with_ready_root", [False, True])
 @pytest.mark.parametrize("prefetch_threshold", [0, 8])
 def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
-    with_ready_root: bool, prefetch_threshold: int,
+    with_ready_root: bool,
+    prefetch_threshold: int,
 ) -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=16, page_size=4,
-        l2_capacity_tokens=8, l3_capacity_tokens=64,
+        max_running_requests=2,
+        max_total_tokens=16,
+        page_size=4,
+        l2_capacity_tokens=8,
+        l3_capacity_tokens=64,
         l3_prefetch_min_tokens=prefetch_threshold,
     )
     perf = PerfModelConfig(
-        prefill_c1=1, decode_d1=0, decode_d2=0, kv_bytes_per_token=2,
+        prefill_c1=1,
+        decode_d1=0,
+        decode_d2=0,
+        kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
         l3_lookup_latency_ms=2,
@@ -232,7 +277,14 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     cache.finish(90)
 
     child = InferenceRequest(
-        1, 90, 90, 9, 1, 1, (encode(90, 0), encode(90, 1)), 2,
+        1,
+        90,
+        90,
+        9,
+        1,
+        1,
+        (encode(90, 0), encode(90, 1)),
+        2,
     )
     assert engine.submit(child, 0)
     if with_ready_root:
@@ -445,15 +497,17 @@ def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:
         sessions=("capacity",),
         requests=tuple(
             TraceTurn(
-                request_id=key, session_id=0, arrival_offset_ms=arrival,
-                prompt_len=prompt, output_len=output, hash_ids=hashes,
+                request_id=key,
+                session_id=0,
+                arrival_offset_ms=arrival,
+                prompt_len=prompt,
+                output_len=output,
+                hash_ids=hashes,
             )
             for key, arrival, prompt, output, hashes in rows
         ),
     )
-    workload = WorkloadConfig(
-        mode="trace", session_rate=1000, trace=TraceWorkloadConfig()
-    )
+    workload = WorkloadConfig(mode="trace", session_rate=1000, trace=TraceWorkloadConfig())
 
     result = simulate(
         resolved_config(workload=workload, engine=config, perf_model=perf),
@@ -516,6 +570,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
     assert run.records[4].arrival == run.records[1].finish == 0
     repeated = CheckedCoordinator(
         (Engine(runtime_config(config, zero)),),
-        planned_client(plan, config), Router(1),
+        planned_client(plan, config),
+        Router(1),
     ).run()[0]
     assert run == repeated

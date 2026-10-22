@@ -161,13 +161,23 @@ def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, 
     )
     expert = expert_params // tp_size * weight_bytes
     non_expert = (
-        sum(row[3] for row in budgets) + dense_params + embedding_params
-        + norm_params + router_params + correction_params + shared_params + ihc_params
+        sum(row[3] for row in budgets)
+        + dense_params
+        + embedding_params
+        + norm_params
+        + router_params
+        + correction_params
+        + shared_params
+        + ihc_params
     )
     active_expert = expert_params // model.num_experts * model.experts_per_token if moe else 0
     return (
-        sharded, replicated, expert,
-        non_expert + expert_params, non_expert + active_expert, expert_params,
+        sharded,
+        replicated,
+        expert,
+        non_expert + expert_params,
+        non_expert + active_expert,
+        expert_params,
     )
 
 
@@ -197,14 +207,16 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
     if model.attention_groups is not None:
         kv_bytes = sum(
-            _group_attention_budget(
-                group, model.hidden_size, tp_size, storage.l2_available_gb > 0
-            )[0]
+            _group_attention_budget(group, model.hidden_size, tp_size, storage.l2_available_gb > 0)[
+                0
+            ]
             for group in model.attention_groups
         )
     else:
         local_kv_heads = max(1, model.num_kv_heads // tp_size)
-        kv_bytes = 2 * model.num_layers * local_kv_heads * model.head_dim * 2  # 单 rank 每 token 的 K/V BF16 字节
+        kv_bytes = (
+            2 * model.num_layers * local_kv_heads * model.head_dim * 2
+        )  # 单 rank 每 token 的 K/V BF16 字节
     group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = _bytes_from_gb(storage.l1_available_gb)
@@ -258,11 +270,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
                 and hardware.collective_latency_ms is not None
             )
         )
-        and (
-            not is_moe
-            or request.ep_size == 1
-            or hardware.ep_communication_latency_ms is not None
-        )
+        and (not is_moe or request.ep_size == 1 or hardware.ep_communication_latency_ms is not None)
     )
     reason = None
     if not runnable:
@@ -335,11 +343,13 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
         kv_bytes_per_token=report.capacity.kv_bytes_per_token,
         l2_to_l1_bandwidth_bytes_per_ms=(
             storage.l2_to_l1_gb_s * 1_000_000
-            if engine.l2_capacity_tokens and storage.l2_to_l1_gb_s is not None else None
+            if engine.l2_capacity_tokens and storage.l2_to_l1_gb_s is not None
+            else None
         ),
         l3_to_l2_bandwidth_bytes_per_ms=(
             storage.l3_to_l2_gb_s * 1_000_000
-            if engine.l3_capacity_tokens and storage.l3_to_l2_gb_s is not None else None
+            if engine.l3_capacity_tokens and storage.l3_to_l2_gb_s is not None
+            else None
         ),
         l2_latency_ms=storage.l2_latency_ms,
         l3_latency_ms=storage.l3_latency_ms,
@@ -347,17 +357,18 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     )
     capacity = report.capacity
     l2 = (
-        TransferLink(inference.page_size / capacity.l2_to_l1_tokens_per_ms,
-                     storage.l2_latency_ms)
-        if capacity.l2_to_l1_tokens_per_ms is not None else None
+        TransferLink(inference.page_size / capacity.l2_to_l1_tokens_per_ms, storage.l2_latency_ms)
+        if capacity.l2_to_l1_tokens_per_ms is not None
+        else None
     )
     l3 = (
-        TransferLink(inference.page_size / capacity.l3_to_l2_tokens_per_ms,
-                     storage.l3_latency_ms)
-        if capacity.l3_to_l2_tokens_per_ms is not None else None
+        TransferLink(inference.page_size / capacity.l3_to_l2_tokens_per_ms, storage.l3_latency_ms)
+        if capacity.l3_to_l2_tokens_per_ms is not None
+        else None
     )
     analytical = (
         AnalyticalSpec(inference.model, inference.hardware, inference.tp_size, inference.ep_size)
-        if inference.timing.mode == "analytical" else None
+        if inference.timing.mode == "analytical"
+        else None
     )
     return RuntimeConfig(engine, perf, TransferLinks(l2, l3), analytical, report)

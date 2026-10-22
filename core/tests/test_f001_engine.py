@@ -3,7 +3,6 @@
 直接注入缓存种子或 withdraw/requeue 的用例是组件状态测试，不是端到端恢复。
 """
 
-
 import pytest
 
 from simcore import simulate
@@ -29,9 +28,7 @@ from test_schemas import resolved_config, runtime_config
 PERF = PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=5, decode_d2=1)
 
 
-def make_engine(
-    *, exclusive: bool = True, page_size: int = 4, capacity: int = 128
-) -> Engine:
+def make_engine(*, exclusive: bool = True, page_size: int = 4, capacity: int = 128) -> Engine:
     config = EngineConfig(
         max_running_requests=4,
         max_total_tokens=capacity,
@@ -42,7 +39,11 @@ def make_engine(
 
 
 def request(
-    key: int, *, prompt: int = 4, maximum: int = 2, output: int = 2,
+    key: int,
+    *,
+    prompt: int = 4,
+    maximum: int = 2,
+    output: int = 2,
     inherited: tuple[str, ...] = (),
 ) -> InferenceRequest:
     return InferenceRequest(key, 0, None, prompt, maximum, output, inherited, len(inherited))
@@ -92,7 +93,8 @@ def test_output_len_one_finishes_at_prefill_end_and_reclaims_partial_page() -> N
 @pytest.mark.parametrize("exclusive", [True, False])
 @pytest.mark.parametrize("output", [1, 2])
 def test_short_output_with_large_request_limit_is_not_permanently_rejected(
-    exclusive: bool, output: int,
+    exclusive: bool,
+    output: int,
 ) -> None:
     engine = make_engine(exclusive=exclusive, page_size=64, capacity=192)
     engine.submit(request(0, prompt=65, maximum=65_536, output=output), 0)
@@ -203,11 +205,13 @@ def test_zero_cost_engine_progresses_and_is_deterministic() -> None:
     plan = WorkloadPlan({0: TurnPlan(0, 0, None, 1, None, 5, 3, 3, 0)}, (0,), {})
     first = Coordinator(
         (Engine(runtime_config(cfg, zero)),),
-        planned_client(plan, cfg), Router(1),
+        planned_client(plan, cfg),
+        Router(1),
     ).run()[0]
     second = Coordinator(
         (Engine(runtime_config(cfg, zero)),),
-        planned_client(plan, cfg), Router(1),
+        planned_client(plan, cfg),
+        Router(1),
     ).run()[0]
     assert first.num_engine_steps == 3
     assert first.records[0].finish == first.records[0].arrival == 1
@@ -227,7 +231,7 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 session=SessionConfig(num_sessions=1),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=512, page_size=64),
         perf_model=PERF,
@@ -603,17 +607,23 @@ def test_zero_lower_tiers_match_legacy_results_field_by_field(exclusive: bool) -
         l2_latency_ms=3,
         l3_latency_ms=5,
     )
-    plan = WorkloadPlan({
-        0: TurnPlan(0, 0, None, 0, None, 5, 3, 3, 0),
-        1: TurnPlan(1, 1, None, 5, None, 4, 2, 2, 0),
-    }, (0, 1), {})
+    plan = WorkloadPlan(
+        {
+            0: TurnPlan(0, 0, None, 0, None, 5, 3, 3, 0),
+            1: TurnPlan(1, 1, None, 5, None, 4, 2, 2, 0),
+        },
+        (0, 1),
+        {},
+    )
     old = Coordinator(
         (Engine(runtime_config(legacy, PERF)),),
-        planned_client(plan, legacy), Router(1),
+        planned_client(plan, legacy),
+        Router(1),
     ).run()[0]
     new = Coordinator(
         (Engine(runtime_config(explicitly_disabled, extra_perf)),),
-        planned_client(plan, explicitly_disabled), Router(1),
+        planned_client(plan, explicitly_disabled),
+        Router(1),
     ).run()[0]
     assert old == new
     assert new.promotions == new.demotions == new.restore_bytes == new.restore_time_ms == 0

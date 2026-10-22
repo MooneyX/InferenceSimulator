@@ -58,13 +58,7 @@ class StepWorkload:
     def __post_init__(self) -> None:  # 校验 GPU 步阶段、请求集合与页数；无返回值
         prefill_ids = tuple(item.request_id for item in self.prefill)
         decode_ids = tuple(item.request_id for item in self.decode)
-        phase = (
-            "MIXED"
-            if prefill_ids and decode_ids
-            else "PREFILL"
-            if prefill_ids
-            else "DECODE"
-        )
+        phase = "MIXED" if prefill_ids and decode_ids else "PREFILL" if prefill_ids else "DECODE"
         if (not prefill_ids and not decode_ids) or self.phase != phase:
             raise ValueError("单步阶段须与非空 Prefill/Decode 集合一致")
         if (
@@ -81,7 +75,9 @@ class StepWorkload:
             raise ValueError("单步页申请量或批内请求数不合法")
 
 
-def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:  # Prefill/Decode 工作量与经验系数 → 融合后的设备耗时（ms）
+def workload_time(
+    workload: StepWorkload, cfg: PerfModelConfig
+) -> float:  # Prefill/Decode 工作量与经验系数 → 融合后的设备耗时（ms）
     """纯步取各自成本；融合取较大成本，不重复统计同一步 Decode。"""
     prefill_total = 0.0
     for item in workload.prefill:
@@ -94,7 +90,9 @@ def workload_time(workload: StepWorkload, cfg: PerfModelConfig) -> float:  # Pre
     return max(prefill_total, decode_total)
 
 
-def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelConfig) -> float:  # 历史上下文、新 token 数与系数 → Prefill 耗时（ms）
+def prefill_cost(
+    context_before: int, new_prefill_tokens: int, cfg: PerfModelConfig
+) -> float:  # 历史上下文、新 token 数与系数 → Prefill 耗时（ms）
     """前缀命中后仍需读取历史上下文：二次项按历史与新输入的面积差计算。"""
     if context_before < 0 or new_prefill_tokens < 1:
         raise ValueError("context_before 须 >= 0 且 new_prefill_tokens 须 >= 1")
@@ -103,7 +101,9 @@ def prefill_cost(context_before: int, new_prefill_tokens: int, cfg: PerfModelCon
     )
 
 
-def decode_step_time(batch_total_tokens: int, cfg: PerfModelConfig) -> float:  # 批内 KV token 总量与性能系数 → 一次 Decode 耗时（ms）
+def decode_step_time(
+    batch_total_tokens: int, cfg: PerfModelConfig
+) -> float:  # 批内 KV token 总量与性能系数 → 一次 Decode 耗时（ms）
     """一次 decode 迭代的耗时（ms）。
 
     ``decode_d1 + decode_d2 * T``。常数项为与 batch 无关的固定开销（kernel launch 等），

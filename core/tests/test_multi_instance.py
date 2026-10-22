@@ -30,7 +30,7 @@ def config(
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 session=SessionConfig(num_sessions=sessions),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=capacity, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),

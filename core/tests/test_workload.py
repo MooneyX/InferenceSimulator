@@ -110,13 +110,26 @@ class TestSampleLength:
         assert build_synthetic_closed_loop_plan(config, engine) == plan
 
 
-@pytest.mark.parametrize("output,cap,expected", [
-    (0, 65_536, 1), (1, 65_536, 1), (2, 65_536, 2),
-    (3, 65_536, 4), (64, 65_536, 64), (65, 65_536, 128),
-    (128, 65_536, 128), (129, 65_536, 256),
-    (65, 100, 100), (99, 100, 100), (100, 100, 100),
-    (101, 100, 100), (64, 64, 64), (65, 64, 64),
-    (65_536, 65_536, 65_536), (65_537, 65_536, 65_536),
-])
+@pytest.mark.parametrize(
+    "output,cap,expected",
+    [
+        (0, 65_536, 1),
+        (1, 65_536, 1),
+        (2, 65_536, 2),
+        (3, 65_536, 4),
+        (64, 65_536, 64),
+        (65, 65_536, 128),
+        (128, 65_536, 128),
+        (129, 65_536, 256),
+        (65, 100, 100),
+        (99, 100, 100),
+        (100, 100, 100),
+        (101, 100, 100),
+        (64, 64, 64),
+        (65, 64, 64),
+        (65_536, 65_536, 65_536),
+        (65_537, 65_536, 65_536),
+    ],
+)
 def test_request_output_limit_rounds_up_then_caps(output: int, cap: int, expected: int) -> None:
     assert request_output_limit(output, cap) == expected

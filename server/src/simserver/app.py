@@ -26,6 +26,7 @@ def create_app(*, cache_path: Path | None = None) -> FastAPI:
     （如 ``SimConfig`` 同时出现在请求体与 ``meta.config`` 回显中），关闭拆分使
     OpenAPI 中每个模型只有一个同名 schema，前端生成的 TS 类型与内核类型一一对应。
     """
+
     @asynccontextmanager
     async def lifespan(current: FastAPI):
         try:
@@ -41,14 +42,17 @@ def create_app(*, cache_path: Path | None = None) -> FastAPI:
         separate_input_output_schemas=False,
     )
     app.state.trace_store = TraceStore()
-    path = cache_path if cache_path is not None else Path(
-        os.environ.get("SIMULATOR_CACHE_PATH", ".simulation-cache/results.sqlite3")
+    path = (
+        cache_path
+        if cache_path is not None
+        else Path(os.environ.get("SIMULATOR_CACHE_PATH", ".simulation-cache/results.sqlite3"))
     )
     max_bytes = int(os.environ.get("SIMULATOR_CACHE_MAX_BYTES", str(DEFAULT_MAX_BYTES)))
     app.state.result_cache = ResultCache(path, max_bytes=max_bytes)
     history_path = os.environ.get("SIMULATOR_JOBS_PATH")
-    app.state.jobs = JobManager(path, cache_size=max_bytes,
-                                history_path=Path(history_path) if history_path else None)
+    app.state.jobs = JobManager(
+        path, cache_size=max_bytes, history_path=Path(history_path) if history_path else None
+    )
     app.include_router(router)
     app.include_router(job_router)
     app.include_router(trace_router)

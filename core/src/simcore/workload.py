@@ -29,7 +29,9 @@ __all__ = ["build_synthetic_closed_loop_plan", "request_output_limit", "sample_l
 _MS_PER_SECOND = 1000.0
 
 
-def sample_length(dist: LengthDist, rng: random.Random) -> int:  # 长度分布与随机流 → 至少 1 的 token 长度
+def sample_length(
+    dist: LengthDist, rng: random.Random
+) -> int:  # 长度分布与随机流 → 至少 1 的 token 长度
     """按分布采样一个 token 长度。
 
     结果向上取整并钳制到 >= 1（见 ``docs/design/workload.md``）：长度为 0 的请求无意义，
@@ -64,7 +66,9 @@ def _sample_poisson(mean: float, rng: random.Random) -> int:  # 泊松均值与�
     return count
 
 
-def _sample_poisson_ptrs(mean: float, rng: random.Random) -> int:  # 大泊松均值与随机流 → PTRS 采样的非负整数
+def _sample_poisson_ptrs(
+    mean: float, rng: random.Random
+) -> int:  # 大泊松均值与随机流 → PTRS 采样的非负整数
     """Hörmann PTRS 变换拒绝采样；大均值下期望尝试次数不随均值增长。"""
     root = math.sqrt(mean)
     b = 0.931 + 2.53 * root
@@ -131,15 +135,18 @@ def build_synthetic_closed_loop_plan(
                 inherited = 0
             else:
                 parent = turns[parent_id]
-                prompt_len = parent.prompt_len + parent.output_len + sample_length(
-                    increment_dist, increments_rng
+                prompt_len = (
+                    parent.prompt_len
+                    + parent.output_len
+                    + sample_length(increment_dist, increments_rng)
                 )
                 inherited = (
                     min(
                         (parent.prompt_len + parent.output_len - 1) // block_size,
                         (prompt_len - 1) // block_size,
                     )
-                    if parent.output_len > 0 else 0
+                    if parent.output_len > 0
+                    else 0
                 )
             sampled_output_len = sample_length(synthetic_cfg.output_len, output_rng)
             max_new_tokens = request_output_limit(sampled_output_len, engine.max_output_tokens)

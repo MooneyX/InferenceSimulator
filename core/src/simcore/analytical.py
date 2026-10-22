@@ -92,7 +92,9 @@ def _group_step_cost(
     base = step_cost(
         workload,
         model.model_copy(update={"attention_layout": "full_gqa", "attention_groups": None}),
-        hardware, tp_size, ep_size
+        hardware,
+        tp_size,
+        ep_size,
     )
     tokens = sum(item.new_tokens for item in workload.prefill) + len(workload.decode)
     pairs = sum(
@@ -111,8 +113,13 @@ def _group_step_cost(
 
     def stage(flops: float, nbytes: float, layers: int) -> tuple[float, float, float, float, float]:
         compute, memory = flops / flops_per_ms, nbytes / bytes_per_ms
-        return (layers * (hardware.kernel_overhead_ms + max(compute, memory)),
-                layers * flops, layers * nbytes, layers * compute, layers * memory)
+        return (
+            layers * (hardware.kernel_overhead_ms + max(compute, memory)),
+            layers * flops,
+            layers * nbytes,
+            layers * compute,
+            layers * memory,
+        )
 
     def gqa_stages(heads: int, kv: int, dim: int, layers: int) -> list[tuple[float, ...]]:
         qkv = h * (heads + 2 * kv) * dim
@@ -120,8 +127,10 @@ def _group_step_cost(
         if single_dense:
             projections = [stage(2 * tokens * (qkv + out), 2 * (qkv + out), layers)]
         else:
-            projections = [stage(2 * tokens * qkv, 2 * qkv, layers),
-                           stage(2 * tokens * out, 2 * out, layers)]
+            projections = [
+                stage(2 * tokens * qkv, 2 * qkv, layers),
+                stage(2 * tokens * out, 2 * out, layers),
+            ]
         return [
             *projections,
             stage(4 * heads * dim * pairs, 4 * kv * dim * (kv_reads + tokens), layers),
@@ -132,12 +141,16 @@ def _group_step_cost(
     for group in model.attention_groups:
         heads, layers = group.num_attention_heads // tp_size, group.layers
         if group.kind == "gqa":
-            current.extend(gqa_stages(
-                heads, max(1, group.num_kv_heads // tp_size), group.head_dim, layers
-            ))
+            current.extend(
+                gqa_stages(heads, max(1, group.num_kv_heads // tp_size), group.head_dim, layers)
+            )
             continue
         q_rank, kv_rank, rope, nope, value = (
-            group.q_rank, group.kv_rank, group.rope_dim, group.nope_dim, group.value_dim
+            group.q_rank,
+            group.kv_rank,
+            group.rope_dim,
+            group.nope_dim,
+            group.value_dim,
         )
         a = h * (q_rank + kv_rank + rope)
         b = q_rank * heads * (nope + rope) + kv_rank * heads * (nope + value)
@@ -148,7 +161,8 @@ def _group_step_cost(
             for item in workload.prefill:
                 uncapped = min(item.new_tokens, max(0, group.topk - item.reused_tokens))
                 uncapped_pairs += (
-                    uncapped * item.reused_tokens + uncapped * (uncapped + 1) / 2
+                    uncapped * item.reused_tokens
+                    + uncapped * (uncapped + 1) / 2
                     + (item.new_tokens - uncapped) * group.topk
                 )
             uncapped_pairs += sum(
@@ -158,25 +172,34 @@ def _group_step_cost(
                 group.index_dim + group.index_heads
             )
             index_bytes = group.index_dim + group.index_dim // 128 * 4
-            current.append(stage(
-                2 * tokens * index_weights + 2 * group.index_heads * group.index_dim * pairs,
-                2 * index_weights + index_bytes * (kv_reads + tokens), group.full_indexer_layers,
-            ))
+            current.append(
+                stage(
+                    2 * tokens * index_weights + 2 * group.index_heads * group.index_dim * pairs,
+                    2 * index_weights + index_bytes * (kv_reads + tokens),
+                    group.full_indexer_layers,
+                )
+            )
             attention_pairs = uncapped_pairs
             index_read_bytes = 4 * attention_pairs
         else:
             attention_pairs = pairs
             index_read_bytes = 0
-        current.append(stage(
-            2 * heads * (nope + rope + value) * attention_pairs,
-            (kv_rank + rope) * 2 * (attention_pairs + tokens) + index_read_bytes, layers,
-        ))
+        current.append(
+            stage(
+                2 * heads * (nope + rope + value) * attention_pairs,
+                (kv_rank + rope) * 2 * (attention_pairs + tokens) + index_read_bytes,
+                layers,
+            )
+        )
         output_weights = out * (2 if group.output_gate else 1)
         current.append(stage(2 * tokens * output_weights, 2 * output_weights, layers))
     delta = [sum(row[i] for row in current) - sum(row[i] for row in old) for i in range(5)]
     return replace(
-        base, duration_ms=base.duration_ms + delta[0], flops=base.flops + delta[1],
-        hbm_bytes=base.hbm_bytes + delta[2], compute_ms=base.compute_ms + delta[3],
+        base,
+        duration_ms=base.duration_ms + delta[0],
+        flops=base.flops + delta[1],
+        hbm_bytes=base.hbm_bytes + delta[2],
+        compute_ms=base.compute_ms + delta[3],
         memory_ms=base.memory_ms + delta[4],
     )
 
@@ -265,7 +288,9 @@ def _moe_step_cost(
     bytes_per_ms = hardware.effective_hbm_gb_s * 1e6
     flops = hbm = compute = memory = device = 0.0
 
-    def stage(work_flops: float, nbytes: float, repeats: int = 1) -> None:  # 单阶段 FLOPs、字节与重复层数 → 累加计算/显存成本；无返回值
+    def stage(
+        work_flops: float, nbytes: float, repeats: int = 1
+    ) -> None:  # 单阶段 FLOPs、字节与重复层数 → 累加计算/显存成本；无返回值
         nonlocal flops, hbm, compute, memory, device
         flops += repeats * work_flops
         hbm += repeats * nbytes

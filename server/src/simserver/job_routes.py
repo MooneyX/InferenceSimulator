@@ -76,12 +76,18 @@ def _get(request: Request, key: str) -> dict[str, Any]:
 
 
 @router.post(
-    "/simulate", response_model=JobReceipt, status_code=202, summary="提交单场后台仿真",
-    responses={404: {"model": ErrorResponse},
-               422: {"model": ErrorResponse | FieldValidationResponse}},
+    "/simulate",
+    response_model=JobReceipt,
+    status_code=202,
+    summary="提交单场后台仿真",
+    responses={
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse | FieldValidationResponse},
+    },
 )
-def submit_simulation(config: SimConfig, request: Request,
-                      force: bool = Query(False)) -> JobReceipt:
+def submit_simulation(
+    config: SimConfig, request: Request, force: bool = Query(False)
+) -> JobReceipt:
     plan = _plan(request, config)
     return JobReceipt(id=_manager(request).submit(config, plan, force=force))
 
@@ -95,14 +101,21 @@ class ScanParameter(BaseModel):
 
 @router.get("/scans/parameters", response_model=list[ScanParameter])
 def scan_parameters() -> list[ScanParameter]:
-    return [ScanParameter(key=key, label=value.label, kind=value.kind, modes=list(value.modes))
-            for key, value in PARAMETERS.items()]
+    return [
+        ScanParameter(key=key, label=value.label, kind=value.kind, modes=list(value.modes))
+        for key, value in PARAMETERS.items()
+    ]
 
 
 @router.post(
-    "/scans", response_model=JobReceipt, status_code=202, summary="提交参数组合扫描",
-    responses={404: {"model": ErrorResponse},
-               422: {"model": ErrorResponse | FieldValidationResponse}},
+    "/scans",
+    response_model=JobReceipt,
+    status_code=202,
+    summary="提交参数组合扫描",
+    responses={
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse | FieldValidationResponse},
+    },
 )
 def submit_scan(config: ScanRequest, request: Request) -> JobReceipt:
     plan = _plan(request, config.base)
@@ -130,8 +143,11 @@ async def job_events(request: Request) -> StreamingResponse:
             else:
                 yield ": heartbeat\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/jobs/{key}", response_model=JobSummary)
@@ -152,9 +168,14 @@ def job_result(key: str, request: Request) -> Response:
         content, cache, lookup = _manager(request).result(key)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return Response(content=content, media_type="application/json",
-                    headers={"X-Simulation-Cache": cache or "miss",
-                             "X-Simulation-Cache-Lookup-Ms": f"{lookup or 0:.3f}"})
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "X-Simulation-Cache": cache or "miss",
+            "X-Simulation-Cache-Lookup-Ms": f"{lookup or 0:.3f}",
+        },
+    )
 
 
 @router.get("/jobs/{key}/points", response_model=list[ScanPoint])

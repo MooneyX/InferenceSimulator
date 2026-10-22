@@ -60,7 +60,8 @@ def _topology(requests: list[tuple[dict[str, Any], str]]) -> tuple[list[int | No
                     + requests[predecessor][0]["api_time"]
                     + think
                     - child["t"]
-                ) <= _TIME_TOLERANCE_S
+                )
+                <= _TIME_TOLERANCE_S
             ]
             if think is not None
             else []

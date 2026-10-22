@@ -42,26 +42,46 @@ class JobStore:
             with connection:
                 yield connection
 
-    def save(self, summary: dict[str, Any], *, result: str | None = None,
-             point: dict[str, Any] | None = None) -> None:
+    def save(
+        self,
+        summary: dict[str, Any],
+        *,
+        result: str | None = None,
+        point: dict[str, Any] | None = None,
+    ) -> None:
         with self._database() as connection:
-            connection.execute("""
+            connection.execute(
+                """
                 INSERT INTO jobs (id, summary, version, result) VALUES (?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     summary=excluded.summary, version=excluded.version,
                     result=COALESCE(excluded.result, jobs.result)
-            """, (summary["id"], json.dumps(summary, ensure_ascii=False), summary["version"], result))
+            """,
+                (
+                    summary["id"],
+                    json.dumps(summary, ensure_ascii=False),
+                    summary["version"],
+                    result,
+                ),
+            )
             if point is not None:
-                connection.execute("""
+                connection.execute(
+                    """
                     INSERT INTO job_points (job_id, sequence, point) VALUES (?, ?, ?)
-                """, (summary["id"], summary["completed"] + summary["failed"],
-                      json.dumps(point, ensure_ascii=False)))
+                """,
+                    (
+                        summary["id"],
+                        summary["completed"] + summary["failed"],
+                        json.dumps(point, ensure_ascii=False),
+                    ),
+                )
 
     def list(self) -> list[dict[str, Any]]:
         with self._database() as connection:
-            return [json.loads(row[0]) for row in connection.execute(
-                "SELECT summary FROM jobs ORDER BY sequence DESC"
-            )]
+            return [
+                json.loads(row[0])
+                for row in connection.execute("SELECT summary FROM jobs ORDER BY sequence DESC")
+            ]
 
     def get(self, job_id: str) -> dict[str, Any]:
         with self._database() as connection:
@@ -72,9 +92,12 @@ class JobStore:
 
     def changes(self, version: int) -> list[dict[str, Any]]:
         with self._database() as connection:
-            return [json.loads(row[0]) for row in connection.execute(
-                "SELECT summary FROM jobs WHERE version > ? ORDER BY version", (version,)
-            )]
+            return [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT summary FROM jobs WHERE version > ? ORDER BY version", (version,)
+                )
+            ]
 
     def result(self, job_id: str) -> str | None:
         with self._database() as connection:
@@ -85,6 +108,9 @@ class JobStore:
 
     def points(self, job_id: str) -> list[dict[str, Any]]:
         with self._database() as connection:
-            return [json.loads(row[0]) for row in connection.execute(
-                "SELECT point FROM job_points WHERE job_id = ? ORDER BY sequence", (job_id,)
-            )]
+            return [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT point FROM job_points WHERE job_id = ? ORDER BY sequence", (job_id,)
+                )
+            ]

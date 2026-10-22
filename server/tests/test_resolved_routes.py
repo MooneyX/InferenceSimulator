@@ -28,20 +28,31 @@ def payload() -> dict[str, Any]:
         },
         "scheduler": {"max_running_requests": 1},
         "inference": {
-            "page_size": 4, "tp_size": 1, "ep_size": 1,
+            "page_size": 4,
+            "tp_size": 1,
+            "ep_size": 1,
             "model": {
-                "name": "toy", "num_layers": 2, "hidden_size": 16,
-                "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
-                "ffn_intermediate_size": 32, "vocab_size": 16,
+                "name": "toy",
+                "num_layers": 2,
+                "hidden_size": 16,
+                "num_attention_heads": 2,
+                "num_kv_heads": 1,
+                "head_dim": 8,
+                "ffn_intermediate_size": 32,
+                "vocab_size": 16,
             },
             "hardware": {
-                "name": "toy", "gpu_count": 1, "memory_bytes_per_gpu": 2_000_000,
-                "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1,
+                "name": "toy",
+                "gpu_count": 1,
+                "memory_bytes_per_gpu": 2_000_000,
+                "effective_fp16_tflops": 1,
+                "effective_hbm_gb_s": 1,
             },
             "storage": {
                 "l1_available_gb": 0.001,
                 "l2_available_gb": 0.000000512,
-                "l2_to_l1_gb_s": 0.001, "l3_to_l2_gb_s": 0.002,
+                "l2_to_l1_gb_s": 0.001,
+                "l3_to_l2_gb_s": 0.002,
             },
             "timing": {"mode": "analytical"},
         },
@@ -53,8 +64,11 @@ def inference_payload(timing_mode: str) -> dict[str, Any]:
     request["shared_l3"] = None
     request["inference"]["page_size"] = 64
     timing = {
-        "mode": "empirical", "prefill_c1": 0.01, "prefill_c2": 0,
-        "decode_d1": 0.01, "decode_d2": 0,
+        "mode": "empirical",
+        "prefill_c1": 0.01,
+        "prefill_c2": 0,
+        "decode_d1": 0.01,
+        "decode_d2": 0,
     }
     request["inference"]["storage"].update(l2_available_gb=0)
     if timing_mode == "empirical":
@@ -63,19 +77,42 @@ def inference_payload(timing_mode: str) -> dict[str, Any]:
 
 
 def attach_trace(
-    client: TestClient, request: dict[str, Any], mode: str = "open_loop", output_len: int = 1,
+    client: TestClient,
+    request: dict[str, Any],
+    mode: str = "open_loop",
+    output_len: int = 1,
 ) -> None:
-    plan = TracePlan(block_size=64, sessions=("session-a",), requests=(
-        TraceTurn(request_id=0, session_id=0, arrival_offset_ms=0,
-                  prompt_len=129, output_len=output_len, hash_ids=(0, 1)),
-        TraceTurn(request_id=1, session_id=0, arrival_offset_ms=1000,
-                  parent_request_id=0, think_time_ms=100,
-                  prompt_len=193, output_len=1, hash_ids=(0, 1, 2)),
-    ))
+    plan = TracePlan(
+        block_size=64,
+        sessions=("session-a",),
+        requests=(
+            TraceTurn(
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=output_len,
+                hash_ids=(0, 1),
+            ),
+            TraceTurn(
+                request_id=1,
+                session_id=0,
+                arrival_offset_ms=1000,
+                parent_request_id=0,
+                think_time_ms=100,
+                prompt_len=193,
+                output_len=1,
+                hash_ids=(0, 1, 2),
+            ),
+        ),
+    )
     upload = client.post("/api/replay-plans", content=plan.model_dump_json().encode())
     assert upload.status_code == 201, upload.text
     request["workload"] = {
-        "mode": "trace", "arrival_mode": mode, "session_rate": 1, "seed": 3,
+        "mode": "trace",
+        "arrival_mode": mode,
+        "session_rate": 1,
+        "seed": 3,
         "trace": {"plan_id": upload.json()["id"]},
     }
 
@@ -83,7 +120,8 @@ def attach_trace(
 @pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
 def test_timing_modes_use_one_run_contract(
-    timing_mode: str, workload_mode: str,
+    timing_mode: str,
+    workload_mode: str,
 ) -> None:
     with TestClient(create_app()) as client:
         request = inference_payload(timing_mode)
@@ -107,7 +145,8 @@ def test_timing_modes_use_one_run_contract(
 @pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
 def test_engine_output_limit_is_request_failure_in_every_mode(
-    timing_mode: str, workload_mode: str,
+    timing_mode: str,
+    workload_mode: str,
 ) -> None:
     with TestClient(create_app()) as client:
         request = inference_payload(timing_mode)
@@ -132,7 +171,9 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
 @pytest.mark.parametrize("failure", ["invalid_tp", "unsupported_timing"])
 def test_unified_run_reports_kernel_errors_for_every_mode(
-    timing_mode: str, workload_mode: str, failure: str,
+    timing_mode: str,
+    workload_mode: str,
+    failure: str,
 ) -> None:
     with TestClient(create_app()) as client:
         request = inference_payload(timing_mode)
@@ -142,7 +183,10 @@ def test_unified_run_reports_kernel_errors_for_every_mode(
         if failure == "unsupported_timing":
             request["inference"]["tp_size"] = 2
             request["inference"]["timing"] = {
-                "mode": "empirical", "prefill_c1": 1, "decode_d1": 1, "decode_d2": 0,
+                "mode": "empirical",
+                "prefill_c1": 1,
+                "decode_d1": 1,
+                "decode_d2": 0,
             }
         receipt = client.post("/api/simulate", json=request)
         assert receipt.status_code == 202
@@ -159,10 +203,14 @@ def test_trace_preview_does_not_require_uploaded_plan() -> None:
     assert preview.json()["runnable"] is True
 
 
-@pytest.mark.parametrize("path", [
-    "/api/simulate/resolved", "/api/replay-plans/unknown/simulate",
-    "/api/replay-plans/unknown/simulate/resolved",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/simulate/resolved",
+        "/api/replay-plans/unknown/simulate",
+        "/api/replay-plans/unknown/simulate/resolved",
+    ],
+)
 def test_old_run_routes_are_removed(path: str) -> None:
     assert TestClient(create_app()).post(path, json=payload()).status_code == 404
 
@@ -178,14 +226,22 @@ def test_preview_and_run_resolve_identically() -> None:
     assert data["resolution"] == preview.json()
     assert data["meta"]["config"] == SimConfig.model_validate(request).model_dump(mode="json")
     assert set(data["resolution"]) == {
-        "capacity", "max_total_tokens", "l2_capacity_tokens", "l3_capacity_tokens",
-        "runnable", "reason",
+        "capacity",
+        "max_total_tokens",
+        "l2_capacity_tokens",
+        "l3_capacity_tokens",
+        "runnable",
+        "reason",
     }
     assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
     assert data["meta"]["num_completed"] == 1
     assert data["meta"]["wall_clock_ms"] >= 0
     request["inference"]["timing"] = {
-        "mode": "empirical", "prefill_c1": 1, "prefill_c2": 0, "decode_d1": 2, "decode_d2": 1,
+        "mode": "empirical",
+        "prefill_c1": 1,
+        "prefill_c2": 0,
+        "decode_d1": 2,
+        "decode_d2": 1,
     }
     empirical = run_simulation(client, request).json()
     assert empirical["analysis"] is None
@@ -195,10 +251,24 @@ def test_preview_and_run_resolve_identically() -> None:
 def test_custom_attention_groups_preview_and_run() -> None:
     client = TestClient(create_app())
     request = payload()
-    mla = {"kind": "mla", "layers": 1, "num_attention_heads": 2,
-           "q_rank": 4, "kv_rank": 4, "rope_dim": 2, "nope_dim": 6, "value_dim": 8}
-    dsa = {**mla, "kind": "mla_dsa", "topk": 4, "index_heads": 2,
-           "index_dim": 128, "full_indexer_layers": 1}
+    mla = {
+        "kind": "mla",
+        "layers": 1,
+        "num_attention_heads": 2,
+        "q_rank": 4,
+        "kv_rank": 4,
+        "rope_dim": 2,
+        "nope_dim": 6,
+        "value_dim": 8,
+    }
+    dsa = {
+        **mla,
+        "kind": "mla_dsa",
+        "topk": 4,
+        "index_heads": 2,
+        "index_dim": 128,
+        "full_indexer_layers": 1,
+    }
     request["inference"]["model"]["attention_layout"] = "grouped"
     request["inference"]["model"]["attention_groups"] = [mla, dsa]
     request["inference"]["storage"].update({"l2_available_gb": 0})
@@ -217,11 +287,15 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     client = TestClient(create_app())
     request = payload()
     request["inference"]["model"] = client.get("/api/presets").json()["models"][2]
-    request["inference"]["hardware"].update({
-        "gpu_count": 8, "memory_bytes_per_gpu": 288_000_000_000,
-        "effective_interconnect_gb_s": 600, "collective_latency_ms": 0.01,
-        "ep_communication_latency_ms": 0.02,
-    })
+    request["inference"]["hardware"].update(
+        {
+            "gpu_count": 8,
+            "memory_bytes_per_gpu": 288_000_000_000,
+            "effective_interconnect_gb_s": 600,
+            "collective_latency_ms": 0.01,
+            "ep_communication_latency_ms": 0.02,
+        }
+    )
     request["inference"]["storage"].update({"l1_available_gb": 260, "l2_available_gb": 0})
     request["shared_l3"] = None
     request["inference"].update({"tp_size": 8, "ep_size": 8})
@@ -232,9 +306,18 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     assert result.status_code == 200, result.text
     assert result.json()["resolution"] == preview.json()
     assert result.json()["analysis"]["ep_exchanges"] > 0
-    custom = dict(request, inference=dict(request["inference"], model=dict(
-        request["inference"]["model"], name="custom", revision=None, attention_layout="grouped",
-    )))
+    custom = dict(
+        request,
+        inference=dict(
+            request["inference"],
+            model=dict(
+                request["inference"]["model"],
+                name="custom",
+                revision=None,
+                attention_layout="grouped",
+            ),
+        ),
+    )
     custom_preview = client.post("/api/resolve", json=custom)
     assert custom_preview.status_code == 200, custom_preview.text
     assert custom_preview.json()["capacity"] == preview.json()["capacity"]
@@ -301,7 +384,11 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     assert data["analysis"]["communication_ms"] > 0
     assert data["analysis"]["collectives"] == 2 * 36 * data["analysis"]["steps"]
     request["inference"]["timing"] = {
-        "mode": "empirical", "prefill_c1": 1, "prefill_c2": 0, "decode_d1": 2, "decode_d2": 1,
+        "mode": "empirical",
+        "prefill_c1": 1,
+        "prefill_c2": 0,
+        "decode_d1": 2,
+        "decode_d2": 1,
     }
     assert client.post("/api/resolve", json=request).json()["runnable"] is False
     refused = client.post("/api/simulate", json=request)
@@ -323,9 +410,7 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
             "effective_interconnect_gb_s": 600,
         }
     )
-    request["inference"]["storage"].update(
-        {"l1_available_gb": 200, "l2_available_gb": 0}
-    )
+    request["inference"]["storage"].update({"l1_available_gb": 200, "l2_available_gb": 0})
     request["shared_l3"] = None
     request["inference"].update({"tp_size": 8, "ep_size": 8})
     response = client.post("/api/resolve", json=request)
@@ -361,7 +446,11 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert data["analysis"]["ep_combine_ms"] > 0
     assert data["analysis"]["ep_exchanges"] > 0
     request["inference"]["timing"] = {
-        "mode": "empirical", "prefill_c1": 1, "prefill_c2": 0, "decode_d1": 2, "decode_d2": 1,
+        "mode": "empirical",
+        "prefill_c1": 1,
+        "prefill_c2": 0,
+        "decode_d1": 2,
+        "decode_d2": 1,
     }
     assert client.post("/api/resolve", json=request).json()["runnable"] is False
     refused = client.post("/api/simulate", json=request)
@@ -421,21 +510,28 @@ def test_presets_and_unsupported_modes() -> None:
                 "ep_communication_latency_ms": 0.02,
             }
         )
-        request["inference"]["storage"].update(
-            {"l1_available_gb": 200, "l2_available_gb": 0}
-        )
+        request["inference"]["storage"].update({"l1_available_gb": 200, "l2_available_gb": 0})
         request["shared_l3"] = None
         request["inference"].update({"tp_size": 8, "ep_size": 8 if model["moe_layers"] else 1})
         explicit = client.post("/api/resolve", json=request)
         assert explicit.status_code == 200, explicit.text
-        legacy = dict(request, inference=dict(request["inference"], model=dict(
-            model, attention_layout="full_gqa", attention_groups=None,
-        )))
+        legacy = dict(
+            request,
+            inference=dict(
+                request["inference"],
+                model=dict(
+                    model,
+                    attention_layout="full_gqa",
+                    attention_groups=None,
+                ),
+            ),
+        )
         original = client.post("/api/resolve", json=legacy)
         assert original.status_code == 200, original.text
         assert explicit.json()["capacity"] == original.json()["capacity"]
-        assert run_simulation(client, request).json()["analysis"] == (
-            run_simulation(client, legacy).json()["analysis"]
+        assert (
+            run_simulation(client, request).json()["analysis"]
+            == (run_simulation(client, legacy).json()["analysis"])
         )
     request = payload()
     missing_vocab = payload()

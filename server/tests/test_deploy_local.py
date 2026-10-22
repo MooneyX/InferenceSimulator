@@ -28,8 +28,14 @@ def write_jobs(path: Path, statuses: list[str]) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE jobs (summary TEXT)")
         for status in statuses:
-            job = {"id": status, "kind": "scan", "status": status,
-                   "completed": 1, "failed": 1, "total": 3}
+            job = {
+                "id": status,
+                "kind": "scan",
+                "status": status,
+                "completed": 1,
+                "failed": 1,
+                "total": 3,
+            }
             connection.execute("INSERT INTO jobs VALUES (?)", (json.dumps(job),))
 
 
@@ -74,7 +80,11 @@ def test_empty_database_allows_deployment(state, tmp_path, monkeypatch) -> None:
 
 @pytest.mark.parametrize("problem", ["missing", "corrupt", "schema", "json", "status"])
 def test_unreadable_state_blocks_without_creating_database(
-    state, tmp_path, monkeypatch, capsys, problem,
+    state,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    problem,
 ) -> None:
     path = tmp_path / "jobs.sqlite3"
     if problem == "corrupt":
@@ -132,6 +142,9 @@ def test_powershell_gate_before_stopping_services(tmp_path, status) -> None:
     )
     result = subprocess.run(
         [shutil.which("powershell.exe"), "-NoProfile", "-Command", command],
-        env=environment, capture_output=True, timeout=30, check=False,
+        env=environment,
+        capture_output=True,
+        timeout=30,
+        check=False,
     )
     assert result.returncode == (0 if status in (None, "completed") else 1), result.stderr

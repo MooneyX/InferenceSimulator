@@ -58,7 +58,9 @@ class EventFactory:
     def __init__(self) -> None:  # 无显式输入 → 初始化单调事件序号；无返回值
         self._next_seq = 0
 
-    def _make(self, time: float, kind: EventKind, ref: int) -> Event:  # 时刻、类别、引用 → 唯一序号事件
+    def _make(
+        self, time: float, kind: EventKind, ref: int
+    ) -> Event:  # 时刻、类别、引用 → 唯一序号事件
         seq = self._next_seq
         self._next_seq = seq + 1
         return Event(time, kind, ref, seq)
@@ -72,7 +74,9 @@ class EventFactory:
     def step_done(self, time: float, instance_id: int) -> Event:  # 步终点与副本 ID → 步完成事件
         return self._make(time, EventKind.STEP_DONE, instance_id)
 
-    def l3_lookup_done(self, time: float, request_id: int) -> Event:  # 查询完成时刻与请求 ID → L3 查询事件
+    def l3_lookup_done(
+        self, time: float, request_id: int
+    ) -> Event:  # 查询完成时刻与请求 ID → L3 查询事件
         return self._make(time, EventKind.L3_LOOKUP_DONE, request_id)
 
     def l3_l2_done(self, time: float, transfer_id: int) -> Event:  # 完成时刻与传输 ID → L3 上行事件

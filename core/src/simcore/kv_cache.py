@@ -378,18 +378,20 @@ class TieredKVCache:
         bindings = self._pin_sources[request_id]
         l1 = self.pools["L1"]
         for chunk_id, pool in bindings.items():
-            if pool is not l1 and l1.lookup(chunk_id) is not None: # 这一页同时出现在L1和L2
-                pool.drop_ref(chunk_id) # L2中的页不再被引用
+            if pool is not l1 and l1.lookup(chunk_id) is not None:  # 这一页同时出现在L1和L2
+                pool.drop_ref(chunk_id)  # L2中的页不再被引用
                 l1.add_ref(chunk_id)
                 bindings[chunk_id] = l1
         if any(pool.level != "L1" for pool in bindings.values()):
             raise CacheCapacityError("低层命中页须先提升到 L1 才能接纳请求")
         del self._pins[request_id], self._pin_sources[request_id]
         for chunk_id in bindings:
-            self.pools["L1"].touch(chunk_id) # 更新这一页的最近访问时间
+            self.pools["L1"].touch(chunk_id)  # 更新这一页的最近访问时间
         self._requests[request_id] = request
         state = KVRequestState(matched_tokens, matched_tokens)
-        self._states[request_id] = state # 这个请求正要开始prefill计算, 私有和发布的token数量都是一开始也有的可复用token
+        self._states[request_id] = (
+            state  # 这个请求正要开始prefill计算, 私有和发布的token数量都是一开始也有的可复用token
+        )
         return state
 
     def extend(self, request_id: int, target_tokens: int) -> int:
@@ -500,7 +502,9 @@ class TieredKVCache:
         else:
             self.demotions += 1
 
-    def reserve_transfer(self, chunk_id: str, destination: str) -> str: # 可以添加source参数, 避免每次都使用page寻找
+    def reserve_transfer(
+        self, chunk_id: str, destination: str
+    ) -> str:  # 可以添加source参数, 避免每次都使用page寻找
         page = self.page(chunk_id)
         if page is None:
             raise ValueError("待传输页不存在")
@@ -514,7 +518,9 @@ class TieredKVCache:
         if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count:
             raise CacheCapacityError("有活动引用的页不能降级")
         target = self.pools[destination]
-        duplicate = target.lookup(chunk_id) is not None or chunk_id in target.pending_pages # 目的层级中是否已经有这一页或者已经有这一页的传输任务
+        duplicate = (
+            target.lookup(chunk_id) is not None or chunk_id in target.pending_pages
+        )  # 目的层级中是否已经有这一页或者已经有这一页的传输任务
         source_pool = self.pools[source]
         source_pool.add_ref(chunk_id)
         try:
@@ -545,7 +551,7 @@ class TieredKVCache:
         del self._transfers[chunk_id]
         return source
 
-    def ensure_free(self, count: int) -> int: # 确保剩余空闲页数不小于count, 返回因此驱逐的页数
+    def ensure_free(self, count: int) -> int:  # 确保剩余空闲页数不小于count, 返回因此驱逐的页数
         if count <= self.free_pages:
             return 0
         evictions_before = self.evictions

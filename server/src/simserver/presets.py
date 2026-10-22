@@ -17,10 +17,17 @@ MODELS = (
         vocab_size=151_936,
         tie_word_embeddings=False,
         attention_layout="grouped",
-        attention_groups=[AttentionGroup(
-            kind="gqa", layers=36, num_attention_heads=32, num_kv_heads=8, head_dim=128,
-            qk_norm=True, output_gate=False,
-        )],
+        attention_groups=[
+            AttentionGroup(
+                kind="gqa",
+                layers=36,
+                num_attention_heads=32,
+                num_kv_heads=8,
+                head_dim=128,
+                qk_norm=True,
+                output_gate=False,
+            )
+        ],
     ),
     ModelSpec(
         name="Qwen/Qwen3-235B-A22B",
@@ -37,10 +44,17 @@ MODELS = (
         experts_per_token=8,
         moe_layers=94,
         attention_layout="grouped",
-        attention_groups=[AttentionGroup(
-            kind="gqa", layers=94, num_attention_heads=64, num_kv_heads=4, head_dim=128,
-            qk_norm=True, output_gate=False,
-        )],
+        attention_groups=[
+            AttentionGroup(
+                kind="gqa",
+                layers=94,
+                num_attention_heads=64,
+                num_kv_heads=4,
+                head_dim=128,
+                qk_norm=True,
+                output_gate=False,
+            )
+        ],
     ),
     # BF16 主干；不计独立 MTP 草稿层。规格来自该 revision 的 config.json。
     ModelSpec(
@@ -63,12 +77,25 @@ MODELS = (
         router=RouterSpec(dtype="fp32", correction_bias=True),
         ihc=IHCSpec(mult=4),
         attention_layout="grouped",
-        attention_groups=[AttentionGroup(
-            kind="mla_dsa", layers=78, num_attention_heads=64,
-            q_rank=2048, kv_rank=512, rope_dim=64, nope_dim=192, value_dim=256,
-            index_heads=32, index_dim=128, topk=2048, full_indexer_layers=21,
-            output_gate=True, index_norm_dtype="fp32", sink_dtype="fp32",
-        )],
+        attention_groups=[
+            AttentionGroup(
+                kind="mla_dsa",
+                layers=78,
+                num_attention_heads=64,
+                q_rank=2048,
+                kv_rank=512,
+                rope_dim=64,
+                nope_dim=192,
+                value_dim=256,
+                index_heads=32,
+                index_dim=128,
+                topk=2048,
+                full_indexer_layers=21,
+                output_gate=True,
+                index_norm_dtype="fp32",
+                sink_dtype="fp32",
+            )
+        ],
     ),
 )
 

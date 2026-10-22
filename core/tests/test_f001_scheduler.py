@@ -249,11 +249,15 @@ def test_prefetch_waiting_head_is_skipped_without_pinning_and_keeps_position() -
 @pytest.mark.parametrize("restoring", [False, True])
 @pytest.mark.parametrize("remote_index", [0, 2])
 def test_admission_stops_at_first_l3_only_page(
-    restoring: bool, remote_index: int,
+    restoring: bool,
+    remote_index: int,
 ) -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=32, page_size=4,
-        l2_capacity_tokens=8, l3_capacity_tokens=8,
+        max_running_requests=2,
+        max_total_tokens=32,
+        page_size=4,
+        l2_capacity_tokens=8,
+        l3_capacity_tokens=8,
     )
     cache = TieredKVCache(32, 4, 8, 8)
     ids = tuple(encode(0, index) for index in range(4))
@@ -268,7 +272,9 @@ def test_admission_stops_at_first_l3_only_page(
 
     assert len(batch.admitted) == 1
     candidate = batch.admitted[0]
-    assert candidate.hit_sources == tuple(zip(ids[:remote_index], tiers[:remote_index], strict=True))
+    assert candidate.hit_sources == tuple(
+        zip(ids[:remote_index], tiers[:remote_index], strict=True)
+    )
     assert candidate.reused_tokens == remote_index * 4
     assert candidate.new_tokens == 17 - remote_index * 4
     assert candidate.required_pages == 5 - remote_index
@@ -281,7 +287,8 @@ def test_admission_stops_at_first_l3_only_page(
 
 @pytest.mark.parametrize("capacity, restores", [(16, False), (20, True)])
 def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
-    capacity: int, restores: bool,
+    capacity: int,
+    restores: bool,
 ) -> None:
     scheduler, cache = make(capacity=capacity, page_size=4)
     item = request(0, prompt=8, maximum=2, output=2)
@@ -328,8 +335,11 @@ def test_restored_full_hit_requires_no_empty_prefill_step() -> None:
 @pytest.mark.parametrize("mode", ["l1", "l2", "recompute"])
 def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: str) -> None:
     config = EngineConfig(
-        max_running_requests=3, max_total_tokens=512, page_size=64,
-        l2_capacity_tokens=128, max_prefill_tokens=128,
+        max_running_requests=3,
+        max_total_tokens=512,
+        page_size=64,
+        l2_capacity_tokens=128,
+        max_prefill_tokens=128,
     )
     cache = TieredKVCache(512, 64, 128)
     item = request(0, prompt=128, maximum=65_536, output=3)

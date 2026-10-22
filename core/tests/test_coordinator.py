@@ -38,7 +38,7 @@ def config(think: float = 0) -> SimConfig:
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 session=SessionConfig(num_sessions=1, think_time_ms=think),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=200, page_size=4),
         perf_model=PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=0),
@@ -47,21 +47,22 @@ def config(think: float = 0) -> SimConfig:
 
 @pytest.mark.parametrize("source", ["synthetic", "trace"])
 @pytest.mark.parametrize("mode", ["closed_loop", "open_loop"])
-def test_all_client_modes_use_send_events_with_time_and_request_id(
-    source: str, mode: str
-) -> None:
+def test_all_client_modes_use_send_events_with_time_and_request_id(source: str, mode: str) -> None:
     engine_config = EngineConfig(max_running_requests=4, max_total_tokens=256, page_size=2)
     workload = (
         synthetic_workload(mode)
         if source == "synthetic"
-        else WorkloadConfig.model_validate({
-            "mode": "trace", "arrival_mode": mode, "session_rate": 10,
-            "seed": 42, "trace": {},
-        })
+        else WorkloadConfig.model_validate(
+            {
+                "mode": "trace",
+                "arrival_mode": mode,
+                "session_rate": 10,
+                "seed": 42,
+                "trace": {},
+            }
+        )
     )
-    client = Client(
-        workload, engine_config, trace_plan=trace_plan() if source == "trace" else None
-    )
+    client = Client(workload, engine_config, trace_plan=trace_plan() if source == "trace" else None)
     initial = client.initial_wakeups()
     engine = Engine(
         runtime_config(engine_config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)),
@@ -85,9 +86,9 @@ def test_all_client_modes_use_send_events_with_time_and_request_id(
     assert sorted((call.args[1], call.args[2]) for call in sends.call_args_list) == sorted(
         (call.args[1], call.args[0].request_id) for call in submissions.call_args_list
     )
-    assert sorted(
-        call.args[0].request_id for call in submissions.call_args_list
-    ) == list(range(count))
+    assert sorted(call.args[0].request_id for call in submissions.call_args_list) == list(
+        range(count)
+    )
     assert not run.aborted_requests and not run.skipped_requests
 
 

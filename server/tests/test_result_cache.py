@@ -188,7 +188,9 @@ def test_clear_does_not_repopulate_from_inflight(
 
 
 def test_clear_across_worker_cache_instances(
-    tmp_path: Path, config: SimConfig, result: SimResult,
+    tmp_path: Path,
+    config: SimConfig,
+    result: SimResult,
 ) -> None:
     path = tmp_path / "cache.sqlite3"
     worker_cache = ResultCache(path, fingerprint="engine")

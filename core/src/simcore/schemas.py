@@ -163,7 +163,9 @@ class WorkloadConfig(_Frozen):
         default=None, gt=0, allow_inf_nan=False, description="新会话投放频率（会话/秒）"
     )
     target_qps: float | None = Field(
-        default=None, gt=0, allow_inf_nan=False,
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
         description="开环目标发送 QPS；合成采样泊松间隔，Trace 缩放原时间线",
     )
     synthetic: SyntheticWorkloadConfig | None = None
@@ -343,13 +345,19 @@ class AttentionGroup(_Frozen):
         if self.kind == "gqa":
             if self.output_gate:
                 raise ValueError("输出门控当前仅支持 MLA 注意力组")
-            if (self.num_kv_heads is None or self.head_dim is None
-                    or any(v is not None for v in mla + index)):
+            if (
+                self.num_kv_heads is None
+                or self.head_dim is None
+                or any(v is not None for v in mla + index)
+            ):
                 raise ValueError("GQA 只配置 KV 头数和头维度")
             if self.num_attention_heads % self.num_kv_heads:
                 raise ValueError("Query 头数须是 KV 头数的整数倍")
-        elif (self.num_kv_heads is not None or self.head_dim is not None
-              or any(v is None for v in mla)):
+        elif (
+            self.num_kv_heads is not None
+            or self.head_dim is not None
+            or any(v is None for v in mla)
+        ):
             raise ValueError("MLA 须配置 Q/KV 低秩、位置/非位置及 V 维度")
         if self.kind == "mla_dsa":
             if any(v is None for v in index) or cast(int, self.full_indexer_layers) > self.layers:
@@ -435,7 +443,9 @@ class HardwareSpec(_Frozen):
     collective_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     ep_communication_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     kernel_overhead_ms: float = Field(
-        default=0.005, ge=0, allow_inf_nan=False,
+        default=0.005,
+        ge=0,
+        allow_inf_nan=False,
         description="解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
     )
 
@@ -449,17 +459,22 @@ class StorageSpec(_Frozen):
     l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(
-        default=0.01, ge=0, allow_inf_nan=False,
+        default=0.01,
+        ge=0,
+        allow_inf_nan=False,
         description="每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
     )
     l3_latency_ms: float = Field(
-        default=0.1, ge=0, allow_inf_nan=False,
+        default=0.1,
+        ge=0,
+        allow_inf_nan=False,
         description="每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
     )
 
 
 class InferenceConfig(_Frozen):
     """实例输入：从模型、硬件和存储解析容量及 GPU 计时规格。"""
+
     page_size: int = Field(default=64, ge=1)
     max_output_tokens: int = Field(default=65_536, ge=1, description="单请求输出 token 硬上限")
     model: ModelSpec
@@ -480,7 +495,9 @@ class SharedL3Config(_Frozen):
         description="全场共享 L3 十进制 GB 总容量；0 表示关闭",
     )
     lookup_latency_ms: float = Field(
-        default=0.1, ge=0, allow_inf_nan=False,
+        default=0.1,
+        ge=0,
+        allow_inf_nan=False,
         description="每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；默认假设低延迟共享存储，未经实测校准，0 为理想基线",
     )
 
@@ -791,9 +808,15 @@ class Metrics(_Record):
     child_ideal_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
     child_actual_prefix_hit_rate: float | None = Field(default=None, ge=0, le=1)
     actual_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1)
-    l1_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, description="L1 命中 token / 成功请求输入 token")
-    l2_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, description="L2 命中 token / 成功请求输入 token")
-    l3_prefix_hit_rate: float = Field(default=0.0, ge=0, le=1, description="L3 命中 token / 成功请求输入 token")
+    l1_prefix_hit_rate: float = Field(
+        default=0.0, ge=0, le=1, description="L1 命中 token / 成功请求输入 token"
+    )
+    l2_prefix_hit_rate: float = Field(
+        default=0.0, ge=0, le=1, description="L2 命中 token / 成功请求输入 token"
+    )
+    l3_prefix_hit_rate: float = Field(
+        default=0.0, ge=0, le=1, description="L3 命中 token / 成功请求输入 token"
+    )
     requests_with_hit_ratio: float = Field(default=0.0, ge=0, le=1)
     requests_fully_cached_ratio: float = Field(default=0.0, ge=0, le=1)
     total_input_tokens: int = Field(default=0, ge=0)

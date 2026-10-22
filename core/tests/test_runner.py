@@ -35,7 +35,7 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
                 prompt_len=LognormalLength(mean=256.0, sigma=0.8),
                 turn_increment_len=FixedLength(value=8),
                 output_len=PoissonLength(mean=40.0),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=16, max_total_tokens=budget, page_size=1),
         perf_model=PerfModelConfig(
@@ -74,7 +74,7 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
@@ -108,7 +108,7 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=1),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
@@ -133,7 +133,7 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
@@ -160,7 +160,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=40),
                 output_len=FixedLength(value=2),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
@@ -190,7 +190,7 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
                 prompt_len=FixedLength(value=32),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=1),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
@@ -212,7 +212,7 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
                 prompt_len=FixedLength(value=128),
                 turn_increment_len=FixedLength(value=5),
                 output_len=FixedLength(value=2),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
         perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
@@ -252,10 +252,16 @@ class TestEndToEnd:
         assert result.metrics.makespan == pytest.approx(result.meta.sim_end - result.meta.sim_start)
 
     def test_metrics_consistent_with_records(self, result: SimResult) -> None:
-        baseline = compute_metrics(result.requests, **(metric_inputs() | {
-            "page_size": result.meta.config.inference.page_size,
-            "workload_mode": result.meta.config.workload.mode,
-        }))
+        baseline = compute_metrics(
+            result.requests,
+            **(
+                metric_inputs()
+                | {
+                    "page_size": result.meta.config.inference.page_size,
+                    "workload_mode": result.meta.config.workload.mode,
+                }
+            ),
+        )
         for name in ("ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "throughput", "makespan"):
             assert getattr(result.metrics, name) == getattr(baseline, name)
         assert result.metrics.total_input_tokens == sum(r.prompt_len for r in result.requests)
@@ -285,7 +291,7 @@ class TestEndToEnd:
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
                     session=SessionConfig(num_sessions=1),
-                )
+                ),
             ),
             engine=EngineConfig(
                 max_running_requests=2,
@@ -323,7 +329,7 @@ class TestEndToEnd:
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=8),
                     session=SessionConfig(num_sessions=1),
-                )
+                ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=80, page_size=2),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
@@ -334,9 +340,16 @@ class TestEndToEnd:
         result = simulate(config)
         metrics = result.metrics
         assert metrics.constructed_ideal_prefix_hit_rate == pytest.approx(22 / 41)
-        empty = compute_metrics([], **(metric_inputs() | {
-            "plan": plan, "page_size": config.inference.page_size,
-        }))
+        empty = compute_metrics(
+            [],
+            **(
+                metric_inputs()
+                | {
+                    "plan": plan,
+                    "page_size": config.inference.page_size,
+                }
+            ),
+        )
         assert empty.constructed_ideal_prefix_hit_rate == metrics.constructed_ideal_prefix_hit_rate
 
     def test_infeasible_request_reports_abort_without_ending_simulation(self) -> None:
@@ -349,7 +362,7 @@ class TestEndToEnd:
                     prompt_len=FixedLength(value=193),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
-                )
+                ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
             perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
@@ -370,7 +383,7 @@ class TestEndToEnd:
                     prompt_len=FixedLength(value=3),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
-                )
+                ),
             ),
             engine=EngineConfig(
                 max_running_requests=1,
@@ -407,7 +420,7 @@ class TestEndToEnd:
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=1),
                     session=SessionConfig(num_sessions=1),
-                )
+                ),
             ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
             perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
@@ -427,9 +440,14 @@ class TestEndToEnd:
 
 class TestTraceSeam:
     def test_trace_workload_requires_explicit_plan(self) -> None:
-        workload = WorkloadConfig.model_validate({
-            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "trace": {},
-        })
+        workload = WorkloadConfig.model_validate(
+            {
+                "mode": "trace",
+                "arrival_mode": "open_loop",
+                "session_rate": 1,
+                "trace": {},
+            }
+        )
         cfg = make_config().model_copy(update={"workload": workload})
         with pytest.raises(ValueError, match=r"plan|计划"):
             simulate(cfg)
@@ -462,7 +480,7 @@ class TestSmallCases:
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=2),
                     session=SessionConfig(num_sessions=1, think_time_ms=think_time_ms),
-                )
+                ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
@@ -495,7 +513,7 @@ class TestSmallCases:
                     prompt_len=FixedLength(value=5),
                     turn_increment_len=FixedLength(value=1),
                     output_len=FixedLength(value=3),
-                )
+                ),
             ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),
             perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),

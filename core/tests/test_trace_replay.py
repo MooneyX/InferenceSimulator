@@ -27,19 +27,29 @@ from test_schemas import resolved_config
 
 
 def config(
-    *, capacity: int = 2048, mode: Literal["open_loop", "closed_loop"] = "open_loop",
-    session_rate: float = 1, seed: int = 7, target_qps: float | None = None,
+    *,
+    capacity: int = 2048,
+    mode: Literal["open_loop", "closed_loop"] = "open_loop",
+    session_rate: float = 1,
+    seed: int = 7,
+    target_qps: float | None = None,
     max_output_tokens: int = 65_536,
 ) -> SimConfig:
     return resolved_config(
         num_instances=2,
         workload=WorkloadConfig(
-            mode="trace", arrival_mode=mode, session_rate=session_rate, seed=seed,
-            target_qps=target_qps, trace=TraceWorkloadConfig(plan_id="test-plan"),
+            mode="trace",
+            arrival_mode=mode,
+            session_rate=session_rate,
+            seed=seed,
+            target_qps=target_qps,
+            trace=TraceWorkloadConfig(plan_id="test-plan"),
         ),
         engine=EngineConfig(
-            max_running_requests=4, max_total_tokens=capacity,
-            max_output_tokens=max_output_tokens, page_size=64,
+            max_running_requests=4,
+            max_total_tokens=capacity,
+            max_output_tokens=max_output_tokens,
+            page_size=64,
         ),
         perf_model=PerfModelConfig(prefill_c1=0.01, decode_d1=0.01, decode_d2=0),
     )
@@ -51,13 +61,22 @@ def plan(*, output: int = 1, second_offset: float = 1000) -> TracePlan:
         block_size=64,
         requests=(
             TraceTurn(
-                request_id=0, session_id=0, arrival_offset_ms=0,
-                prompt_len=129, output_len=output, hash_ids=(0, 1),
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=output,
+                hash_ids=(0, 1),
             ),
             TraceTurn(
-                request_id=1, session_id=0, parent_request_id=0,
-                arrival_offset_ms=second_offset, think_time_ms=20,
-                prompt_len=193, output_len=1, hash_ids=(0, 1, 2),
+                request_id=1,
+                session_id=0,
+                parent_request_id=0,
+                arrival_offset_ms=second_offset,
+                think_time_ms=20,
+                prompt_len=193,
+                output_len=1,
+                hash_ids=(0, 1, 2),
             ),
         ),
     )
@@ -79,10 +98,17 @@ def test_trace_open_loop_reuses_input_pages_on_same_instance() -> None:
 
 def test_open_loop_target_qps_scales_merged_arrivals_without_changing_shape() -> None:
     source = TracePlan(
-        sessions=("first", "second"), block_size=64,
+        sessions=("first", "second"),
+        block_size=64,
         requests=tuple(
-            TraceTurn(request_id=i, session_id=session, arrival_offset_ms=offset,
-                      prompt_len=129, output_len=1, hash_ids=(session * 10, session * 10 + 1))
+            TraceTurn(
+                request_id=i,
+                session_id=session,
+                arrival_offset_ms=offset,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(session * 10, session * 10 + 1),
+            )
             for i, session, offset in ((0, 0, 0), (1, 0, 900), (2, 1, 0), (3, 1, 3500))
         ),
     )
@@ -105,23 +131,45 @@ def test_open_loop_target_qps_scales_merged_arrivals_without_changing_shape() ->
     ("mode", "target"), [("closed_loop", 5), ("open_loop", 0), ("open_loop", float("inf"))]
 )
 def test_target_qps_only_accepts_positive_finite_open_loop(
-    mode: Literal["open_loop", "closed_loop"], target: float,
+    mode: Literal["open_loop", "closed_loop"],
+    target: float,
 ) -> None:
     with pytest.raises(ValueError, match=r"目标 QPS|target_qps"):
         simulate(config(mode=mode, target_qps=target), trace_plan=plan())
 
 
 def test_target_qps_requires_a_nonzero_arrival_window() -> None:
-    one = TracePlan(sessions=("only",), block_size=64, requests=(
-        TraceTurn(request_id=0, session_id=0, arrival_offset_ms=0,
-                  prompt_len=129, output_len=1, hash_ids=(0, 1)),
-    ))
+    one = TracePlan(
+        sessions=("only",),
+        block_size=64,
+        requests=(
+            TraceTurn(
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            ),
+        ),
+    )
     with pytest.raises(ValueError, match="两个到达时刻不同"):
         simulate(config(target_qps=5), trace_plan=one)
-    simultaneous = TracePlan(sessions=("only",), block_size=64, requests=tuple(
-        TraceTurn(request_id=i, session_id=0, arrival_offset_ms=0,
-                  prompt_len=129, output_len=1, hash_ids=(0, 1)) for i in range(2)
-    ))
+    simultaneous = TracePlan(
+        sessions=("only",),
+        block_size=64,
+        requests=tuple(
+            TraceTurn(
+                request_id=i,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            )
+            for i in range(2)
+        ),
+    )
     with pytest.raises(ValueError, match="两个到达时刻不同"):
         simulate(config(target_qps=5), trace_plan=simultaneous)
 
@@ -157,7 +205,8 @@ def test_trace_never_truncates_output_for_capacity() -> None:
 @pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
 @pytest.mark.parametrize("cap", [64, 100])
 def test_trace_output_exceeding_engine_limit_aborts_at_arrival(
-    mode: Literal["open_loop", "closed_loop"], cap: int,
+    mode: Literal["open_loop", "closed_loop"],
+    cap: int,
 ) -> None:
     source = plan(output=cap + 1)
     result = simulate(config(mode=mode, max_output_tokens=cap), trace_plan=source)
@@ -178,12 +227,25 @@ def test_trace_output_at_engine_cap_is_preserved(cap: int) -> None:
 
 def test_equal_raw_block_ids_do_not_share_kv_across_sessions() -> None:
     source = TracePlan(
-        sessions=("first", "second"), block_size=64,
+        sessions=("first", "second"),
+        block_size=64,
         requests=(
-            TraceTurn(request_id=0, session_id=0, arrival_offset_ms=0,
-                      prompt_len=129, output_len=1, hash_ids=(0, 1)),
-            TraceTurn(request_id=1, session_id=1, arrival_offset_ms=0,
-                      prompt_len=129, output_len=1, hash_ids=(0, 1)),
+            TraceTurn(
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            ),
+            TraceTurn(
+                request_id=1,
+                session_id=1,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            ),
         ),
     )
     single = config().model_copy(update={"num_instances": 1})
@@ -195,12 +257,25 @@ def test_equal_raw_block_ids_do_not_share_kv_across_sessions() -> None:
 
 def test_timed_root_ratio_counts_all_branches_without_changing_session_count() -> None:
     source = TracePlan(
-        sessions=("one",), block_size=64,
+        sessions=("one",),
+        block_size=64,
         requests=(
-            TraceTurn(request_id=0, session_id=0, arrival_offset_ms=0,
-                      prompt_len=129, output_len=1, hash_ids=(0, 1)),
-            TraceTurn(request_id=1, session_id=0, arrival_offset_ms=100,
-                      prompt_len=129, output_len=1, hash_ids=(0, 1)),
+            TraceTurn(
+                request_id=0,
+                session_id=0,
+                arrival_offset_ms=0,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            ),
+            TraceTurn(
+                request_id=1,
+                session_id=0,
+                arrival_offset_ms=100,
+                prompt_len=129,
+                output_len=1,
+                hash_ids=(0, 1),
+            ),
         ),
     )
     result = simulate(config(mode="closed_loop", session_rate=2, seed=3), trace_plan=source)
@@ -211,31 +286,46 @@ def test_timed_root_ratio_counts_all_branches_without_changing_session_count() -
 @pytest.mark.parametrize("timing", ["empirical", "analytical"])
 @pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
 def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
-    timing: Literal["empirical", "analytical"], mode: Literal["open_loop", "closed_loop"],
+    timing: Literal["empirical", "analytical"],
+    mode: Literal["open_loop", "closed_loop"],
 ) -> None:
     baseline = config(capacity=64, mode=mode)
-    original = baseline.model_copy(update={
-        "shared_l3": SharedL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
-        "inference": InferenceConfig(
-            page_size=64,
-            model=ModelSpec(
-                name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
-                num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+    original = baseline.model_copy(
+        update={
+            "shared_l3": SharedL3Config(available_gb=0.000004096, lookup_latency_ms=1.25),
+            "inference": InferenceConfig(
+                page_size=64,
+                model=ModelSpec(
+                    name="toy",
+                    num_layers=2,
+                    hidden_size=16,
+                    num_attention_heads=2,
+                    num_kv_heads=1,
+                    head_dim=8,
+                    ffn_intermediate_size=32,
+                    vocab_size=16,
+                ),
+                hardware=HardwareSpec(
+                    name="toy",
+                    memory_bytes_per_gpu=2_000_000,
+                    effective_fp16_tflops=1,
+                    effective_hbm_gb_s=1,
+                ),
+                storage=StorageSpec(
+                    l1_available_gb=0.0001,
+                    l2_available_gb=0.000008192,
+                    runtime_reserve_bytes=1000,
+                    l2_to_l1_gb_s=0.001,
+                    l3_to_l2_gb_s=0.002,
+                    l2_latency_ms=3,
+                    l3_latency_ms=4,
+                ),
+                timing=(
+                    baseline.inference.timing if timing == "empirical" else AnalyticalTimingConfig()
+                ),
             ),
-            hardware=HardwareSpec(
-                name="toy", memory_bytes_per_gpu=2_000_000,
-                effective_fp16_tflops=1, effective_hbm_gb_s=1,
-            ),
-            storage=StorageSpec(
-                l1_available_gb=0.0001, l2_available_gb=0.000008192,
-                runtime_reserve_bytes=1000,
-                l2_to_l1_gb_s=0.001, l3_to_l2_gb_s=0.002,
-                l2_latency_ms=3, l3_latency_ms=4,
-            ),
-            timing=(baseline.inference.timing if timing == "empirical"
-                    else AnalyticalTimingConfig()),
-        ),
-    })
+        }
+    )
     original_data = original.model_dump()
     resolution = resolve_config(original)
     resolution_data = resolution.model_dump()
@@ -253,8 +343,10 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
     trace = result.meta.config.workload.trace
     assert trace is not None and trace.plan_id == "test-plan"
     assert result.resolution == resolution
-    assert runtime.engine.max_total_tokens == resolution.max_total_tokens == (
-        resolution.capacity.l1_capacity_pages * source.block_size
+    assert (
+        runtime.engine.max_total_tokens
+        == resolution.max_total_tokens
+        == (resolution.capacity.l1_capacity_pages * source.block_size)
     )
     assert runtime.engine.max_total_tokens > resolve_config(baseline).max_total_tokens
     assert runtime.engine.l2_capacity_tokens == resolution.l2_capacity_tokens == 128
@@ -277,8 +369,11 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
         assert analysis.flops > 0
         expected = step_cost(
             StepWorkload(
-                phase="PREFILL", prefill=(PrefillWork(0, 0, 129, 129),), decode=(),
-                allocated_pages=3, batch_requests=1,
+                phase="PREFILL",
+                prefill=(PrefillWork(0, 0, 129, 129),),
+                decode=(),
+                allocated_pages=3,
+                batch_requests=1,
             ),
             original.inference.model,
             original.inference.hardware,

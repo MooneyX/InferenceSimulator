@@ -28,9 +28,7 @@ from test_schemas import metric_inputs, resolved_config, runtime_config
 PERF = PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=1)
 
 
-def request(
-    key: int, *, prompt: int = 4, maximum: int = 3, output: int = 3
-) -> InferenceRequest:
+def request(key: int, *, prompt: int = 4, maximum: int = 3, output: int = 3) -> InferenceRequest:
     return InferenceRequest(key, key, None, prompt, maximum, output, (), 0)
 
 
@@ -276,20 +274,31 @@ def test_input_limit_aborts_at_actual_arrival_without_gpu_step() -> None:
 
 def test_aborted_root_does_not_block_later_success_or_shift_makespan_start() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=192, page_size=64)
-    plan = WorkloadPlan({
-        0: TurnPlan(0, 0, None, 0, None, 193, 1, 1, 0),
-        1: TurnPlan(1, 1, None, 1, None, 1, 1, 1, 0),
-    }, (0, 1), {})
+    plan = WorkloadPlan(
+        {
+            0: TurnPlan(0, 0, None, 0, None, 193, 1, 1, 0),
+            1: TurnPlan(1, 1, None, 1, None, 1, 1, 1, 0),
+        },
+        (0, 1),
+        {},
+    )
     run = Coordinator(
         (Engine(runtime_config(cfg, PERF)),),
-        planned_client(plan, cfg), Router(1),
+        planned_client(plan, cfg),
+        Router(1),
     ).run()[0]
     assert [item.id for item in run.aborted_requests] == [0]
     assert [item.id for item in run.records] == [1]
     assert (run.sim_start, run.sim_end, run.num_engine_steps) == (0, 2, 1)
-    metrics = compute_metrics(run.records, **(metric_inputs() | {
-        "earliest_sent_arrival": run.sim_start,
-    }))
+    metrics = compute_metrics(
+        run.records,
+        **(
+            metric_inputs()
+            | {
+                "earliest_sent_arrival": run.sim_start,
+            }
+        ),
+    )
     assert metrics.makespan == 2 and metrics.ttft_mean == 1
 
 
@@ -319,7 +328,7 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
                 turn_increment_len=FixedLength(value=1),
                 output_len=FixedLength(value=2),
                 session=SessionConfig(num_sessions=1),
-            )
+            ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=128, page_size=64),
         perf_model=PERF,

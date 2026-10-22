@@ -216,7 +216,8 @@ def test_periodic_heap_rebuild_discards_stale_entries(
 
 @pytest.mark.parametrize("interval", [64, 4096])
 def test_periodic_heap_check_bounds_stale_entries_without_eviction(
-    interval: int, monkeypatch: pytest.MonkeyPatch,
+    interval: int,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", interval)
     pool = CachePool("L2", 0, 1, 1)
@@ -336,13 +337,17 @@ def tier_page(cache: TieredKVCache, chunk_id: str) -> CacheEntry:
 
 
 def cache_entries(cache: TieredKVCache) -> dict[tuple[str, str], CacheEntry]:
-    return {(tier, chunk_id): entry for tier, pool in cache.pools.items()
-            for chunk_id, entry in pool.entries.items()}
+    return {
+        (tier, chunk_id): entry
+        for tier, pool in cache.pools.items()
+        for chunk_id, entry in pool.entries.items()
+    }
 
 
 def entry_values(cache: TieredKVCache) -> dict[tuple[str, str], tuple[int, int]]:
-    return {key: (page.ref_count, page.last_access_seq)
-            for key, page in cache_entries(cache).items()}
+    return {
+        key: (page.ref_count, page.last_access_seq) for key, page in cache_entries(cache).items()
+    }
 
 
 def assert_tiers_conserved(cache: TieredKVCache) -> None:
@@ -460,14 +465,22 @@ def test_tiered_insufficient_evictable_pages_preserve_cache_and_lru() -> None:
     snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     heaps = {tier: list(state.heap) for tier, state in cache.pools.items()}
     queued = {tier: set(state.queued) for tier, state in cache.pools.items()}
-    counters = (tuple(pool.access_seq for pool in cache.pools.values()), cache.promotions, cache.demotions)
+    counters = (
+        tuple(pool.access_seq for pool in cache.pools.values()),
+        cache.promotions,
+        cache.demotions,
+    )
     with pytest.raises(CacheCapacityError):
         cache.ensure_free(2)
     assert entry_values(cache) == entries
     assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert {tier: state.heap for tier, state in cache.pools.items()} == heaps
     assert {tier: state.queued for tier, state in cache.pools.items()} == queued
-    assert (tuple(pool.access_seq for pool in cache.pools.values()), cache.promotions, cache.demotions) == counters
+    assert (
+        tuple(pool.access_seq for pool in cache.pools.values()),
+        cache.promotions,
+        cache.demotions,
+    ) == counters
     cache.cancel_pin(protected.request_id)
     assert cache.ensure_free(2) == 2
     assert_tiers_conserved(cache)
@@ -524,7 +537,9 @@ def test_transfer_reserves_destination_without_exposing_page_or_refreshing_sourc
     page = tier_page(cache, source)
     assert page.tier == "L2" and page.ref_count == 0
     assert cache.reserve_transfer(source, "L1") == "L2"
-    assert cache.page(source) == CacheEntry(source, "L2", 1, page.last_access_seq, pool_id=page.pool_id)
+    assert cache.page(source) == CacheEntry(
+        source, "L2", 1, page.last_access_seq, pool_id=page.pool_id
+    )
     assert cache.probe(request(9, 2, (source,)), 2) == ((source, "L2"),)
     assert cache.tier_snapshot("L1").resident_blocks == before["L1"].resident_blocks + 1
     assert cache.tier_snapshot("L1").free_blocks == before["L1"].free_blocks - 1

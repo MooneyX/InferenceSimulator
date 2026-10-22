@@ -30,8 +30,11 @@ SIMPLE = PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0)
 
 def req(request_id: int, t: float, prompt_len: int, output_len: int) -> Arrival:
     return Arrival(
-        request_id=request_id, sim_time=t, prompt_len=prompt_len,
-        output_len=output_len, max_new_tokens=128,
+        request_id=request_id,
+        sim_time=t,
+        prompt_len=prompt_len,
+        output_len=output_len,
+        max_new_tokens=128,
     )
 
 
@@ -54,13 +57,21 @@ def run(
             raise ValueError("重复的请求 ID")
         maximum = request_output_limit(arrival.output_len, config.max_output_tokens)
         turns[arrival.request_id] = TurnPlan(
-            arrival.request_id, arrival.request_id, None, arrival.sim_time, None,
-            arrival.prompt_len, arrival.output_len, maximum, 0,
+            arrival.request_id,
+            arrival.request_id,
+            None,
+            arrival.sim_time,
+            None,
+            arrival.prompt_len,
+            arrival.output_len,
+            maximum,
+            0,
         )
     plan = WorkloadPlan(turns, tuple(turns), {})
     return Coordinator(
         (Engine(runtime_config(config, perf)),),
-        planned_client(plan, config), Router(1),
+        planned_client(plan, config),
+        Router(1),
     ).run()[0]
 
 
@@ -280,7 +291,9 @@ class TestInvariants:
         )
 
     def test_completed_request_intervals_are_ordered(self, result: EngineRun) -> None:
-        assert all(r.arrival <= r.prefill_start <= r.prefill_end <= r.finish for r in result.records)
+        assert all(
+            r.arrival <= r.prefill_start <= r.prefill_end <= r.finish for r in result.records
+        )
 
     def test_fcfs_admission_order(self, result: EngineRun) -> None:
         starts = [r.prefill_start for r in result.records]

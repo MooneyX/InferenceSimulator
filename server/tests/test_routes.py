@@ -30,15 +30,33 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
         "scheduler": {"max_running_requests": 16},
         "inference": {
             "page_size": 1,
-            "model": {"name": "toy", "num_layers": 2, "hidden_size": 16,
-                      "num_attention_heads": 2, "num_kv_heads": 1, "head_dim": 8,
-                      "ffn_intermediate_size": 32, "vocab_size": 16},
-            "hardware": {"name": "toy", "memory_bytes_per_gpu": 2_000_000,
-                         "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1},
-            "storage": {"l1_available_gb": (10_464 + budget * 64) / 1_000_000_000,
-                        "l2_available_gb": 0},
-            "timing": {"mode": "empirical", "prefill_c1": 0.05,
-                       "prefill_c2": 1e-5, "decode_d1": 8.0, "decode_d2": 0.002},
+            "model": {
+                "name": "toy",
+                "num_layers": 2,
+                "hidden_size": 16,
+                "num_attention_heads": 2,
+                "num_kv_heads": 1,
+                "head_dim": 8,
+                "ffn_intermediate_size": 32,
+                "vocab_size": 16,
+            },
+            "hardware": {
+                "name": "toy",
+                "memory_bytes_per_gpu": 2_000_000,
+                "effective_fp16_tflops": 1,
+                "effective_hbm_gb_s": 1,
+            },
+            "storage": {
+                "l1_available_gb": (10_464 + budget * 64) / 1_000_000_000,
+                "l2_available_gb": 0,
+            },
+            "timing": {
+                "mode": "empirical",
+                "prefill_c1": 0.05,
+                "prefill_c2": 1e-5,
+                "decode_d1": 8.0,
+                "decode_d2": 0.002,
+            },
         },
     }
 
@@ -54,7 +72,8 @@ class TestSuccess:
         payload = make_payload(num_requests=4)
         payload["workload"]["session_rate"] = 2
         payload["workload"]["synthetic"]["session"] = {
-            "num_sessions": 2, "think_time_ms": 200,
+            "num_sessions": 2,
+            "think_time_ms": 200,
         }
         response = run_simulation(client, payload)
         assert response.status_code == 200
@@ -132,8 +151,11 @@ class TestSuccess:
         assert {item["instance_id"] for item in body["requests"]} == {0, 1}
         for metrics in [body["metrics"], *(item["metrics"] for item in body["instances"])]:
             for tier in ("l1", "l2", "l3"):
-                expected = (metrics[f"{tier}_hit_tokens"] / metrics["total_input_tokens"]
-                            if metrics["total_input_tokens"] else 0)
+                expected = (
+                    metrics[f"{tier}_hit_tokens"] / metrics["total_input_tokens"]
+                    if metrics["total_input_tokens"]
+                    else 0
+                )
                 assert metrics[f"{tier}_prefix_hit_rate"] == pytest.approx(expected)
             assert sum(metrics[f"{tier}_prefix_hit_rate"] for tier in ("l1", "l2", "l3")) == (
                 pytest.approx(metrics["actual_prefix_hit_rate"])
@@ -246,19 +268,26 @@ class TestSuccess:
 
 
 class TestErrors:
-    @pytest.mark.parametrize("branch,legacy,value", [
-        ("synthetic", "arrival_mode", "closed_loop"),
-        ("synthetic", "seed", 0),
-        ("synthetic", "session_rate", 1),
-        ("synthetic", "arrival_rate", 1),
-        ("synthetic", "max_new_tokens", 128),
-        ("trace", "mode", "open_loop"),
-        ("trace", "seed", 0),
-        ("trace", "session_rate", 1),
-        ("trace", "target_qps", 1),
-    ])
+    @pytest.mark.parametrize(
+        "branch,legacy,value",
+        [
+            ("synthetic", "arrival_mode", "closed_loop"),
+            ("synthetic", "seed", 0),
+            ("synthetic", "session_rate", 1),
+            ("synthetic", "arrival_rate", 1),
+            ("synthetic", "max_new_tokens", 128),
+            ("trace", "mode", "open_loop"),
+            ("trace", "seed", 0),
+            ("trace", "session_rate", 1),
+            ("trace", "target_qps", 1),
+        ],
+    )
     def test_old_nested_workload_fields_are_rejected(
-        self, client: TestClient, branch: str, legacy: str, value: object,
+        self,
+        client: TestClient,
+        branch: str,
+        legacy: str,
+        value: object,
     ) -> None:
         payload = make_payload(num_requests=1)
         if branch == "trace":
@@ -282,7 +311,10 @@ class TestErrors:
     @pytest.mark.parametrize("field", ["inference", "shared_l3"])
     @pytest.mark.parametrize("url", [URL, "/api/resolve"])
     def test_removed_physical_mode_field_is_rejected(
-        self, client: TestClient, field: str, url: str,
+        self,
+        client: TestClient,
+        field: str,
+        url: str,
     ) -> None:
         payload = make_payload(num_requests=1)
         if field == "shared_l3":
@@ -292,24 +324,34 @@ class TestErrors:
         response = client.post(url, json=payload)
         assert response.status_code == 422
         assert any(
-            error["type"] == "extra_forbidden"
-            and error["loc"] == ["body", field, "mode"]
+            error["type"] == "extra_forbidden" and error["loc"] == ["body", field, "mode"]
             for error in response.json()["detail"]
         )
 
-    @pytest.mark.parametrize("storage,shared,message", [
-        ({"l1_available_gb": 0.00001}, None, "不足一个本地 KV 页"),
-        ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
-        ({"l2_available_gb": 0, "l2_to_l1_gb_s": None},
-         {"available_gb": 0.000000128}, "启用 L3 时必须先启用 L2"),
-        ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": None},
-         None, "L2 → L1 带宽"),
-        ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
-         {"available_gb": 0.000000128}, "L3 → L2 带宽"),
-    ])
+    @pytest.mark.parametrize(
+        "storage,shared,message",
+        [
+            ({"l1_available_gb": 0.00001}, None, "不足一个本地 KV 页"),
+            ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
+            (
+                {"l2_available_gb": 0, "l2_to_l1_gb_s": None},
+                {"available_gb": 0.000000128},
+                "启用 L3 时必须先启用 L2",
+            ),
+            ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": None}, None, "L2 → L1 带宽"),
+            (
+                {"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
+                {"available_gb": 0.000000128},
+                "L3 → L2 带宽",
+            ),
+        ],
+    )
     def test_invalid_tiered_configuration_fails_task(
-        self, client: TestClient, storage: dict[str, float | None],
-        shared: dict[str, object] | None, message: str,
+        self,
+        client: TestClient,
+        storage: dict[str, float | None],
+        shared: dict[str, object] | None,
+        message: str,
     ) -> None:
         payload = make_payload(num_requests=1)
         payload["inference"]["storage"].update(storage)
@@ -380,11 +422,16 @@ class TestErrors:
 
     @pytest.mark.parametrize("plan_id", [None, "missing"])
     def test_trace_plan_id_is_required_and_must_exist(
-        self, client: TestClient, plan_id: str | None,
+        self,
+        client: TestClient,
+        plan_id: str | None,
     ) -> None:
         payload = make_payload()
         payload["workload"] = {
-            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1, "seed": 0,
+            "mode": "trace",
+            "arrival_mode": "open_loop",
+            "session_rate": 1,
+            "seed": 0,
             "trace": {"plan_id": plan_id},
         }
         response = run_simulation(client, payload)
@@ -431,15 +478,25 @@ class TestErrors:
     @pytest.mark.parametrize(
         "path,value,expected",
         [
-            (("scheduler", "max_running_requests"), 0,
-             ["body", "scheduler", "max_running_requests"]),
-            (("inference", "timing", "decode_d1"), -1,
-             ["body", "inference", "timing", "empirical", "decode_d1"]),
+            (
+                ("scheduler", "max_running_requests"),
+                0,
+                ["body", "scheduler", "max_running_requests"],
+            ),
+            (
+                ("inference", "timing", "decode_d1"),
+                -1,
+                ["body", "inference", "timing", "empirical", "decode_d1"],
+            ),
             (("inference", "kv"), {"max_total_tokens": 128}, ["body", "inference", "kv"]),
         ],
     )
     def test_field_validation_paths_follow_unified_config(
-        self, client: TestClient, path: tuple[str, ...], value: object, expected: list[str],
+        self,
+        client: TestClient,
+        path: tuple[str, ...],
+        value: object,
+        expected: list[str],
     ) -> None:
         payload = make_payload()
         node = payload

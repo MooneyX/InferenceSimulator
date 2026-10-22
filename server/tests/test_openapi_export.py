@@ -28,8 +28,14 @@ def test_schema_names_not_split() -> None:
     assert {"SimConfig", "SimResult", "RequestRecord", "Metrics", "ErrorResponse"} <= set(schemas)
     assert not [name for name in schemas if name.endswith(("-Input", "-Output"))]
     assert "ResolutionReport" in schemas
-    assert not {"ResolvedRequest", "ResolvedConfig", "ResolvedRun", "ReplaySettings",
-                "ReplayRun", "ResolvedReplayRun"} & set(schemas)
+    assert not {
+        "ResolvedRequest",
+        "ResolvedConfig",
+        "ResolvedRun",
+        "ReplaySettings",
+        "ReplayRun",
+        "ResolvedReplayRun",
+    } & set(schemas)
 
 
 def test_workload_common_fields_and_engine_output_limit_schema() -> None:
@@ -40,26 +46,36 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
     assert common["arrival_mode"]["default"] == "closed_loop"
     assert common["seed"]["default"] == 0
     assert set(schemas["SyntheticWorkloadConfig"]["properties"]) == {
-        "num_requests", "prompt_len", "turn_increment_len", "output_len", "session",
+        "num_requests",
+        "prompt_len",
+        "turn_increment_len",
+        "output_len",
+        "session",
     }
     assert set(schemas["TraceWorkloadConfig"]["properties"]) == {"plan_id"}
     assert schemas["InferenceConfig"]["properties"]["max_output_tokens"]["default"] == 65536
     assert "mode" not in schemas["InferenceConfig"]["properties"]
     assert "mode" not in schemas["SharedL3Config"]["properties"]
     assert not {
-        "PhysicalInferenceConfig", "PhysicalL3Config", "ManualInferenceConfig",
-        "ManualKVConfig", "ManualL3Config",
+        "PhysicalInferenceConfig",
+        "PhysicalL3Config",
+        "ManualInferenceConfig",
+        "ManualKVConfig",
+        "ManualL3Config",
     } & set(schemas)
     config = schemas["SimConfig"]["properties"]
     assert config["inference"]["$ref"] == "#/components/schemas/InferenceConfig"
 
 
-@pytest.mark.parametrize("schema,field,default", [
-    ("HardwareSpec", "kernel_overhead_ms", 0.005),
-    ("StorageSpec", "l2_latency_ms", 0.01),
-    ("StorageSpec", "l3_latency_ms", 0.1),
-    ("SharedL3Config", "lookup_latency_ms", 0.1),
-])
+@pytest.mark.parametrize(
+    "schema,field,default",
+    [
+        ("HardwareSpec", "kernel_overhead_ms", 0.005),
+        ("StorageSpec", "l2_latency_ms", 0.01),
+        ("StorageSpec", "l3_latency_ms", 0.1),
+        ("SharedL3Config", "lookup_latency_ms", 0.1),
+    ],
+)
 def test_fixed_latency_defaults_in_openapi(schema: str, field: str, default: float) -> None:
     schemas = json.loads(render_openapi())["components"]["schemas"]
     property_schema = schemas[schema]["properties"][field]
@@ -94,8 +110,12 @@ def test_only_unified_simulation_routes_remain() -> None:
     assert preview["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ResolutionReport",
     }
-    assert {"/api/traces", "/api/traces/{key}/sessions", "/api/traces/{key}/plans",
-            "/api/replay-plans"} <= set(paths)
+    assert {
+        "/api/traces",
+        "/api/traces/{key}/sessions",
+        "/api/traces/{key}/plans",
+        "/api/replay-plans",
+    } <= set(paths)
 
 
 def test_write_uses_lf(tmp_path: Path) -> None:

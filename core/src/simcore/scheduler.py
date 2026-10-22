@@ -142,7 +142,7 @@ class AdmissionScheduler:
                 or not 1 <= active.generated_tokens <= active.request.max_new_tokens
             ):
                 raise ValueError("运行请求身份或生成进度不合法")
-            _ = cache.state(request_id) # 调用state函数, 尝试取出状态信息, 若没有则会报错
+            _ = cache.state(request_id)  # 调用state函数, 尝试取出状态信息, 若没有则会报错
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
             for item in running.values()
@@ -156,16 +156,18 @@ class AdmissionScheduler:
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
         selected_pages_tokens = 0  # 本批已选 Prefill 的整页计算额度
-        for item in tuple(self._waiting): # 遍历等待队列中的所有请求
-            if active_count + len(selected) >= self._engine.max_running_requests: # 同时运行请求数限制
+        for item in tuple(self._waiting):  # 遍历等待队列中的所有请求
+            if (
+                active_count + len(selected) >= self._engine.max_running_requests
+            ):  # 同时运行请求数限制
                 break
             request = item.request
-            if is_ready is not None and not is_ready(request.request_id): # 请求未就绪(prefetch未完成, 或者本地命中率比到达时更低, 原因是排队期间有KV被驱逐)
+            if is_ready is not None and not is_ready(
+                request.request_id
+            ):  # 请求未就绪(prefetch未完成, 或者本地命中率比到达时更低, 原因是排队期间有KV被驱逐)
                 continue
             target = item.target_tokens
-            sources = cache.probe(
-                request, target, restoring=item.restoring, include_l3=False
-            )
+            sources = cache.probe(request, target, restoring=item.restoring, include_l3=False)
             hit = len(sources) * block_size
             cache.pin(request, sources)
             new_tokens = target - hit
@@ -173,7 +175,9 @@ class AdmissionScheduler:
             direct_restore = (
                 item.restoring and new_tokens == 0 and all(tier == "L1" for _, tier in sources)
             )
-            required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size # 该请求重算KV所需的空间(单位为token)
+            required_tokens = (
+                (new_tokens + block_size - 1) // block_size
+            ) * block_size  # 该请求重算KV所需的空间(单位为token)
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
             proposed_current = (
                 current_offset
@@ -183,22 +187,21 @@ class AdmissionScheduler:
             )
             proposed_total = proposed_current + selected_future + future + running_future
             compute_ok = (
-                not selected # 当前没有选中的请求
-                or not new_tokens # 当前请求不需要重算KV
-                or ( # 或者预算还足够
-                    required_tokens
-                    < self._engine.max_prefill_tokens - selected_pages_tokens
-                ) # 预算不足时整批只会准入这一个超预算请求, 和sglang的chunked prefill不一致
-            )# 预算判断时要求严格小于, 也就是总token数<=预算 - 1, 但是reuired_tokens为0时还是可以准入, 即使总token数==预算, 和sglang中的处理一致
+                not selected  # 当前没有选中的请求
+                or not new_tokens  # 当前请求不需要重算KV
+                or (  # 或者预算还足够
+                    required_tokens < self._engine.max_prefill_tokens - selected_pages_tokens
+                )  # 预算不足时整批只会准入这一个超预算请求, 和sglang的chunked prefill不一致
+            )  # 预算判断时要求严格小于, 也就是总token数<=预算 - 1, 但是reuired_tokens为0时还是可以准入, 即使总token数==预算, 和sglang中的处理一致
             # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算, 但是后续cunked prefill可能出现这种情况
-            future_ok = direct_restore or proposed_total <= cache.available_tokens or not (
-                running or selected or restored or restore_only
+            future_ok = (
+                direct_restore
+                or proposed_total <= cache.available_tokens
+                or not (running or selected or restored or restore_only)
             )
             if (
-                proposed_current > cache.available_tokens
-                or not future_ok
-                or not compute_ok
-            ): # 容量不足, 这个请求无法准入, 结束这次组批, 将已选入的请求提交计算
+                proposed_current > cache.available_tokens or not future_ok or not compute_ok
+            ):  # 容量不足, 这个请求无法准入, 结束这次组批, 将已选入的请求提交计算
                 cache.cancel_pin(request.request_id)  # 未准入，撤销对命中页的临时保护
                 if (
                     not running
@@ -207,7 +210,7 @@ class AdmissionScheduler:
                     and not restore_only
                     and (
                         (target + block_size - 1) // block_size * block_size + block_size
-                        > self._engine.max_total_tokens # 若整个L1都无法容纳目标长度的KV, abort掉(sglang中的这个判断发生在请求到达时, 需要修复)
+                        > self._engine.max_total_tokens  # 若整个L1都无法容纳目标长度的KV, abort掉(sglang中的这个判断发生在请求到达时, 需要修复)
                     )
                 ):
                     aborted.append(self._pop_item(item))
@@ -221,7 +224,7 @@ class AdmissionScheduler:
                     restore_only.append(item)
                 active_count += 1
                 running_future += future * self._ratio
-            else: # 非回撤恢复请求, 即新到达的请求; 或者回撤恢复但是KV不全的请求
+            else:  # 非回撤恢复请求, 即新到达的请求; 或者回撤恢复但是KV不全的请求
                 selected.append(
                     PrefillCandidate(item, hit, new_tokens, required_tokens // block_size, sources)
                 )

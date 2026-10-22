@@ -157,9 +157,11 @@ class Engine:
     def _start_transfer(
         self, chunk_id: str, destination: str, now_ms: float, request_id: int
     ) -> int:  # 页 ID、目的层、时刻及请求 ID → 去重后的传输任务 ID
-        existing = self._transfer_by_chunk.get(chunk_id) # chunk_id -> 传输任务id
-        if existing is not None: # 查询当前id是否正在被传输
-            self._transfers[existing].waiting_requests.add(request_id) # transfer_id -> 等待该页的请求id
+        existing = self._transfer_by_chunk.get(chunk_id)  # chunk_id -> 传输任务id
+        if existing is not None:  # 查询当前id是否正在被传输
+            self._transfers[existing].waiting_requests.add(
+                request_id
+            )  # transfer_id -> 等待该页的请求id
             return existing
         self._prefix_cache.reserve_transfer(chunk_id, destination)
         link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
@@ -226,15 +228,19 @@ class Engine:
 
     def _ready_for_prefill(self, request_id: int, now_ms: float) -> bool:
         if (
-            self._pending_loads # 请求的load_back未完成
-            or request_id in self._lookup_waiting # L3的查找
-            or request_id in self._prefetch_waiting # L3的prefetch
+            self._pending_loads  # 请求的load_back未完成
+            or request_id in self._lookup_waiting  # L3的查找
+            or request_id in self._prefetch_waiting  # L3的prefetch
         ):
             return False
         if request_id in self._last_local_match:
             request = self._requests[request_id]
-            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False) # 准入前再次probe
-            if len(local) < self._last_local_match[request_id]: # 若命中比到达时更少, 说明部分KV被驱逐了, 需要向L3发起查询和prefetch
+            local = self._prefix_cache.probe(
+                request, request.prompt_len, include_l3=False
+            )  # 准入前再次probe
+            if (
+                len(local) < self._last_local_match[request_id]
+            ):  # 若命中比到达时更少, 说明部分KV被驱逐了, 需要向L3发起查询和prefetch
                 self._last_local_match[request_id] = len(local)
                 self._schedule_l3_lookup(request_id, now_ms)
                 return False
@@ -365,32 +371,38 @@ class Engine:
     ) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
         """回载未就绪时仍可处理已有请求的 Decode；就绪后再执行准入批次。"""
         selection = self._pending_selection
-        if selection is not None and self._pending_loads: # 之前选中了一批请求准备开始prefill, 但是这批请求的load_back未完成, 因此无法进行prefill
-            if not self._running: # 没有等待decode的请求
+        if (
+            selection is not None and self._pending_loads
+        ):  # 之前选中了一批请求准备开始prefill, 但是这批请求的load_back未完成, 因此无法进行prefill
+            if not self._running:  # 没有等待decode的请求
                 return None
             selection = AdmissionBatch((), (), ())
-        elif selection is not None: #  之前选中了一批请求准备开始prefill, 且load_back已完成, 可以开始prefill
+        elif (
+            selection is not None
+        ):  #  之前选中了一批请求准备开始prefill, 且load_back已完成, 可以开始prefill
             self._pending_selection = None
-        else: # 之前没有尝试组织prefill批次, 现在组批
+        else:  # 之前没有尝试组织prefill批次, 现在组批
             running = {
                 key: RunningRequest(self._requests[key], generated)
                 for key, generated in self._running.items()
             }
             selection = self._prefix_scheduler.select_prefill(
                 running,
-                is_ready=lambda key: self._ready_for_prefill(key, now_ms), # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill, 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
+                is_ready=lambda key: self._ready_for_prefill(
+                    key, now_ms
+                ),  # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill, 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
             )
             if (
                 not self._running
                 and not selection.admitted
                 and not selection.restored
                 and not selection.restore_only
-                and not selection.aborted # 没有运行中的请求, 也没有可以开始prefill的请求
-                and (self._lookup_waiting or self._prefetch_waiting) # 有请求在等待L3查询或prefetch
+                and not selection.aborted  # 没有运行中的请求, 也没有可以开始prefill的请求
+                and (self._lookup_waiting or self._prefetch_waiting)  # 有请求在等待L3查询或prefetch
             ):
                 return None
             if selection.promote_ids:
-                self._pending_selection = selection # 将选择准入请求放入等待准入中
+                self._pending_selection = selection  # 将选择准入请求放入等待准入中
                 new_pages = sum(candidate.required_pages for candidate in selection.admitted)
                 _ = self._prefix_cache.ensure_free(len(selection.promote_ids) + new_pages)
                 for chunk_id in selection.promote_ids:
@@ -403,8 +415,8 @@ class Engine:
                         else selection.restore_only[0].request.request_id,
                     )
                     self._pending_loads.add(chunk_id)
-                return None # 本次无法直接开始计算, 需要等待load_back完成
-        return self._execute_step(now_ms, step_index, selection) # 所有KV都在L1, 可以开始计算
+                return None  # 本次无法直接开始计算, 需要等待load_back完成
+        return self._execute_step(now_ms, step_index, selection)  # 所有KV都在L1, 可以开始计算
 
     def finish_step(
         self, now_ms: float

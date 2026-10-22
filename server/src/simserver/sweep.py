@@ -16,7 +16,10 @@ class Parameter:
     label: str
     kind: str = "number"
     modes: tuple[str, ...] = (
-        "synthetic/open_loop", "synthetic/closed_loop", "trace/open_loop", "trace/closed_loop"
+        "synthetic/open_loop",
+        "synthetic/closed_loop",
+        "trace/open_loop",
+        "trace/closed_loop",
     )
 
 
@@ -72,8 +75,10 @@ class ScanAxis(BaseModel):
         import math
 
         for value in values:
-            if value is not None and (type(value) not in (int, float, bool) or
-                                      (type(value) is float and not math.isfinite(value))):
+            if value is not None and (
+                type(value) not in (int, float, bool)
+                or (type(value) is float and not math.isfinite(value))
+            ):
                 raise ValueError("扫描值必须是有限数字、布尔值或 null")
         return values
 
@@ -99,16 +104,20 @@ class ScanRequest(BaseModel):
                 elif parameter.kind == "boolean":
                     if type(value) is not bool:
                         raise ValueError(f"{axis.key} 需要布尔值")
-                elif type(value) is bool or (parameter.kind == "integer" and
-                                             (type(value) is float or type(value) is not int)):
+                elif type(value) is bool or (
+                    parameter.kind == "integer" and (type(value) is float or type(value) is not int)
+                ):
                     raise ValueError(f"{axis.key} 需要{parameter.kind}数值")
         return self
 
 
 NULLABLE = {
-    "inference.hardware.effective_fp8_tflops", "inference.hardware.effective_interconnect_gb_s",
-    "inference.hardware.collective_latency_ms", "inference.hardware.ep_communication_latency_ms",
-    "inference.storage.l2_to_l1_gb_s", "inference.storage.l3_to_l2_gb_s",
+    "inference.hardware.effective_fp8_tflops",
+    "inference.hardware.effective_interconnect_gb_s",
+    "inference.hardware.collective_latency_ms",
+    "inference.hardware.ep_communication_latency_ms",
+    "inference.storage.l2_to_l1_gb_s",
+    "inference.storage.l3_to_l2_gb_s",
 }
 
 
@@ -135,7 +144,8 @@ def build_point(base: SimConfig, values: dict[str, Any], plan: TracePlan | None)
         if key == "shared_l3.available_gb":
             value *= 1000
         if key in (
-            "inference.hardware.memory_bytes_per_gpu", "inference.storage.runtime_reserve_bytes"
+            "inference.hardware.memory_bytes_per_gpu",
+            "inference.storage.runtime_reserve_bytes",
         ):
             value *= 1_000_000_000
             if not float(value).is_integer():

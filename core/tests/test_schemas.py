@@ -42,12 +42,20 @@ from simcore.schemas import (
 LENGTH_DIST = TypeAdapter[LengthDist](LengthDist)
 
 TOY_MODEL = ModelSpec(
-    name="toy", num_layers=2, hidden_size=16, num_attention_heads=2,
-    num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+    name="toy",
+    num_layers=2,
+    hidden_size=16,
+    num_attention_heads=2,
+    num_kv_heads=1,
+    head_dim=8,
+    ffn_intermediate_size=32,
+    vocab_size=16,
 )
 TOY_HARDWARE = HardwareSpec(
-    name="toy", memory_bytes_per_gpu=2_000_000,
-    effective_fp16_tflops=1, effective_hbm_gb_s=1,
+    name="toy",
+    memory_bytes_per_gpu=2_000_000,
+    effective_fp16_tflops=1,
+    effective_hbm_gb_s=1,
 )
 
 
@@ -68,15 +76,23 @@ def resolved_config(
         l3_prefetch_min_tokens=engine.l3_prefetch_min_tokens,
     )
     timing = EmpiricalTimingConfig(
-        prefill_c1=perf_model.prefill_c1, prefill_c2=perf_model.prefill_c2,
-        decode_d1=perf_model.decode_d1, decode_d2=perf_model.decode_d2,
+        prefill_c1=perf_model.prefill_c1,
+        prefill_c2=perf_model.prefill_c2,
+        decode_d1=perf_model.decode_d1,
+        decode_d2=perf_model.decode_d2,
     )
     storage = StorageSpec(l1_available_gb=0.001)
     base = SimConfig(
-        workload=workload, scheduler=scheduler, num_instances=num_instances,
+        workload=workload,
+        scheduler=scheduler,
+        num_instances=num_instances,
         inference=InferenceConfig(
-            page_size=engine.page_size, max_output_tokens=engine.max_output_tokens,
-            model=TOY_MODEL, hardware=TOY_HARDWARE, storage=storage, timing=timing,
+            page_size=engine.page_size,
+            max_output_tokens=engine.max_output_tokens,
+            model=TOY_MODEL,
+            hardware=TOY_HARDWARE,
+            storage=storage,
+            timing=timing,
         ),
     )
     budget = resolve_config(base).capacity
@@ -89,43 +105,49 @@ def resolved_config(
         l2_available_gb=l2_bytes / 1_000_000_000,
         l2_to_l1_gb_s=(
             (perf_model.l2_to_l1_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
-            if l2_bytes else None
+            if l2_bytes
+            else None
         ),
         l3_to_l2_gb_s=(
             (perf_model.l3_to_l2_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
-            if l3_bytes else None
+            if l3_bytes
+            else None
         ),
         l2_latency_ms=perf_model.l2_latency_ms,
         l3_latency_ms=perf_model.l3_latency_ms,
     )
-    return base.model_copy(update={
-        "inference": base.inference.model_copy(update={"storage": physical_storage}),
-        "shared_l3": SharedL3Config(
-            available_gb=l3_bytes / 1_000_000_000,
-            lookup_latency_ms=perf_model.l3_lookup_latency_ms,
-        ),
-    })
+    return base.model_copy(
+        update={
+            "inference": base.inference.model_copy(update={"storage": physical_storage}),
+            "shared_l3": SharedL3Config(
+                available_gb=l3_bytes / 1_000_000_000,
+                lookup_latency_ms=perf_model.l3_lookup_latency_ms,
+            ),
+        }
+    )
 
 
 def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig:
     """直接 Engine 单测保留显式运行参数，不经过公开 SimConfig。"""
     l2 = (
         TransferLink(
-            engine.page_size * perf.kv_bytes_per_token
-            / perf.l2_to_l1_bandwidth_bytes_per_ms,
+            engine.page_size * perf.kv_bytes_per_token / perf.l2_to_l1_bandwidth_bytes_per_ms,
             perf.l2_latency_ms,
         )
-        if engine.l2_capacity_tokens and perf.kv_bytes_per_token
-        and perf.l2_to_l1_bandwidth_bytes_per_ms else None
+        if engine.l2_capacity_tokens
+        and perf.kv_bytes_per_token
+        and perf.l2_to_l1_bandwidth_bytes_per_ms
+        else None
     )
     l3 = (
         TransferLink(
-            engine.page_size * perf.kv_bytes_per_token
-            / perf.l3_to_l2_bandwidth_bytes_per_ms,
+            engine.page_size * perf.kv_bytes_per_token / perf.l3_to_l2_bandwidth_bytes_per_ms,
             perf.l3_latency_ms,
         )
-        if engine.l3_capacity_tokens and perf.kv_bytes_per_token
-        and perf.l3_to_l2_bandwidth_bytes_per_ms else None
+        if engine.l3_capacity_tokens
+        and perf.kv_bytes_per_token
+        and perf.l3_to_l2_bandwidth_bytes_per_ms
+        else None
     )
     return RuntimeConfig(engine=engine, perf_model=perf, links=TransferLinks(l2, l3))
 
@@ -135,13 +157,21 @@ def metric_inputs() -> dict[str, Any]:
     from simcore.schemas import WorkloadPlan
 
     return {
-        "plan": WorkloadPlan({}, (), {}), "page_size": 1, "workload_mode": "synthetic",
+        "plan": WorkloadPlan({}, (), {}),
+        "page_size": 1,
+        "workload_mode": "synthetic",
         "cache_snapshot": L1Snapshot(0, 0, 0, 0, 0, 0),
         "l2_snapshot": TierSnapshot(0, 0, 0, 0, 0, 0, 0),
         "l3_snapshot": TierSnapshot(0, 0, 0, 0, 0, 0, 0),
-        "l1_evictions": 0, "l1_peak_resident_blocks": 0, "promotions": 0, "demotions": 0,
-        "restore_bytes": 0, "restore_time_ms": 0.0,
-        "earliest_sent_arrival": None, "latest_sent_arrival": None, "num_sent": 0,
+        "l1_evictions": 0,
+        "l1_peak_resident_blocks": 0,
+        "promotions": 0,
+        "demotions": 0,
+        "restore_bytes": 0,
+        "restore_time_ms": 0.0,
+        "earliest_sent_arrival": None,
+        "latest_sent_arrival": None,
+        "num_sent": 0,
         "replayed_prefill_tokens": 0,
     }
 
@@ -157,7 +187,7 @@ def make_config(**engine_overrides: object) -> SimConfig:
                 prompt_len=FixedLength(value=128),
                 turn_increment_len=FixedLength(value=8),
                 output_len=FixedLength(value=16),
-            )
+            ),
         ),
         engine=EngineConfig.model_validate(
             {"max_running_requests": 8, "max_total_tokens": 4096, **engine_overrides}
@@ -167,17 +197,34 @@ def make_config(**engine_overrides: object) -> SimConfig:
 
 
 def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() -> None:
-    base = dict(name="mixed", num_layers=2, hidden_size=16, num_attention_heads=2,
-                num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16)
+    base = dict(
+        name="mixed",
+        num_layers=2,
+        hidden_size=16,
+        num_attention_heads=2,
+        num_kv_heads=1,
+        head_dim=8,
+        ffn_intermediate_size=32,
+        vocab_size=16,
+    )
     gqa = AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
     with pytest.raises(ValidationError, match="注意力组层数之和"):
         ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa])
     with pytest.raises(ValidationError, match="DSA 须配置"):
-        AttentionGroup(kind="mla_dsa", layers=1, num_attention_heads=2,
-                       q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8)
+        AttentionGroup(
+            kind="mla_dsa",
+            layers=1,
+            num_attention_heads=2,
+            q_rank=4,
+            kv_rank=4,
+            rope_dim=2,
+            nope_dim=6,
+            value_dim=8,
+        )
     with pytest.raises(ValidationError, match="GQA 只配置"):
-        AttentionGroup(kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1,
-                       head_dim=8, kv_rank=4)
+        AttentionGroup(
+            kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8, kv_rank=4
+        )
     model = ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa, gqa])
     assert model.attention_groups == [gqa, gqa]
     assert not gqa.output_gate
@@ -228,34 +275,63 @@ def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> No
 
 def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
     model = ModelSpec(
-        name="auxiliary", num_layers=2, hidden_size=16, num_attention_heads=2,
-        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+        name="auxiliary",
+        num_layers=2,
+        hidden_size=16,
+        num_attention_heads=2,
+        num_kv_heads=1,
+        head_dim=8,
+        ffn_intermediate_size=32,
+        vocab_size=16,
     )
     assert model.norms.model_dump() == {
-        "kind": "rms", "block_per_layer": 2, "final_norm": True, "dtype": None,
+        "kind": "rms",
+        "block_per_layer": 2,
+        "final_norm": True,
+        "dtype": None,
     }
     assert model.router.model_dump() == {
-        "dtype": None, "correction_bias": False, "correction_dtype": "fp32",
+        "dtype": None,
+        "correction_bias": False,
+        "correction_dtype": "fp32",
     }
     assert model.ihc is None
     group = AttentionGroup(
-        kind="mla_dsa", layers=2, num_attention_heads=2, q_rank=4, kv_rank=4,
-        rope_dim=2, nope_dim=6, value_dim=8, index_heads=2, index_dim=128,
-        topk=4, full_indexer_layers=1,
+        kind="mla_dsa",
+        layers=2,
+        num_attention_heads=2,
+        q_rank=4,
+        kv_rank=4,
+        rope_dim=2,
+        nope_dim=6,
+        value_dim=8,
+        index_heads=2,
+        index_dim=128,
+        topk=4,
+        full_indexer_layers=1,
     )
     assert group.qk_norm and group.norm_dtype is None
     assert group.index_norm == "layer" and group.index_norm_dtype is None
     assert group.sink_dtype is None
     payload = model.model_dump() | {
-        "moe_layers": 1, "num_experts": 4, "experts_per_token": 2,
-        "expert_intermediate_size": 8, "attention_layout": "grouped",
+        "moe_layers": 1,
+        "num_experts": 4,
+        "experts_per_token": 2,
+        "expert_intermediate_size": 8,
+        "attention_layout": "grouped",
         "norms": {"kind": "layer", "block_per_layer": 0, "final_norm": False, "dtype": "fp32"},
         "router": {"dtype": "fp32", "correction_bias": True, "correction_dtype": "fp16"},
         "ihc": {"mult": 1},
-        "attention_groups": [group.model_dump() | {
-            "qk_norm": False, "norm_dtype": "fp16", "index_norm": "rms",
-            "index_norm_dtype": "fp32", "sink_dtype": "bf16",
-        }],
+        "attention_groups": [
+            group.model_dump()
+            | {
+                "qk_norm": False,
+                "norm_dtype": "fp16",
+                "index_norm": "rms",
+                "index_norm_dtype": "fp32",
+                "sink_dtype": "bf16",
+            }
+        ],
     }
     explicit = ModelSpec.model_validate(payload)
     assert explicit.ihc == IHCSpec(mult=1, dtype="fp32")
@@ -263,17 +339,28 @@ def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
     assert ModelSpec.model_validate(explicit.model_dump() | {"ihc": None}).ihc is None
 
 
-@pytest.mark.parametrize("spec,payload", [
-    (NormSpec, {"kind": "batch"}), (NormSpec, {"block_per_layer": -1}),
-    (NormSpec, {"block_per_layer": None}), (NormSpec, {"dtype": "fp8"}),
-    (RouterSpec, {"dtype": "fp8"}), (RouterSpec, {"correction_dtype": "fp8"}),
-    (RouterSpec, {"correction_dtype": None}), (IHCSpec, {}),
-    (IHCSpec, {"mult": 0}), (IHCSpec, {"mult": -1}),
-    (IHCSpec, {"mult": 1.5}), (IHCSpec, {"mult": None}),
-    (IHCSpec, {"mult": 1, "dtype": "fp8"}), (IHCSpec, {"mult": 1, "dtype": None}),
-])
+@pytest.mark.parametrize(
+    "spec,payload",
+    [
+        (NormSpec, {"kind": "batch"}),
+        (NormSpec, {"block_per_layer": -1}),
+        (NormSpec, {"block_per_layer": None}),
+        (NormSpec, {"dtype": "fp8"}),
+        (RouterSpec, {"dtype": "fp8"}),
+        (RouterSpec, {"correction_dtype": "fp8"}),
+        (RouterSpec, {"correction_dtype": None}),
+        (IHCSpec, {}),
+        (IHCSpec, {"mult": 0}),
+        (IHCSpec, {"mult": -1}),
+        (IHCSpec, {"mult": 1.5}),
+        (IHCSpec, {"mult": None}),
+        (IHCSpec, {"mult": 1, "dtype": "fp8"}),
+        (IHCSpec, {"mult": 1, "dtype": None}),
+    ],
+)
 def test_auxiliary_weight_spec_rejects_invalid_dtype_counts_and_null(
-    spec: type[NormSpec] | type[RouterSpec] | type[IHCSpec], payload: dict[str, object],
+    spec: type[NormSpec] | type[RouterSpec] | type[IHCSpec],
+    payload: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
         spec.model_validate(payload)
@@ -286,10 +373,21 @@ def test_auxiliary_dtype_accepts_supported_precision_and_nullable_inheritance(
     assert NormSpec(dtype=dtype).dtype == dtype
     assert RouterSpec(dtype=dtype).dtype == dtype
     group = AttentionGroup(
-        kind="mla_dsa", layers=1, num_attention_heads=2, q_rank=4, kv_rank=4,
-        rope_dim=2, nope_dim=6, value_dim=8, index_heads=2, index_dim=128,
-        topk=4, full_indexer_layers=1,
-        norm_dtype=dtype, index_norm_dtype=dtype, sink_dtype=dtype,
+        kind="mla_dsa",
+        layers=1,
+        num_attention_heads=2,
+        q_rank=4,
+        kv_rank=4,
+        rope_dim=2,
+        nope_dim=6,
+        value_dim=8,
+        index_heads=2,
+        index_dim=128,
+        topk=4,
+        full_indexer_layers=1,
+        norm_dtype=dtype,
+        index_norm_dtype=dtype,
+        sink_dtype=dtype,
     )
     assert group.norm_dtype == group.index_norm_dtype == group.sink_dtype == dtype
     if dtype is not None:
@@ -297,47 +395,90 @@ def test_auxiliary_dtype_accepts_supported_precision_and_nullable_inheritance(
         assert RouterSpec(correction_dtype=dtype).correction_dtype == dtype
 
 
-@pytest.mark.parametrize("field,invalid", [
-    ("norm_dtype", "fp8"), ("index_norm_dtype", "fp8"), ("sink_dtype", "fp8"),
-    ("index_norm", "batch"), ("index_norm", None),
-])
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("norm_dtype", "fp8"),
+        ("index_norm_dtype", "fp8"),
+        ("sink_dtype", "fp8"),
+        ("index_norm", "batch"),
+        ("index_norm", None),
+    ],
+)
 def test_attention_auxiliary_spec_rejects_invalid_precision_or_norm(
-    field: str, invalid: str | None,
+    field: str,
+    invalid: str | None,
 ) -> None:
     with pytest.raises(ValidationError, match=field):
-        AttentionGroup.model_validate({
-            "kind": "mla_dsa", "layers": 1, "num_attention_heads": 2,
-            "q_rank": 4, "kv_rank": 4, "rope_dim": 2, "nope_dim": 6, "value_dim": 8,
-            "index_heads": 2, "index_dim": 128, "topk": 4, "full_indexer_layers": 1,
-            field: invalid,
-        })
+        AttentionGroup.model_validate(
+            {
+                "kind": "mla_dsa",
+                "layers": 1,
+                "num_attention_heads": 2,
+                "q_rank": 4,
+                "kv_rank": 4,
+                "rope_dim": 2,
+                "nope_dim": 6,
+                "value_dim": 8,
+                "index_heads": 2,
+                "index_dim": 128,
+                "topk": 4,
+                "full_indexer_layers": 1,
+                field: invalid,
+            }
+        )
 
 
 @pytest.mark.parametrize("kind", ["gqa", "mla"])
-@pytest.mark.parametrize("update", [
-    {"index_norm": "none"}, {"index_norm": "rms"}, {"index_norm_dtype": "fp32"},
-])
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"index_norm": "none"},
+        {"index_norm": "rms"},
+        {"index_norm_dtype": "fp32"},
+    ],
+)
 def test_index_norm_overrides_require_dsa(
-    kind: Literal["gqa", "mla"], update: dict[str, object],
+    kind: Literal["gqa", "mla"],
+    update: dict[str, object],
 ) -> None:
     group = (
         AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
-        if kind == "gqa" else
-        AttentionGroup(kind="mla", layers=1, num_attention_heads=2,
-                       q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6, value_dim=8)
+        if kind == "gqa"
+        else AttentionGroup(
+            kind="mla",
+            layers=1,
+            num_attention_heads=2,
+            q_rank=4,
+            kv_rank=4,
+            rope_dim=2,
+            nope_dim=6,
+            value_dim=8,
+        )
     )
     assert group.index_norm == "layer" and group.index_norm_dtype is None
     with pytest.raises(ValidationError, match="仅 MLA\\+DSA 可以配置索引器归一化"):
         AttentionGroup.model_validate(group.model_dump() | update)
 
 
-@pytest.mark.parametrize("router", [
-    {"dtype": "fp32"}, {"correction_bias": True}, {"correction_dtype": "bf16"},
-])
+@pytest.mark.parametrize(
+    "router",
+    [
+        {"dtype": "fp32"},
+        {"correction_bias": True},
+        {"correction_dtype": "bf16"},
+    ],
+)
 def test_non_default_router_requires_moe(router: dict[str, object]) -> None:
     payload = dict(
-        name="router", num_layers=1, hidden_size=16, num_attention_heads=2,
-        num_kv_heads=1, head_dim=8, ffn_intermediate_size=32, vocab_size=16,
+        name="router",
+        num_layers=1,
+        hidden_size=16,
+        num_attention_heads=2,
+        num_kv_heads=1,
+        head_dim=8,
+        ffn_intermediate_size=32,
+        vocab_size=16,
     )
     assert ModelSpec.model_validate(payload | {"router": {}}).router == RouterSpec()
     with pytest.raises(ValidationError, match="Router 辅助配置需要 MoE 层"):
@@ -396,9 +537,13 @@ class TestWorkloadConfig:
     def test_trace_payload_required_and_parent_defaults(self) -> None:
         with pytest.raises(ValidationError, match="trace"):
             WorkloadConfig(mode="trace", session_rate=1)
-        workload = WorkloadConfig.model_validate({
-            "mode": "trace", "session_rate": 1, "trace": {},
-        })
+        workload = WorkloadConfig.model_validate(
+            {
+                "mode": "trace",
+                "session_rate": 1,
+                "trace": {},
+            }
+        )
         assert workload.synthetic is None
         assert workload.arrival_mode == "closed_loop" and workload.seed == 0
         assert workload.target_qps is None
@@ -412,15 +557,25 @@ class TestWorkloadConfig:
         with pytest.raises(ValidationError):
             WorkloadConfig.model_validate(payload)
 
-    @pytest.mark.parametrize("field,invalid", [
-        ("arrival_mode", "legacy"), ("arrival_mode", "session"),
-        ("session_rate", 0), ("session_rate", float("inf")),
-        ("seed", -1), ("target_qps", 0), ("target_qps", float("nan")),
-    ])
+    @pytest.mark.parametrize(
+        "field,invalid",
+        [
+            ("arrival_mode", "legacy"),
+            ("arrival_mode", "session"),
+            ("session_rate", 0),
+            ("session_rate", float("inf")),
+            ("seed", -1),
+            ("target_qps", 0),
+            ("target_qps", float("nan")),
+        ],
+    )
     def test_parent_rejects_invalid_values(self, field: str, invalid: object) -> None:
         payload = {
-            "mode": "trace", "arrival_mode": "open_loop", "session_rate": 1,
-            "trace": {}, field: invalid,
+            "mode": "trace",
+            "arrival_mode": "open_loop",
+            "session_rate": 1,
+            "trace": {},
+            field: invalid,
         }
         with pytest.raises(ValidationError, match=field):
             WorkloadConfig.model_validate(payload)
@@ -428,7 +583,9 @@ class TestWorkloadConfig:
     @pytest.mark.parametrize("source", ["synthetic", "trace"])
     @pytest.mark.parametrize("arrival_mode", ["closed_loop", "open_loop"])
     def test_four_modes_enforce_parent_rate_constraints(
-        self, source: str, arrival_mode: str,
+        self,
+        source: str,
+        arrival_mode: str,
     ) -> None:
         synthetic = make_config().workload.synthetic
         assert synthetic is not None
@@ -459,35 +616,51 @@ class TestWorkloadConfig:
         body = synthetic.model_dump() | {"session": {}}
         assert SyntheticWorkloadConfig.model_validate(body).session.num_sessions is None
         closed = WorkloadConfig(
-            session_rate=1, synthetic=SyntheticWorkloadConfig.model_validate(body),
+            session_rate=1,
+            synthetic=SyntheticWorkloadConfig.model_validate(body),
         )
         assert closed.synthetic is not None and closed.synthetic.session.num_sessions == 4
-        opened = WorkloadConfig(arrival_mode="open_loop", target_qps=1,
-                                synthetic=SyntheticWorkloadConfig.model_validate(body))
+        opened = WorkloadConfig(
+            arrival_mode="open_loop",
+            target_qps=1,
+            synthetic=SyntheticWorkloadConfig.model_validate(body),
+        )
         assert opened.synthetic is not None and opened.synthetic.session.num_sessions is None
         for sessions in (0, 5):
             with pytest.raises(ValidationError, match="num_sessions"):
-                WorkloadConfig.model_validate({
-                    "session_rate": 1, "synthetic": body | {"session": {"num_sessions": sessions}},
-                })
+                WorkloadConfig.model_validate(
+                    {
+                        "session_rate": 1,
+                        "synthetic": body | {"session": {"num_sessions": sessions}},
+                    }
+                )
         for session in ({"num_sessions": 1}, {"think_time_ms": 1}):
             with pytest.raises(ValidationError):
-                WorkloadConfig.model_validate({
-                    "arrival_mode": "open_loop", "target_qps": 1,
-                    "synthetic": body | {"session": session},
-                })
+                WorkloadConfig.model_validate(
+                    {
+                        "arrival_mode": "open_loop",
+                        "target_qps": 1,
+                        "synthetic": body | {"session": session},
+                    }
+                )
 
     @pytest.mark.parametrize("source", ["synthetic", "trace"])
-    @pytest.mark.parametrize("field", ["arrival_mode", "seed", "session_rate", "target_qps",
-                                       "arrival_rate", "max_new_tokens"])
+    @pytest.mark.parametrize(
+        "field",
+        ["arrival_mode", "seed", "session_rate", "target_qps", "arrival_rate", "max_new_tokens"],
+    )
     def test_removed_nested_workload_fields_are_rejected(self, source: str, field: str) -> None:
         synthetic = make_config().workload.synthetic
         assert synthetic is not None
         body = synthetic.model_dump() if source == "synthetic" else {}
         with pytest.raises(ValidationError, match=field):
-            WorkloadConfig.model_validate({
-                "mode": source, "session_rate": 1, source: body | {field: 1},
-            })
+            WorkloadConfig.model_validate(
+                {
+                    "mode": source,
+                    "session_rate": 1,
+                    source: body | {field: 1},
+                }
+            )
 
     def test_unknown_mode_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -522,7 +695,11 @@ class TestConfigValidation:
 
         config = make_config()
         assert set(config.model_dump()) == {
-            "num_instances", "workload", "scheduler", "inference", "shared_l3",
+            "num_instances",
+            "workload",
+            "scheduler",
+            "inference",
+            "shared_l3",
         }
         assert not hasattr(config, "engine") and not hasattr(config, "perf_model")
         engine = prepare_runtime(config).engine
@@ -566,17 +743,21 @@ class TestConfigValidation:
 
     @pytest.mark.parametrize("invalid", [0, -1, 1.5, None])
     def test_engine_output_limit_rejects_non_positive_or_non_integer_values(
-        self, invalid: object,
+        self,
+        invalid: object,
     ) -> None:
         payload = make_config().model_dump()
         payload["inference"]["max_output_tokens"] = invalid
         with pytest.raises(ValidationError, match="max_output_tokens"):
             SimConfig.model_validate(payload)
         with pytest.raises(ValidationError, match="max_output_tokens"):
-            EngineConfig.model_validate({
-                "max_running_requests": 1, "max_total_tokens": 128,
-                "max_output_tokens": invalid,
-            })
+            EngineConfig.model_validate(
+                {
+                    "max_running_requests": 1,
+                    "max_total_tokens": 128,
+                    "max_output_tokens": invalid,
+                }
+            )
 
     def test_prefill_c2_defaults_to_zero(self) -> None:
         from simcore.capacity import prepare_runtime
@@ -584,8 +765,12 @@ class TestConfigValidation:
         config = make_config()
         inference = config.inference
         assert isinstance(inference.timing, EmpiricalTimingConfig)
-        assert (inference.timing.prefill_c2 == inference.storage.l2_latency_ms
-                == inference.storage.l3_latency_ms == 0.0)
+        assert (
+            inference.timing.prefill_c2
+            == inference.storage.l2_latency_ms
+            == inference.storage.l3_latency_ms
+            == 0.0
+        )
         assert config.shared_l3 is not None and config.shared_l3.lookup_latency_ms == 0.0
         runtime = prepare_runtime(config)
         assert runtime.perf_model.kv_bytes_per_token == 64
@@ -608,7 +793,9 @@ class TestConfigValidation:
             else:
                 section.pop(field)
         payload["inference"]["storage"].update(
-            l2_available_gb=0.001, l2_to_l1_gb_s=1, l3_to_l2_gb_s=1,
+            l2_available_gb=0.001,
+            l2_to_l1_gb_s=1,
+            l3_to_l2_gb_s=1,
         )
         payload["shared_l3"]["available_gb"] = 0.001
         config = SimConfig.model_validate(payload)
@@ -627,12 +814,19 @@ class TestConfigValidation:
         assert runtime.perf_model.l3_lookup_latency_ms == expected[3]
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
 
-    @pytest.mark.parametrize("field,invalid", [
-        ("l2_to_l1_gb_s", 0), ("l3_to_l2_gb_s", -1),
-        ("l2_to_l1_gb_s", float("inf")), ("l3_to_l2_gb_s", float("nan")),
-        ("l2_latency_ms", -1), ("l3_latency_ms", -1),
-        ("l2_latency_ms", float("inf")), ("l3_latency_ms", float("nan")),
-    ])
+    @pytest.mark.parametrize(
+        "field,invalid",
+        [
+            ("l2_to_l1_gb_s", 0),
+            ("l3_to_l2_gb_s", -1),
+            ("l2_to_l1_gb_s", float("inf")),
+            ("l3_to_l2_gb_s", float("nan")),
+            ("l2_latency_ms", -1),
+            ("l3_latency_ms", -1),
+            ("l2_latency_ms", float("inf")),
+            ("l3_latency_ms", float("nan")),
+        ],
+    )
     def test_invalid_tiered_storage_fields_rejected(self, field: str, invalid: float) -> None:
         payload = make_config().model_dump()
         payload["inference"]["storage"][field] = invalid
@@ -644,15 +838,20 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match="lookup_latency_ms"):
             SharedL3Config(lookup_latency_ms=invalid)
 
-    @pytest.mark.parametrize("tier,missing", [
-        ("l2", "L2.*L1"), ("l3", "L3.*L2"),
-    ])
+    @pytest.mark.parametrize(
+        "tier,missing",
+        [
+            ("l2", "L2.*L1"),
+            ("l3", "L3.*L2"),
+        ],
+    )
     def test_enabled_tier_requires_transfer_bandwidth(self, tier: str, missing: str) -> None:
         from simcore.capacity import resolve_config
 
         payload = make_config().model_dump()
         payload["inference"]["storage"].update(
-            l2_available_gb=64 * 64 / 1_000_000_000, l2_to_l1_gb_s=1,
+            l2_available_gb=64 * 64 / 1_000_000_000,
+            l2_to_l1_gb_s=1,
         )
         if tier == "l3":
             payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
@@ -668,8 +867,10 @@ class TestConfigValidation:
         payload = make_config().model_dump()
         payload["inference"]["storage"].update(
             l2_available_gb=64 * 64 / 1_000_000_000,
-            l2_to_l1_gb_s=0.000128, l3_to_l2_gb_s=0.000064,
-            l2_latency_ms=0.5, l3_latency_ms=1.5,
+            l2_to_l1_gb_s=0.000128,
+            l3_to_l2_gb_s=0.000064,
+            l2_latency_ms=0.5,
+            l3_latency_ms=1.5,
         )
         payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
         config = SimConfig.model_validate(payload)
@@ -681,7 +882,9 @@ class TestConfigValidation:
         assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
         payload["shared_l3"]["available_gb"] = 0
         payload["inference"]["storage"].update(
-            l2_available_gb=0, l2_to_l1_gb_s=None, l3_to_l2_gb_s=None,
+            l2_available_gb=0,
+            l2_to_l1_gb_s=None,
+            l3_to_l2_gb_s=None,
         )
         disabled = prepare_runtime(SimConfig.model_validate(payload))
         assert disabled.engine.l2_capacity_tokens == disabled.engine.l3_capacity_tokens == 0
@@ -710,7 +913,11 @@ class TestConfigValidation:
         assert workload.session_rate == 10 and workload.target_qps is None
         assert workload.synthetic is not None
         assert set(workload.synthetic.model_dump()) == {
-            "num_requests", "prompt_len", "turn_increment_len", "output_len", "session",
+            "num_requests",
+            "prompt_len",
+            "turn_increment_len",
+            "output_len",
+            "session",
         }
         with pytest.raises(ValidationError, match="arrival_mode"):
             WorkloadConfig.model_validate(workload.model_dump() | {"arrival_mode": "session"})
@@ -720,7 +927,9 @@ class TestConfigValidation:
     @pytest.mark.parametrize("arrival_mode", ["closed_loop", "open_loop"])
     @pytest.mark.parametrize("missing", [True, False])
     def test_both_modes_require_turn_increment_and_reject_old_hit_target(
-        self, arrival_mode: str, missing: bool,
+        self,
+        arrival_mode: str,
+        missing: bool,
     ) -> None:
         synthetic = make_config().workload.synthetic
         assert synthetic is not None
@@ -812,13 +1021,20 @@ class TestConfigValidation:
         payload["inference"] = {
             "page_size": 4,
             "model": {
-                "name": "toy", "num_layers": 2, "hidden_size": 16,
-                "num_attention_heads": 2, "num_kv_heads": 1,
-                "head_dim": 8, "ffn_intermediate_size": 32, "vocab_size": 16,
+                "name": "toy",
+                "num_layers": 2,
+                "hidden_size": 16,
+                "num_attention_heads": 2,
+                "num_kv_heads": 1,
+                "head_dim": 8,
+                "ffn_intermediate_size": 32,
+                "vocab_size": 16,
             },
             "hardware": {
-                "name": "toy", "memory_bytes_per_gpu": 2_000_000,
-                "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1,
+                "name": "toy",
+                "memory_bytes_per_gpu": 2_000_000,
+                "effective_fp16_tflops": 1,
+                "effective_hbm_gb_s": 1,
             },
             "storage": {"l1_available_gb": 0.001},
             "timing": {"mode": "analytical"},
@@ -844,8 +1060,10 @@ class TestConfigValidation:
         payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
         payload["inference"]["storage"].update(
             l2_available_gb=64 * 64 / 1_000_000_000,
-            l2_to_l1_gb_s=0.000128, l3_to_l2_gb_s=0.000064,
-            l2_latency_ms=0.5, l3_latency_ms=1.5,
+            l2_to_l1_gb_s=0.000128,
+            l3_to_l2_gb_s=0.000064,
+            l2_latency_ms=0.5,
+            l3_latency_ms=1.5,
         )
         config = SimConfig.model_validate(payload)
         original = config.model_dump()
@@ -900,8 +1118,11 @@ class TestArrival:
     )
     def test_bounds(self, overrides: dict[str, float]) -> None:
         base = {
-            "request_id": 0, "sim_time": 1.0, "prompt_len": 10,
-            "output_len": 5, "max_new_tokens": 5,
+            "request_id": 0,
+            "sim_time": 1.0,
+            "prompt_len": 10,
+            "output_len": 5,
+            "max_new_tokens": 5,
         }
         with pytest.raises(ValidationError):
             Arrival.model_validate({**base, **overrides})

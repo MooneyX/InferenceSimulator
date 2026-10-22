@@ -21,7 +21,9 @@ __all__ = ["compute_metrics", "percentile"]
 _MS_PER_SECOND = 1000.0
 
 
-def percentile(sorted_values: Sequence[float], q: float) -> float:  # 升序样本与 [0,1] 分位点 → 插值后的数值
+def percentile(
+    sorted_values: Sequence[float], q: float
+) -> float:  # 升序样本与 [0,1] 分位点 → 插值后的数值
     """线性插值分位数。
 
     对升序样本取位置 ``h = (n - 1) * q``，在 ``floor(h)`` 与 ``ceil(h)`` 两点间线性插值，
@@ -79,14 +81,23 @@ def compute_metrics(
     arrival_qps = (
         (num_sent - 1) * _MS_PER_SECOND / (latest_sent_arrival - earliest_sent_arrival)
         if num_sent > 1
-        and earliest_sent_arrival is not None and latest_sent_arrival is not None
-        and latest_sent_arrival > earliest_sent_arrival else None
+        and earliest_sent_arrival is not None
+        and latest_sent_arrival is not None
+        and latest_sent_arrival > earliest_sent_arrival
+        else None
     )
     peak_resident = max(l1_peak_resident_blocks, cache_snapshot.resident_blocks)
     l3_fields: dict[str, Any] = {
         f"l3_{name}": getattr(l3_snapshot, name) if l3_snapshot is not None else None
-        for name in ("evictions", "peak_resident_blocks", "capacity_blocks", "resident_blocks",
-                     "active_blocks", "evictable_blocks", "free_blocks")
+        for name in (
+            "evictions",
+            "peak_resident_blocks",
+            "capacity_blocks",
+            "resident_blocks",
+            "active_blocks",
+            "evictable_blocks",
+            "free_blocks",
+        )
     }
     if not records:
         return Metrics(
@@ -170,11 +181,13 @@ def compute_metrics(
         mean_output_tokens=sum(record.output_len for record in records) / len(records),
         child_ideal_prefix_hit_rate=(
             sum(record.ideal_reuse_tokens for record in children) / child_input
-            if child_input else None
+            if child_input
+            else None
         ),
         child_actual_prefix_hit_rate=(
             sum(record.actual_hit_tokens for record in children) / child_input
-            if child_input else None
+            if child_input
+            else None
         ),
         actual_prefix_hit_rate=actual / input_tokens,
         l1_prefix_hit_rate=l1_hits / input_tokens,

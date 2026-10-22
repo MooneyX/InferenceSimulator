@@ -31,7 +31,8 @@ class TraceStore:
         now = time.monotonic()
         with self._lock:
             expired = [
-                key for key, created in self._created.items()
+                key
+                for key, created in self._created.items()
                 if now - created > _MAX_AGE_S
                 and self._jobs.get(key, {}).get("status") != "processing"
             ]

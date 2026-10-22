@@ -26,9 +26,11 @@ from simserver.sweep import ScanRequest, build_point
 def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
     parent = mp.parent_process()
     if parent is not None:
+
         def stop_with_parent() -> None:
             wait([parent.sentinel])
             os._exit(1)
+
         threading.Thread(target=stop_with_parent, name="worker-parent-watch", daemon=True).start()
     cache = ResultCache(Path(cache_path), max_bytes=cache_size)
     try:
@@ -38,10 +40,14 @@ def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
                 break
             try:
                 config = SimConfig.model_validate(command["config"])
-                plan = (TracePlan.model_validate(command["plan"])
-                        if command["plan"] is not None else None)
+                plan = (
+                    TracePlan.model_validate(command["plan"])
+                    if command["plan"] is not None
+                    else None
+                )
                 result = cache.run(
-                    config, plan,
+                    config,
+                    plan,
                     lambda config=config, plan=plan: simulate(config, trace_plan=plan),
                     force=command["force"],
                 )
@@ -59,8 +65,14 @@ def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
                     }
                 else:
                     payload = {"result": result.content}
-                connection.send({"ok": True, "payload": payload, "cache": result.status,
-                                 "lookup_ms": result.lookup_ms})
+                connection.send(
+                    {
+                        "ok": True,
+                        "payload": payload,
+                        "cache": result.status,
+                        "lookup_ms": result.lookup_ms,
+                    }
+                )
             except Exception as exc:
                 connection.send({"ok": False, "error": str(exc)})
     except (EOFError, BrokenPipeError, OSError):
@@ -89,11 +101,20 @@ class Job:
     code_fingerprint: str = ""
 
     def summary(self) -> dict[str, Any]:
-        return {"id": self.id, "kind": self.kind, "status": self.status, "total": self.total,
-                "completed": self.completed, "failed": self.failed, "error": self.error,
-                "cache": self.cache, "lookup_ms": self.lookup_ms, "version": self.version,
-                "code_fingerprint": self.code_fingerprint,
-                "axes": self.axes if self.kind == "scan" else None}
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "status": self.status,
+            "total": self.total,
+            "completed": self.completed,
+            "failed": self.failed,
+            "error": self.error,
+            "cache": self.cache,
+            "lookup_ms": self.lookup_ms,
+            "version": self.version,
+            "code_fingerprint": self.code_fingerprint,
+            "axes": self.axes if self.kind == "scan" else None,
+        }
 
 
 @dataclass
@@ -104,8 +125,13 @@ class Slot:
 
 
 class JobManager:
-    def __init__(self, cache_path: Path, cache_size: int = DEFAULT_MAX_BYTES,
-                 workers: int | None = None, history_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        cache_path: Path,
+        cache_size: int = DEFAULT_MAX_BYTES,
+        workers: int | None = None,
+        history_path: Path | None = None,
+    ) -> None:
         self.cache_path = cache_path
         self.cache_size = cache_size
         self.store = JobStore(history_path or cache_path.with_name("jobs.sqlite3"))
@@ -122,12 +148,23 @@ class JobManager:
         self._closed = False
         self._started = False
         for record in reversed(self.store.list()):
-            job = Job(record["id"], record["kind"], None, None, False, record["total"],
-                      axes=record["axes"] or [], status=record["status"],
-                      completed=record["completed"], failed=record["failed"],
-                      error=record["error"], cache=record["cache"],
-                      lookup_ms=record["lookup_ms"], version=record["version"],
-                      code_fingerprint=record["code_fingerprint"])
+            job = Job(
+                record["id"],
+                record["kind"],
+                None,
+                None,
+                False,
+                record["total"],
+                axes=record["axes"] or [],
+                status=record["status"],
+                completed=record["completed"],
+                failed=record["failed"],
+                error=record["error"],
+                cache=record["cache"],
+                lookup_ms=record["lookup_ms"],
+                version=record["version"],
+                code_fingerprint=record["code_fingerprint"],
+            )
             self._jobs[job.id] = job
             self._version = max(self._version, job.version)
         with self._condition:
@@ -144,8 +181,10 @@ class JobManager:
 
     def _present(self, summary: dict[str, Any]) -> dict[str, Any]:
         fingerprint = summary["code_fingerprint"]
-        status = "unknown" if not fingerprint else (
-            "current" if fingerprint == self.code_fingerprint else "stale"
+        status = (
+            "unknown"
+            if not fingerprint
+            else ("current" if fingerprint == self.code_fingerprint else "stale")
         )
         return {**summary, "code_version_status": status}
 
@@ -161,8 +200,9 @@ class JobManager:
         self._condition.notify_all()
 
     def submit(self, config: SimConfig, plan: TracePlan | None, *, force: bool = False) -> str:
-        job = Job(uuid4().hex, "single", config, plan, force, 1,
-                  code_fingerprint=self.code_fingerprint)
+        job = Job(
+            uuid4().hex, "single", config, plan, force, 1, code_fingerprint=self.code_fingerprint
+        )
         with self._condition:
             self._changed(job)
             self._jobs[job.id] = job
@@ -176,8 +216,16 @@ class JobManager:
         total = 1
         for axis in axes:
             total *= len(axis["values"])
-        job = Job(uuid4().hex, "scan", request.base, plan, False, total, axes=axes,
-                  code_fingerprint=self.code_fingerprint)
+        job = Job(
+            uuid4().hex,
+            "scan",
+            request.base,
+            plan,
+            False,
+            total,
+            axes=axes,
+            code_fingerprint=self.code_fingerprint,
+        )
 
         def combinations() -> Iterator[dict[str, Any]]:
             for values in product(*(axis["values"] for axis in axes)):
@@ -200,8 +248,9 @@ class JobManager:
         child.close()
         slot = Slot(process, parent)
         self._slots.append(slot)
-        threading.Thread(target=self._watch, args=(slot,), daemon=True,
-                         name=f"simulation-worker-{process.pid}").start()
+        threading.Thread(
+            target=self._watch, args=(slot,), daemon=True, name=f"simulation-worker-{process.pid}"
+        ).start()
         return slot
 
     def _next(self) -> tuple[Job, dict[str, Any]] | None:
@@ -249,11 +298,17 @@ class JobManager:
                         continue
                     job, values = job_and_values
                     assert job.base is not None
-                    config = (build_point(job.base, values, job.plan)
-                              if job.kind == "scan" else job.base)
-                    slot.pipe.send({"kind": job.kind, "config": config.model_dump(mode="json"),
-                                    "plan": job.plan.model_dump(mode="json") if job.plan else None,
-                                    "force": job.force})
+                    config = (
+                        build_point(job.base, values, job.plan) if job.kind == "scan" else job.base
+                    )
+                    slot.pipe.send(
+                        {
+                            "kind": job.kind,
+                            "config": config.model_dump(mode="json"),
+                            "plan": job.plan.model_dump(mode="json") if job.plan else None,
+                            "force": job.force,
+                        }
+                    )
                     slot.assignment = (job.id, values)
                     job.status = "running"
                     self._changed(job)
@@ -299,8 +354,7 @@ class JobManager:
                     self._slots.remove(slot)
                     if slot.assignment:
                         job_id, values = slot.assignment
-                        self._record(self._jobs[job_id], values,
-                                     {"ok": False, "error": str(exc)})
+                        self._record(self._jobs[job_id], values, {"ok": False, "error": str(exc)})
                     slot.pipe.close()
                     self._condition.notify_all()
                 return

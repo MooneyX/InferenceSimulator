@@ -137,5 +137,6 @@ async def upload_plan(request: Request) -> PlanReceipt:
     except (ValidationError, ValueError) as exc:
         path.unlink(missing_ok=True)
         raise HTTPException(422, str(exc)) from exc
-    return PlanReceipt(id=key, sessions=len(plan.sessions), requests=len(plan.requests),
-                       block_size=plan.block_size)
+    return PlanReceipt(
+        id=key, sessions=len(plan.sessions), requests=len(plan.requests), block_size=plan.block_size
+    )

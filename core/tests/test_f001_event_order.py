@@ -1,5 +1,6 @@
 """F001 同刻完成、客户端回调、子轮发送和单步调度全序验收。"""
 
+from dataclasses import replace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -371,8 +372,8 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
     child = InferenceRequest(1, 90, 90, 5, 8, 8, inherited, 1)
     assert engine.submit(child, 0)
     if restoring:
-        engine._prefix_scheduler._pop_item(engine._prefix_scheduler._waiting[0])
-        engine._prefix_scheduler.requeue(child, 0, 4)
+        waiting = engine._prefix_scheduler._waiting
+        waiting[0] = replace(waiting[0], generated_tokens=4)
         cache.pools["L1"].insert(encode(1, 1))
     if blocked == "lookup":
         engine._lookup_waiting.add(1)

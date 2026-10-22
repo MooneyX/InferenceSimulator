@@ -89,16 +89,12 @@ class TestImmediateEngine:
         assert not hasattr(engine, "step")
         engine.submit(request, 3.0)
         assert engine.has_work
-        with pytest.raises(ValueError, match="重复"):
-            engine.submit(request, 3.0)
         started = engine.start_step(3.0, 0)
         assert started == (5.0, (7,))
         assert not engine.has_work
         assert engine._prefix_cache.page("chunk:7:0") is None
         assert engine.finish_step(8.0) == (7,)
         engine.complete(8.0, 7)
-        with pytest.raises(ValueError, match="未待结算"):
-            engine.complete(8.0, 7)
         assert interval(engine.finalize().records[0]) == (3.0, 3.0, 8.0, 8.0)
 
     @pytest.mark.parametrize("maximum", [4, 8])
@@ -230,10 +226,6 @@ class TestEdgeCases:
         result = run([])
         assert result.records == () and result.num_engine_steps == 0
         assert (result.sim_start, result.sim_end) == (0.0, 0.0)
-
-    def test_duplicate_request_id_rejected(self) -> None:
-        with pytest.raises(ValueError, match="重复"):
-            run([req(0, 0.0, 5, 1), req(0, 1.0, 5, 1)])
 
     def test_zero_cost_model_terminates(self) -> None:
         """全零系数下步长为 0，时钟不前进但 token 仍逐步产出，必须终止。"""

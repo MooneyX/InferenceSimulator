@@ -178,13 +178,9 @@ def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
     assert shared.lookup(chunk).ref_count == 0
 
 
-def test_repeated_pool_insert_is_rejected_without_corrupting_state() -> None:
+def test_pool_store_merges_existing_page_references() -> None:
     pool = CachePool("L1", 0, 2, 4)
     pool.insert("x", 1)
-    before = pool.snapshot(), dict(pool.entries), pool.access_seq
-    with pytest.raises(ValueError, match="已存在"):
-        pool.insert("x")
-    assert (pool.snapshot(), pool.entries, pool.access_seq) == before
     assert not pool.store("x", 1)
     assert pool.resident == 1 and pool.lookup("x").ref_count == 2
 

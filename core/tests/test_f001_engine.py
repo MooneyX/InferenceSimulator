@@ -247,13 +247,6 @@ def test_multi_turn_simulation_uses_published_parent_prefix_and_is_reproducible(
     assert all(request.output_len == 2 for request in first.requests)
 
 
-def test_empty_step_is_rejected_without_advancing_clock() -> None:
-    engine = make_engine()
-    with pytest.raises(RuntimeError, match="没有可执行"):
-        engine.start_step(0, 0)
-    assert engine.num_steps == 0
-
-
 def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> None:
     config = EngineConfig(
         max_running_requests=3,

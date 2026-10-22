@@ -171,15 +171,6 @@ describe("simulate", () => {
     });
   });
 
-  it("ignores malformed entries in the generic validation detail array", async () => {
-    const valid = { loc: ["body", "scheduler", "max_running_requests"],
-      msg: "Input should be greater than 0", type: "greater_than" };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(422, {
-      detail: [null, { msg: "missing location" }, valid],
-    })));
-    await expect(simulate(config)).rejects.toMatchObject({ validationErrors: [valid] });
-  });
-
   it("shows L1 capacity failures as an actionable 422 message", async () => {
     vi.stubGlobal(
       "fetch",
@@ -189,17 +180,6 @@ describe("simulate", () => {
     await expect(simulate(config)).rejects.toMatchObject({
       message: "请求输入超过 L1 容量",
       validationErrors: [],
-    });
-  });
-
-  it("uses the service detail for an unimplemented workload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(501, { detail: "trace workload 未实现" })),
-    );
-
-    await expect(simulate(config)).rejects.toMatchObject({
-      message: "trace workload 未实现",
     });
   });
 

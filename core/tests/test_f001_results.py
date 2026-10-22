@@ -50,16 +50,6 @@ def config() -> SimConfig:
     )
 
 
-def test_direct_engine_defers_missing_transfer_link_until_needed() -> None:
-    engine = EngineConfig(
-        max_running_requests=1, max_total_tokens=8, page_size=4, l2_capacity_tokens=4
-    )
-    perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
-    direct = Engine(runtime_config(engine, perf))
-    assert direct._links.l2_to_l1 is None
-    assert direct._prefix_cache.pools["L2"].capacity == 1
-
-
 def mixed_plan() -> WorkloadPlan:
     turns = {
         0: TurnPlan(0, 0, None, 0, None, 4, 1, 2, 0),

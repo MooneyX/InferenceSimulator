@@ -165,7 +165,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         InferenceRequest(93, 93, None, l2_pages * 4, 1, 1, (), 0),
     )
     for seed in seeds:
-        cache.pin(seed, 0)
+        cache.pin(seed, ())
         cache.admit(seed.request_id)
         cache.extend(seed.request_id, seed.prompt_len)
         cache.publish(seed.request_id)
@@ -224,7 +224,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = InferenceRequest(90, 90, None, 8, 1, 1, (), 0)
-    cache.pin(parent, 0)
+    cache.pin(parent, ())
     cache.admit(90)
     cache.extend(90, 8)
     cache.publish(90)
@@ -239,7 +239,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         assert engine.submit(root, 0)
     assert not engine._lookup_waiting
     filler = InferenceRequest(91, 91, None, 16, 1, 1, (), 0)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(91)
     cache.ensure_free(4)
     cache.extend(91, 16)
@@ -406,7 +406,7 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
     cache.publish(0)
     cache.withdraw(0)
     filler = InferenceRequest(99, 99, None, 16, 1, 1, (), 0)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 16)
     cache.publish(99)
@@ -439,13 +439,13 @@ def test_partial_load_failure_waits_for_inflight_page_then_recomputes() -> None:
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = InferenceRequest(0, 0, None, 8, 1, 1, (), 0)
-    cache.pin(parent, 0)
+    cache.pin(parent, ())
     cache.admit(0)
     cache.extend(0, 8)
     cache.publish(0)
     cache.finish(0)
     filler = InferenceRequest(99, 99, None, 20, 1, 1, (), 0)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 20)
     cache.publish(99)

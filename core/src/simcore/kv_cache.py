@@ -359,21 +359,13 @@ class TieredKVCache:
             sources.append((chunk_id, pool.level))
         return tuple(sources)
 
-    def pin(self, request: InferenceRequest, matched_tokens: int) -> None:
+    def pin(self, request: InferenceRequest, sources: tuple[tuple[str, str], ...]) -> None:
         if request.request_id in self._pins or request.request_id in self._states:
             raise ValueError("请求已被保护或驻留")
-        if matched_tokens < 0 or matched_tokens % self.page_size:
-            raise ValueError("命中前缀必须是非负整页长度")
-        bindings: dict[str, CachePool] = {}
-        for index in range(matched_tokens // self.page_size):
-            chunk_id = self._chunk_id(request, index)
-            pool = self._source_pool(chunk_id)
-            if pool is None:
-                raise ValueError("命中前缀包含未发布页")
-            bindings[chunk_id] = pool
+        bindings = {chunk_id: self.pools[tier] for chunk_id, tier in sources}
         for chunk_id, pool in bindings.items():
             pool.add_ref(chunk_id)
-        self._pins[request.request_id] = (request, matched_tokens)
+        self._pins[request.request_id] = (request, len(sources) * self.page_size)
         self._pin_sources[request.request_id] = bindings
 
     def cancel_pin(self, request_id: int) -> None:

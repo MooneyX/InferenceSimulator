@@ -179,7 +179,7 @@ class AdmissionScheduler:
                     )
                 ]
             hit = len(sources) * block_size
-            cache.pin(request, hit) # 这里也可以复用之前的probe的结果, 避免重新查找每个chunk所在的层级
+            cache.pin(request, sources)
             new_tokens = target - hit
             new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
             if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources): # 回撤后恢复的请求, 所有KV都可复用且在L1

@@ -45,7 +45,7 @@ def test_same_batch_new_pages_not_visible_until_publication() -> None:
 def test_budget_blocked_candidate_remains_waiting_while_running_decodes() -> None:
     scheduler, cache = setup(capacity=32)
     running = request(0, maximum=2)
-    cache.pin(running, 0)
+    cache.pin(running, ())
     cache.admit(0)
     cache.extend(0, 5)
     cache.publish(0)

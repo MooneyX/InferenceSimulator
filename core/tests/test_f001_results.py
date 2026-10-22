@@ -201,7 +201,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     assert engine.finish_step(7) == ()
     assert engine._replayed_tokens[0] == 4
     holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0)
-    engine._prefix_cache.pin(holder, 0)
+    engine._prefix_cache.pin(holder, ())
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)
     assert engine.start_step(7, 3) == (0, ())

@@ -67,7 +67,8 @@ def test_two_readers_have_independent_destinations_and_preserve_shared_source() 
     chunk = encode(90, 0)
     shared.insert(chunk)
     for cache, key in ((first, 0), (second, 1)):
-        cache.pin(request(key, (chunk,)), 4)
+        item = request(key, (chunk,))
+        cache.pin(item, cache.probe(item, item.prompt_len))
         assert cache.reserve_transfer(chunk, "L2") == "L3"
         assert cache.pools["L2"].lookup(chunk) is None
         assert cache.pools["L2"].reserved == 1
@@ -158,10 +159,10 @@ def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
     chunk = encode(90, 0)
     shared.insert(chunk)
     waiting = request(0, (chunk,))
-    cache.pin(waiting, 4)
+    cache.pin(waiting, cache.probe(waiting, waiting.prompt_len))
     cache.reserve_transfer(chunk, "L2")
     recompute = request(1, (chunk,))
-    cache.pin(recompute, 0)
+    cache.pin(recompute, ())
     cache.admit(1)
     cache.extend(1, 5)
     cache.publish(1)

@@ -36,7 +36,7 @@ def request(
 
 def occupy(cache: TieredKVCache, key: int, length: int) -> None:
     holder = request(key, prompt=length)
-    cache.pin(holder, 0)
+    cache.pin(holder, ())
     cache.admit(key)
     cache.extend(key, length)
     cache.publish(key)

@@ -40,7 +40,7 @@ def request(
 
 def hold(cache: TieredKVCache, item: InferenceRequest, length: int | None = None) -> None:
     sources = cache.probe(item, item.prompt_len)
-    cache.pin(item, len(sources) * cache.page_size)
+    cache.pin(item, sources)
     cache.admit(item.request_id)
     cache.extend(item.request_id, item.prompt_len)
     cache.publish(item.request_id)

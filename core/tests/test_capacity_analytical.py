@@ -1605,7 +1605,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     cache = engine._prefix_cache
     for key in range(3):
         parent = InferenceRequest(key, key, None, 4, 1, 1, (), 0)
-        cache.pin(parent, 0)
+        cache.pin(parent, ())
         cache.admit(key)
         cache.extend(key, 4)
         cache.publish(key)

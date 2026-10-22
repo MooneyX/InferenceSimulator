@@ -268,13 +268,13 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = request(0, prompt=4)
-    cache.pin(parent, 0)
+    cache.pin(parent, ())
     cache.admit(0)
     cache.extend(0, 4)
     cache.publish(0)
     cache.finish(0)
     filler = request(99, prompt=28)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 28)
     cache.publish(99)
@@ -324,7 +324,7 @@ def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
     cache = engine._prefix_cache
     for key in (0, 99, 100):
         seed = request(key, prompt=8)
-        cache.pin(seed, 0)
+        cache.pin(seed, ())
         cache.admit(key)
         cache.extend(key, 8)
         cache.publish(key)
@@ -373,7 +373,7 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
     del engine._running[0]
     engine._prefix_scheduler.requeue(item, 4, generated_tokens=1)
     filler = request(99, prompt=16)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 16)
     cache.publish(99)
@@ -428,7 +428,7 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
     del engine._running[0]
     engine._prefix_scheduler.requeue(item, 8, generated_tokens=1)
     filler = request(99, prompt=24)
-    cache.pin(filler, 0)
+    cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 24)
     cache.publish(99)
@@ -481,7 +481,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 16), (98, 4)):
         seed = request(key, prompt=size)
-        cache.pin(seed, 0)
+        cache.pin(seed, ())
         cache.admit(key)
         cache.extend(key, size)
         cache.publish(key)
@@ -537,7 +537,7 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 36)):
         seed = request(key, prompt=size)
-        cache.pin(seed, 0)
+        cache.pin(seed, ())
         cache.admit(key)
         cache.extend(key, size)
         cache.publish(key)

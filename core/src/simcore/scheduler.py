@@ -180,24 +180,15 @@ class AdmissionScheduler:
             cache.pin(request, sources)
             new_tokens = target - hit
             new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
-            if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources): # 回撤后恢复的请求, 所有KV都可复用且在L1
-                if current_offset > cache.available_tokens:
-                    cache.cancel_pin(request.request_id)
-                    break
-                cache.admit(request.request_id) # 直接准入
-                self._pop_item(item) # 从等待队列中移除
-                restored.append(item)
-                active_count += 1 # 活跃请求数
-                running_future += (
-                    min(request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
-                ) # 该请求的未来输出预算
-                continue
+            direct_restore = (
+                item.restoring and new_tokens == 0 and all(tier == "L1" for _, tier in sources)
+            )
             required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size # 该请求重算KV所需的空间(单位为token)
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
             proposed_current = (
                 current_offset
                 + required_tokens
-                + block_size  # 为后续增长再留一页
+                + (0 if direct_restore else block_size)
                 + len(new_promotions) * block_size  # 低层命中页先提升到 L1
             )
             proposed_total = proposed_current + selected_future + future + running_future
@@ -210,7 +201,7 @@ class AdmissionScheduler:
                 ) # 预算不足时整批只会准入这一个超预算请求, 和sglang的chunked prefill不一致
             )# 预算判断时要求严格小于, 也就是总token数<=预算 - 1, 但是reuired_tokens为0时还是可以准入, 即使总token数==预算, 和sglang中的处理一致
             # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算, 但是后续cunked prefill可能出现这种情况
-            future_ok = proposed_total <= cache.available_tokens or not (
+            future_ok = direct_restore or proposed_total <= cache.available_tokens or not (
                 running or selected or restored or restore_only
             )
             if (
@@ -232,8 +223,12 @@ class AdmissionScheduler:
                     aborted.append(self._pop_item(item))
                     continue
                 break
-            if item.restoring and new_tokens == 0: # 回撤后恢复的请求, 所有KV都可复用, 若全在L1, 则在185行就直接准入了, 此处表示还有KV处于L2
-                restore_only.append(item)
+            if item.restoring and new_tokens == 0:
+                if direct_restore:
+                    cache.admit(request.request_id)
+                    restored.append(item)
+                else:
+                    restore_only.append(item)
                 active_count += 1
                 running_future += future * self._ratio
             else: # 非回撤恢复请求, 即新到达的请求; 或者回撤恢复但是KV不全的请求

@@ -292,6 +292,53 @@ def test_restored_full_hit_requires_no_empty_prefill_step() -> None:
     assert cache.private_page_count(0) == 0 and cache.resident_pages == 1
 
 
+@pytest.mark.parametrize("mode", ["l1", "l2", "recompute"])
+def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: str) -> None:
+    config = EngineConfig(
+        max_running_requests=3, max_total_tokens=512, page_size=64,
+        l2_capacity_tokens=128, max_prefill_tokens=128,
+    )
+    cache = TieredKVCache(512, 64, 128)
+    item = request(0, prompt=128, maximum=65_536, output=3)
+    hold(cache, item)
+    cache.withdraw(0)
+    if mode == "l2":
+        for index in range(2):
+            chunk_id = encode(0, index)
+            cache.reserve_transfer(chunk_id, "L2")
+            cache.complete_transfer(chunk_id)
+    scheduler = AdmissionScheduler(config, cache)
+    scheduler.enqueue(request(1), 1)
+    scheduler.requeue(item, 2, generated_tokens=2 if mode == "recompute" else 1)
+
+    batch = scheduler.select_prefill({})
+
+    assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [1]
+    assert not batch.restore_only and not batch.promote_ids and not batch.aborted
+    assert [entry.request.request_id for entry in batch.restored] == ([0] if mode == "l1" else [])
+    assert scheduler.num_waiting == (0 if mode == "l1" else 1)
+    assert scheduler.head_request_id == (None if mode == "l1" else 0)
+    assert 0 not in cache._pins
+    for index in range(2):
+        page = cache.page(encode(0, index))
+        assert page is not None and page.ref_count == int(mode == "l1")
+
+
+def test_direct_restore_does_not_add_growth_reservation_to_full_l1() -> None:
+    scheduler, cache = make(capacity=64)
+    item = request(0, maximum=65_536, output=2)
+    hold(cache, item)
+    cache.withdraw(0)
+    scheduler.requeue(item, 1, generated_tokens=1)
+
+    batch = scheduler.select_prefill({})
+
+    assert [entry.request.request_id for entry in batch.restored] == [0]
+    assert not batch.admitted and not batch.aborted and not batch.restore_only
+    assert cache.available_tokens == 0 and cache.free_pages == 0
+    assert scheduler.num_waiting == 0
+
+
 def test_ratio_decays_only_for_decode_reestimates_after_withdraw_and_resets_when_idle() -> None:
     scheduler, _ = make()
     active = request(0, maximum=200)

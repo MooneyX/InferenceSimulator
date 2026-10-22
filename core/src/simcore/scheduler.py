@@ -192,8 +192,11 @@ class AdmissionScheduler:
                 or (  # 或者预算还足够
                     required_tokens < self._engine.max_prefill_tokens - selected_pages_tokens
                 )  # 预算不足时整批只会准入这一个超预算请求, 和sglang的chunked prefill不一致
-            )  # 预算判断时要求严格小于, 也就是总token数<=预算 - 1, 但是reuired_tokens为0时还是可以准入, 即使总token数==预算, 和sglang中的处理一致
-            # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算, 但是后续cunked prefill可能出现这种情况
+            )  # 预算判断时要求严格小于, 也就是总token数<=预算 - 1,
+            # 但是reuired_tokens为0时还是可以准入, 即使总token数==预算,
+            # 和sglang中的处理一致
+            # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算,
+            # 但是后续cunked prefill可能出现这种情况
             future_ok = (
                 direct_restore
                 or proposed_total <= cache.available_tokens
@@ -209,8 +212,10 @@ class AdmissionScheduler:
                     and not restored
                     and not restore_only
                     and (
+                        # 若整个L1都无法容纳目标长度的KV, abort掉
+                        # (sglang中的这个判断发生在请求到达时, 需要修复)
                         (target + block_size - 1) // block_size * block_size + block_size
-                        > self._engine.max_total_tokens  # 若整个L1都无法容纳目标长度的KV, abort掉(sglang中的这个判断发生在请求到达时, 需要修复)
+                        > self._engine.max_total_tokens
                     )
                 ):
                     aborted.append(self._pop_item(item))

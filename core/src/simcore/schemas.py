@@ -462,13 +462,19 @@ class StorageSpec(_Frozen):
         default=0.01,
         ge=0,
         allow_inf_nan=False,
-        description="每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+        description=(
+            "每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；"
+            "默认值未经实测校准，另计传输耗时，0 为理想基线"
+        ),
     )
     l3_latency_ms: float = Field(
         default=0.1,
         ge=0,
         allow_inf_nan=False,
-        description="每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线",
+        description=(
+            "每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；"
+            "默认值未经实测校准，另计传输耗时，0 为理想基线"
+        ),
     )
 
 
@@ -498,7 +504,10 @@ class SharedL3Config(_Frozen):
         default=0.1,
         ge=0,
         allow_inf_nan=False,
-        description="每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；默认假设低延迟共享存储，未经实测校准，0 为理想基线",
+        description=(
+            "每次共享 L3 前缀查询的固定延迟（ms），未命中也计入；"
+            "默认假设低延迟共享存储，未经实测校准，0 为理想基线"
+        ),
     )
 
 
@@ -602,7 +611,7 @@ class TracePlan(_Frozen):
         by_id = {turn.request_id: turn for turn in self.requests}
         if any(
             previous.request_id >= following.request_id
-            for previous, following in zip(self.requests, self.requests[1:])
+            for previous, following in zip(self.requests, self.requests[1:], strict=False)
         ):
             raise ValueError("请求须按 ID 严格递增")
         contexts: dict[tuple[int, int], tuple[int, int | None]] = {}

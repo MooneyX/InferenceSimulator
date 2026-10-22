@@ -38,9 +38,8 @@ class JobStore:
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
-        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
-            with connection:
-                yield connection
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection, connection:
+            yield connection
 
     def save(
         self,

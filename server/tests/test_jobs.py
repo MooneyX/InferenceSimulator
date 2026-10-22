@@ -60,18 +60,20 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         assert wait_job(client, scan_id)["status"] == "completed"
         points = client.get(f"/api/jobs/{scan_id}/points").json()
         client.delete("/api/simulation-cache")
-    with patch("simserver.jobs.engine_fingerprint", return_value="new-engine"):
-        with TestClient(create_app(cache_path=path)) as restarted:
-            assert [item["id"] for item in restarted.get("/api/jobs").json()] == [
-                scan_id,
-                single_id,
-            ]
-            summary = restarted.get(f"/api/jobs/{single_id}").json()
-            assert summary["code_version_status"] == "stale"
-            assert summary["code_fingerprint"] != "new-engine"
-            assert restarted.get(f"/api/jobs/{single_id}/result").content == original
-            assert restarted.get(f"/api/jobs/{scan_id}/points").json() == points
-            assert restarted.get(f"/api/jobs/{scan_id}").json()["code_version_status"] == "stale"
+    with (
+        patch("simserver.jobs.engine_fingerprint", return_value="new-engine"),
+        TestClient(create_app(cache_path=path)) as restarted,
+    ):
+        assert [item["id"] for item in restarted.get("/api/jobs").json()] == [
+            scan_id,
+            single_id,
+        ]
+        summary = restarted.get(f"/api/jobs/{single_id}").json()
+        assert summary["code_version_status"] == "stale"
+        assert summary["code_fingerprint"] != "new-engine"
+        assert restarted.get(f"/api/jobs/{single_id}/result").content == original
+        assert restarted.get(f"/api/jobs/{scan_id}/points").json() == points
+        assert restarted.get(f"/api/jobs/{scan_id}").json()["code_version_status"] == "stale"
 
 
 def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path: Path) -> None:

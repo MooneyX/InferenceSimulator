@@ -121,8 +121,6 @@ class Coordinator:
                 instance_id = event.ref
                 engine = self.engines[instance_id]
                 self._step_pending[instance_id] = False
-                if not engine.can_step:
-                    continue
                 started = engine.start_step(now_ms, engine.num_steps)
                 self._process_aborts(instance_id)
                 self._drain_engine_events(instance_id)

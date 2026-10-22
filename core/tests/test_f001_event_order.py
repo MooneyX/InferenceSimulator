@@ -402,6 +402,87 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
     assert engine._last_local_match[1] == 1
 
 
+@pytest.mark.parametrize("tier", ["L2", "L3"])
+@pytest.mark.parametrize("trace", [False, True])
+def test_transfer_completions_preserve_context_order(tier: str, trace: bool) -> None:
+    config = EngineConfig(
+        max_running_requests=1,
+        max_total_tokens=32,
+        page_size=4,
+        l2_capacity_tokens=16,
+        l3_capacity_tokens=16 if tier == "L3" else 0,
+        l3_prefetch_min_tokens=0,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1,
+        decode_d1=0,
+        decode_d2=0,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l2_latency_ms=3,
+        l3_latency_ms=1,
+        l3_lookup_latency_ms=2,
+    )
+    engine = Engine(runtime_config(config, perf))
+    cache = engine._prefix_cache
+    hashes = (2, 10, 11)
+    ids = (
+        tuple(f"trace:0:{block}" for block in hashes)
+        if trace
+        else tuple(encode(90, block) for block in hashes)
+    )
+    for chunk_id in ids:
+        cache.pools[tier].insert(chunk_id)
+    item = InferenceRequest(
+        request_id=1,
+        session_id=0,
+        parent_request_id=None,
+        prompt_len=13,
+        max_new_tokens=1,
+        output_len=1,
+        inherited_prefix_ids=() if trace else ids,
+        ideal_reuse_blocks=3,
+        trace_hash_ids=hashes if trace else (),
+        is_trace=trace,
+    )
+    assert engine.submit(item, 0)
+    now = 0.0
+    if tier == "L3":
+        [(now, kind, key)] = engine.drain_events()
+        assert kind is EventKind.L3_LOOKUP_DONE
+        engine.on_l3_lookup(key, now)
+        prefetch = engine.drain_events()
+        assert [engine._transfers[event[2]].chunk_id for event in prefetch] == list(ids)
+        assert [event[0] for event in prefetch] == [7, 12, 17]
+        for now, kind, key in prefetch:
+            engine.on_transfer_done(kind, key, now)
+
+    assert engine.start_step(now, 0) is None
+    loads = engine.drain_events()
+    assert [engine._transfers[event[2]].chunk_id for event in loads] == list(ids)
+    assert [event[0] for event in loads] == [now + 5, now + 10, now + 15]
+    # 中间页按上下文顺序可见，整批回载完成前不能开始 Prefill。
+    for index, (finished_at, kind, key) in enumerate(loads):
+        assert kind is EventKind.L2_L1_DONE
+        engine.on_transfer_done(kind, key, finished_at)
+        assert all(cache.pools["L1"].lookup(chunk) is not None for chunk in ids[: index + 1])
+        assert all(cache.pools["L1"].lookup(chunk) is None for chunk in ids[index + 1 :])
+        assert not cache.evictable_pages
+        if index < len(ids) - 1:
+            assert engine.start_step(finished_at, 0) is None
+    started = engine.start_step(loads[-1][0], 0)
+    assert started is not None
+    end = loads[-1][0] + started[0]
+    assert engine.finish_step(end) == (1,)
+    engine.complete(end, 1)
+    result = engine.finalize()
+    assert result.restore_bytes == 24 * (2 if tier == "L3" else 1)
+    assert result.restore_time_ms == 15 * (2 if tier == "L3" else 1)
+    assert result.records[0].l3_hit_tokens == (12 if tier == "L3" else 0)
+    assert result.cache_snapshot.active_blocks == 0
+
+
 def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
     config = EngineConfig(
         max_running_requests=2,

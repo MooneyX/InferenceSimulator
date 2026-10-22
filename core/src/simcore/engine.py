@@ -408,6 +408,7 @@ class Engine:
                 self._pending_selection = selection  # 将选择准入请求放入等待准入中
                 new_pages = sum(candidate.required_pages for candidate in selection.admitted)
                 _ = self._prefix_cache.ensure_free(len(selection.promote_ids) + new_pages)
+                # 调度器已保留上下文首次遇到顺序；串行链路按此顺序安排页完成时刻。
                 for chunk_id in selection.promote_ids:
                     _ = self._start_transfer(
                         chunk_id,

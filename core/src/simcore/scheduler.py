@@ -58,6 +58,7 @@ class AdmissionBatch:
     restored: tuple[WaitingRequest, ...]
     aborted: tuple[WaitingRequest, ...]
     restore_only: tuple[WaitingRequest, ...] = ()
+    # 回载按候选准入顺序、候选内部上下文顺序提交；块 ID 只作身份，不作排序键。
     promote_ids: tuple[str, ...] = ()
 
 
@@ -152,7 +153,9 @@ class AdmissionScheduler:
         selected: list[PrefillCandidate] = []
         restored: list[WaitingRequest] = []
         restore_only: list[WaitingRequest] = []
-        promotions: set[str] = set()
+        # 列表保留提交顺序，集合只负责跨候选共享页去重和唯一页容量预算。
+        promotions: list[str] = []
+        promoted: set[str] = set()
         aborted: list[WaitingRequest] = []
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
@@ -172,7 +175,9 @@ class AdmissionScheduler:
             hit = len(sources) * block_size
             cache.pin(request, sources)
             new_tokens = target - hit
-            new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
+            new_promotions = [
+                chunk_id for chunk_id, tier in sources if tier != "L1" and chunk_id not in promoted
+            ]
             direct_restore = (
                 item.restoring and new_tokens == 0 and all(tier == "L1" for _, tier in sources)
             )
@@ -237,14 +242,16 @@ class AdmissionScheduler:
                 selected_future += future
                 selected_pages_tokens += required_tokens
             self._pop_item(item)
-            promotions.update(new_promotions)
+            # 预算通过后才提交候选贡献的页，失败候选不能污染去重集合或传输顺序。
+            promotions.extend(new_promotions)
+            promoted.update(new_promotions)
             current_offset = proposed_current
         return AdmissionBatch(
             tuple(selected),
             tuple(restored),
             tuple(aborted),
             tuple(sorted(restore_only, key=lambda item: item.request.request_id)),
-            tuple(sorted(promotions)),
+            tuple(promotions),
         )
 
     def _pop_item(self, item: WaitingRequest) -> WaitingRequest:

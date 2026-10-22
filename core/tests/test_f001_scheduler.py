@@ -453,6 +453,79 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
         cache.finish(key)
 
 
+@pytest.mark.parametrize("trace", [False, True])
+def test_promotions_follow_context_and_candidate_order_with_shared_restore(trace: bool) -> None:
+    config = EngineConfig(
+        max_running_requests=3, max_total_tokens=64, page_size=4, l2_capacity_tokens=64
+    )
+    cache = TieredKVCache(64, 4, 64)
+    scheduler = AdmissionScheduler(config, cache)
+    hashes = (2, 10, 11, 3, 1)
+    ids = (
+        tuple(f"trace:0:{block}" for block in hashes)
+        if trace
+        else (encode(90, 2), encode(7, 10), encode(90, 11), encode(3, 0), encode(1, 0))
+    )
+    cache.pools["L1"].insert(ids[0])
+    for chunk_id in ids[1:]:
+        cache.pools["L2"].insert(chunk_id)
+    # 到达顺序与请求 ID、块 ID 排序均不同；中间穿插全命中的恢复候选。
+    for arrival, (key, positions, prompt, generated) in enumerate(
+        (
+            (9, (0, 1, 2), 13, 0),
+            (1, (0, 1, 3), 12, 1),
+            (2, (0, 1, 2, 4), 17, 0),
+        )
+    ):
+        item = InferenceRequest(
+            request_id=key,
+            session_id=0,
+            parent_request_id=None,
+            prompt_len=prompt,
+            max_new_tokens=1,
+            output_len=1,
+            inherited_prefix_ids=() if trace else tuple(ids[i] for i in positions),
+            ideal_reuse_blocks=len(positions),
+            trace_hash_ids=tuple(hashes[i] for i in positions) if trace else (),
+            is_trace=trace,
+        )
+        scheduler.enqueue(item, arrival, generated_tokens=generated)
+
+    batch = scheduler.select_prefill({})
+
+    assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [9, 2]
+    assert [item.request.request_id for item in batch.restore_only] == [1]
+    assert batch.promote_ids == (ids[1], ids[2], ids[3], ids[4])
+    assert cache.pools["L1"].entries[ids[0]].ref_count == 3
+    assert cache.pools["L2"].entries[ids[1]].ref_count == 3
+    assert len(batch.promote_ids) == 4  # 共享页只消耗一份回载容量。
+
+
+def test_rejected_candidate_does_not_contribute_promotions() -> None:
+    config = EngineConfig(
+        max_running_requests=2,
+        max_total_tokens=64,
+        page_size=4,
+        l2_capacity_tokens=16,
+        max_prefill_tokens=4,
+    )
+    cache = TieredKVCache(64, 4, 16)
+    scheduler = AdmissionScheduler(config, cache)
+    first, rejected = encode(9, 10), encode(1, 2)
+    cache.pools["L2"].insert(first)
+    cache.pools["L2"].insert(rejected)
+    scheduler.enqueue(request(9, prompt=5, inherited=(first,)), 0)
+    scheduler.enqueue(request(1, prompt=5, inherited=(rejected,)), 1)
+
+    batch = scheduler.select_prefill({})
+
+    assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [9]
+    assert batch.promote_ids == (first,)
+    assert scheduler.head_request_id == 1
+    assert 1 not in cache._pins
+    assert cache.pools["L2"].entries[rejected].ref_count == 0
+
+
 def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
     scheduler, cache = make(capacity=512, page_size=4)
     shared = encode(90, 0)

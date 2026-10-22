@@ -1,5 +1,7 @@
 """F001 L1 页状态、共享引用和物理容量守恒。"""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from simcore.kv_cache import CacheCapacityError, CacheEntry, CachePool, TieredKVCache
@@ -166,6 +168,64 @@ def test_multiple_candidates_pin_one_shared_page_once() -> None:
     cache.cancel_pin(2)
     assert cache.available_tokens == 128
     assert_conserved(cache)
+
+
+def test_chunk_pins_track_only_pending_requests_and_remove_empty_sets() -> None:
+    cache = TieredKVCache(3, 1)
+    shared, extra = encode(0, 0), encode(0, 1)
+    cache.pools["L1"].insert(shared)
+    cache.pools["L1"].insert(extra)
+    first = request(1, 3, (shared, extra))
+    second = request(2, 2, (shared,))
+    pin_hit(cache, first)
+    pin_hit(cache, second)
+    assert cache._chunk_pins == {shared: {1, 2}, extra: {1}}
+
+    cache.cancel_pin(1)
+    assert cache._chunk_pins == {shared: {2}}
+    pin_hit(cache, first)
+    cache.admit(1)
+    assert cache._chunk_pins == {shared: {2}}
+    assert cache._pin_sources == {2: {shared: cache.pools["L1"]}}
+    assert tier_page(cache, shared).ref_count == 2
+    assert tier_page(cache, extra).ref_count == 1
+    cache.cancel_pin(2)
+    assert cache._chunk_pins == {}
+    cache.withdraw(1)
+    assert tier_page(cache, shared).ref_count == tier_page(cache, extra).ref_count == 0
+
+    cache.pin(first, ())
+    cache.cancel_pin(1)
+    cache.pin(first, ())
+    cache.admit(1)
+    assert cache._chunk_pins == cache._pin_sources == {}
+    cache.withdraw(1)
+    assert_tiers_conserved(cache)
+
+
+def test_failed_admit_keeps_chunk_pins_after_partial_rebinding() -> None:
+    cache = TieredKVCache(2, 1, 2, 2)
+    shared, extra = encode(0, 0), encode(0, 1)
+    for chunk_id in (shared, extra):
+        cache.pools["L3"].insert(chunk_id)
+    child = request(1, 3, (shared, extra))
+    pin_hit(cache, child)
+    cache.pools["L1"].insert(shared)
+
+    with pytest.raises(CacheCapacityError, match="低层命中页须先提升到 L1"):
+        cache.admit(1)
+    assert cache._chunk_pins == {shared: {1}, extra: {1}}
+    assert cache._pin_sources[1] == {
+        shared: cache.pools["L1"],
+        extra: cache.pools["L3"],
+    }
+    assert cache.pools["L3"].entries[shared].ref_count == 0
+    assert cache.pools["L1"].entries[shared].ref_count == 1
+    cache.cancel_pin(1)
+    assert cache._chunk_pins == cache._pin_sources == {}
+    assert cache.pools["L1"].entries[shared].ref_count == 0
+    assert cache.pools["L3"].entries[extra].ref_count == 0
+    assert_tiers_conserved(cache)
 
 
 def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
@@ -493,6 +553,60 @@ def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None
     for item in (first, second):
         cache.admit(item.request_id)
         cache.withdraw(item.request_id)
+    assert_tiers_conserved(cache)
+
+
+@pytest.mark.parametrize(
+    ("source", "destination", "other_tier"),
+    [("L2", "L1", "L3"), ("L3", "L2", "L1")],
+)
+def test_transfer_only_visits_requests_pinning_the_moved_chunk(
+    source: str, destination: str, other_tier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = TieredKVCache(3, 1, 3, 3)
+    chunk, unrelated = encode(0, 0), encode(9, 0)
+    old, target, other = (cache.pools[tier] for tier in (source, destination, other_tier))
+    old.insert(chunk)
+    old.insert(unrelated)
+    other.insert(chunk)
+    for key, chunk_id, tier in (
+        (1, chunk, source),
+        (2, chunk, source),
+        (3, chunk, other_tier),
+        (4, unrelated, source),
+    ):
+        cache.pin(request(key, 2, (chunk_id,)), ((chunk_id, tier),))
+    assert cache._chunk_pins == {chunk: {1, 2, 3}, unrelated: {4}}
+    cache.reserve_transfer(chunk, destination, source=source)
+
+    sources = MagicMock(spec=dict)
+    sources.__getitem__.side_effect = cache._pin_sources.__getitem__
+    with monkeypatch.context() as patch:
+        patch.setattr(cache, "_pin_sources", sources)
+        cache.complete_transfer(chunk)
+    sources.values.assert_not_called()
+    sources.items.assert_not_called()
+    sources.__iter__.assert_not_called()
+    assert sorted(call.args[0] for call in sources.__getitem__.call_args_list) == [1, 2, 3]
+    assert cache._pin_sources == {
+        1: {chunk: target},
+        2: {chunk: target},
+        3: {chunk: other},
+        4: {unrelated: old},
+    }
+    assert cache._chunk_pins == {chunk: {1, 2, 3}, unrelated: {4}}
+    assert target.entries[chunk].ref_count == 2
+    assert other.entries[chunk].ref_count == old.entries[unrelated].ref_count == 1
+    if source == "L3":
+        assert old.entries[chunk].ref_count == 0
+    else:
+        assert old.lookup(chunk) is None
+    assert_tiers_conserved(cache)
+
+    for key in (1, 2, 3, 4):
+        cache.cancel_pin(key)
+    assert cache._chunk_pins == cache._pin_sources == {}
+    assert all(page.ref_count == 0 for page in cache_entries(cache).values())
     assert_tiers_conserved(cache)
 
 

@@ -66,9 +66,10 @@ def test_two_readers_have_independent_destinations_and_preserve_shared_source() 
     shared, first, second = managers(1)
     chunk = encode(90, 0)
     shared.insert(chunk)
-    for cache, key in ((first, 0), (second, 1)):
-        item = request(key, (chunk,))
+    for cache in (first, second):
+        item = request(0, (chunk,))
         cache.pin(item, cache.probe(item, item.prompt_len))
+        assert cache._chunk_pins == {chunk: {0}}
         assert cache.reserve_transfer(chunk, "L2", source="L3") == "L3"
         assert cache.pools["L2"].lookup(chunk) is None
         assert cache.pools["L2"].reserved == 1
@@ -80,9 +81,13 @@ def test_two_readers_have_independent_destinations_and_preserve_shared_source() 
     first.reserve_transfer(chunk, "L1", source="L2")
     first.complete_transfer(chunk)
     first.admit(0)
+    assert first._chunk_pins == {}
+    assert second._chunk_pins == {chunk: {0}}
+    assert second._pin_sources == {0: {chunk: shared}}
     first.withdraw(0)
     second.complete_transfer(chunk)
-    second.cancel_pin(1)
+    second.cancel_pin(0)
+    assert second._chunk_pins == {}
     assert shared.lookup(chunk).ref_count == 0
     assert shared.resident == 1
     assert shared.evictions == 0

@@ -266,6 +266,7 @@ class TieredKVCache:
         self._states: dict[int, KVRequestState] = {}
         self._pins: dict[int, tuple[InferenceRequest, int]] = {}
         self._pin_sources: dict[int, dict[str, CachePool]] = {}
+        self._chunk_pins: dict[str, set[int]] = {}
         self._transfers: dict[str, tuple[str, str]] = {}
         self._private_pages = 0
         self.promotions = 0
@@ -363,6 +364,7 @@ class TieredKVCache:
         bindings = {chunk_id: self.pools[tier] for chunk_id, tier in sources}
         for chunk_id, pool in bindings.items():
             pool.add_ref(chunk_id)
+            self._chunk_pins.setdefault(chunk_id, set()).add(request.request_id)
         self._pins[request.request_id] = (request, len(sources) * self.page_size)
         self._pin_sources[request.request_id] = bindings
 
@@ -370,6 +372,10 @@ class TieredKVCache:
         self._pins.pop(request_id)
         for chunk_id, pool in self._pin_sources.pop(request_id).items():
             pool.drop_ref(chunk_id)
+            requests = self._chunk_pins[chunk_id]
+            requests.remove(request_id)
+            if not requests:
+                del self._chunk_pins[chunk_id]
 
     def admit(self, request_id: int) -> KVRequestState:
         request, matched_tokens = self._pins[request_id]
@@ -385,6 +391,10 @@ class TieredKVCache:
         del self._pins[request_id], self._pin_sources[request_id]
         for chunk_id in bindings:
             self.pools["L1"].touch(chunk_id)  # 更新这一页的最近访问时间
+            requests = self._chunk_pins[chunk_id]
+            requests.remove(request_id)
+            if not requests:
+                del self._chunk_pins[chunk_id]
         self._requests[request_id] = request
         state = KVRequestState(matched_tokens, matched_tokens)
         self._states[request_id] = (
@@ -489,8 +499,9 @@ class TieredKVCache:
             return
         target = self.pools[destination]
         target.store(chunk_id, page.ref_count if source != "L3" else 0)
-        for bindings in self._pin_sources.values():
-            if bindings.get(chunk_id) is old:
+        for request_id in self._chunk_pins.get(chunk_id, ()):
+            bindings = self._pin_sources[request_id]
+            if bindings[chunk_id] is old:
                 if source == "L3":
                     old.drop_ref(chunk_id)
                     target.add_ref(chunk_id)

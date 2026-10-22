@@ -172,24 +172,26 @@ class AdmissionScheduler:
                             index
                             for index, (chunk_id, tier) in enumerate(sources)
                             if not can_reuse(request.request_id, chunk_id, tier)
+                            # 排除位于L3或者之前因为传输失败而被标记为不可复用的块, 因此上面的probe可以改用忽略L3, 可以复用上次probe的结果
+                            # "传输失败就标记该页无法使用"的机制需要修改
                         ),
                         len(sources),
                     )
                 ]
             hit = len(sources) * block_size
-            cache.pin(request, hit)
+            cache.pin(request, hit) # 这里也可以复用之前的probe的结果, 避免重新查找每个chunk所在的层级
             new_tokens = target - hit
             new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
-            if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources):
-                cache.admit(request.request_id)
-                self._pop_item(item)
+            if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources): # 回撤后恢复的请求, 所有KV都可复用且在L1
+                cache.admit(request.request_id) # 直接准入
+                self._pop_item(item) # 从等待队列中移除
                 restored.append(item)
-                active_count += 1
+                active_count += 1 # 活跃请求数
                 running_future += (
                     min(request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
-                )
+                ) # 该请求的未来输出预算
                 continue
-            required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size
+            required_tokens = ((new_tokens + block_size - 1) // block_size) * block_size # 该请求重算KV所需的空间(单位为token)
             future = min(request.max_new_tokens - item.generated_tokens, 4096)
             proposed_current = (
                 current_offset
@@ -199,13 +201,14 @@ class AdmissionScheduler:
             )
             proposed_total = proposed_current + selected_future + future + running_future
             compute_ok = (
-                not selected
-                or not new_tokens
-                or (
+                not selected # 当前没有选中的请求
+                or not new_tokens # 当前请求不需要重算KV
+                or ( # 或者预算还足够
                     required_tokens
                     < self._engine.max_prefill_tokens - selected_pages_tokens
-                )
-            )
+                ) # 预算不足时整批只会准入这一个超预算请求, 和sglang的chunked prefill不一致
+            )# 预算判断时要求严格小于, 也就是总token数<=预算 - 1, 但是reuired_tokens为0时还是可以准入, 即使总token数==预算, 和sglang中的处理一致
+            # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算, 但是后续cunked prefill可能出现这种情况
             future_ok = proposed_total <= cache.available_tokens or not (
                 running or selected or restored or restore_only
             )
@@ -213,7 +216,7 @@ class AdmissionScheduler:
                 proposed_current > cache.available_tokens
                 or not future_ok
                 or not compute_ok
-            ):
+            ): # 容量不足, 这个请求无法准入, 结束这次组批, 将已选入的请求提交计算
                 cache.cancel_pin(request.request_id)  # 未准入，撤销对命中页的临时保护
                 if (
                     not running
@@ -222,17 +225,17 @@ class AdmissionScheduler:
                     and not restore_only
                     and (
                         (target + block_size - 1) // block_size * block_size + block_size
-                        > self._engine.max_total_tokens
+                        > self._engine.max_total_tokens # 若整个L1都无法容纳目标长度的KV, abort掉(sglang中的这个判断发生在请求到达时, 需要修复)
                     )
                 ):
                     aborted.append(self._pop_item(item))
                     continue
                 break
-            if item.restoring and new_tokens == 0:
+            if item.restoring and new_tokens == 0: # 回撤后恢复的请求, 所有KV都可复用, 若全在L1, 则在185行就直接准入了, 此处表示还有KV处于L2
                 restore_only.append(item)
                 active_count += 1
                 running_future += future * self._ratio
-            else:
+            else: # 非回撤恢复请求, 即新到达的请求; 或者回撤恢复但是KV不全的请求
                 selected.append(
                     PrefillCandidate(item, hit, new_tokens, required_tokens // block_size, sources)
                 )

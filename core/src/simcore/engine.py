@@ -158,9 +158,9 @@ class Engine:
     def _start_transfer(
         self, chunk_id: str, destination: str, now_ms: float, request_id: int
     ) -> int:  # 页 ID、目的层、时刻及请求 ID → 去重后的传输任务 ID
-        existing = self._transfer_by_chunk.get(chunk_id)
-        if existing is not None:
-            self._transfers[existing].waiting_requests.add(request_id)
+        existing = self._transfer_by_chunk.get(chunk_id) # chunk_id -> 传输任务id
+        if existing is not None: # 查询当前id是否正在被传输
+            self._transfers[existing].waiting_requests.add(request_id) # transfer_id -> 等待该页的请求id
             return existing
         self._prefix_cache.reserve_transfer(chunk_id, destination)
         link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
@@ -389,24 +389,24 @@ class Engine:
                 and not selection.admitted
                 and not selection.restored
                 and not selection.restore_only
-                and not selection.aborted
-                and (self._lookup_waiting or self._prefetch_waiting)
+                and not selection.aborted # 没有运行中的请求, 也没有可以开始prefill的请求
+                and (self._lookup_waiting or self._prefetch_waiting) # 有请求在等待L3查询或prefetch
             ):
                 return None
-            missing = tuple(
+            missing = tuple( # 正常情况下promote_ids中本身就是L2, 因此missing一定和promote_ids相同
                 chunk_id
                 for chunk_id in selection.promote_ids
                 if (page := self._prefix_cache.page(chunk_id)) is not None and page.tier == "L2"
             )
             if missing:
-                self._pending_selection = selection
+                self._pending_selection = selection # 将选择准入请求放入等待准入中
                 failed_chunk = missing[0]
                 try:
                     new_pages = sum(candidate.required_pages for candidate in selection.admitted)
-                    self._prefix_cache.ensure_free(len(missing) + new_pages)
+                    _ = self._prefix_cache.ensure_free(len(missing) + new_pages)
                     for chunk_id in missing:
                         failed_chunk = chunk_id
-                        self._start_transfer(
+                        _ = self._start_transfer(
                             chunk_id,
                             "L1",
                             now_ms,
@@ -415,7 +415,7 @@ class Engine:
                             else selection.restore_only[0].request.request_id,
                         )
                         self._pending_loads.add(chunk_id)
-                except CacheCapacityError:
+                except CacheCapacityError: # 正常仿真流程中不会触发
                     for item in selection.aborted:
                         self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
                     for item in selection.restored:
@@ -431,8 +431,8 @@ class Engine:
                     self._prefix_scheduler.rollback_selection(selection)
                     self._pending_selection = None
                     return None
-                return None
-        return self._execute_step(now_ms, step_index, selection)
+                return None # 本次无法直接开始计算, 需要等待load_back完成
+        return self._execute_step(now_ms, step_index, selection) # 所有KV都在L1, 可以开始计算
 
     def finish_step(
         self, now_ms: float

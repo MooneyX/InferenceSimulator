@@ -73,7 +73,7 @@ class CachePool:
     entries: dict[str, CacheEntry] = field(default_factory=dict, init=False)
     resident: int = field(default=0, init=False)
     reserved: int = field(default=0, init=False)
-    evictable: int = field(default=0, init=False)
+    evictable: set[tuple[int, str]] = field(default_factory=set, init=False)
     peak: int = field(default=0, init=False)
     evictions: int = field(default=0, init=False)
     access_seq: int = field(default=0, init=False)
@@ -89,8 +89,8 @@ class CachePool:
         return TierSnapshot(
             self.capacity,
             self.resident,
-            self.resident - self.evictable,
-            self.evictable,
+            self.resident - len(self.evictable),
+            len(self.evictable),
             self.capacity - self.resident,
             self.peak,
             self.evictions,
@@ -151,14 +151,13 @@ class CachePool:
         page = CacheEntry(chunk_id, self.level, ref_count, self.access_seq, pool_id=self.pool_id)
         self.entries[chunk_id] = page
         if not ref_count:
-            self.evictable += 1
             self._queue(page)
 
     def remove(self, chunk_id: str, *, evicted: bool = False) -> CacheEntry:
         page = self.entries.pop(chunk_id)
         self.resident -= 1
         if not page.ref_count:
-            self.evictable -= 1
+            self.evictable.remove((page.last_access_seq, chunk_id))
         self.evictions += int(evicted)
         return page
 
@@ -167,7 +166,7 @@ class CachePool:
             return
         page = self.entries[chunk_id]
         if not page.ref_count:
-            self.evictable -= 1
+            self.evictable.remove((page.last_access_seq, chunk_id))
         page.ref_count += count
 
     def add_ref(self, chunk_id: str, *, refresh: bool = False) -> None:
@@ -179,18 +178,20 @@ class CachePool:
         page = self.entries[chunk_id]
         page.ref_count -= 1
         if not page.ref_count:
-            self.evictable += 1
             self._queue(page)
 
     def touch(self, chunk_id: str) -> None:
         self.access_seq += 1
         page = self.entries[chunk_id]
+        if not page.ref_count:
+            self.evictable.remove((page.last_access_seq, chunk_id))
         page.last_access_seq = self.access_seq
         if not page.ref_count:
             self._queue(page)
 
     def _queue(self, page: CacheEntry) -> None:
         key = (page.last_access_seq, page.chunk_id)
+        self.evictable.add(key)
         if key not in self.queued:
             heappush(self.heap, key)
             self.queued.add(key)
@@ -200,16 +201,13 @@ class CachePool:
                 self._maybe_rebuild_heap()
 
     def _maybe_rebuild_heap(self) -> None:
-        stale = len(self.heap) - self.evictable
-        if stale < 512 or stale * 16 < self.evictable:
+        evictable_count = len(self.evictable)
+        stale = len(self.heap) - evictable_count
+        if stale < 512 or stale * 16 < evictable_count:
             return
-        self.heap = [
-            (page.last_access_seq, page.chunk_id)
-            for page in self.entries.values()
-            if not page.ref_count
-        ]
+        self.heap = list(self.evictable)
         heapify(self.heap)
-        self.queued = set(self.heap)
+        self.queued = self.evictable.copy()
 
     def pop_lru(self) -> CacheEntry | None:
         """弹出最老的可驱逐页，顺带清理堆顶过期条目。"""
@@ -283,7 +281,7 @@ class TieredKVCache:
 
     @property
     def evictable_pages(self) -> int:
-        return self.pools["L1"].evictable
+        return len(self.pools["L1"].evictable)
 
     @property
     def active_pages(self) -> int:
@@ -473,7 +471,7 @@ class TieredKVCache:
 
     def _ensure_tier_free(self, tier: str, count: int) -> None:
         pool = self.pools[tier]
-        if count > pool.capacity - pool.resident + pool.evictable:
+        if count > pool.capacity - pool.resident + len(pool.evictable):
             raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
         while pool.capacity - pool.resident < count:
             if not self._evict_one(tier):

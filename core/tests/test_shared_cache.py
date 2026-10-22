@@ -150,7 +150,8 @@ def test_simultaneous_shared_writes_reserve_one_page(first_finisher: int) -> Non
         other.reserve_transfer(encode(91, 0), "L3", source="L1")
     other.complete_transfer(chunk)
     assert shared.lookup(chunk).ref_count == 0
-    assert shared.evictable == shared.resident == 1
+    assert len(shared.evictable) == shared.resident == 1
+    assert shared.evictable == {(shared.lookup(chunk).last_access_seq, chunk)}
     assert not shared.pending_pages
 
 
@@ -174,7 +175,10 @@ def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
     cache.complete_transfer(chunk)
     assert cache.pools["L1"].lookup(chunk) is None
     assert cache.pools["L2"].lookup(chunk).ref_count == 0
-    assert cache.pools["L2"].evictable == len(cache.pools["L2"].entries)
+    assert len(cache.pools["L2"].evictable) == len(cache.pools["L2"].entries)
+    assert cache.pools["L2"].evictable == {
+        (page.last_access_seq, page.chunk_id) for page in cache.pools["L2"].entries.values()
+    }
     assert shared.lookup(chunk).ref_count == 0
 
 

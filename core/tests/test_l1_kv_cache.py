@@ -205,13 +205,49 @@ def test_periodic_heap_rebuild_discards_stale_entries(
         for page in pool.entries.values()
         if not page.ref_count
     )
-    assert set(pool.heap) == set(expected)
+    assert set(pool.heap) == pool.evictable == set(expected)
     assert pool.queued == set(pool.heap)
-    assert len(pool.heap) == pool.evictable
+    assert pool.queued is not pool.evictable
+    assert len(pool.heap) == len(pool.evictable)
     assert pool.heap[0] == expected[0]
     if change == "protect":
         pool.drop_ref("old")
         assert pool.heap[0] == (pool.entries["old"].last_access_seq, "old")
+
+
+@pytest.mark.parametrize("protect_all", [False, True])
+def test_heap_rebuild_uses_evictable_set_without_accessing_entries(
+    protect_all: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = CachePool("L1", 0, 1026, 1)
+    for index in range(1024):
+        pool.insert(f"active-{index}", ref_count=1)
+    pool.insert("old")
+    pool.insert("recent")
+    for _ in range(512):
+        pool.touch("recent")
+    if protect_all:
+        pool.add_ref("old")
+        pool.add_ref("recent")
+    expected = sorted(
+        (page.last_access_seq, page.chunk_id)
+        for page in pool.entries.values()
+        if not page.ref_count
+    )
+    assert len(pool.heap) == 514
+    with monkeypatch.context() as patch:
+        patch.setattr(pool, "entries", object())
+        pool._maybe_rebuild_heap()
+    assert sorted(pool.heap) == expected
+    assert pool.evictable == pool.queued == set(expected)
+    assert pool.queued is not pool.evictable
+    for seq, chunk_id in expected:
+        assert pool.pop_lru() is pool.entries[chunk_id]
+        assert (seq, chunk_id) in pool.evictable
+        pool.remove(chunk_id)
+        assert (seq, chunk_id) not in pool.evictable
+    assert pool.pop_lru() is None
+    assert not pool.evictable
 
 
 @pytest.mark.parametrize("interval", [64, 4096])
@@ -224,9 +260,35 @@ def test_periodic_heap_check_bounds_stale_entries_without_eviction(
     pool.insert("page")
     for _ in range(10_000):
         pool.touch("page")
-    assert len(pool.heap) <= pool.evictable + 512 + interval
+    assert len(pool.heap) <= len(pool.evictable) + 512 + interval
     assert pool.queued == set(pool.heap)
     assert pool.pop_lru() is pool.entries["page"]
+
+
+@pytest.mark.parametrize("ref_count", [0, 2])
+def test_evictable_set_tracks_touch_removal_and_same_id_reinsertion(ref_count: int) -> None:
+    pool = CachePool("L1", 0, 1, 1)
+    pool.insert("page", ref_count=ref_count)
+    assert len(pool.evictable) == int(ref_count == 0)
+    pool.touch("page")
+    page = pool.entries["page"]
+    key = (page.last_access_seq, "page")
+    assert pool.evictable == ({key} if ref_count == 0 else set())
+    snapshot = pool.snapshot()
+    assert snapshot.evictable_blocks == len(pool.evictable)
+    assert snapshot.active_blocks == int(ref_count > 0)
+    pool.remove("page")
+    assert not pool.evictable
+    pool.insert("page", ref_count=1)
+    pool.touch("page")
+    pool.drop_ref("page")
+    page = pool.entries["page"]
+    assert pool.evictable == {(page.last_access_seq, "page")}
+    assert key not in pool.evictable
+    assert pool.pop_lru() is page
+    pool.remove("page", evicted=True)
+    assert not pool.evictable
+    assert pool.snapshot().resident_blocks == 0
 
 
 def test_page_updates_keep_same_entry_and_current_lru_order() -> None:
@@ -235,15 +297,21 @@ def test_page_updates_keep_same_entry_and_current_lru_order() -> None:
     pool.insert("second")
     page = pool.lookup("first")
     assert page is not None
+    first_key = (page.last_access_seq, "first")
+    second_key = (pool.entries["second"].last_access_seq, "second")
     pool.add_ref("first")
     assert pool.lookup("first") is page
-    assert page.ref_count == 1 and pool.evictable == 1
+    assert page.ref_count == 1 and pool.evictable == {second_key}
+    pool.add_refs("first", 1)
+    pool.drop_ref("first")
+    assert page.ref_count == 1 and pool.evictable == {second_key}
     pool.drop_ref("first")
     assert pool.lookup("first") is page
-    assert page.ref_count == 0 and pool.evictable == 2
+    assert page.ref_count == 0 and pool.evictable == {first_key, second_key}
     pool.touch("first")
     assert pool.lookup("first") is page
     assert page.last_access_seq == pool.access_seq
+    assert pool.evictable == {(page.last_access_seq, "first"), second_key}
     assert pool.pop_lru() is pool.lookup("second")
     assert pool.pop_lru() is page
 

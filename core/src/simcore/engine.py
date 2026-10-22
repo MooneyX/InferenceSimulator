@@ -389,16 +389,11 @@ class Engine:
                 and (self._lookup_waiting or self._prefetch_waiting) # 有请求在等待L3查询或prefetch
             ):
                 return None
-            missing = tuple( # 正常情况下promote_ids中本身就是L2, 因此missing一定和promote_ids相同
-                chunk_id
-                for chunk_id in selection.promote_ids
-                if (page := self._prefix_cache.page(chunk_id)) is not None and page.tier == "L2"
-            )
-            if missing:
+            if selection.promote_ids:
                 self._pending_selection = selection # 将选择准入请求放入等待准入中
                 new_pages = sum(candidate.required_pages for candidate in selection.admitted)
-                _ = self._prefix_cache.ensure_free(len(missing) + new_pages)
-                for chunk_id in missing:
+                _ = self._prefix_cache.ensure_free(len(selection.promote_ids) + new_pages)
+                for chunk_id in selection.promote_ids:
                     _ = self._start_transfer(
                         chunk_id,
                         "L1",

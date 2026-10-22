@@ -302,7 +302,13 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     assert all(cache.page(chunk).tier == "L3" for chunk in child.inherited_prefix_ids)
 
     assert engine.can_step
-    started = engine.start_step(0, 0)
+    with (
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+    ):
+        started = engine.start_step(0, 0)
+    assert sum(call.args[0].request_id == 1 for call in probes.call_args_list) == 1
+    assert all(call.args[0].request_id != 1 for call in pins.call_args_list)
     assert engine._lookup_waiting == {1}
     assert engine._prefix_scheduler.head_request_id == 1
     if with_ready_root:
@@ -346,6 +352,54 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     engine.complete(end, 1)
     child_record = next(item for item in engine.finalize().records if item.id == 1)
     assert child_record.actual_hit_tokens == child_record.l3_hit_tokens == 8
+
+
+@pytest.mark.parametrize("restoring", [False, True])
+@pytest.mark.parametrize("blocked", [None, "lookup", "prefetch", "load"])
+def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str | None) -> None:
+    config = EngineConfig(
+        max_running_requests=2,
+        max_total_tokens=32,
+        page_size=4,
+        l2_capacity_tokens=8,
+        l3_capacity_tokens=16,
+    )
+    engine = Engine(runtime_config(config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)))
+    cache = engine._prefix_cache
+    inherited = (encode(90, 0),)
+    cache.pools["L1"].insert(inherited[0])
+    child = InferenceRequest(1, 90, 90, 5, 8, 8, inherited, 1)
+    assert engine.submit(child, 0)
+    if restoring:
+        engine._prefix_scheduler._pop_item(engine._prefix_scheduler._waiting[0])
+        engine._prefix_scheduler.requeue(child, 0, 4)
+        cache.pools["L1"].insert(encode(1, 1))
+    if blocked == "lookup":
+        engine._lookup_waiting.add(1)
+    elif blocked == "prefetch":
+        engine._prefetch_waiting[1] = {0}
+    elif blocked == "load":
+        engine._pending_loads.add(inherited[0])
+    with (
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+    ):
+        selection = engine._prefix_scheduler.select_prefill(
+            {},
+            is_ready=engine._ready_for_prefill,
+            accept_probe=lambda item, sources: engine._accept_prefill_probe(item, sources, 0),
+        )
+    assert probes.call_count == pins.call_count == int(blocked is None)
+    if blocked is not None:
+        assert not selection.admitted and not selection.restored
+        assert engine._prefix_scheduler.num_waiting == 1
+        assert not cache._pins
+    elif restoring:
+        assert selection.restored[0].request == child
+        assert cache.state(1).k == 8
+    else:
+        assert selection.admitted[0].reused_tokens == 4
+    assert engine._last_local_match[1] == 1
 
 
 def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:

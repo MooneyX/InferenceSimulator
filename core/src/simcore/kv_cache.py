@@ -502,17 +502,15 @@ class TieredKVCache:
         else:
             self.demotions += 1
 
-    def reserve_transfer(
-        self, chunk_id: str, destination: str
-    ) -> str:  # 可以添加source参数, 避免每次都使用page寻找
-        page = self.page(chunk_id)
+    def reserve_transfer(self, chunk_id: str, destination: str, *, source: str) -> str:
+        source_pool = self.pools[source]
+        page = source_pool.lookup(chunk_id)
         if page is None:
             raise ValueError("待传输页不存在")
         if chunk_id in self._transfers:
             raise ValueError("同一页已有在途传输")
         if destination not in self.pools or not self.pools[destination].capacity:
             raise ValueError("目的层不存在或未启用")
-        source = page.tier
         if source == destination:
             raise ValueError("来源与目的层不能相同")
         if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count:
@@ -521,7 +519,6 @@ class TieredKVCache:
         duplicate = (
             target.lookup(chunk_id) is not None or chunk_id in target.pending_pages
         )  # 目的层级中是否已经有这一页或者已经有这一页的传输任务
-        source_pool = self.pools[source]
         source_pool.add_ref(chunk_id)
         try:
             if not duplicate:

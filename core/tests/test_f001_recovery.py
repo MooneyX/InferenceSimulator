@@ -83,7 +83,7 @@ def test_decode_drops_cached_page_when_lower_tier_is_protected_by_inflight_load(
     source = encode(99, 0)
     cached = cache.page(source)
     assert cached is not None and cached.tier == "L2"
-    cache.reserve_transfer(source, "L1")
+    cache.reserve_transfer(source, "L1", source="L2")
     assert engine.start_step(4, 1) == (10, (0,))
     assert cache.page(encode(98, 0)) is None
     assert not engine._aborted

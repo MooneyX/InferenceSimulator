@@ -412,7 +412,7 @@ def test_tiered_shared_low_hit_is_promoted_once_and_preserves_pin_refs() -> None
         cache.pin(item, sources)
     assert tier_page(cache, shared).ref_count == 2
     assert tier_page(cache, shared).tier == "L2"
-    assert cache.reserve_transfer(shared, "L1") == "L2"
+    assert cache.reserve_transfer(shared, "L1", source="L2") == "L2"
     assert tier_page(cache, shared).tier == "L2"
     assert tier_page(cache, shared).ref_count == 3
     assert cache.pools["L1"].reserved == 1
@@ -514,7 +514,7 @@ def test_l3_transfer_drops_l2_victim_when_source_is_protected() -> None:
     assert tier_page(cache, shared).tier == "L3"
     contender = request(4, 2, (shared,))
     pin_hit(cache, contender)
-    assert cache.reserve_transfer(shared, "L2") == "L3"
+    assert cache.reserve_transfer(shared, "L2", source="L3") == "L3"
     assert cache.pools["L3"].lookup(shared) is not None
     assert cache.page(victim) is None
     assert cache.tier_snapshot("L2").evictions >= 1
@@ -522,6 +522,38 @@ def test_l3_transfer_drops_l2_victim_when_source_is_protected() -> None:
     assert tier_page(cache, shared).tier == "L2"
     cache.cancel_pin(contender.request_id)
     assert_tiers_conserved(cache)
+
+
+@pytest.mark.parametrize("source,destination", [("L2", "L1"), ("L3", "L2")])
+def test_transfer_uses_known_source_without_searching_pools(
+    source: str, destination: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = TieredKVCache(2, 1, 2, 2)
+    chunk = encode(0, 0)
+    cache.pools[source].insert(chunk)
+
+    def unexpected_search(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("已知传输来源不应重新搜索来源池")
+
+    monkeypatch.setattr(cache, "page", unexpected_search)
+    monkeypatch.setattr(cache, "_source_pool", unexpected_search)
+    assert cache.reserve_transfer(chunk, destination, source=source) == source
+    assert cache.pools[source].entries[chunk].ref_count == 1
+    assert cache.pools[destination].reserved == 1
+    cache.complete_transfer(chunk)
+    assert cache.pools[destination].entries[chunk].ref_count == 0
+    assert_tiers_conserved(cache)
+
+
+def test_transfer_missing_known_source_does_not_reserve_destination() -> None:
+    cache = TieredKVCache(2, 1, 2, 2)
+    chunk = encode(0, 0)
+    cache.pools["L3"].insert(chunk)
+    before = tuple(pool.snapshot() for pool in cache.pools.values())
+    with pytest.raises(ValueError, match="待传输页不存在"):
+        cache.reserve_transfer(chunk, "L1", source="L2")
+    assert tuple(pool.snapshot() for pool in cache.pools.values()) == before
+    assert not cache._transfers
 
 
 def test_transfer_reserves_destination_without_exposing_page_or_refreshing_source() -> None:
@@ -534,7 +566,7 @@ def test_transfer_reserves_destination_without_exposing_page_or_refreshing_sourc
     before = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     page = tier_page(cache, source)
     assert page.tier == "L2" and page.ref_count == 0
-    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.reserve_transfer(source, "L1", source="L2") == "L2"
     assert cache.page(source) == CacheEntry(
         source, "L2", 1, page.last_access_seq, pool_id=page.pool_id
     )
@@ -560,7 +592,7 @@ def test_transfer_completion_moves_one_page_into_reserved_slot() -> None:
     source = encode(0, 0)
     old_count = len(cache_entries(cache))
     old_promotions = cache.promotions
-    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.reserve_transfer(source, "L1", source="L2") == "L2"
     assert cache.complete_transfer(source) == "L2"
     assert tier_page(cache, source).tier == "L1"
     assert tier_page(cache, source).ref_count == 0
@@ -586,7 +618,7 @@ def test_transfer_failed_reservation_restores_source_reference(stale_entries: in
     entries = entry_values(cache)
     snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
     with pytest.raises(CacheCapacityError):
-        cache.reserve_transfer(source, "L1")
+        cache.reserve_transfer(source, "L1", source="L2")
     assert entry_values(cache) == entries
     assert {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")} == snapshots
     assert (source_pool.entries[source].last_access_seq, source) in source_pool.queued
@@ -608,7 +640,7 @@ def test_l2_to_l1_load_drops_l1_victim_when_l2_source_is_pinned() -> None:
     assert cache.ensure_free(1) == 1
     assert cache.page(victim) is None
     assert tier_page(cache, source).tier == "L2"
-    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.reserve_transfer(source, "L1", source="L2") == "L2"
     assert cache.complete_transfer(source) == "L2"
     assert tier_page(cache, source).tier == "L1"
     cache.cancel_pin(contender.request_id)
@@ -624,7 +656,7 @@ def test_full_transfer_destination_evicted_by_lru_before_reservation() -> None:
     assert tier_page(cache, source).tier == "L3"
     assert cache.tier_snapshot("L2").free_blocks == 0
     evictions = cache.tier_snapshot("L2").evictions
-    assert cache.reserve_transfer(source, "L2") == "L3"
+    assert cache.reserve_transfer(source, "L2", source="L3") == "L3"
     assert cache.tier_snapshot("L2").evictions == evictions + 1
     assert tier_page(cache, encode(1, 0)).tier == "L3"
     assert tier_page(cache, source).tier == "L3"
@@ -643,7 +675,7 @@ def test_full_transfer_drops_l2_victim_instead_of_evicting_l3_source() -> None:
     source = encode(0, 0)
     victim = encode(1, 0)
     assert tier_page(cache, source).tier == "L3"
-    assert cache.reserve_transfer(source, "L2") == "L3"
+    assert cache.reserve_transfer(source, "L2", source="L3") == "L3"
     assert cache.page(victim) is None
     assert tier_page(cache, source).tier == "L3"
     assert cache.complete_transfer(source) == "L3"
@@ -661,7 +693,7 @@ def test_incremental_promotion_keeps_unaffected_entries_and_heaps() -> None:
     page = tier_page(cache, unrelated)
     heaps = {tier: state.heap for tier, state in cache.pools.items()}
     pin_hit(cache, request(8, 2, (source,)))
-    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.reserve_transfer(source, "L1", source="L2") == "L2"
     assert tier_page(cache, source).tier == "L2"
     assert_tiers_conserved(cache)
     assert cache.complete_transfer(source) == "L2"
@@ -681,7 +713,7 @@ def test_transfer_promotes_pinned_source_and_retains_request_reference() -> None
     pin_hit(cache, request(9, 2, (source,)))
     page = tier_page(cache, source)
     assert page.tier == "L2" and page.ref_count == 1
-    assert cache.reserve_transfer(source, "L1") == "L2"
+    assert cache.reserve_transfer(source, "L1", source="L2") == "L2"
     assert tier_page(cache, source).tier == "L2"
     assert tier_page(cache, source).ref_count == 2
     assert_tiers_conserved(cache)
@@ -700,8 +732,8 @@ def test_parallel_transfer_reservations_are_counted_and_isolated() -> None:
         cache.finish(request_id)
     cache.ensure_free(2)
     first, second = encode(0, 0), encode(1, 0)
-    assert cache.reserve_transfer(first, "L1") == "L2"
-    assert cache.reserve_transfer(second, "L1") == "L2"
+    assert cache.reserve_transfer(first, "L1", source="L2") == "L2"
+    assert cache.reserve_transfer(second, "L1", source="L2") == "L2"
     assert cache.tier_snapshot("L1").free_blocks == 0
     assert_tiers_conserved(cache)
     snapshots = {tier: cache.tier_snapshot(tier) for tier in ("L1", "L2", "L3")}
@@ -729,14 +761,14 @@ def test_l3_to_l2_reload_is_promotion_and_preserves_new_request_refs() -> None:
     cache.ensure_free(1)
     make_room = encode(2, 0)
     pin_hit(cache, request(9, 2, (make_room,)))
-    assert cache.reserve_transfer(make_room, "L1") == "L2"
+    assert cache.reserve_transfer(make_room, "L1", source="L2") == "L2"
     assert cache.complete_transfer(make_room) == "L2"
     cache.cancel_pin(9)
     source = encode(0, 0)
     assert tier_page(cache, source).tier == "L3"
     counters = cache.promotions, cache.demotions
     l3_evictions = cache.tier_snapshot("L3").evictions
-    assert cache.reserve_transfer(source, "L2") == "L3"
+    assert cache.reserve_transfer(source, "L2", source="L3") == "L3"
     pin_hit(cache, request(10, 2, (source,)))
     assert_tiers_conserved(cache)
     assert cache.complete_transfer(source) == "L3"

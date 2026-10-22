@@ -17,7 +17,7 @@ from simcore.perf_model import (
     workload_time,
 )
 from simcore.runtime import RuntimeConfig
-from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest
+from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
@@ -155,7 +155,7 @@ class Engine:
         return events
 
     def _start_transfer(
-        self, chunk_id: str, destination: str, now_ms: float, request_id: int
+        self, chunk_id: str, destination: str, now_ms: float, request_id: int, *, source: str
     ) -> int:  # 页 ID、目的层、时刻及请求 ID → 去重后的传输任务 ID
         existing = self._transfer_by_chunk.get(chunk_id)  # chunk_id -> 传输任务id
         if existing is not None:  # 查询当前id是否正在被传输
@@ -163,7 +163,7 @@ class Engine:
                 request_id
             )  # transfer_id -> 等待该页的请求id
             return existing
-        self._prefix_cache.reserve_transfer(chunk_id, destination)
+        self._prefix_cache.reserve_transfer(chunk_id, destination, source=source)
         link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
         if link is None:
             raise ValueError("传输链路须配置有效带宽和 KV 字节数")
@@ -226,22 +226,24 @@ class Engine:
             (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, request_id)
         )
 
-    def _ready_for_prefill(self, request_id: int, now_ms: float) -> bool:
-        if (
-            self._pending_loads  # 请求的load_back未完成
-            or request_id in self._lookup_waiting  # L3的查找
-            or request_id in self._prefetch_waiting  # L3的prefetch
-        ):
-            return False
+    def _ready_for_prefill(self, request_id: int) -> bool:
+        return not (
+            self._pending_loads
+            or request_id in self._lookup_waiting
+            or request_id in self._prefetch_waiting
+        )
+
+    def _accept_prefill_probe(
+        self, item: WaitingRequest, sources: tuple[tuple[str, str], ...], now_ms: float
+    ) -> bool:
+        request = item.request
+        request_id = request.request_id
         if request_id in self._last_local_match:
-            request = self._requests[request_id]
-            local = self._prefix_cache.probe(
-                request, request.prompt_len, include_l3=False
-            )  # 准入前再次probe
-            if (
-                len(local) < self._last_local_match[request_id]
-            ):  # 若命中比到达时更少, 说明部分KV被驱逐了, 需要向L3发起查询和prefetch
-                self._last_local_match[request_id] = len(local)
+            local_match = min(
+                len(sources), (request.prompt_len - 1) // self._prefix_cache.page_size
+            )
+            if local_match < self._last_local_match[request_id]:
+                self._last_local_match[request_id] = local_match
                 self._schedule_l3_lookup(request_id, now_ms)
                 return False
         return True
@@ -260,7 +262,7 @@ class Engine:
         pending: set[int] = set()
         for chunk_id in remote:
             try:
-                pending.add(self._start_transfer(chunk_id, "L2", now_ms, request_id))
+                pending.add(self._start_transfer(chunk_id, "L2", now_ms, request_id, source="L3"))
             except (CacheCapacityError, ValueError):
                 break
         if pending:
@@ -388,9 +390,10 @@ class Engine:
             }
             selection = self._prefix_scheduler.select_prefill(
                 running,
-                # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill,
-                # 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
-                is_ready=lambda key: self._ready_for_prefill(key, now_ms),
+                is_ready=self._ready_for_prefill,
+                accept_probe=lambda item, sources: self._accept_prefill_probe(
+                    item, sources, now_ms
+                ),
             )
             if (
                 not self._running
@@ -413,6 +416,7 @@ class Engine:
                         selection.admitted[0].waiting.request.request_id
                         if selection.admitted
                         else selection.restore_only[0].request.request_id,
+                        source="L2",
                     )
                     self._pending_loads.add(chunk_id)
                 return None  # 本次无法直接开始计算, 需要等待load_back完成

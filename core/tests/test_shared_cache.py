@@ -69,7 +69,7 @@ def test_two_readers_have_independent_destinations_and_preserve_shared_source() 
     for cache, key in ((first, 0), (second, 1)):
         item = request(key, (chunk,))
         cache.pin(item, cache.probe(item, item.prompt_len))
-        assert cache.reserve_transfer(chunk, "L2") == "L3"
+        assert cache.reserve_transfer(chunk, "L2", source="L3") == "L3"
         assert cache.pools["L2"].lookup(chunk) is None
         assert cache.pools["L2"].reserved == 1
     assert shared.lookup(chunk).ref_count == 4
@@ -77,7 +77,7 @@ def test_two_readers_have_independent_destinations_and_preserve_shared_source() 
     assert shared.lookup(chunk).ref_count == 2
     assert first.pools["L2"].lookup(chunk).ref_count == 1
     assert second.pools["L2"].lookup(chunk) is None
-    first.reserve_transfer(chunk, "L1")
+    first.reserve_transfer(chunk, "L1", source="L2")
     first.complete_transfer(chunk)
     first.admit(0)
     first.withdraw(0)
@@ -98,11 +98,11 @@ def test_shared_writes_deduplicate_without_removing_other_local_copies() -> None
     chunk = encode(90, 0)
     for cache in (first, second):
         cache.pools["L1"].insert(chunk)
-        cache.reserve_transfer(chunk, "L3")
+        cache.reserve_transfer(chunk, "L3", source="L1")
         cache.complete_transfer(chunk)
     assert shared.resident == 1 and shared.reserved == 0
     assert shared.lookup(chunk).ref_count == 0
-    first.reserve_transfer(chunk, "L2")
+    first.reserve_transfer(chunk, "L2", source="L3")
     first.complete_transfer(chunk)
     second.pools["L2"].insert(chunk)
     second.pools["L1"].insert(encode(91, 0))
@@ -118,14 +118,14 @@ def test_protected_shared_source_cannot_be_evicted_by_another_instance() -> None
     shared, first, second = managers(1)
     chunk = encode(90, 0)
     shared.insert(chunk)
-    first.reserve_transfer(chunk, "L2")
+    first.reserve_transfer(chunk, "L2", source="L3")
     second.pools["L1"].insert(encode(91, 0))
     before = tuple(pool.snapshot() for pool in second.pools.values())
     with pytest.raises(CacheCapacityError):
-        second.reserve_transfer(encode(91, 0), "L3")
+        second.reserve_transfer(encode(91, 0), "L3", source="L1")
     assert tuple(pool.snapshot() for pool in second.pools.values()) == before
     first.complete_transfer(chunk)
-    second.reserve_transfer(encode(91, 0), "L3")
+    second.reserve_transfer(encode(91, 0), "L3", source="L1")
     second.complete_transfer(encode(91, 0))
     assert shared.lookup(chunk) is None
     assert first.pools["L2"].lookup(chunk) is not None
@@ -137,7 +137,7 @@ def test_simultaneous_shared_writes_reserve_one_page(first_finisher: int) -> Non
     chunk = encode(90, 0)
     for cache in (first, second):
         cache.pools["L1"].insert(chunk)
-        cache.reserve_transfer(chunk, "L3")
+        cache.reserve_transfer(chunk, "L3", source="L1")
     assert shared.resident == shared.reserved == 1
     assert shared.lookup(chunk) is None
     readers = (first, second)
@@ -147,7 +147,7 @@ def test_simultaneous_shared_writes_reserve_one_page(first_finisher: int) -> Non
     other = readers[1 - first_finisher]
     other.pools["L1"].insert(encode(91, 0))
     with pytest.raises(CacheCapacityError):
-        other.reserve_transfer(encode(91, 0), "L3")
+        other.reserve_transfer(encode(91, 0), "L3", source="L1")
     other.complete_transfer(chunk)
     assert shared.lookup(chunk).ref_count == 0
     assert shared.evictable == shared.resident == 1
@@ -160,7 +160,7 @@ def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
     shared.insert(chunk)
     waiting = request(0, (chunk,))
     cache.pin(waiting, cache.probe(waiting, waiting.prompt_len))
-    cache.reserve_transfer(chunk, "L2")
+    cache.reserve_transfer(chunk, "L2", source="L3")
     recompute = request(1, (chunk,))
     cache.pin(recompute, ())
     cache.admit(1)
@@ -170,7 +170,7 @@ def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
     cache.withdraw(0)
     cache.finish(1)
     cache.complete_transfer(chunk)
-    cache.reserve_transfer(chunk, "L2")
+    cache.reserve_transfer(chunk, "L2", source="L1")
     cache.complete_transfer(chunk)
     assert cache.pools["L1"].lookup(chunk) is None
     assert cache.pools["L2"].lookup(chunk).ref_count == 0
@@ -239,7 +239,7 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
     shared, writer, _ = managers()
     chunk = encode(90, 0)
     writer.pools["L1"].insert(chunk)
-    writer.reserve_transfer(chunk, "L3")
+    writer.reserve_transfer(chunk, "L3", source="L1")
     writer.complete_transfer(chunk)
     config = settings()
     engine = Engine(

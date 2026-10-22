@@ -1972,7 +1972,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     ):
         page = cache.page(chunk_id)
         assert page is not None and page.tier == source
-        transfer_id = engine._start_transfer(chunk_id, destination, now, 99)
+        transfer_id = engine._start_transfer(chunk_id, destination, now, 99, source=source)
         [(end, event_kind, event_id)] = engine.drain_events()
         assert (event_kind, event_id) == (kind, transfer_id)
         assert end - now == pytest.approx(service)

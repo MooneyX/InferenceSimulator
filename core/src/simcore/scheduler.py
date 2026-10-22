@@ -132,6 +132,7 @@ class AdmissionScheduler:
         running: Mapping[int, RunningRequest],
         *,
         is_ready: Callable[[int], bool] | None = None,
+        accept_probe: Callable[[WaitingRequest, tuple[tuple[str, str], ...]], bool] | None = None,
     ) -> AdmissionBatch:  # 运行集与就绪条件 → 本步准入、恢复和失败批次
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
@@ -162,12 +163,12 @@ class AdmissionScheduler:
             ):  # 同时运行请求数限制
                 break
             request = item.request
-            if is_ready is not None and not is_ready(
-                request.request_id
-            ):  # 请求未就绪(prefetch未完成, 或者本地命中率比到达时更低, 原因是排队期间有KV被驱逐)
+            if is_ready is not None and not is_ready(request.request_id):
                 continue
             target = item.target_tokens
             sources = cache.probe(request, target, restoring=item.restoring, include_l3=False)
+            if accept_probe is not None and not accept_probe(item, sources):
+                continue
             hit = len(sources) * block_size
             cache.pin(request, sources)
             new_tokens = target - hit

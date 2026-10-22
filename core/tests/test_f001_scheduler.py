@@ -1,10 +1,12 @@
 """F001 准入顺序、物理页预算与动态未来比例的独立验收。"""
 
+from unittest.mock import patch
+
 import pytest
 
 from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import encode
-from simcore.scheduler import AdmissionScheduler, RunningRequest
+from simcore.scheduler import AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
 
@@ -348,7 +350,7 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
     if mode == "l2":
         for index in range(2):
             chunk_id = encode(0, index)
-            cache.reserve_transfer(chunk_id, "L2")
+            cache.reserve_transfer(chunk_id, "L2", source="L1")
             cache.complete_transfer(chunk_id)
     scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1), 1)
@@ -434,7 +436,7 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     pinned_page = cache.page(shared)
     assert pinned_page is not None and pinned_page.ref_count == 2 and pinned_page.tier == "L2"
     assert cache.promotions == 0
-    assert cache.reserve_transfer(shared, "L1") == "L2"
+    assert cache.reserve_transfer(shared, "L1", source="L2") == "L2"
     in_flight = cache.page(shared)
     assert in_flight is not None and in_flight.tier == "L2" and in_flight.ref_count == 3
     assert cache.complete_transfer(shared) == "L2"
@@ -449,6 +451,32 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     assert cache.promotions == 1
     for key in (1, 2):
         cache.finish(key)
+
+
+def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
+    scheduler, cache = make(capacity=512, page_size=4)
+    shared = encode(90, 0)
+    cache.pools["L1"].insert(shared)
+    for key in (1, 2):
+        scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 0)
+    checked: dict[int, tuple[tuple[str, str], ...]] = {}
+
+    def accept(item: WaitingRequest, sources: tuple[tuple[str, str], ...]) -> bool:
+        assert item.request.request_id not in cache._pins
+        checked[item.request.request_id] = sources
+        return item.request.request_id == 2
+
+    with (
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+    ):
+        batch = scheduler.select_prefill({}, accept_probe=accept)
+    assert probes.call_count == 2
+    assert pins.call_count == 1 and pins.call_args.args[0].request_id == 2
+    assert batch.admitted[0].hit_sources is checked[2]
+    assert pins.call_args.args[1] is checked[2]
+    assert scheduler.head_request_id == 1 and 1 not in cache._pins
+    assert cache.pools["L1"].entries[shared].ref_count == 1
 
 
 def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:

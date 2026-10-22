@@ -172,8 +172,6 @@ class AdmissionScheduler:
                             index
                             for index, (chunk_id, tier) in enumerate(sources)
                             if not can_reuse(request.request_id, chunk_id, tier)
-                            # 排除位于L3或者之前因为传输失败而被标记为不可复用的块, 因此上面的probe可以改用忽略L3, 可以复用上次probe的结果
-                            # "传输失败就标记该页无法使用"的机制需要修改
                         ),
                         len(sources),
                     )
@@ -183,6 +181,9 @@ class AdmissionScheduler:
             new_tokens = target - hit
             new_promotions = {chunk_id for chunk_id, tier in sources if tier != "L1"} - promotions
             if item.restoring and new_tokens == 0 and not any(tier != "L1" for _, tier in sources): # 回撤后恢复的请求, 所有KV都可复用且在L1
+                if current_offset > cache.available_tokens:
+                    cache.cancel_pin(request.request_id)
+                    break
                 cache.admit(request.request_id) # 直接准入
                 self._pop_item(item) # 从等待队列中移除
                 restored.append(item)
@@ -251,15 +252,6 @@ class AdmissionScheduler:
             tuple(sorted(restore_only, key=lambda item: item.request.request_id)),
             tuple(sorted(promotions)),
         )
-
-    def rollback_selection(self, selection: AdmissionBatch) -> None:
-        """回载容量不足时撤销候选引用，并按原到达顺序放回队列。"""
-        for candidate in selection.admitted:
-            self._cache.cancel_pin(candidate.waiting.request.request_id)
-            self._insert(candidate.waiting)
-        for item in selection.restore_only:
-            self._cache.cancel_pin(item.request.request_id)
-            self._insert(item)
 
     def _pop_item(self, item: WaitingRequest) -> WaitingRequest:
         self._waiting.remove(item)

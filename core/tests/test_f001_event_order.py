@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from simcore import simulate
 from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
@@ -23,7 +24,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
-from test_schemas import runtime_config
+from test_schemas import resolved_config, runtime_config
 
 
 def make_plan(*, ordinary_at: float = 8, think: float = 0) -> WorkloadPlan:
@@ -295,8 +296,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     assert child_record.actual_hit_tokens == child_record.l3_hit_tokens == 8
 
 
-@pytest.mark.parametrize("load_fails", [False, True])
-def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> None:
+def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
     config = EngineConfig(
         max_running_requests=2,
         max_total_tokens=20,
@@ -322,18 +322,12 @@ def test_l2_hit_waits_for_transfer_before_child_prefill(load_fails: bool) -> Non
         children={0: (1,)},
     )
     engine = Engine(runtime_config(config, perf))
-    if load_fails:
-        with patch.object(
-            engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
-        ):
-            run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
-    else:
-        run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
+    run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     child = next(item for item in run.records if item.id == 1)
     assert child.arrival == 50
-    assert child.prefill_start == pytest.approx(50 if load_fails else 55)
-    assert (child.actual_hit_tokens, child.l2_hit_tokens) == ((0, 0) if load_fails else (4, 4))
-    assert run.restore_time_ms == pytest.approx(0 if load_fails else 5)
+    assert child.prefill_start == pytest.approx(55)
+    assert (child.actual_hit_tokens, child.l2_hit_tokens) == (4, 4)
+    assert run.restore_time_ms == pytest.approx(5)
     assert run.num_engine_steps == 4
 
 
@@ -425,58 +419,52 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
     assert engine._restore_time_ms == pytest.approx(5)
 
 
-def test_partial_load_failure_waits_for_inflight_page_then_recomputes() -> None:
+def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:
     config = EngineConfig(
-        max_running_requests=1, max_total_tokens=20, page_size=4, l2_capacity_tokens=12
+        max_running_requests=8, max_total_tokens=512, page_size=64, l2_capacity_tokens=512
     )
     perf = PerfModelConfig(
         prefill_c1=1,
-        decode_d1=0,
+        prefill_c2=0,
+        decode_d1=5,
         decode_d2=0,
-        kv_bytes_per_token=2,
-        l2_to_l1_bandwidth_bytes_per_ms=4,
+        kv_bytes_per_token=1,
+        l2_to_l1_bandwidth_bytes_per_ms=64,
     )
-    engine = Engine(runtime_config(config, perf))
-    cache = engine._prefix_cache
-    parent = InferenceRequest(0, 0, None, 8, 1, 1, (), 0)
-    cache.pin(parent, ())
-    cache.admit(0)
-    cache.extend(0, 8)
-    cache.publish(0)
-    cache.finish(0)
-    filler = InferenceRequest(99, 99, None, 20, 1, 1, (), 0)
-    cache.pin(filler, ())
-    cache.admit(99)
-    cache.extend(99, 20)
-    cache.publish(99)
-    cache.finish(99)
-    first, second = encode(0, 0), encode(0, 1)
-    first_page, second_page = cache.page(first), cache.page(second)
-    assert first_page is not None and second_page is not None
-    assert first_page.tier == second_page.tier == "L2"
-    child = InferenceRequest(1, 0, 0, 9, 1, 1, (first, second), 2)
-    engine.submit(child, 1)
-    reserve = cache.reserve_transfer
-    attempts = 0
+    rows = (
+        (0, 0, 64, 1, (1,)),
+        (1, 64, 128, 1, (10, 11)),
+        (2, 192, 129, 3, (10, 11)),
+        (3, 194, 128, 2, (10, 11)),
+        (4, 200, 64, 2, (30,)),
+        (5, 270, 128, 2, (40, 41)),
+        (6, 455, 448, 1, (1, 20, 21, 22, 23, 24, 25)),
+    )
+    source = TracePlan(
+        block_size=64,
+        sessions=("capacity",),
+        requests=tuple(
+            TraceTurn(
+                request_id=key, session_id=0, arrival_offset_ms=arrival,
+                prompt_len=prompt, output_len=output, hash_ids=hashes,
+            )
+            for key, arrival, prompt, output, hashes in rows
+        ),
+    )
+    workload = WorkloadConfig(
+        mode="trace", session_rate=1000, trace=TraceWorkloadConfig()
+    )
 
-    def fail_second(chunk_id: str, destination: str) -> str:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 2:
-            raise CacheCapacityError("L1 空间不足")
-        return reserve(chunk_id, destination)
+    result = simulate(
+        resolved_config(workload=workload, engine=config, perf_model=perf),
+        trace_plan=source,
+    )
 
-    with patch.object(cache, "reserve_transfer", side_effect=fail_second):
-        assert engine.start_step(1, 0) is None
-    [(end, kind, transfer_id)] = engine.drain_events()
-    assert kind is EventKind.L2_L1_DONE and not engine.can_step
-    engine.on_transfer_done(kind, transfer_id, end)
-    assert engine.can_step
-    started = engine.start_step(end, 0)
-    assert started is not None
-    duration, _ = started
-    assert engine.finish_step(end + duration) == (1,)
-    assert engine._admission_stats[1] == (4, 4)
+    assert result.meta.num_completed == 7 and result.meta.num_aborted == 0
+    records = {item.id: item for item in result.requests}
+    assert records[3].retry_count == 1
+    assert records[6].actual_hit_tokens == records[6].l2_hit_tokens == 64
+    assert records[6].actual_prefill_tokens == 384
 
 
 def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:

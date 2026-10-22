@@ -116,7 +116,6 @@ class Engine:
         self._last_local_match: dict[int, int] = {}
         self._prefetch_waiting: dict[int, set[int]] = {}
         self._prefetched_origins: dict[int, set[str]] = {}
-        self._unusable_hits: dict[int, set[str]] = {}
         self._pending_selection: AdmissionBatch | None = None  # 等待 L2 回载后执行的准入批次
         self._pending_loads: set[str] = set()  # 当前批次尚未回载到 L1 的页 ID
         self._pending_publish: tuple[int, ...] = ()
@@ -380,9 +379,7 @@ class Engine:
             selection = self._prefix_scheduler.select_prefill(
                 running,
                 is_ready=lambda key: self._ready_for_prefill(key, now_ms), # lambda表示临时定义一个函数, key作为参数, 返回_ready_for_prefill, 判断prefetch是否完成, 以及准入时的本地命中率有没有比到达时降低
-                can_reuse=lambda key, chunk_id, tier: (
-                    tier != "L3" and chunk_id not in self._unusable_hits.get(key, ())
-                ),
+                can_reuse=lambda key, chunk_id, tier: tier != "L3",
             )
             if (
                 not self._running
@@ -400,37 +397,18 @@ class Engine:
             )
             if missing:
                 self._pending_selection = selection # 将选择准入请求放入等待准入中
-                failed_chunk = missing[0]
-                try:
-                    new_pages = sum(candidate.required_pages for candidate in selection.admitted)
-                    _ = self._prefix_cache.ensure_free(len(missing) + new_pages)
-                    for chunk_id in missing:
-                        failed_chunk = chunk_id
-                        _ = self._start_transfer(
-                            chunk_id,
-                            "L1",
-                            now_ms,
-                            selection.admitted[0].waiting.request.request_id
-                            if selection.admitted
-                            else selection.restore_only[0].request.request_id,
-                        )
-                        self._pending_loads.add(chunk_id)
-                except CacheCapacityError: # 正常仿真流程中不会触发
-                    for item in selection.aborted:
-                        self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
-                    for item in selection.restored:
-                        self._running[item.request.request_id] = item.generated_tokens
-                    for candidate in selection.admitted:
-                        self._unusable_hits.setdefault(
-                            candidate.waiting.request.request_id, set()
-                        ).add(failed_chunk)
-                    for item in selection.restore_only:
-                        self._unusable_hits.setdefault(item.request.request_id, set()).add(
-                            failed_chunk
-                        )
-                    self._prefix_scheduler.rollback_selection(selection)
-                    self._pending_selection = None
-                    return None
+                new_pages = sum(candidate.required_pages for candidate in selection.admitted)
+                _ = self._prefix_cache.ensure_free(len(missing) + new_pages)
+                for chunk_id in missing:
+                    _ = self._start_transfer(
+                        chunk_id,
+                        "L1",
+                        now_ms,
+                        selection.admitted[0].waiting.request.request_id
+                        if selection.admitted
+                        else selection.restore_only[0].request.request_id,
+                    )
+                    self._pending_loads.add(chunk_id)
                 return None # 本次无法直接开始计算, 需要等待load_back完成
         return self._execute_step(now_ms, step_index, selection) # 所有KV都在L1, 可以开始计算
 

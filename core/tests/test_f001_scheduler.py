@@ -246,17 +246,38 @@ def test_prefetch_waiting_head_is_skipped_without_pinning_and_keeps_position() -
     assert [item.waiting.request.request_id for item in ready.admitted] == [0]
 
 
-def test_skipped_candidate_keeps_order_across_rollback() -> None:
-    scheduler, cache = make()
-    for key in range(3):
-        scheduler.enqueue(request(key), key)
-    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
-    assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
-    scheduler.rollback_selection(batch)
-    assert scheduler.num_waiting == 3 and scheduler.head_request_id == 0
-    assert not cache._pins
-    retried = scheduler.select_prefill({})
-    assert [item.waiting.request.request_id for item in retried.admitted] == [0, 1, 2]
+@pytest.mark.parametrize("capacity, restores", [(16, False), (20, True)])
+def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
+    capacity: int, restores: bool,
+) -> None:
+    scheduler, cache = make(capacity=capacity, page_size=4)
+    item = request(0, prompt=8, maximum=2, output=2)
+    hold(cache, item)
+    cache.withdraw(0)
+    scheduler.enqueue(request(1, prompt=8), 1)
+    scheduler.requeue(item, 2, generated_tokens=1)
+    scheduler.enqueue(request(2, prompt=4), 3)
+
+    batch = scheduler.select_prefill({})
+
+    assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [1]
+    assert [entry.request.request_id for entry in batch.restored] == ([0] if restores else [])
+    assert scheduler.head_request_id == (2 if restores else 0)
+    assert scheduler.num_waiting == (1 if restores else 2)
+    assert 0 not in cache._pins and 2 not in cache._pins
+    assert cache.available_tokens == (12 if restores else 16)
+    for index in range(2):
+        page = cache.page(encode(0, index))
+        assert page is not None and page.ref_count == int(restores)
+    cache.ensure_free(batch.admitted[0].required_pages)
+
+    if not restores:
+        cache.admit(1)
+        cache.extend(1, 8)
+        cache.finish(1)
+        retried = scheduler.select_prefill({}, is_ready=lambda key: key == 0)
+        assert [entry.request.request_id for entry in retried.restored] == [0]
+        assert scheduler.head_request_id == 2
 
 
 def test_restored_full_hit_requires_no_empty_prefill_step() -> None:

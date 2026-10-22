@@ -252,7 +252,6 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
     expected_queued = scheduler._queued.copy()
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
-    is_ready = Mock(return_value=True)
     accept_probe = Mock(return_value=True)
 
     with (
@@ -261,9 +260,7 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
         patch.object(cache, "pin", wraps=cache.pin) as pins,
     ):
         for _ in range(3):
-            batch = scheduler.select_prefill(
-                running, is_ready=is_ready, accept_probe=accept_probe
-            )
+            batch = scheduler.select_prefill(running, accept_probe=accept_probe)
             assert batch == AdmissionBatch((), (), ())
 
     assert states.call_count == 3
@@ -271,7 +268,7 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
     assert waiting.iterations == 0
     assert tuple(waiting) == expected_waiting
     assert scheduler._queued == expected_queued
-    is_ready.assert_not_called()
+    assert scheduler.ready_count == waiting_count
     accept_probe.assert_not_called()
     probes.assert_not_called()
     pins.assert_not_called()
@@ -312,14 +309,17 @@ def test_prefetch_waiting_head_is_skipped_without_pinning_and_keeps_position() -
     scheduler, cache = make()
     for key in range(3):
         scheduler.enqueue(request(key), key)
-    assert scheduler.has_ready(lambda key: key != 0)
-    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    scheduler.set_ready(0, False)
+    assert scheduler.has_ready() and scheduler.ready_count == 2
+    batch = scheduler.select_prefill({})
     assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
     assert scheduler.num_waiting == 1 and scheduler.head_request_id == 0
     assert 0 not in cache._pins and 1 in cache._pins and 2 in cache._pins
-    assert not scheduler.has_ready(lambda key: key != 0)
-    ready = scheduler.select_prefill({}, is_ready=lambda _: True)
+    assert not scheduler.has_ready() and scheduler.ready_count == 0
+    scheduler.set_ready(0, True)
+    ready = scheduler.select_prefill({})
     assert [item.waiting.request.request_id for item in ready.admitted] == [0]
+    assert scheduler.ready_count == 0
 
 
 @pytest.mark.parametrize("blocked_count, admitted_count", [(0, 1), (64, 8)])
@@ -334,11 +334,13 @@ def test_selection_only_consumes_visited_prefix(
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
 
+    if not block_at_probe:
+        for key in range(blocked_count):
+            scheduler.set_ready(key, False)
     batch = scheduler.select_prefill(
-        {},
-        is_ready=lambda key: block_at_probe or key >= blocked_count,
-        accept_probe=lambda item, _: item.request.request_id >= blocked_count,
+        {}, accept_probe=lambda item, _: item.request.request_id >= blocked_count
     )
+    assert scheduler.ready_count == 1024
 
     admitted_ids = list(range(blocked_count, blocked_count + admitted_count))
     expected = original[:blocked_count] + original[blocked_count + admitted_count :]
@@ -351,23 +353,74 @@ def test_selection_only_consumes_visited_prefix(
     assert set(cache._pins) == set(admitted_ids)
 
 
-def test_all_blocked_requests_are_checked_once_per_selection_and_keep_order() -> None:
+@pytest.mark.parametrize("with_running", [False, True])
+def test_zero_ready_count_skips_queue_and_preserves_order(with_running: bool) -> None:
     scheduler, cache = make()
-    for key in range(4):
+    active = request(1024, maximum=32)
+    running = {}
+    if with_running:
+        hold(cache, active)
+        running[1024] = RunningRequest(active, 1)
+    for key in range(1024):
         scheduler.enqueue(request(key), 0)
+        scheduler.set_ready(key, False)
     original = tuple(scheduler._waiting)
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
-    is_ready = Mock(return_value=False)
+    accept_probe = Mock(return_value=True)
 
-    for _ in range(3):
-        assert scheduler.select_prefill({}, is_ready=is_ready) == AdmissionBatch((), (), ())
-
-    assert is_ready.call_count == waiting.pops == 12
-    assert waiting.iterations == waiting.removals == 0
+    with (
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+    ):
+        for _ in range(3):
+            assert scheduler.ready_count == 0 and not scheduler.has_ready()
+            assert scheduler.select_prefill(running, accept_probe=accept_probe) == AdmissionBatch(
+                (), (), ()
+            )
+    assert waiting.pops == waiting.iterations == waiting.removals == 0
     assert tuple(waiting) == original
-    assert scheduler._queued == set(range(4))
-    assert not cache._pins
+    assert scheduler._queued == set(range(1024))
+    accept_probe.assert_not_called()
+    probes.assert_not_called()
+    pins.assert_not_called()
+
+    scheduler.set_ready(0, True)
+    assert scheduler.has_ready() and scheduler.ready_count == 1
+    batch = scheduler.select_prefill(running)
+    assert [item.waiting.request.request_id for item in batch.admitted] == [0]
+    assert scheduler.ready_count == 0 and waiting.pops == 1
+    assert tuple(waiting) == original[1:]
+
+
+def test_ready_count_tracks_state_changes_and_requeue_without_double_counting() -> None:
+    scheduler, cache = make()
+    item = request(0, maximum=3)
+    assert scheduler.ready_count == 0
+    assert not scheduler.enqueue(request(1, maximum=0), 0)
+    assert scheduler.ready_count == 0
+    assert scheduler.enqueue(item, 0)
+    scheduler.set_ready(0, True)
+    assert scheduler.ready_count == 1
+    with pytest.raises(ValueError, match="请求已在等待队列中"):
+        scheduler.enqueue(item, 0)
+    assert scheduler.ready_count == 1
+    scheduler.set_ready(0, False)
+    scheduler.set_ready(0, False)
+    assert scheduler.ready_count == 0
+    scheduler.set_ready(0, True)
+    scheduler.set_ready(0, True)
+    assert scheduler.ready_count == 1
+    assert len(scheduler.select_prefill({}).admitted) == 1
+    assert scheduler.ready_count == 0
+    cache.admit(0)
+    cache.extend(0, 64)
+    cache.publish(0)
+    cache.withdraw(0)
+    scheduler.requeue(item, 1, generated_tokens=1)
+    assert scheduler.ready_count == 1
+    assert len(scheduler.select_prefill({}).restored) == 1
+    assert scheduler.ready_count == 0 and not scheduler._blocked
 
 
 def test_budget_stop_restores_skipped_prefix_and_failed_candidate_before_tail() -> None:
@@ -377,7 +430,10 @@ def test_budget_stop_restores_skipped_prefix_and_failed_candidate_before_tail() 
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
 
-    batch = scheduler.select_prefill({}, is_ready=lambda key: key not in (0, 2))
+    scheduler.set_ready(0, False)
+    scheduler.set_ready(2, False)
+    batch = scheduler.select_prefill({})
+    assert scheduler.ready_count == 2
 
     assert [item.waiting.request.request_id for item in batch.admitted] == [1]
     assert waiting.pops == 4
@@ -394,7 +450,9 @@ def test_impossible_candidate_is_removed_after_skipped_prefix_and_selection_cont
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
 
-    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    scheduler.set_ready(0, False)
+    batch = scheduler.select_prefill({})
+    assert scheduler.ready_count == 1
 
     assert [item.request.request_id for item in batch.aborted] == [1]
     assert [item.waiting.request.request_id for item in batch.admitted] == [2]
@@ -416,7 +474,9 @@ def test_direct_restore_fills_slot_without_consuming_tail_after_skipped_prefix()
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
 
-    batch = scheduler.select_prefill({}, is_ready=lambda key: key != 0)
+    scheduler.set_ready(0, False)
+    batch = scheduler.select_prefill({})
+    assert scheduler.ready_count == 1
 
     assert [item.request.request_id for item in batch.restored] == [1]
     assert not batch.admitted and not batch.restore_only and not batch.aborted
@@ -426,23 +486,23 @@ def test_direct_restore_fills_slot_without_consuming_tail_after_skipped_prefix()
     assert scheduler._queued == {0, 2}
 
 
-@pytest.mark.parametrize("failure_point", ["is_ready", "probe", "accept_probe"])
+@pytest.mark.parametrize("failure_point", ["probe", "accept_probe"])
 def test_selection_error_restores_unselected_prefix_and_preserves_tail(failure_point: str) -> None:
     scheduler, cache = make(max_running=2)
     for key in range(5):
         scheduler.enqueue(request(key), 0)
+    scheduler.set_ready(0, False)
+    scheduler.set_ready(2, False)
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
     error = RuntimeError("selection failed")
-    is_ready = Mock(
-        side_effect=[False, True, False, error if failure_point == "is_ready" else True]
-    )
     accept_probe = Mock(side_effect=[True, error if failure_point == "accept_probe" else True])
     with (
         patch.object(cache, "probe", side_effect=[(), error if failure_point == "probe" else ()]),
         pytest.raises(RuntimeError, match="selection failed"),
     ):
-        scheduler.select_prefill({}, is_ready=is_ready, accept_probe=accept_probe)
+        scheduler.select_prefill({}, accept_probe=accept_probe)
+    assert scheduler.ready_count == 2
 
     assert waiting.pops == 4
     assert waiting.iterations == waiting.removals == 0
@@ -520,7 +580,9 @@ def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
         cache.admit(1)
         cache.extend(1, 8)
         cache.finish(1)
-        retried = scheduler.select_prefill({}, is_ready=lambda key: key == 0)
+        scheduler.set_ready(2, False)
+        retried = scheduler.select_prefill({})
+        assert scheduler.ready_count == 0
         assert [entry.request.request_id for entry in retried.restored] == [0]
         assert scheduler.head_request_id == 2
 

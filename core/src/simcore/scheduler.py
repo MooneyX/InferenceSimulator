@@ -79,6 +79,8 @@ class AdmissionScheduler:
         self._cache = cache
         self._waiting: deque[WaitingRequest] = deque()
         self._queued: set[int] = set()
+        self._blocked: set[int] = set()
+        self._ready_count: int = 0
         self._last_arrival = float("-inf")
         self._ratio = 0.7
 
@@ -90,8 +92,23 @@ class AdmissionScheduler:
     def head_request_id(self) -> int | None:  # 队列首项 → 请求 ID，空队列返回 None
         return self._waiting[0].request.request_id if self._waiting else None
 
-    def has_ready(self, is_ready: Callable[[int], bool]) -> bool:
-        return any(is_ready(item.request.request_id) for item in self._waiting)
+    @property
+    def ready_count(self) -> int:
+        """等待队列中不受请求级查询、预取阻塞的请求数，不代表预算可准入。"""
+        return self._ready_count
+
+    def has_ready(self) -> bool:
+        return self._ready_count > 0
+
+    def set_ready(self, request_id: int, ready: bool) -> None:
+        """更新已入队请求的就绪状态；重复通知不重复计数。"""
+        if ready:
+            if request_id in self._blocked:
+                self._blocked.remove(request_id)
+                self._ready_count += 1
+        elif request_id not in self._blocked:
+            self._blocked.add(request_id)
+            self._ready_count -= 1
 
     def enqueue(
         self, request: InferenceRequest, now_ms: float, *, generated_tokens: int = 0
@@ -127,12 +144,12 @@ class AdmissionScheduler:
             index -= 1
         self._waiting.insert(index, item)
         self._queued.add(key)
+        self._ready_count += 1
 
     def select_prefill(
         self,
         running: Mapping[int, RunningRequest],
         *,
-        is_ready: Callable[[int], bool] | None = None,
         accept_probe: Callable[[WaitingRequest, tuple[tuple[str, str], ...]], bool] | None = None,
     ) -> AdmissionBatch:  # 运行集与就绪条件 → 本步准入、恢复和失败批次
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
@@ -146,7 +163,7 @@ class AdmissionScheduler:
                 raise ValueError("运行请求身份或生成进度不合法")
             _ = cache.state(request_id)  # 调用state函数, 尝试取出状态信息, 若没有则会报错
         active_count = len(running)
-        if active_count >= self._engine.max_running_requests:
+        if active_count >= self._engine.max_running_requests or not self._ready_count:
             return AdmissionBatch((), (), ())
         running_future = sum(
             min(item.request.max_new_tokens - item.generated_tokens, 4096) * self._ratio
@@ -165,7 +182,7 @@ class AdmissionScheduler:
         skipped: list[WaitingRequest] = []
         pending_item: WaitingRequest | None = None
         try:
-            while self._waiting:
+            while self._waiting and self._ready_count:
                 if (
                     active_count + len(selected) >= self._engine.max_running_requests
                 ):  # 同时运行请求数限制
@@ -173,13 +190,14 @@ class AdmissionScheduler:
                 item = self._waiting.popleft()
                 pending_item = item
                 request = item.request
-                if is_ready is not None and not is_ready(request.request_id):
+                if request.request_id in self._blocked:
                     skipped.append(item)
                     pending_item = None
                     continue
                 target = item.target_tokens
                 sources = cache.probe(request, target, restoring=item.restoring, include_l3=False)
                 if accept_probe is not None and not accept_probe(item, sources):
+                    self.set_ready(request.request_id, False)
                     skipped.append(item)
                     pending_item = None
                     continue
@@ -238,6 +256,7 @@ class AdmissionScheduler:
                         )
                     ):
                         self._queued.remove(request.request_id)
+                        self._ready_count -= 1
                         pending_item = None
                         aborted.append(item)
                         continue
@@ -259,6 +278,7 @@ class AdmissionScheduler:
                     selected_future += future
                     selected_pages_tokens += required_tokens
                 self._queued.remove(request.request_id)
+                self._ready_count -= 1
                 pending_item = None
                 # 预算通过后才提交候选贡献的页，失败候选不能污染去重集合或传输顺序。
                 promotions.extend(new_promotions)

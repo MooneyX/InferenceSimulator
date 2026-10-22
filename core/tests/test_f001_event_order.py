@@ -25,6 +25,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
+from test_f001_scheduler import TrackedWaitingQueue
 from test_schemas import resolved_config, runtime_config
 
 
@@ -303,11 +304,13 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     assert all(cache.page(chunk).tier == "L3" for chunk in child.inherited_prefix_ids)
 
     assert engine.can_step
+    assert engine._prefix_scheduler.ready_count == 1 + int(with_ready_root)
     with (
         patch.object(cache, "probe", wraps=cache.probe) as probes,
         patch.object(cache, "pin", wraps=cache.pin) as pins,
     ):
         started = engine.start_step(0, 0)
+    assert engine._prefix_scheduler.ready_count == 0
     assert sum(call.args[0].request_id == 1 for call in probes.call_args_list) == 1
     assert all(call.args[0].request_id != 1 for call in pins.call_args_list)
     assert engine._lookup_waiting == {1}
@@ -322,6 +325,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     [(lookup_at, kind, key)] = engine.drain_events()
     assert (lookup_at, kind, key) == (2, EventKind.L3_LOOKUP_DONE, 1)
     engine.on_l3_lookup(key, lookup_at)
+    assert engine._prefix_scheduler.ready_count == int(bool(prefetch_threshold))
     prefetch = sorted(engine.drain_events())
     if prefetch_threshold:
         assert not prefetch and engine.can_step
@@ -336,10 +340,12 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         assert not engine.drain_events()
         return
     assert len(prefetch) == 2
-    for time, kind, transfer_id in prefetch:
+    for index, (time, kind, transfer_id) in enumerate(prefetch):
         assert kind is EventKind.L3_L2_DONE
         engine.on_transfer_done(kind, transfer_id, time)
+        assert engine._prefix_scheduler.ready_count == int(index == 1)
     assert engine.start_step(prefetch[-1][0], engine.num_steps) is None
+    assert engine._prefix_scheduler.ready_count == 0
     loads = sorted(engine.drain_events())
     assert len(loads) == 2
     for time, kind, transfer_id in loads:
@@ -353,6 +359,121 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     engine.complete(end, 1)
     child_record = next(item for item in engine.finalize().records if item.id == 1)
     assert child_record.actual_hit_tokens == child_record.l3_hit_tokens == 8
+
+
+def test_lookup_burst_readiness_checks_do_not_scan_waiting_queue() -> None:
+    config = EngineConfig(
+        max_running_requests=4,
+        max_total_tokens=64,
+        page_size=4,
+        l2_capacity_tokens=16,
+        l3_capacity_tokens=16,
+    )
+    perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, l3_lookup_latency_ms=10)
+    engine = Engine(runtime_config(config, perf))
+    scheduler = engine._prefix_scheduler
+    waiting = TrackedWaitingQueue()
+    scheduler._waiting = waiting
+    for key in range(128):
+        assert engine.submit(InferenceRequest(key, key, None, 5, 1, 1, (), 0), 0)
+        assert scheduler.ready_count == 0 and not engine.can_step
+    for count, (time, kind, key) in enumerate(engine.drain_events(), 1):
+        assert kind is EventKind.L3_LOOKUP_DONE
+        engine.on_l3_lookup(key, time)
+        assert scheduler.ready_count == count and engine.can_step
+    assert waiting.iterations == waiting.pops == waiting.removals == 0
+
+
+def test_zero_ready_waiters_do_not_stop_decode_or_trigger_queue_scan() -> None:
+    config = EngineConfig(
+        max_running_requests=4,
+        max_total_tokens=64,
+        page_size=4,
+        l2_capacity_tokens=16,
+        l3_capacity_tokens=16,
+    )
+    perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, l3_lookup_latency_ms=100)
+    engine = Engine(runtime_config(config, perf))
+    assert engine.submit(InferenceRequest(0, 0, None, 1, 4, 4, (), 0), 0)
+    started = engine.start_step(0, 0)
+    assert started is not None
+    now = started[0]
+    assert not engine.finish_step(now)
+    assert engine.submit(InferenceRequest(1, 1, None, 5, 1, 1, (), 0), now)
+    scheduler = engine._prefix_scheduler
+    waiting = TrackedWaitingQueue(scheduler._waiting)
+    scheduler._waiting = waiting
+    for _ in range(2):
+        assert scheduler.ready_count == 0 and engine.can_step
+        started = engine.start_step(now, engine.num_steps)
+        assert started is not None
+        now += started[0]
+        assert not engine.finish_step(now)
+    assert engine._running[0] == 3
+    assert waiting.iterations == waiting.pops == waiting.removals == 0
+
+
+def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() -> None:
+    config = EngineConfig(
+        max_running_requests=4,
+        max_total_tokens=64,
+        page_size=4,
+        l2_capacity_tokens=16,
+        l3_capacity_tokens=16,
+        l3_prefetch_min_tokens=0,
+    )
+    perf = PerfModelConfig(
+        prefill_c1=1,
+        decode_d1=1,
+        decode_d2=0,
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_lookup_latency_ms=2,
+    )
+    engine = Engine(runtime_config(config, perf))
+    scheduler = engine._prefix_scheduler
+    ids = (encode(90, 0), encode(90, 1))
+    for chunk in ids:
+        engine._prefix_cache.pools["L3"].insert(chunk)
+    for key, blocks in ((0, 1), (1, 2), (2, 1)):
+        item = InferenceRequest(key, 90, 90, blocks * 4 + 1, 1, 1, ids[:blocks], blocks)
+        assert engine.submit(item, 0)
+    assert scheduler.ready_count == 0
+    for time, kind, key in engine.drain_events():
+        assert kind is EventKind.L3_LOOKUP_DONE
+        engine.on_l3_lookup(key, time)
+        assert scheduler.ready_count == 0 and not engine.can_step
+    prefetch = sorted(engine.drain_events())
+    assert len(prefetch) == 2
+    assert engine._transfers[prefetch[0][2]].waiting_requests == {0, 1, 2}
+    time, kind, key = prefetch[0]
+    engine.on_transfer_done(kind, key, time)
+    assert scheduler.ready_count == 2 and engine.can_step
+    assert set(engine._prefetch_waiting) == {1}
+    engine.on_transfer_done(kind, key, time)
+    assert scheduler.ready_count == 2
+    time, kind, key = prefetch[1]
+    engine.on_transfer_done(kind, key, time)
+    assert scheduler.ready_count == 3 and not engine._prefetch_waiting
+    assert engine.start_step(time, 0) is None
+    assert scheduler.ready_count == 0
+    loads = sorted(engine.drain_events())
+    assert len(loads) == 2
+    assert engine.submit(InferenceRequest(3, 3, None, 1, 1, 1, (), 0), time)
+    assert scheduler.ready_count == 1 and not engine.can_step
+    for index, (time, kind, key) in enumerate(loads):
+        engine.on_transfer_done(kind, key, time)
+        assert scheduler.ready_count == 1
+        assert engine.can_step == (index == 1)
+    started = engine.start_step(time, 0)
+    assert started is not None and scheduler.ready_count == 1
+    time += started[0]
+    assert engine.finish_step(time) == (0, 1, 2)
+    for key in (0, 1, 2):
+        engine.complete(time, key)
+    assert engine.start_step(time, engine.num_steps) is not None
+    assert scheduler.ready_count == 0
 
 
 @pytest.mark.parametrize("restoring", [False, True])
@@ -376,20 +497,27 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
         waiting[0] = replace(waiting[0], generated_tokens=4)
         cache.pools["L1"].insert(encode(1, 1))
     if blocked == "lookup":
-        engine._lookup_waiting.add(1)
+        engine._schedule_l3_lookup(1, 0)
     elif blocked == "prefetch":
         engine._prefetch_waiting[1] = {0}
+        engine._prefix_scheduler.set_ready(1, False)
     elif blocked == "load":
         engine._pending_loads.add(inherited[0])
     with (
         patch.object(cache, "probe", wraps=cache.probe) as probes,
         patch.object(cache, "pin", wraps=cache.pin) as pins,
     ):
+        if blocked == "load":
+            assert engine._prefix_scheduler.ready_count == 1
+            assert not engine.can_step and engine.start_step(0, 0) is None
+            probes.assert_not_called()
+            pins.assert_not_called()
+            return
         selection = engine._prefix_scheduler.select_prefill(
             {},
-            is_ready=engine._ready_for_prefill,
             accept_probe=lambda item, sources: engine._accept_prefill_probe(item, sources, 0),
         )
+    assert engine._prefix_scheduler.ready_count == 0
     assert probes.call_count == pins.call_count == int(blocked is None)
     if blocked is not None:
         assert not selection.admitted and not selection.restored

@@ -141,9 +141,7 @@ class Engine:
             return True
         if self._pending_selection is not None or self._pending_loads:
             return self._pending_selection is not None and not self._pending_loads
-        return self._prefix_scheduler.has_ready(
-            lambda key: key not in self._lookup_waiting and key not in self._prefetch_waiting
-        )
+        return self._prefix_scheduler.has_ready()
 
     def drain_events(
         self,
@@ -222,15 +220,9 @@ class Engine:
 
     def _schedule_l3_lookup(self, request_id: int, now_ms: float) -> None:
         self._lookup_waiting.add(request_id)
+        self._prefix_scheduler.set_ready(request_id, False)
         self._scheduled_events.append(
             (now_ms + self._perf.l3_lookup_latency_ms, EventKind.L3_LOOKUP_DONE, request_id)
-        )
-
-    def _ready_for_prefill(self, request_id: int) -> bool:
-        return not (
-            self._pending_loads
-            or request_id in self._lookup_waiting
-            or request_id in self._prefetch_waiting
         )
 
     def _accept_prefill_probe(
@@ -258,6 +250,7 @@ class Engine:
         sources = self._prefix_cache.probe(request, request.prompt_len, start_index=len(local))
         remote = [chunk_id for chunk_id, tier in sources if tier == "L3"]
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
+            self._prefix_scheduler.set_ready(request_id, True)
             return
         pending: set[int] = set()
         for chunk_id in remote:
@@ -267,6 +260,8 @@ class Engine:
                 break
         if pending:
             self._prefetch_waiting[request_id] = pending
+        else:
+            self._prefix_scheduler.set_ready(request_id, True)
 
     def on_transfer_done(
         self, kind: EventKind, transfer_id: int, now_ms: float
@@ -294,6 +289,7 @@ class Engine:
                             request, request.prompt_len, include_l3=False
                         )
                         self._last_local_match[request_id] = len(local)
+                        self._prefix_scheduler.set_ready(request_id, True)
         else:
             self._pending_loads.discard(task.chunk_id)
 
@@ -373,9 +369,7 @@ class Engine:
     ) -> tuple[float, tuple[int, ...]] | None:  # 步起点与序号 → 耗时/完成 ID，等待回载时返回 None
         """回载未就绪时仍可处理已有请求的 Decode；就绪后再执行准入批次。"""
         selection = self._pending_selection
-        if (
-            selection is not None and self._pending_loads
-        ):  # 之前选中了一批请求准备开始prefill, 但是这批请求的load_back未完成, 因此无法进行prefill
+        if self._pending_loads:
             if not self._running:  # 没有等待decode的请求
                 return None
             selection = AdmissionBatch((), (), ())
@@ -390,7 +384,6 @@ class Engine:
             }
             selection = self._prefix_scheduler.select_prefill(
                 running,
-                is_ready=self._ready_for_prefill,
                 accept_probe=lambda item, sources: self._accept_prefill_probe(
                     item, sources, now_ms
                 ),

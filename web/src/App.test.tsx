@@ -362,7 +362,7 @@ describe("App", () => {
       requests: [result.requests![0], { ...result.requests![0], id: 1, instance_id: 1 }],
     });
     render(<App />);
-    fireEvent.change(screen.getByLabelText("推理实例数量（L1/L2 独占，L3 共享）"),
+    fireEvent.change(screen.getByLabelText("推理实例数量"),
       { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({ num_instances: 2 }));

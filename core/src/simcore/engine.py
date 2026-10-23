@@ -68,13 +68,15 @@ class _TransferTask:
     chunk_id: str
     waiting_requests: set[int]
     service_ms: float
+    owns_transfer: bool = True
 
 
 class Engine:
     """维护即时请求与调度/KV 状态，不预存未来请求或持有事件队列。"""
 
     def __init__(
-        self, runtime: RuntimeConfig, *, shared_l3: CachePool | None = None, instance_id: int = 0
+        self, runtime: RuntimeConfig, *, shared_l3: CachePool | None = None,
+        shared_l2: CachePool | None = None, instance_id: int = 0
     ) -> None:
         engine, perf = runtime.engine, runtime.perf_model
         self._links = runtime.links
@@ -88,6 +90,7 @@ class Engine:
             engine.l2_capacity_tokens,
             engine.l3_capacity_tokens,
             shared_l3=shared_l3,
+            shared_l2=shared_l2,
             pool_id_base=instance_id * 2,
         )
         self._prefix_scheduler = AdmissionScheduler(engine, self._prefix_cache)
@@ -124,7 +127,7 @@ class Engine:
         self._pending_finished: tuple[int, ...] = ()
         self._scheduled_events: list[tuple[float, EventKind, int]] = []
         self._transfers: dict[int, _TransferTask] = {}
-        self._transfer_by_chunk: dict[str, int] = {}
+        self._transfer_by_chunk: dict[tuple[str, str], int] = {}
         self._next_transfer_id = 0
         self._link_free = {"L2": 0.0, "L1": 0.0}
 
@@ -167,24 +170,33 @@ class Engine:
     def _start_transfer(
         self, chunk_id: str, destination: str, now_ms: float, request_id: int, *, source: str
     ) -> int:  # 页 ID、目的层、时刻及请求 ID → 去重后的传输任务 ID
-        existing = self._transfer_by_chunk.get(chunk_id)  # chunk_id -> 传输任务id
+        existing = self._transfer_by_chunk.get((chunk_id, destination))
         if existing is not None:  # 查询当前id是否正在被传输
             self._transfers[existing].waiting_requests.add(
                 request_id
             )  # transfer_id -> 等待该页的请求id
             return existing
-        self._prefix_cache.reserve_transfer(chunk_id, destination, source=source)
-        link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
-        if link is None:
-            raise ValueError("传输链路须配置有效带宽和 KV 字节数")
-        service_ms = link.latency_ms + link.transfer_ms
-        start = max(now_ms, self._link_free[destination])
-        end = start + service_ms
-        self._link_free[destination] = end
+        target = self._prefix_cache.pools[destination]
+        end = target.incoming_ready_ms.get(chunk_id) if destination == "L2" else None
+        owns_transfer = end is None
+        service_ms = 0.0
+        if end is None:
+            link = self._links.l3_to_l2 if destination == "L2" else self._links.l2_to_l1
+            if link is None:
+                raise ValueError("传输链路须配置有效带宽和 KV 字节数")
+            self._prefix_cache.reserve_transfer(chunk_id, destination, source=source)
+            service_ms = link.latency_ms + link.transfer_ms
+            start = max(now_ms, self._link_free[destination])
+            end = start + service_ms
+            self._link_free[destination] = end
+            if destination == "L2":
+                target.incoming_ready_ms[chunk_id] = end
         transfer_id = self._next_transfer_id
         self._next_transfer_id += 1
-        self._transfers[transfer_id] = _TransferTask(chunk_id, {request_id}, service_ms)
-        self._transfer_by_chunk[chunk_id] = transfer_id
+        self._transfers[transfer_id] = _TransferTask(
+            chunk_id, {request_id}, service_ms, owns_transfer
+        )
+        self._transfer_by_chunk[chunk_id, destination] = transfer_id
         kind = EventKind.L3_L2_DONE if destination == "L2" else EventKind.L2_L1_DONE
         self._scheduled_events.append((end, kind, transfer_id))
         return transfer_id
@@ -281,13 +293,17 @@ class Engine:
         task = self._transfers.pop(transfer_id, None)
         if task is None:
             return
-        del self._transfer_by_chunk[task.chunk_id]
-        self._prefix_cache.complete_transfer(task.chunk_id)
-        page_bytes = self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
-        self._restore_bytes += page_bytes
-        self._restore_time_ms += task.service_ms
-        if self._analysis is not None:
-            self._analysis.restore_ms += task.service_ms
+        destination = "L2" if kind is EventKind.L3_L2_DONE else "L1"
+        del self._transfer_by_chunk[task.chunk_id, destination]
+        if task.owns_transfer:
+            self._prefix_cache.complete_transfer(task.chunk_id, destination)
+            if kind is EventKind.L3_L2_DONE:
+                del self._prefix_cache.pools["L2"].incoming_ready_ms[task.chunk_id]
+            page_bytes = self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
+            self._restore_bytes += page_bytes
+            self._restore_time_ms += task.service_ms
+            if self._analysis is not None:
+                self._analysis.restore_ms += task.service_ms
         if kind is EventKind.L3_L2_DONE:
             for request_id in task.waiting_requests:
                 self._prefetched_origins.setdefault(request_id, set()).add(task.chunk_id)

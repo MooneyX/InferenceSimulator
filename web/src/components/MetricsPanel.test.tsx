@@ -128,8 +128,23 @@ describe("MetricsPanel", () => {
     expect(metricValue("L3 前缀命中率")).toHaveTextContent("2 %");
   });
 
+  it("hides shared L2 state for an instance but retains hits", () => {
+    render(<MetricsPanel wallClockMs={42.5} sharedL2 metrics={{ ...metrics,
+      l2_capacity_blocks: null, l2_resident_blocks: null, l2_active_blocks: null,
+      l2_evictable_blocks: null, l2_free_blocks: null, l2_peak_resident_blocks: null,
+      l2_evictions: null, l2_hit_tokens: 20,
+    }} />);
+    expect(screen.queryByText("L2 容量")).not.toBeInTheDocument();
+    expect(screen.queryByText("L2 峰值驻留")).not.toBeInTheDocument();
+    expect(metricValue("L2 命中")).toHaveTextContent("20 token");
+  });
+
   it("uses the actual shared peak even in aggregate mode", () => {
-    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} peakAggregated />);
+    render(<MetricsPanel metrics={metrics} wallClockMs={42.5} peakAggregated sharedL2 />);
+    expect(screen.getByText("L2 峰值驻留").closest(".metric-card"))
+      .toHaveTextContent("全场共享 L2 的实际驻留峰值");
+    expect(screen.getByText("L1 峰值驻留").closest(".metric-card"))
+      .toHaveTextContent("各实例峰值之和");
     expect(screen.getByText("L3 峰值驻留").closest(".metric-card"))
       .toHaveTextContent("全场共享 L3 的实际驻留峰值");
   });

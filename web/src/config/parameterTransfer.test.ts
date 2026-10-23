@@ -15,6 +15,21 @@ function serializeInference(inference: InferenceConfig): string {
 }
 
 describe("parameter JSON transfer", () => {
+  it.each([true, false])("round-trips shared L2 %s", (enabled) => {
+    const config = { ...createDefaultSimConfig(), shared_l2_enabled: enabled };
+    expect(parseSimConfigJson(serializeSimConfig(config)).shared_l2_enabled).toBe(enabled);
+  });
+
+  it("enables shared L2 when omitted", () => {
+    const { shared_l2_enabled: _shared, ...config } = createDefaultSimConfig();
+    expect(parseSimConfigJson(JSON.stringify(config)).shared_l2_enabled).toBe(true);
+  });
+
+  it.each([null, 1, "false"])("rejects non-boolean shared L2 %s", (value) => {
+    expect(() => parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), shared_l2_enabled: value })))
+      .toThrow("shared_l2_enabled 必须是布尔值");
+  });
+
   it.each(["cache_affinity", "least_load"] as const)("round-trips routing policy %s", (policy) => {
     const config = { ...createDefaultSimConfig(), routing_policy: policy };
     expect(parseSimConfigJson(serializeSimConfig(config)).routing_policy).toBe(policy);

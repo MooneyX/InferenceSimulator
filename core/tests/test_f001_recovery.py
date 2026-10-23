@@ -89,7 +89,7 @@ def test_decode_drops_cached_page_when_lower_tier_is_protected_by_inflight_load(
     assert not engine._aborted
     assert engine.finish_step(14) == (0,)
     engine.complete(14, 0)
-    assert cache.complete_transfer(source) == "L2"
+    assert cache.complete_transfer(source, "L1") == "L2"
 
 
 def test_withdraws_deterministically_then_replays_without_sampling_again() -> None:

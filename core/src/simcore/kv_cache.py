@@ -81,6 +81,7 @@ class CachePool:
     queued: set[tuple[int, str]] = field(default_factory=set, init=False)
     queued_since_check: int = field(default=0, init=False)
     pending_pages: dict[str, int] = field(default_factory=dict, init=False)
+    incoming_ready_ms: dict[str, float] = field(default_factory=dict, init=False)
 
     def lookup(self, chunk_id: str) -> CacheEntry | None:
         return self.entries.get(chunk_id)
@@ -221,7 +222,7 @@ class CachePool:
 
 
 class TieredKVCache:
-    """按逻辑页组织请求；本地 L1/L2 迁移，L3 与本地允许独立副本。"""
+    """按逻辑页组织请求；私有层迁移，共享层向上回载保留副本。"""
 
     def __init__(
         self,
@@ -231,6 +232,7 @@ class TieredKVCache:
         l3_capacity_tokens: int = 0,
         *,
         shared_l3: CachePool | None = None,
+        shared_l2: CachePool | None = None,
         pool_id_base: int = 0,
     ) -> None:
         if page_size < 1 or max_total_tokens < page_size or max_total_tokens % page_size:
@@ -253,13 +255,19 @@ class TieredKVCache:
         )
         if l3.level != "L3" or l3.page_size != page_size:
             raise ValueError("共享 L3 的层级和页大小必须与实例一致")
-        if l3.capacity and not l2_capacity_tokens:
+        l2 = shared_l2 if shared_l2 is not None else CachePool(
+            "L2", pool_id_base + 1, l2_capacity_tokens // page_size, page_size
+        )
+        if l2.level != "L2" or l2.page_size != page_size:
+            raise ValueError("共享 L2 的层级和页大小必须与实例一致")
+        if l3.capacity and not l2.capacity:
             raise ValueError("L3 启用时须启用 L2")
+        self._shared_tiers: set[str] = {"L2", "L3"} if shared_l2 is not None else {"L3"}
         self.page_size = page_size
         self.capacity_pages = max_total_tokens // page_size
         self.pools: dict[str, CachePool] = {
             "L1": CachePool("L1", pool_id_base, self.capacity_pages, page_size),
-            "L2": CachePool("L2", pool_id_base + 1, l2_capacity_tokens // page_size, page_size),
+            "L2": l2,
             "L3": l3,
         }
         self._requests: dict[int, InferenceRequest] = {}
@@ -267,7 +275,7 @@ class TieredKVCache:
         self._pins: dict[int, tuple[InferenceRequest, int]] = {}
         self._pin_sources: dict[int, dict[str, CachePool]] = {}
         self._chunk_pins: dict[str, set[int]] = {}
-        self._transfers: dict[str, tuple[str, str]] = {}
+        self._transfers: dict[tuple[str, str], str] = {}
         self._private_pages = 0
         self.promotions = 0
         self.demotions = 0
@@ -424,12 +432,14 @@ class TieredKVCache:
             self._chunk_id(request, i)
             for i in range(state.f // self.page_size, state.k // self.page_size)
         )
-        if any((page := l2.lookup(chunk_id)) is not None and page.ref_count for chunk_id in ids):
+        if "L2" not in self._shared_tiers and any(
+            (page := l2.lookup(chunk_id)) is not None and page.ref_count for chunk_id in ids
+        ):
             raise CacheCapacityError("正在被保护的低层页不能被重算替换")
         freed = 0
         for chunk_id in ids:
             self._private_pages -= 1
-            if l2.lookup(chunk_id) is not None:
+            if "L2" not in self._shared_tiers and l2.lookup(chunk_id) is not None:
                 l2.remove(chunk_id, evicted=True)
             freed += int(not l1.store(chunk_id, 1, occupied=True))
         self._states[request_id] = KVRequestState(
@@ -493,16 +503,17 @@ class TieredKVCache:
         upward = destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(
             source
         )
-        if source != "L3" or destination is None:
+        copy = upward and source in self._shared_tiers
+        if not copy:
             old.remove(chunk_id, evicted=not upward)
         if destination is None:
             return
         target = self.pools[destination]
-        target.store(chunk_id, page.ref_count if source != "L3" else 0)
+        target.store(chunk_id, 0 if copy else page.ref_count)
         for request_id in self._chunk_pins.get(chunk_id, ()):
             bindings = self._pin_sources[request_id]
             if bindings[chunk_id] is old:
-                if source == "L3":
+                if copy:
                     old.drop_ref(chunk_id)
                     target.add_ref(chunk_id)
                 bindings[chunk_id] = target
@@ -516,8 +527,8 @@ class TieredKVCache:
         page = source_pool.lookup(chunk_id)
         if page is None:
             raise ValueError("待传输页不存在")
-        if chunk_id in self._transfers:
-            raise ValueError("同一页已有在途传输")
+        if (chunk_id, destination) in self._transfers:
+            raise ValueError("同一页到该目的层已有在途传输")
         if destination not in self.pools or not self.pools[destination].capacity:
             raise ValueError("目的层不存在或未启用")
         if source == destination:
@@ -536,25 +547,26 @@ class TieredKVCache:
         except Exception:
             source_pool.drop_ref(chunk_id)
             raise
-        self._transfers[chunk_id] = (source, destination)
+        self._transfers[chunk_id, destination] = source
         return source
 
-    def complete_transfer(self, chunk_id: str) -> str:
-        source, destination = self._transfers[chunk_id]
+    def complete_transfer(self, chunk_id: str, destination: str) -> str:
+        source = self._transfers[chunk_id, destination]
         old, target = self.pools[source], self.pools[destination]
         page = old.entries[chunk_id]
-        if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count > 1:
+        upward = _TIER_ORDER.index(destination) < _TIER_ORDER.index(source)
+        if not upward and page.ref_count > 1:
             raise CacheCapacityError("在途降级页获得活动引用，须先释放活动引用")
-        if destination == "L3":
+        if not upward:
             old.drop_ref(chunk_id)
         self._apply_move(chunk_id, source, destination)
-        if source == "L3":
+        if upward and source in self._shared_tiers:
             old.drop_ref(chunk_id)
             old.touch(chunk_id)
-        elif destination != "L3":
+        elif upward:
             target.drop_ref(chunk_id)
         target.finish_page(chunk_id)
-        del self._transfers[chunk_id]
+        del self._transfers[chunk_id, destination]
         return source
 
     def ensure_free(self, count: int) -> int:  # 确保剩余空闲页数不小于count, 返回因此驱逐的页数

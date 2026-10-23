@@ -695,7 +695,9 @@ class TestConfigValidation:
 
         config = make_config()
         assert config.routing_policy == "least_load"
+        assert config.shared_l2_enabled is True
         assert set(config.model_dump()) == {
+            "shared_l2_enabled",
             "num_instances",
             "routing_policy",
             "workload",

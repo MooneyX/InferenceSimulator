@@ -55,9 +55,15 @@ def simulate(
         engine_config.l3_capacity_tokens // engine_config.page_size,
         engine_config.page_size,
     )
+    shared_l2 = CachePool(
+        "L2",
+        config.num_instances * 2 + 1,
+        (engine_config.l2_capacity_tokens // engine_config.page_size) * config.num_instances,
+        engine_config.page_size,
+    ) if config.shared_l2_enabled else None
     runs = Coordinator(
         tuple(
-            Engine(runtime, shared_l3=shared_l3, instance_id=index)
+            Engine(runtime, shared_l3=shared_l3, shared_l2=shared_l2, instance_id=index)
             for index in range(config.num_instances)
         ),
         client,
@@ -129,7 +135,10 @@ def simulate(
             ),
             wall_clock_ms=wall_clock_ms,
         ),
-        metrics=_summarize(runs, plan, config, shared_l3.snapshot()),
+        metrics=_summarize(
+            runs, plan, config, shared_l3.snapshot(),
+            shared_l2.snapshot() if shared_l2 is not None else None,
+        ),
         instances=instances,
         requests=records,
         aborted_requests=aborted,
@@ -157,6 +166,7 @@ def _summarize(
     plan: WorkloadPlan,
     config: SimConfig,
     shared_l3: TierSnapshot | None = None,
+    shared_l2: TierSnapshot | None = None,
 ) -> Metrics:
     """本地池按实例求和；共享池只在全场统计一次。"""
     records = [record for run in runs for record in run.records]
@@ -169,7 +179,7 @@ def _summarize(
             for item in fields(L1Snapshot)
         }
     )
-    l2 = TierSnapshot(
+    l2 = shared_l2 if config.shared_l2_enabled else TierSnapshot(
         **{
             item.name: sum(getattr(run.l2_snapshot, item.name) for run in runs)
             for item in fields(TierSnapshot)

@@ -211,7 +211,7 @@ class WorkloadConfig(_Frozen):
 
 
 class EngineConfig(_Frozen):
-    """实例运行规格；L1/L2 独占，L3 容量反映全场共享池。"""
+    """实例运行规格；L2 为每实例贡献容量，L3 为全场共享容量。"""
 
     max_running_requests: int = Field(ge=1, description="同时驻留的运行请求数上限")
     max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
@@ -513,12 +513,20 @@ class SharedL3Config(_Frozen):
 
 
 class SimConfig(_Frozen):
-    """唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。"""
+    """唯一仿真输入；L1 独占，L2 可合并为理想共享池，L3 全场共享。"""
 
     workload: WorkloadConfig
     scheduler: SchedulerConfig
     inference: InferenceConfig
-    num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1/L2，共享 L3")
+    num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1，共享 L3")
+    shared_l2_enabled: bool = Field(
+        default=True,
+        strict=True,
+        description=(
+            "理想化全局共享 host 缓存：容量为每实例 L2 页容量乘实例数；"
+            "淘汰写入、复制回载，按每实例链路计时，不模拟全局带宽竞争"
+        ),
+    )
     shared_l3: SharedL3Config | None = None
     routing_policy: Literal["cache_affinity", "least_load"] = Field(
         default="least_load",
@@ -859,13 +867,13 @@ class Metrics(_Record):
     l1_free_blocks: int = Field(default=0, ge=0)
     l1_reserved_future_blocks: int = Field(default=0, ge=0)
     l1_internal_fragmentation_tokens: int = Field(default=0, ge=0)
-    l2_evictions: int = Field(default=0, ge=0)
-    l2_peak_resident_blocks: int = Field(default=0, ge=0)
-    l2_capacity_blocks: int = Field(default=0, ge=0)
-    l2_resident_blocks: int = Field(default=0, ge=0)
-    l2_active_blocks: int = Field(default=0, ge=0)
-    l2_evictable_blocks: int = Field(default=0, ge=0)
-    l2_free_blocks: int = Field(default=0, ge=0)
+    l2_evictions: int | None = Field(default=0, ge=0)
+    l2_peak_resident_blocks: int | None = Field(default=0, ge=0)
+    l2_capacity_blocks: int | None = Field(default=0, ge=0)
+    l2_resident_blocks: int | None = Field(default=0, ge=0)
+    l2_active_blocks: int | None = Field(default=0, ge=0)
+    l2_evictable_blocks: int | None = Field(default=0, ge=0)
+    l2_free_blocks: int | None = Field(default=0, ge=0)
     l3_evictions: int | None = Field(default=0, ge=0)
     l3_peak_resident_blocks: int | None = Field(default=0, ge=0)
     l3_capacity_blocks: int | None = Field(default=0, ge=0)
@@ -906,7 +914,7 @@ class Metrics(_Record):
                 peak,
                 getattr(self, f"{tier}_evictions"),
             )
-            if tier == "l3" and all(value is None for value in values):
+            if all(value is None for value in values):
                 continue
             if any(value is None for value in values) or (
                 free + resident != capacity

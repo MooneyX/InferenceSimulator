@@ -9,6 +9,7 @@ export interface MetricsPanelProps {
   targetQps?: number;
   targetSessionRate?: number;
   peakAggregated?: boolean;
+  sharedL2?: boolean;
 }
 
 interface MetricCardProps {
@@ -40,7 +41,7 @@ function MetricCard({ label, value, unit, description }: MetricCardProps) {
   );
 }
 
-export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRate, peakAggregated = false }: MetricsPanelProps) {
+export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRate, peakAggregated = false, sharedL2 = false }: MetricsPanelProps) {
   return (
     <section className="metrics-panel" aria-labelledby="metrics-heading">
       <div className="metrics-heading">
@@ -129,11 +130,13 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
         <MetricCard label="L1 空闲" value={metrics.l1_free_blocks} unit="页" description="仿真结束时 L1 的空闲页数" />
         <MetricCard label="L1 驱逐" value={metrics.l1_evictions} unit="次" description="离开 L1 的 KV 页数，含降级到 L2" />
         <MetricCard label="L1 峰值驻留" value={metrics.l1_peak_resident_blocks} unit="页" description={peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中实际物理 KV 页驻留峰值"} />
-        <MetricCard label="L2 容量" value={metrics.l2_capacity_blocks} unit="页" description="L2 的整页容量；0 表示关闭" />
+        {metrics.l2_capacity_blocks != null && <>
+        <MetricCard label="L2 容量" value={metrics.l2_capacity_blocks} unit="页" description={sharedL2 ? "全场共享 L2 总容量，只计一次；0 表示关闭" : "L2 的整页容量；0 表示关闭"} />
         <MetricCard label="L2 驻留" value={metrics.l2_resident_blocks} unit="页" description="仿真结束时 L2 的 KV 页占用" />
         <MetricCard label="L2 空闲" value={metrics.l2_free_blocks} unit="页" description="仿真结束时 L2 的空闲页数" />
         <MetricCard label="L2 驱逐" value={metrics.l2_evictions} unit="次" description="离开 L2 的 KV 页数，含降级到 L3" />
-        <MetricCard label="L2 峰值驻留" value={metrics.l2_peak_resident_blocks} unit="页" description={peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中 L2 驻留页数峰值"} />
+        <MetricCard label="L2 峰值驻留" value={metrics.l2_peak_resident_blocks} unit="页" description={sharedL2 ? "全场共享 L2 的实际驻留峰值，非各实例峰值之和" : peakAggregated ? "各实例峰值之和（上界，非同时峰值）" : "仿真中 L2 驻留页数峰值"} />
+        </>}
         {metrics.l3_capacity_blocks != null && <>
         <MetricCard label="L3 容量" value={metrics.l3_capacity_blocks} unit="页" description="全场共享 L3 总容量，只计一次；0 表示关闭" />
         <MetricCard label="L3 驻留" value={metrics.l3_resident_blocks} unit="页" description="仿真结束时 L3 的 KV 页占用" />

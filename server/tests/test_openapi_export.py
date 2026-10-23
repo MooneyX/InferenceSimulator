@@ -68,6 +68,9 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
     assert config["routing_policy"]["enum"] == ["cache_affinity", "least_load"]
     assert config["routing_policy"]["default"] == "least_load"
     assert "routing_policy" not in schemas["SimConfig"]["required"]
+    assert config["shared_l2_enabled"]["type"] == "boolean"
+    assert config["shared_l2_enabled"]["default"] is True
+    assert "shared_l2_enabled" not in schemas["SimConfig"]["required"]
 
 
 @pytest.mark.parametrize(

@@ -317,6 +317,7 @@ export default function App() {
               <MetricsPanel metrics={selectedInstance?.metrics ?? result.metrics}
                 wallClockMs={result.meta.wall_clock_ms}
                 peakAggregated={selectedInstanceId === null && result.instances.length > 1}
+                sharedL2={result.meta.config.shared_l2_enabled ?? false}
                 targetQps={selectedInstanceId === null ? result.meta.config.workload.target_qps ?? undefined : undefined}
                 targetSessionRate={selectedInstanceId === null ? result.meta.config.workload.session_rate ?? undefined : undefined} />
               <WarningsPanel warnings={result.warnings} />

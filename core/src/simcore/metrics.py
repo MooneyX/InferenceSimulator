@@ -56,7 +56,7 @@ def compute_metrics(
     page_size: int,
     workload_mode: WorkloadMode,
     cache_snapshot: L1Snapshot,
-    l2_snapshot: TierSnapshot,
+    l2_snapshot: TierSnapshot | None,
     l3_snapshot: TierSnapshot | None,
     l1_evictions: int,
     l1_peak_resident_blocks: int,
@@ -87,8 +87,9 @@ def compute_metrics(
         else None
     )
     peak_resident = max(l1_peak_resident_blocks, cache_snapshot.resident_blocks)
-    l3_fields: dict[str, Any] = {
-        f"l3_{name}": getattr(l3_snapshot, name) if l3_snapshot is not None else None
+    tier_fields: dict[str, Any] = {
+        f"{tier}_{name}": getattr(snapshot, name) if snapshot is not None else None
+        for tier, snapshot in (("l2", l2_snapshot), ("l3", l3_snapshot))
         for name in (
             "evictions",
             "peak_resident_blocks",
@@ -125,14 +126,7 @@ def compute_metrics(
             l1_free_blocks=cache_snapshot.free_blocks,
             l1_reserved_future_blocks=cache_snapshot.reserved_future_blocks,
             l1_internal_fragmentation_tokens=cache_snapshot.internal_fragmentation_tokens,
-            l2_evictions=l2_snapshot.evictions,
-            l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks,
-            l2_capacity_blocks=l2_snapshot.capacity_blocks,
-            l2_resident_blocks=l2_snapshot.resident_blocks,
-            l2_active_blocks=l2_snapshot.active_blocks,
-            l2_evictable_blocks=l2_snapshot.evictable_blocks,
-            l2_free_blocks=l2_snapshot.free_blocks,
-            **l3_fields,
+            **tier_fields,
         )
 
     ttfts = sorted(r.prefill_end - r.arrival for r in records)
@@ -219,12 +213,5 @@ def compute_metrics(
         l1_free_blocks=cache_snapshot.free_blocks,
         l1_reserved_future_blocks=cache_snapshot.reserved_future_blocks,
         l1_internal_fragmentation_tokens=cache_snapshot.internal_fragmentation_tokens,
-        l2_evictions=l2_snapshot.evictions,
-        l2_peak_resident_blocks=l2_snapshot.peak_resident_blocks,
-        l2_capacity_blocks=l2_snapshot.capacity_blocks,
-        l2_resident_blocks=l2_snapshot.resident_blocks,
-        l2_active_blocks=l2_snapshot.active_blocks,
-        l2_evictable_blocks=l2_snapshot.evictable_blocks,
-        l2_free_blocks=l2_snapshot.free_blocks,
-        **l3_fields,
+        **tier_fields,
     )

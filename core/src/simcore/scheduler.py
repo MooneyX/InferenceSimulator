@@ -68,13 +68,6 @@ class AdmissionScheduler:
     def __init__(self, engine: EngineConfig, cache: TieredKVCache) -> None:
         if cache.page_size != engine.page_size or cache.capacity_pages != engine.capacity_pages:
             raise ValueError("L1 页配置与引擎配置不一致")
-        if (
-            cache.tier_snapshot("L2").capacity_blocks
-            != engine.l2_capacity_tokens // engine.page_size
-            or cache.tier_snapshot("L3").capacity_blocks
-            != engine.l3_capacity_tokens // engine.page_size
-        ):
-            raise ValueError("低层页配置与引擎配置不一致")
         self._engine = engine
         self._cache = cache
         self._waiting: deque[WaitingRequest] = deque()

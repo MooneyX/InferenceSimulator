@@ -617,7 +617,7 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
         for index in range(2):
             chunk_id = encode(0, index)
             cache.reserve_transfer(chunk_id, "L2", source="L1")
-            cache.complete_transfer(chunk_id)
+            cache.complete_transfer(chunk_id, "L2")
     scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1), 1)
     scheduler.requeue(item, 2, generated_tokens=2 if mode == "recompute" else 1)
@@ -705,7 +705,7 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     assert cache.reserve_transfer(shared, "L1", source="L2") == "L2"
     in_flight = cache.page(shared)
     assert in_flight is not None and in_flight.tier == "L2" and in_flight.ref_count == 3
-    assert cache.complete_transfer(shared) == "L2"
+    assert cache.complete_transfer(shared, "L1") == "L2"
     cache.ensure_free(sum(item.required_pages for item in batch.admitted))
     for item in batch.admitted:
         key = item.waiting.request.request_id

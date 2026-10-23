@@ -323,6 +323,20 @@ describe("SimulationForm", () => {
     }
   });
 
+  it("enables shared L2 by default and submits explicit disable", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    const checkbox = screen.getByRole("checkbox", { name: "共享 L2" });
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
+    expect(onSubmit.mock.calls[0][0].shared_l2_enabled).toBe(false);
+    fireEvent.click(checkbox);
+    fireEvent.submit(screen.getByRole("button", { name: "运行仿真" }).closest("form")!);
+    expect(onSubmit.mock.calls[1][0].shared_l2_enabled).toBe(true);
+  });
+
   it("submits the complete default config", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);

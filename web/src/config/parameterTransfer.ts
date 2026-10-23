@@ -52,8 +52,11 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("JSON 格式不正确");
   }
 
-  const root = objectWithKeys(parsed, "", ["num_instances", "routing_policy", "workload", "scheduler", "inference", "shared_l3"],
-    { shared_l3: null, routing_policy: "least_load" });
+  const root = objectWithKeys(parsed, "", ["num_instances", "routing_policy", "workload", "scheduler", "inference", "shared_l3", "shared_l2_enabled"],
+    { shared_l3: null, routing_policy: "least_load", shared_l2_enabled: true });
+  if (typeof root.shared_l2_enabled !== "boolean") {
+    throw new Error("shared_l2_enabled 必须是布尔值");
+  }
   if (root.shared_l3 != null) {
     root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: initialSharedL3.lookup_latency_ms });
     numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", ["available_gb", "lookup_latency_ms"]);

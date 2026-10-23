@@ -65,7 +65,7 @@ for (const width of [1600, 768]) {
     await planInput.fill(json);
     await page.getByRole("button", { name: "导入扫描方案" }).click();
     await expect(page.getByLabel("扫描档位 1")).toHaveValue("1,2");
-    await expect(page.getByLabel("推理实例数量（L1/L2 独占，L3 共享）")).toHaveValue("7");
+    await expect(page.getByLabel("推理实例数量")).toHaveValue("7");
     expect(errors).toEqual([]);
   });
 }

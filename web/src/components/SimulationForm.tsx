@@ -449,22 +449,33 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>{(config.routing_policy ?? "least_load") === "least_load"
-            ? "每实例独占 L1/L2 · 全场共享 L3 · 每轮最低负载优先，不绑定会话"
-            : "每实例独占 L1/L2 · 全场共享 L3 · 新会话轮询，同会话固定实例"}</p>
+          <p>{(config.shared_l2_enabled ?? true) ? "每实例独占 L1 · 全局共享 L2/L3" : "每实例独占 L1/L2 · 全场共享 L3"}
+            {(config.routing_policy ?? "least_load") === "least_load"
+              ? " · 每轮最低负载优先，不绑定会话" : " · 新会话轮询，同会话固定实例"}</p>
         </div>
 
         <div className="form-grid">
           <NumberField
             id="num-instances"
             name="num_instances"
-            label="推理实例数量（L1/L2 独占，L3 共享）"
+            label="推理实例数量"
             value={config.num_instances}
             integer
             min={1}
             error={errorByField.get("num_instances")}
             onChange={(value) => setConfig({ ...config, num_instances: value })}
           />
+          <div className="form-field">
+            <label htmlFor="shared-l2-enabled">
+              <input id="shared-l2-enabled" name="shared_l2_enabled" type="checkbox"
+                checked={config.shared_l2_enabled ?? true}
+                aria-describedby="shared-l2-help"
+                onChange={(event) => setConfig({ ...config, shared_l2_enabled: event.currentTarget.checked })} />
+              共享 L2
+            </label>
+            <small id="shared-l2-help">理想化全局 host 缓存：总容量为实例数 × 每实例 L2 页容量。
+              L1 淘汰后写入，回载保留副本；按每实例链路计时，不模拟网络及全局带宽竞争。</small>
+          </div>
           <div className="form-field">
             <label htmlFor="routing-policy">实例路由策略</label>
             <select id="routing-policy" name="routing_policy" value={config.routing_policy ?? "least_load"}

@@ -7,6 +7,7 @@ describe("createDefaultSimConfig", () => {
   it("creates a complete synthetic configuration", () => {
     expect(createDefaultSimConfig()).toEqual({
       num_instances: 1,
+      shared_l2_enabled: true,
       routing_policy: "least_load",
       workload: {
         mode: "synthetic",

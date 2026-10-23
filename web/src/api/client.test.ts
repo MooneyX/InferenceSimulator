@@ -6,6 +6,7 @@ import { createDefaultSimConfig } from "../config/simulation";
 
 const config: SimConfig = {
   num_instances: 1,
+  shared_l2_enabled: true,
   routing_policy: "least_load",
   workload: {
     mode: "synthetic",

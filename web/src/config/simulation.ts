@@ -44,9 +44,10 @@ export interface ConfigValidationError {
   message: string;
 }
 
-function createDefaultCommonConfig(): Pick<SimConfig, "num_instances" | "routing_policy" | "workload" | "scheduler"> {
+function createDefaultCommonConfig(): Pick<SimConfig, "num_instances" | "routing_policy" | "workload" | "scheduler" | "shared_l2_enabled"> {
   return {
     num_instances: 1,
+    shared_l2_enabled: true,
     routing_policy: "least_load",
     workload: {
       mode: "synthetic",

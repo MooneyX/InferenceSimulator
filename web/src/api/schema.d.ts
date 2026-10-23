@@ -989,37 +989,37 @@ export interface components {
              * L2 Evictions
              * @default 0
              */
-            l2_evictions: number;
+            l2_evictions: number | null;
             /**
              * L2 Peak Resident Blocks
              * @default 0
              */
-            l2_peak_resident_blocks: number;
+            l2_peak_resident_blocks: number | null;
             /**
              * L2 Capacity Blocks
              * @default 0
              */
-            l2_capacity_blocks: number;
+            l2_capacity_blocks: number | null;
             /**
              * L2 Resident Blocks
              * @default 0
              */
-            l2_resident_blocks: number;
+            l2_resident_blocks: number | null;
             /**
              * L2 Active Blocks
              * @default 0
              */
-            l2_active_blocks: number;
+            l2_active_blocks: number | null;
             /**
              * L2 Evictable Blocks
              * @default 0
              */
-            l2_evictable_blocks: number;
+            l2_evictable_blocks: number | null;
             /**
              * L2 Free Blocks
              * @default 0
              */
-            l2_free_blocks: number;
+            l2_free_blocks: number | null;
             /**
              * L3 Evictions
              * @default 0
@@ -1536,7 +1536,7 @@ export interface components {
         };
         /**
          * SimConfig
-         * @description 唯一仿真输入；L1/L2 为实例规格，L3 为全场共享资源。
+         * @description 唯一仿真输入；L1 独占，L2 可合并为理想共享池，L3 全场共享。
          */
         SimConfig: {
             workload: components["schemas"]["WorkloadConfig"];
@@ -1544,9 +1544,15 @@ export interface components {
             inference: components["schemas"]["InferenceConfig"];
             /**
              * Num Instances
-             * @description 同构推理副本数量；各自独占 L1/L2，共享 L3
+             * @description 同构推理副本数量；各自独占 L1，共享 L3
              */
             num_instances: number;
+            /**
+             * Shared L2 Enabled
+             * @description 理想化全局共享 host 缓存：容量为每实例 L2 页容量乘实例数；淘汰写入、复制回载，按每实例链路计时，不模拟全局带宽竞争
+             * @default true
+             */
+            shared_l2_enabled: boolean;
             shared_l3?: components["schemas"]["SharedL3Config"] | null;
             /**
              * Routing Policy

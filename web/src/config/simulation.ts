@@ -121,7 +121,7 @@ export const initialStorage: InferenceConfig["storage"] = {
   l2_latency_ms: 0.01, l3_latency_ms: 0.1,
 };
 export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {
-  available_gb: 40_000, lookup_latency_ms: 0.1,
+  available_gb: 100_000, lookup_latency_ms: 0.1,
 };
 
 function validateFiniteNumber(

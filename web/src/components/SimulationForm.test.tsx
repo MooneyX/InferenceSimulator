@@ -175,7 +175,7 @@ describe("SimulationForm", () => {
     expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("模型名称")).toHaveValue("Qwen/Qwen3-8B");
     expect(screen.getByLabelText("L2 可用容量（GB，仅 KV）")).toHaveValue(2048);
-    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(40);
+    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(100);
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     expect(screen.getByLabelText("单算子固定开销（ms）")).toHaveValue(0.005);
@@ -189,7 +189,7 @@ describe("SimulationForm", () => {
       inference: expect.objectContaining({ timing: { mode: "analytical" },
         storage: expect.objectContaining({ l2_available_gb: 2048,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
-      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0.1 },
+      shared_l3: { available_gb: 100_000, lookup_latency_ms: 0.1 },
     }));
   });
 
@@ -235,7 +235,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("最多同时运行请求")).toHaveValue(32);
     expect(screen.queryByLabelText("L1 KV 总容量（token）")).not.toBeInTheDocument();
     expect(screen.getByLabelText("L2 可用容量（GB，仅 KV）")).toHaveValue(2048);
-    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(40);
+    expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(100);
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
     expect(screen.getByLabelText("单次 Prefill 额度（token）")).toHaveValue(16_384);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(256);
@@ -410,7 +410,7 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 0 }),
-      shared_l3: { available_gb: 40_000, lookup_latency_ms: 0.75 },
+      shared_l3: { available_gb: 100_000, lookup_latency_ms: 0.75 },
       inference: expect.objectContaining({ storage: expect.objectContaining({ l3_to_l2_gb_s: 75 }) }),
     }));
   });

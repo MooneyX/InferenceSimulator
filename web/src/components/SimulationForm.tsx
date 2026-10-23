@@ -469,12 +469,9 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <label htmlFor="shared-l2-enabled">
               <input id="shared-l2-enabled" name="shared_l2_enabled" type="checkbox"
                 checked={config.shared_l2_enabled ?? true}
-                aria-describedby="shared-l2-help"
                 onChange={(event) => setConfig({ ...config, shared_l2_enabled: event.currentTarget.checked })} />
               共享 L2
             </label>
-            <small id="shared-l2-help">理想化全局 host 缓存：总容量为实例数 × 每实例 L2 页容量。
-              L1 淘汰后写入，回载保留副本；按每实例链路计时，不模拟网络及全局带宽竞争。</small>
           </div>
           <div className="form-field">
             <label htmlFor="routing-policy">实例路由策略</label>

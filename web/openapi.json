@@ -3126,12 +3126,12 @@
           "routing_policy": {
             "type": "string",
             "enum": [
-              "round_robin",
+              "cache_affinity",
               "least_load"
             ],
             "title": "Routing Policy",
-            "description": "实例路由：round_robin 保留会话亲和；least_load 每轮选择最低 token 负载实例",
-            "default": "round_robin"
+            "description": "实例路由：cache_affinity 新会话轮询、同会话固定实例；least_load 每轮选择最低 token 负载实例",
+            "default": "least_load"
           }
         },
         "additionalProperties": false,

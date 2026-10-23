@@ -73,7 +73,7 @@ def test_all_client_modes_use_send_events_with_time_and_request_id(source: str, 
         ) as sends,
         patch.object(engine, "submit", wraps=engine.submit) as submissions,
     ):
-        coordinator = Coordinator((engine,), client, Router(1, session_affinity=source == "trace"))
+        coordinator = Coordinator((engine,), client, Router(1))
         assert {event.kind for event in coordinator._heap} == {EventKind.CLIENT_SEND}
         assert sorted((event.time, event.ref) for event in coordinator._heap) == sorted(
             (wakeup.send_time_ms, wakeup.turn_id) for wakeup in initial

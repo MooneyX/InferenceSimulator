@@ -6,7 +6,7 @@ import { createDefaultSimConfig } from "../config/simulation";
 
 const config: SimConfig = {
   num_instances: 1,
-  routing_policy: "round_robin",
+  routing_policy: "least_load",
   workload: {
     mode: "synthetic",
     arrival_mode: "open_loop",

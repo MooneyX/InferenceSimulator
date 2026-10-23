@@ -37,8 +37,8 @@ def config(
     )
 
 
-def test_parallel_engines_and_parent_affinity() -> None:
-    settings = config()
+def test_parallel_engines_and_cache_affinity() -> None:
+    settings = config().model_copy(update={"routing_policy": "cache_affinity"})
     result = simulate(settings)
     assert result.meta.num_completed == 4
     assert [item.instance_id for item in result.requests if item.parent_request_id is None] == [

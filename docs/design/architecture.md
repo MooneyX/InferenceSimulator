@@ -24,7 +24,7 @@ kv_cache     CachePool：逐池页索引、容量、稳定 LRU；TieredKVCache�
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
 engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
-router       带父子/会话亲和的轮询，或逐请求最低 token 负载优先；接收不可变负载元组（依赖 schemas）
+router       默认逐请求最低 token 负载优先，或新会话轮询、按 session_id 绑定的缓存亲和；接收不可变负载元组（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
 metrics      指标汇总：区间与 cache 快照 → Metrics（依赖 schemas、kv_cache）
 runtime      RuntimeConfig、AnalyticalSpec、具名 TransferLinks 的不可变值对象
@@ -34,7 +34,7 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 `runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
 
-- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference`、可选 `shared_l3` 和默认 `round_robin` 的 `routing_policy` 组成。`inference` 从模型/硬件/存储推导容量，并选择经验或解析计时。
+- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference`、可选 `shared_l3` 和默认 `least_load` 的 `routing_policy` 组成。`inference` 从模型/硬件/存储推导容量，并选择经验或解析计时。
 - `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload` 公共层；`workload.trace` 只保存可选 `plan_id`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
 - 始终返回单个 `SimResult`，成功运行时包含 `resolution`；经验计时的 `analysis` 为 `None`。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
 - 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。

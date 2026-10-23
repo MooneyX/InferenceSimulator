@@ -67,6 +67,14 @@ def client() -> Iterator[TestClient]:
         yield active
 
 
+def test_removed_round_robin_policy_returns_422(client: TestClient) -> None:
+    payload = make_payload(num_requests=1)
+    payload["routing_policy"] = "round_robin"
+    response = client.post(URL, json=payload)
+    assert response.status_code == 422
+    assert "routing_policy" in response.text
+
+
 class TestSuccess:
     def test_closed_loop_session_rate_and_request_qps(self, client: TestClient) -> None:
         payload = make_payload(num_requests=4)
@@ -130,18 +138,19 @@ class TestSuccess:
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
-    @pytest.mark.parametrize("policy", ["round_robin", "least_load"])
+    @pytest.mark.parametrize("policy", ["cache_affinity", "least_load", None])
     def test_two_instances_have_independent_capacity_and_request_owners(
-        self, client: TestClient, policy: str
+        self, client: TestClient, policy: str | None
     ) -> None:
         payload = make_payload(num_requests=4)
         payload["num_instances"] = 2
-        payload["routing_policy"] = policy
+        if policy is not None:
+            payload["routing_policy"] = policy
         response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["num_instances"] == 2
-        assert body["meta"]["config"]["routing_policy"] == policy
+        assert body["meta"]["config"]["routing_policy"] == (policy or "least_load")
         assert [item["instance_id"] for item in body["instances"]] == [0, 1]
         assert (
             body["metrics"]["l1_capacity_blocks"]

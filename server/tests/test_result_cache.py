@@ -71,7 +71,7 @@ def test_effective_inputs_change_key(tmp_path: Path, config: SimConfig, field: s
     elif field == "hardware":
         payload["inference"]["hardware"]["effective_fp16_tflops"] += 1
     elif field == "routing_policy":
-        payload["routing_policy"] = "least_load"
+        payload["routing_policy"] = "cache_affinity"
     else:
         payload["inference"]["timing"]["decode_d1"] += 1
     cache = ResultCache(tmp_path / "cache.sqlite3", fingerprint="engine")

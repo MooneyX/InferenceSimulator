@@ -83,7 +83,7 @@ def plan(*, output: int = 1, second_offset: float = 1000) -> TracePlan:
 
 
 def test_trace_open_loop_reuses_input_pages_on_same_instance() -> None:
-    original = config()
+    original = config().model_copy(update={"routing_policy": "cache_affinity"})
     original_data = original.model_dump()
     result = simulate(original, trace_plan=plan())
     assert result.meta.config.model_dump() == original_data
@@ -175,7 +175,8 @@ def test_target_qps_requires_a_nonzero_arrival_window() -> None:
 
 
 def test_trace_closed_loop_uses_simulated_parent_completion() -> None:
-    result = simulate(config(mode="closed_loop"), trace_plan=plan())
+    settings = config(mode="closed_loop").model_copy(update={"routing_policy": "cache_affinity"})
+    result = simulate(settings, trace_plan=plan())
     first, second = result.requests
     assert second.arrival == pytest.approx(first.finish + 20)
     assert second.actual_hit_tokens >= 128

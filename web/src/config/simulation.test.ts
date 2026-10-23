@@ -7,7 +7,7 @@ describe("createDefaultSimConfig", () => {
   it("creates a complete synthetic configuration", () => {
     expect(createDefaultSimConfig()).toEqual({
       num_instances: 1,
-      routing_policy: "round_robin",
+      routing_policy: "least_load",
       workload: {
         mode: "synthetic",
         arrival_mode: "open_loop",
@@ -51,11 +51,11 @@ describe("createDefaultSimConfig", () => {
 });
 
 describe("validateSimConfig", () => {
-  it.each(["round_robin", "least_load"] as const)("accepts routing policy %s", (routing_policy) => {
+  it.each(["cache_affinity", "least_load"] as const)("accepts routing policy %s", (routing_policy) => {
     expect(validateSimConfig({ ...createDefaultSimConfig(), routing_policy })).toEqual([]);
   });
 
-  it.each([null, "power_of_two", "", 1])("rejects routing policy %s", (routing_policy) => {
+  it.each([null, "round_robin", "power_of_two", "", 1])("rejects routing policy %s", (routing_policy) => {
     const config = { ...createDefaultSimConfig(), routing_policy } as unknown as SimConfig;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["routing_policy"]);
   });

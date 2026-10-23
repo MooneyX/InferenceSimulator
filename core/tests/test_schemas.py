@@ -694,7 +694,7 @@ class TestConfigValidation:
         from simcore.capacity import prepare_runtime
 
         config = make_config()
-        assert config.routing_policy == "round_robin"
+        assert config.routing_policy == "least_load"
         assert set(config.model_dump()) == {
             "num_instances",
             "routing_policy",
@@ -729,7 +729,7 @@ class TestConfigValidation:
         )
         assert make_config(pd_mutually_exclusive=False).scheduler.pd_mutually_exclusive is False
 
-    @pytest.mark.parametrize("policy", ["round_robin", "least_load"])
+    @pytest.mark.parametrize("policy", ["cache_affinity", "least_load"])
     def test_routing_policy_round_trip(self, policy: str) -> None:
         payload = make_config().model_dump()
         payload["routing_policy"] = policy
@@ -737,7 +737,7 @@ class TestConfigValidation:
         assert config.routing_policy == policy
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
 
-    @pytest.mark.parametrize("policy", ["power_of_two", "", None, 1])
+    @pytest.mark.parametrize("policy", ["round_robin", "power_of_two", "", None, 1])
     def test_invalid_routing_policy_rejected(self, policy: object) -> None:
         payload = make_config().model_dump()
         payload["routing_policy"] = policy

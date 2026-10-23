@@ -2,11 +2,11 @@
 
 ## Config schema
 
-唯一外部配置为 `SimConfig`；物理推理配置支持经验或解析计时，可与合成/Trace 负载组合。旧手动配置 JSON 与 API 请求返回 422，不提供自动迁移。
+唯一外部配置为 `SimConfig`；物理推理配置支持经验或解析计时，可与合成/Trace 负载组合。旧手动配置 JSON 与 API 请求返回 422，不提供自动迁移。`routing_policy` 省略时采用 `least_load`；缓存亲和使用 `cache_affinity`，合成和 Trace 均按会话 ID 绑定。旧值 `round_robin` 不保留别名，API 返回 422、前端导入报错。
 
 ```yaml
 num_instances: int             # 必填，正整数；每实例独占 L1/L2，共享 L3
-routing_policy: round_robin | least_load  # 默认 round_robin；least_load 每轮最低 token 负载优先，无强制亲和
+routing_policy: cache_affinity | least_load  # 默认 least_load；cache_affinity 新会话轮询、同会话绑定
 shared_l3:                     # 可选，null 或容量 0 表示关闭；全场最多一个池
   available_gb: float          # 非负十进制 GB 总预算
   lookup_latency_ms: float     # 默认 0，非负

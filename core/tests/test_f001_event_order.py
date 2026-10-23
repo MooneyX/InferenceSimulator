@@ -220,7 +220,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     ):
         order.attach_mock(submissions, "send")
         order.attach_mock(lookups, "lookup")
-        run = Coordinator((engine,), client, Router(1, session_affinity=True)).run()[0]
+        run = Coordinator((engine,), client, Router(1)).run()[0]
     assert [call.args[0].request_id for call in submissions.call_args_list] == [0, 1, 2, 3, 4]
     assert [(call.args[0], call.args[1]) for call in lookups.call_args_list[:2]] == [
         (1, send_ms + lookup_ms),

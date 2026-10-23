@@ -11,15 +11,13 @@ class Router:
         self,
         num_instances: int,
         *,
-        policy: Literal["round_robin", "least_load"] = "round_robin",
-        session_affinity: bool = False,
+        policy: Literal["cache_affinity", "least_load"] = "least_load",
     ) -> None:
-        self.policy: Literal["round_robin", "least_load"] = policy
+        self.policy: Literal["cache_affinity", "least_load"] = policy
         self._num_instances = num_instances
         self._next_instance: int = 0
         self._assignments: dict[int, int] = {}
         self._sessions: dict[int, int] = {}
-        self._session_affinity = session_affinity
 
     def select(self, request: InferenceRequest, loads: Sequence[int] = ()) -> int:
         """按亲和轮询或当前 token 负载选路；并列最低者从游标起轮询。"""
@@ -31,14 +29,15 @@ class Router:
                 if loads[index := (self._next_instance + offset) % self._num_instances] == minimum
             )
             self._next_instance = (instance_id + 1) % self._num_instances
-        elif self._session_affinity and request.session_id in self._sessions:
-            instance_id = self._sessions[request.session_id]
-        elif request.parent_request_id is not None and not self._session_affinity:
-            instance_id = self._assignments[request.parent_request_id]
+        elif self.policy == "cache_affinity":
+            if request.session_id in self._sessions:
+                instance_id = self._sessions[request.session_id]
+            else:
+                instance_id = self._next_instance
+                self._next_instance = (self._next_instance + 1) % self._num_instances
+                self._sessions[request.session_id] = instance_id
         else:
-            instance_id = self._next_instance
-            self._next_instance = (self._next_instance + 1) % self._num_instances
-        self._sessions[request.session_id] = instance_id
+            raise ValueError(f"不支持的路由策略: {self.policy}")
         self._assignments[request.request_id] = instance_id
         return instance_id
 

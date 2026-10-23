@@ -1,6 +1,6 @@
 # 当前引擎与调度
 
-每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。实例选路由 `routing_policy` 控制：默认 `round_robin` 下根请求轮询、合成子请求严格送回父轮实例、Trace 同会话绑定首次分配的实例，过载也不改道；`least_load` 每轮重新选择最低 token 负载实例，不保留强制亲和，不迁移已分配请求。缓存亲和不保证实际命中。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。实例选路由 `routing_policy` 控制：默认 `least_load` 每轮重新选择最低 token 负载实例，不保留强制亲和，不迁移已分配请求；`cache_affinity` 对合成与 Trace 统一按 `session_id` 绑定，新会话轮询分配，同会话的根请求、子轮和分支都留在首次分配的实例，过载也不改道。缓存亲和不查询实际缓存或比较前缀，不保证实际命中；它不是 SGLang 的 `cache_aware` 混合策略。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
 
 ## 最低负载路由
 

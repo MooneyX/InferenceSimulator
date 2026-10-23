@@ -28,9 +28,24 @@ def test_router_selects_global_minimum_and_rotates_ties() -> None:
     assert single.select(request(0), (100,)) == 0
 
 
-@pytest.mark.parametrize("session_affinity", [False, True])
-def test_router_ignores_parent_and_session_affinity(session_affinity: bool) -> None:
-    router = Router(2, policy="least_load", session_affinity=session_affinity)
+@pytest.mark.parametrize("is_trace", [False, True])
+def test_cache_affinity_binds_all_roots_and_branches_by_session(is_trace: bool) -> None:
+    router = Router(3, policy="cache_affinity")
+    roots = [
+        replace(request(key), session_id=session, is_trace=is_trace)
+        for key, session in enumerate((10, 10, 20, 10, 30, 40))
+    ]
+    assert [router.select(item, (100, 0, 0)) for item in roots] == [0, 0, 1, 0, 2, 0]
+    for key, parent in enumerate((0, 1, 3), start=6):
+        branch = replace(request(key), session_id=10, parent_request_id=parent, is_trace=is_trace)
+        assert router.select(branch, (100, 0, 0)) == 0
+        assert router.instance_of(key) == 0
+    assert router.select(replace(request(9), session_id=50, is_trace=is_trace)) == 1
+
+
+def test_default_router_ignores_parent_and_session_binding() -> None:
+    router = Router(2)
+    assert router.policy == "least_load"
     assert router.select(request(0), (0, 0)) == 0
     child = replace(request(1), parent_request_id=0)
     assert router.select(child, (10, 0)) == 1
@@ -98,7 +113,7 @@ def test_load_is_zero_after_submission_or_admission_failure() -> None:
 
 
 def test_synthetic_children_reroute_and_results_remain_deterministic() -> None:
-    settings = config(requests=4, sessions=1).model_copy(update={"routing_policy": "least_load"})
+    settings = config(requests=4, sessions=1)
     first = simulate(settings)
     second = simulate(settings)
     assert [item.instance_id for item in first.requests] == [0, 1, 0, 1]

@@ -35,6 +35,20 @@ class JobSummary(BaseModel):
     code_fingerprint: str
     code_version_status: Literal["current", "stale", "unknown"]
     axes: list[ScanAxis] | None
+    point_archive_version: int = 0
+
+
+class ScanTask(BaseModel):
+    index: int
+    values: dict[str, Any]
+    status: Literal["queued", "running", "completed", "failed", "not_run"]
+    error: str | None
+    result_available: bool
+
+
+class ScanTaskPage(BaseModel):
+    total: int
+    items: list[ScanTask]
 
 
 class ScanPoint(BaseModel):
@@ -185,3 +199,27 @@ def scan_points(key: str, request: Request) -> list[dict[str, Any]]:
         return _manager(request).points(key)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/jobs/{key}/tasks", response_model=ScanTaskPage)
+def scan_tasks(key: str, request: Request, offset: int = Query(0, ge=0),
+               limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    _get(request, key)
+    try:
+        return _manager(request).point_page(key, offset, limit)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/jobs/{key}/points/{index}/result", response_model=SimResult)
+def scan_point_result(key: str, index: int, request: Request) -> Response:
+    _get(request, key)
+    if index < 0:
+        raise HTTPException(404, "未找到扫描点")
+    try:
+        content = _manager(request).point_result(key, index)
+    except KeyError as exc:
+        raise HTTPException(404, "未找到扫描点") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return Response(content=content, media_type="application/json")

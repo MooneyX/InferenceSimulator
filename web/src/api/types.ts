@@ -9,6 +9,7 @@ export type JobReceipt = components["schemas"]["JobReceipt"];
 export type JobSummary = components["schemas"]["JobSummary"];
 export type ScanRequest = components["schemas"]["ScanRequest"];
 export type ScanPoint = components["schemas"]["ScanPoint"];
+export type ScanTaskPage = components["schemas"]["ScanTaskPage"];
 export type ScanParameter = components["schemas"]["ScanParameter"];
 export type ValidationError = components["schemas"]["ValidationError"];
 export type RequestRecord = components["schemas"]["RequestRecord"];

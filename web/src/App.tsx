@@ -5,6 +5,7 @@ import type { ScanRequest, SimConfig, SimResult } from "./api/types";
 import { useJobs } from "./useJobs";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { SimulationForm } from "./components/SimulationForm";
+import { ScanTaskList } from "./components/ScanTaskList";
 import { WarningsPanel } from "./components/WarningsPanel";
 import "./App.css";
 
@@ -52,6 +53,8 @@ export default function App() {
   const [error, setError] = useState<PresentationError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<SimulationCacheInfo | null>(null);
+  const [resultSource, setResultSource] = useState<string | null>(null);
+  const [loadingPoint, setLoadingPoint] = useState(false);
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [cacheNotice, setCacheNotice] = useState<{ message: string; error: boolean } | null>(null);
   const selectedInstance = result?.instances.find((item) => item.instance_id === selectedInstanceId);
@@ -63,12 +66,18 @@ export default function App() {
       ? window.location.hash.slice(1)
       : navigation[0].id,
   );
-  const tasks = useJobs((response) => {
+  const tasks = useJobs((response, source) => {
     setResult(response.result);
     setCacheInfo(response.cache);
+    setResultSource(source);
+    setError(null);
+    setLoadingPoint(false);
     setSelectedInstanceId(null);
     setIsRunning(false);
-  }, (cause) => setError(presentError(cause)));
+  }, (cause) => {
+    setLoadingPoint(false);
+    setError(presentError(cause));
+  });
 
   async function handleSubmit(config: SimConfig, force = false): Promise<void> {
     setIsRunning(true);
@@ -149,7 +158,8 @@ export default function App() {
               {job.code_version_status === "current" ? "当前代码版本"
                 : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"}</span>
             <span className="job-progress">{job.completed + job.failed}/{job.total}</span>
-            {job.error && ` · ${job.error}`}
+            {job.failed > 0 && job.kind === "scan" && ` · ${job.failed} 点失败`}
+            {job.error && (job.kind !== "scan" || job.status === "interrupted") && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&
               <button type="button" className="secondary-button secondary-button-small" onClick={() => tasks.select(job.id)}>
                 查看结果</button>}
@@ -163,6 +173,15 @@ export default function App() {
               <button type="button" className="secondary-button secondary-button-small" onClick={() =>
                 void tasks.stop(job.id).catch((cause: unknown) => setError(presentError(cause)))}>
                 取消任务</button>}
+            {job.kind === "scan" && <ScanTaskList job={job} onSelect={(id, index) => {
+              setResult(null);
+              setCacheInfo(null);
+              setResultSource(null);
+              setError(null);
+              setLoadingPoint(true);
+              tasks.selectPoint(id, index);
+              document.getElementById("results-heading")?.scrollIntoView?.({ behavior: "smooth" });
+            }} />}
           </li>)}</ul>
         </section>}
         {tasks.jobs.some((job) => job.kind === "scan") && <Suspense fallback={<p>正在加载扫描图表…</p>}>
@@ -174,6 +193,7 @@ export default function App() {
             <div>
               <p className="section-kicker">Simulation output</p>
               <h2>仿真结果</h2>
+              {result && resultSource && <p className="result-source">{resultSource}</p>}
             </div>
             <div className="cache-controls">
               <span>相同参数自动复用结果</span>
@@ -190,6 +210,9 @@ export default function App() {
               ? "已复用相同参数的进行中计算" : "本次结果为重新计算"}
             {" · "}缓存查找/读取 {cacheInfo.lookupMs.toFixed(2)} ms
             {" · "}原始仿真计算 {result.meta.wall_clock_ms.toFixed(2)} ms
+          </section>}
+          {loadingPoint && <section className="simulation-status" role="status">
+            <span className="status-indicator" aria-hidden="true" />正在读取扫描点结果…
           </section>}
           {isRunning ? (
             <section className="simulation-status" role="status">
@@ -307,7 +330,7 @@ export default function App() {
             </>
           ) : null}
 
-          {!isRunning && !error && !result ? (
+          {!isRunning && !loadingPoint && !error && !result ? (
             <section className="results-placeholder" aria-labelledby="placeholder-heading">
               <h2 id="placeholder-heading">等待仿真结果</h2>
               <p>调整参数并运行仿真后，此处将展示指标、告警和请求生命周期。</p>

@@ -8,6 +8,7 @@ import type {
   JobSummary,
   ScanRequest,
   ScanPoint,
+  ScanTaskPage,
   ScanParameter,
   ValidationError,
   PlanReceipt,
@@ -127,6 +128,18 @@ export function getScanParameters(): Promise<ScanParameter[]> {
 
 export function getScanPoints(id: string): Promise<ScanPoint[]> {
   return requestConfig<ScanPoint[]>(`/api/jobs/${encodeURIComponent(id)}/points`);
+}
+
+export function getScanTasks(id: string, offset: number, limit: number): Promise<ScanTaskPage> {
+  return requestConfig<ScanTaskPage>(`/api/jobs/${encodeURIComponent(id)}/tasks?offset=${offset}&limit=${limit}`);
+}
+
+export async function getScanPointResult(id: string, index: number): Promise<SimResult> {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(id)}/points/${index}/result`);
+  if (!response.ok) throw new SimulationApiError(getErrorDetail(await readJson(response)) ?? "获取扫描点结果失败");
+  const result = await readJson(response);
+  if (result === undefined) throw new SimulationApiError("仿真服务返回了无效的 JSON 响应");
+  return result as SimResult;
 }
 
 export async function cancelJob(id: string): Promise<JobSummary> {

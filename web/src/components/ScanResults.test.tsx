@@ -15,7 +15,8 @@ const axes = [{ key: "num_instances", values: [1, 2] },
   { key: "scheduler.pd_mutually_exclusive", values: [true, false] }];
 const job = (id: string): JobSummary => ({ id, kind: "scan", status: "completed", total: 2,
   completed: 2, failed: 0, error: null, cache: null, lookup_ms: null, version: 1, axes,
-  code_fingerprint: "engine-1", code_version_status: "current" });
+  code_fingerprint: "engine-1", code_version_status: "current",
+  point_archive_version: 1 });
 const point = (x: number, color: number, shape: boolean, signature: string): ScanPoint => ({
   status: "completed", signature, values: { num_instances: x,
     "scheduler.max_running_requests": color, "scheduler.pd_mutually_exclusive": shape },

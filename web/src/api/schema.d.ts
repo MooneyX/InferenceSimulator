@@ -192,6 +192,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{key}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Tasks */
+        get: operations["scan_tasks_api_jobs__key__tasks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{key}/points/{index}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scan Point Result */
+        get: operations["scan_point_result_api_jobs__key__points__index__result_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/traces": {
         parameters: {
             query?: never;
@@ -717,6 +751,11 @@ export interface components {
             code_version_status: "current" | "stale" | "unknown";
             /** Axes */
             axes: components["schemas"]["ScanAxis"][] | null;
+            /**
+             * Point Archive Version
+             * @default 0
+             */
+            point_archive_version: number;
         };
         /**
          * LognormalLength
@@ -1348,6 +1387,31 @@ export interface components {
             base: components["schemas"]["SimConfig"];
             /** Axes */
             axes: components["schemas"]["ScanAxis"][];
+        };
+        /** ScanTask */
+        ScanTask: {
+            /** Index */
+            index: number;
+            /** Values */
+            values: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "completed" | "failed" | "not_run";
+            /** Error */
+            error: string | null;
+            /** Result Available */
+            result_available: boolean;
+        };
+        /** ScanTaskPage */
+        ScanTaskPage: {
+            /** Total */
+            total: number;
+            /** Items */
+            items: components["schemas"]["ScanTask"][];
         };
         /**
          * SchedulerConfig
@@ -2041,6 +2105,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanPoint"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_tasks_api_jobs__key__tasks_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScanTaskPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_point_result_api_jobs__key__points__index__result_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimResult"];
                 };
             };
             /** @description Validation Error */

@@ -55,6 +55,7 @@ def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
                     body = json.loads(result.content)
                     signature, _ = cache.identity(config, plan)
                     payload: dict[str, Any] = {
+                        "result": result.content,
                         "signature": signature,
                         "config": config.model_dump(mode="json"),
                         "metrics": body["metrics"],
@@ -90,6 +91,7 @@ class Job:
     force: bool
     total: int
     axes: list[dict[str, Any]] = field(default_factory=list)
+    point_archive_version: int = 0
     status: str = "queued"
     completed: int = 0
     failed: int = 0
@@ -114,6 +116,7 @@ class Job:
             "version": self.version,
             "code_fingerprint": self.code_fingerprint,
             "axes": self.axes if self.kind == "scan" else None,
+            "point_archive_version": self.point_archive_version,
         }
 
 
@@ -121,7 +124,7 @@ class Job:
 class Slot:
     process: mp.Process
     pipe: Connection
-    assignment: tuple[str, dict[str, Any]] | None = None
+    assignment: tuple[str, int, dict[str, Any]] | None = None
 
 
 class JobManager:
@@ -142,7 +145,7 @@ class JobManager:
         self._context = mp.get_context("spawn")
         self._condition = threading.Condition(threading.RLock())
         self._jobs: dict[str, Job] = {}
-        self._queue: deque[tuple[str, Iterator[dict[str, Any]]]] = deque()
+        self._queue: deque[tuple[str, Iterator[tuple[int, dict[str, Any]]]]] = deque()
         self._slots: list[Slot] = []
         self._version = 0
         self._closed = False
@@ -156,6 +159,7 @@ class JobManager:
                 False,
                 record["total"],
                 axes=record["axes"] or [],
+                point_archive_version=record.get("point_archive_version", 0),
                 status=record["status"],
                 completed=record["completed"],
                 failed=record["failed"],
@@ -188,11 +192,13 @@ class JobManager:
         )
         return {**summary, "code_version_status": status}
 
-    def _changed(self, job: Job, *, point: dict[str, Any] | None = None) -> None:
+    def _changed(self, job: Job, *, point: dict[str, Any] | None = None,
+                 point_index: int | None = None, point_result: str | None = None) -> None:
         version = self._version + 1
         job.version = version
         try:
-            self.store.save(job.summary(), result=job.result, point=point)
+            self.store.save(job.summary(), result=job.result, point=point,
+                            point_index=point_index, point_result=point_result)
         except Exception:
             job.version = self._version
             raise
@@ -206,7 +212,7 @@ class JobManager:
         with self._condition:
             self._changed(job)
             self._jobs[job.id] = job
-            self._queue.append((job.id, iter(({},))))
+            self._queue.append((job.id, iter(((0, {}),))))
             self._started = True
             self._condition.notify_all()
         return job.id
@@ -224,12 +230,13 @@ class JobManager:
             False,
             total,
             axes=axes,
+            point_archive_version=1,
             code_fingerprint=self.code_fingerprint,
         )
 
-        def combinations() -> Iterator[dict[str, Any]]:
-            for values in product(*(axis["values"] for axis in axes)):
-                yield {axis["key"]: value for axis, value in zip(axes, values, strict=True)}
+        def combinations() -> Iterator[tuple[int, dict[str, Any]]]:
+            for index, values in enumerate(product(*(axis["values"] for axis in axes))):
+                yield index, {axis["key"]: value for axis, value in zip(axes, values, strict=True)}
 
         with self._condition:
             self._changed(job)
@@ -253,7 +260,7 @@ class JobManager:
         ).start()
         return slot
 
-    def _next(self) -> tuple[Job, dict[str, Any]] | None:
+    def _next(self) -> tuple[Job, int, dict[str, Any]] | None:
         while self._queue:
             job_id, iterator = self._queue[0]
             job = self._jobs[job_id]
@@ -261,11 +268,11 @@ class JobManager:
                 self._queue.popleft()
                 continue
             try:
-                values = next(iterator)
+                index, values = next(iterator)
             except StopIteration:
                 self._queue.popleft()
                 continue
-            return job, values
+            return job, index, values
         return None
 
     def _finish_if_done(self, job: Job) -> None:
@@ -292,11 +299,12 @@ class JobManager:
                 if slot is None:
                     self._condition.wait(timeout=0.5)
                     continue
+                job_and_values = None
                 try:
                     job_and_values = self._next()
                     if job_and_values is None:
                         continue
-                    job, values = job_and_values
+                    job, index, values = job_and_values
                     assert job.base is not None
                     config = (
                         build_point(job.base, values, job.plan) if job.kind == "scan" else job.base
@@ -309,27 +317,33 @@ class JobManager:
                             "force": job.force,
                         }
                     )
-                    slot.assignment = (job.id, values)
+                    slot.assignment = (job.id, index, values)
                     job.status = "running"
                     self._changed(job)
                 except Exception as exc:
                     if job_and_values is not None:
-                        job, values = job_and_values
-                        self._record(job, values, {"ok": False, "error": str(exc)})
+                        job, index, values = job_and_values
+                        slot.assignment = None
+                        self._record(job, index, values, {"ok": False, "error": str(exc)})
                     else:
                         self._condition.wait(timeout=0.5)
 
-    def _record(self, job: Job, values: dict[str, Any], message: dict[str, Any]) -> None:
+    def _record(self, job: Job, index: int, values: dict[str, Any],
+                message: dict[str, Any]) -> None:
         if job.status == "cancelled":
             return
         point = None
+        point_result = None
         if message["ok"]:
             if job.kind == "single":
                 job.result = message["payload"]["result"]
                 job.cache = message["cache"]
                 job.lookup_ms = message["lookup_ms"]
             else:
-                point = {"values": values, "status": "completed", **message["payload"]}
+                point_result = message["payload"]["result"]
+                point = {"values": values, "status": "completed",
+                         **{key: value for key, value in message["payload"].items()
+                            if key != "result"}}
             job.completed += 1
         else:
             job.error = message["error"]
@@ -337,7 +351,8 @@ class JobManager:
             if job.kind == "scan":
                 point = {"values": values, "status": "failed", "error": message["error"]}
         self._finish_if_done(job)
-        self._changed(job, point=point)
+        self._changed(job, point=point, point_index=index if point else None,
+                      point_result=point_result)
 
     def _watch(self, slot: Slot) -> None:
         while not self._closed:
@@ -353,8 +368,9 @@ class JobManager:
                         return
                     self._slots.remove(slot)
                     if slot.assignment:
-                        job_id, values = slot.assignment
-                        self._record(self._jobs[job_id], values, {"ok": False, "error": str(exc)})
+                        job_id, index, values = slot.assignment
+                        self._record(self._jobs[job_id], index, values,
+                                     {"ok": False, "error": str(exc)})
                     slot.pipe.close()
                     self._condition.notify_all()
                 return
@@ -362,9 +378,9 @@ class JobManager:
                 if slot not in self._slots:
                     return
                 if slot.assignment:
-                    job_id, values = slot.assignment
+                    job_id, index, values = slot.assignment
                     slot.assignment = None
-                    self._record(self._jobs[job_id], values, message)
+                    self._record(self._jobs[job_id], index, values, message)
                 self._condition.notify_all()
 
     def get(self, job_id: str) -> dict[str, Any]:
@@ -388,6 +404,46 @@ class JobManager:
             if self.store.get(job_id)["kind"] != "scan":
                 raise ValueError("这不是参数扫描任务")
             return self.store.points(job_id)
+
+    def point_page(self, job_id: str, offset: int, limit: int) -> dict[str, Any]:
+        with self._condition:
+            job = self.store.get(job_id)
+            if job["kind"] != "scan":
+                raise ValueError("这不是参数扫描任务")
+            legacy = not job.get("point_archive_version")
+            total = job["completed"] + job["failed"] if legacy else job["total"]
+            saved = self.store.point_page(job_id, offset, limit, legacy=legacy)
+            running = {index for slot in self._slots if slot.assignment
+                       for ident, index, _ in (slot.assignment,) if ident == job_id}
+            items = []
+            for index in range(offset, min(offset + limit, total)):
+                point = saved.get(index)
+                if point is None:
+                    remainder = index
+                    values = {}
+                    for axis in reversed(job["axes"]):
+                        remainder, position = divmod(remainder, len(axis["values"]))
+                        values[axis["key"]] = axis["values"][position]
+                    values = {axis["key"]: values[axis["key"]] for axis in job["axes"]}
+                    status = ("running" if index in running else "not_run"
+                              if job["status"] in ("cancelled", "interrupted") else "queued")
+                    point = {"values": values, "status": status, "result_available": False}
+                items.append({"index": index, "values": point["values"],
+                              "status": point["status"], "error": point.get("error"),
+                              "result_available": point["result_available"]})
+            return {"total": total, "items": items}
+
+    def point_result(self, job_id: str, index: int) -> str:
+        with self._condition:
+            job = self.store.get(job_id)
+            if job["kind"] != "scan":
+                raise ValueError("这不是参数扫描任务")
+            if index >= job["total"]:
+                raise KeyError(index)
+            content = self.store.point_result(job_id, index)
+            if content is None:
+                raise ValueError("此扫描点没有归档的完整结果")
+            return content
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._condition:

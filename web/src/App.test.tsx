@@ -1,8 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearSimulationCache, getJob, getJobResult, getScanParameters, listJobs,
-  simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
+import { clearSimulationCache, getJob, getJobResult, getScanParameters, getScanTasks,
+  getScanPointResult, listJobs, simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
 import type { InferenceConfig, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
 import App from "./App";
@@ -10,7 +10,8 @@ import App from "./App";
 vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
   return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn(), clearSimulationCache: vi.fn(),
-    listJobs: vi.fn(), getJob: vi.fn(), getJobResult: vi.fn(), getScanParameters: vi.fn() };
+    listJobs: vi.fn(), getJob: vi.fn(), getJobResult: vi.fn(), getScanParameters: vi.fn(),
+    getScanTasks: vi.fn(), getScanPointResult: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -157,13 +158,16 @@ beforeEach(() => {
   clearCacheMock.mockReset();
   jobMock.mockReset();
   resultMock.mockReset();
+  vi.mocked(getScanTasks).mockReset();
+  vi.mocked(getScanPointResult).mockReset();
   vi.mocked(listJobs).mockReset();
   vi.mocked(listJobs).mockResolvedValue([]);
   vi.mocked(getScanParameters).mockReset();
   vi.mocked(getScanParameters).mockResolvedValue([]);
   jobMock.mockResolvedValue({ id: "job-1", kind: "single", status: "completed", total: 1,
     completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0, axes: null, version: 1,
-    code_fingerprint: "engine-1", code_version_status: "current" });
+    code_fingerprint: "engine-1", code_version_status: "current",
+    point_archive_version: 0 });
   vi.restoreAllMocks();
 });
 
@@ -227,7 +231,8 @@ describe("App", () => {
   it("keeps results hidden after refresh even when completed tasks are listed", async () => {
     vi.mocked(listJobs).mockResolvedValue([{ id: "previous", kind: "single", status: "completed",
       total: 1, completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0,
-      axes: null, version: 1, code_fingerprint: "engine-old", code_version_status: "stale" }]);
+      axes: null, version: 1, code_fingerprint: "engine-old", code_version_status: "stale",
+      point_archive_version: 0 }]);
     resolveSimulation(result);
     render(<App />);
     const tasks = await screen.findByLabelText("后台任务");
@@ -248,13 +253,64 @@ describe("App", () => {
   it("keeps legacy imported results downloadable when the code version is unknown", async () => {
     vi.mocked(listJobs).mockResolvedValue([{ id: "legacy", kind: "single", status: "completed",
       total: 1, completed: 1, failed: 0, error: null, cache: "hit", lookup_ms: 1,
-      axes: null, version: 1, code_fingerprint: "", code_version_status: "unknown" }]);
+      axes: null, version: 1, code_fingerprint: "", code_version_status: "unknown",
+      point_archive_version: 0 }]);
     render(<App />);
     const tasks = await screen.findByLabelText("后台任务");
     expect(within(tasks).getByText("代码版本未知")).toBeInTheDocument();
     expect(within(tasks).getByRole("link", { name: "查看原始 JSON" })).toBeInTheDocument();
     expect(within(tasks).getByRole("link", { name: "导出 JSON" }))
       .toHaveAttribute("download", "simulation-legacy.json");
+  });
+
+  it("expands scan points and opens a completed point in the existing result panel", async () => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "scan-a", kind: "scan", status: "completed",
+      total: 2, completed: 1, failed: 1, error: "point failed", cache: null, lookup_ms: null,
+      axes: [{ key: "num_instances", values: [1, 0] }], version: 3,
+      code_fingerprint: "engine-old", code_version_status: "stale",
+      point_archive_version: 1 }]);
+    vi.mocked(getScanTasks).mockResolvedValue({ total: 2, items: [
+      { index: 0, values: { num_instances: 1 }, status: "completed", error: null,
+        result_available: true },
+      { index: 1, values: { num_instances: 0 }, status: "failed", error: "point failed",
+        result_available: false },
+    ] });
+    vi.mocked(getScanPointResult).mockResolvedValue(result);
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    expect(within(tasks).getByText(/1 点失败/)).toBeInTheDocument();
+    fireEvent.click(within(tasks).getByRole("button", { name: "展开组合" }));
+    expect(await within(tasks).findByText("num_instances: 1")).toBeInTheDocument();
+    expect(within(tasks).getByText("point failed")).toBeInTheDocument();
+    expect(within(tasks).getAllByRole("button", { name: "查看结果" })).toHaveLength(1);
+    expect(within(tasks).getByRole("link", { name: "查看原始 JSON" }))
+      .toHaveAttribute("href", "/api/jobs/scan-a/points/0/result");
+    fireEvent.click(within(tasks).getByRole("button", { name: "查看结果" }));
+    expect(await screen.findByText("扫描 scan-a · 组合 #1")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("结果缓存状态")).not.toBeInTheDocument();
+    expect(getScanPointResult).toHaveBeenCalledWith("scan-a", 0);
+  });
+
+  it("paginates recorded scan points and does not offer a fabricated historical result", async () => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "old-scan", kind: "scan", status: "interrupted",
+      total: 30, completed: 21, failed: 0, error: "service restarted", cache: null, lookup_ms: null,
+      axes: [{ key: "num_instances", values: [1, 2] }], version: 3,
+      code_fingerprint: "engine-old", code_version_status: "stale",
+      point_archive_version: 0 }]);
+    vi.mocked(getScanTasks).mockImplementation(async (_id, offset) => ({ total: 21, items: [
+      { index: offset, values: { num_instances: offset + 1 }, status: "completed",
+        error: null, result_available: false },
+    ] }));
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    fireEvent.click(within(tasks).getByRole("button", { name: "展开组合" }));
+    expect(await within(tasks).findByText("num_instances: 1")).toBeInTheDocument();
+    expect(within(tasks).getByText(/历史扫描仅显示已记录的组合/)).toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "查看结果" })).not.toBeInTheDocument();
+    fireEvent.click(within(tasks).getByRole("button", { name: "下一页" }));
+    expect(await within(tasks).findByText("num_instances: 21")).toBeInTheDocument();
+    expect(getScanTasks).toHaveBeenCalledWith("old-scan", 20, 20);
   });
 
   it("routes the configured replica count and filters instance results", async () => {

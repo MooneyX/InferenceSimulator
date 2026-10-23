@@ -27,7 +27,8 @@ class FakeEvents {
 
 const queued = { id: "job-1", kind: "single" as const, status: "queued" as const,
   total: 1, completed: 0, failed: 0, error: null, cache: null, lookup_ms: null,
-  axes: null, version: 1, code_fingerprint: "engine-1", code_version_status: "current" as const };
+  axes: null, version: 1, code_fingerprint: "engine-1", code_version_status: "current" as const,
+  point_archive_version: 0 };
 const finished = { ...queued, status: "completed" as const, completed: 1, version: 3 };
 
 beforeEach(() => {

@@ -1,5 +1,6 @@
 """后台调度接口与参数扫描的端到端测试。"""
 
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +60,12 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         ).json()["id"]
         assert wait_job(client, scan_id)["status"] == "completed"
         points = client.get(f"/api/jobs/{scan_id}/points").json()
+        page = client.get(f"/api/jobs/{scan_id}/tasks?offset=1&limit=1").json()
+        assert page["total"] == 2
+        assert page["items"][0]["index"] == 1
+        assert page["items"][0]["values"] == {"num_instances": 2}
+        archived_point = client.get(f"/api/jobs/{scan_id}/points/1/result").content
+        assert page["items"][0]["result_available"] is True
         client.delete("/api/simulation-cache")
     with (
         patch("simserver.jobs.engine_fingerprint", return_value="new-engine"),
@@ -73,6 +80,8 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         assert summary["code_fingerprint"] != "new-engine"
         assert restarted.get(f"/api/jobs/{single_id}/result").content == original
         assert restarted.get(f"/api/jobs/{scan_id}/points").json() == points
+        assert restarted.get(f"/api/jobs/{scan_id}/points/1/result").content == archived_point
+        assert restarted.get(f"/api/jobs/{scan_id}/tasks?offset=1&limit=1").json() == page
         assert restarted.get(f"/api/jobs/{scan_id}").json()["code_version_status"] == "stale"
 
 
@@ -102,6 +111,11 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
         assert recovered["failed"] == 0
         assert recovered["version"] > 4
         assert recovered["code_version_status"] == "stale"
+        assert recovered["point_archive_version"] == 0
+        page = client.get("/api/jobs/unfinished/tasks").json()
+        assert page == {"total": 1, "items": [{"index": 0, "values": point["values"],
+                  "status": "completed", "error": None, "result_available": False}]}
+        assert client.get("/api/jobs/unfinished/points/0/result").status_code == 409
         assert (
             client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
         )
@@ -111,6 +125,62 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
         assert (
             client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
         )
+
+
+def test_interrupted_scan_preserves_new_point_results_and_marks_remaining_not_run(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "results.sqlite3"
+    store = JobStore(path.with_name("jobs.sqlite3"))
+    summary = {"id": "partial", "kind": "scan", "status": "running", "total": 3,
+               "completed": 1, "failed": 0, "error": None, "cache": None,
+               "lookup_ms": None, "version": 1, "code_fingerprint": "previous",
+               "point_archive_version": 1,
+               "axes": [{"key": "num_instances", "values": [1, 2, 3]}]}
+    store.save(summary, point={"values": {"num_instances": 2}, "status": "completed"},
+               point_index=1, point_result='{"meta": {"num_requests": 2}}')
+    with TestClient(create_app(cache_path=path)) as client:
+        page = client.get("/api/jobs/partial/tasks").json()
+        assert [item["status"] for item in page["items"]] == ["not_run", "completed", "not_run"]
+        assert [item["values"]["num_instances"] for item in page["items"]] == [1, 2, 3]
+        assert client.get("/api/jobs/partial/points/1/result").json()["meta"] == {"num_requests": 2}
+        assert client.get("/api/jobs/partial/points/0/result").status_code == 409
+
+
+def test_legacy_point_table_is_migrated_without_losing_rows(tmp_path: Path) -> None:
+    path = tmp_path / "jobs.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("""
+            CREATE TABLE job_points (
+                job_id TEXT NOT NULL, sequence INTEGER NOT NULL, point TEXT NOT NULL,
+                PRIMARY KEY (job_id, sequence)
+            )
+        """)
+    store = JobStore(path)
+    store.save({"id": "old", "kind": "scan", "completed": 1, "failed": 0,
+                "version": 1, "axes": [{"key": "num_instances", "values": [1]}]},
+               point={"values": {"num_instances": 1}, "status": "completed"})
+    assert store.point_page("old", 0, 20, legacy=True)[0]["result_available"] is False
+    assert store.points("old")[0]["values"] == {"num_instances": 1}
+
+
+def test_scan_point_failures_and_duplicate_values_have_distinct_indices(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SIMULATOR_WORKERS", "2")
+    with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:
+        key = client.post("/api/scans", json={"base": make_payload(num_requests=1),
+            "axes": [{"key": "num_instances", "values": [1, 1, 0]}]}).json()["id"]
+        summary = wait_job(client, key)
+        assert (summary["status"], summary["completed"], summary["failed"]) == ("completed", 2, 1)
+        items = client.get(f"/api/jobs/{key}/tasks").json()["items"]
+        assert [item["index"] for item in items] == [0, 1, 2]
+        assert [item["status"] for item in items] == ["completed", "completed", "failed"]
+        assert all(item["result_available"] for item in items[:2])
+        assert items[2]["error"]
+        assert client.get(f"/api/jobs/{key}/points/0/result").status_code == 200
+        assert client.get(f"/api/jobs/{key}/points/1/result").status_code == 200
+        assert client.get(f"/api/jobs/{key}/points/2/result").status_code == 409
 
 
 def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:
@@ -142,6 +212,17 @@ def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:
         assert len({item["signature"] for item in points}) == 8
         assert {item["config"]["scheduler"]["max_running_requests"] for item in points} == {1, 2}
         assert all(item["metrics"] is not None for item in points)
+        tasks = client.get(f"/api/jobs/{key}/tasks?offset=3&limit=2").json()
+        assert tasks["total"] == 8
+        assert [item["index"] for item in tasks["items"]] == [3, 4]
+        assert [item["values"]["scheduler.max_prefill_tokens"] for item in tasks["items"]] == [
+            32768, 16384
+        ]
+        assert all(item["result_available"] for item in tasks["items"])
+        assert client.get(f"/api/jobs/{key}/points/4/result").json()["metrics"]
+        assert client.get(f"/api/jobs/{key}/points/8/result").status_code == 404
+        assert client.get(f"/api/jobs/{key}/tasks?limit=101").status_code == 422
+        assert client.get(f"/api/jobs/{single}/tasks").status_code == 409
         invalid = client.post(
             "/api/scans",
             json={"base": config, "axes": [{"key": "inference.model.num_layers", "values": [3]}]},
@@ -157,6 +238,9 @@ def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:
         cancelled = client.delete(f"/api/jobs/{another}")
         assert cancelled.json()["status"] == "cancelled"
         assert client.get(f"/api/jobs/{another}/result").status_code == 409
+        pending = client.get(f"/api/jobs/{another}/tasks").json()["items"]
+        assert pending[-1]["status"] == "not_run"
+        assert client.get(f"/api/jobs/{another}/points/7/result").status_code == 409
 
 
 def test_two_workers_run_distinct_points(tmp_path: Path, monkeypatch) -> None:

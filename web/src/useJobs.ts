@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-import { cancelJob, getJob, getJobResult, listJobs, simulate, submitScan,
+import { cancelJob, getJob, getJobResult, getScanPointResult, listJobs, simulate, submitScan,
   type SimulationResponse } from "./api/client";
 import type { JobSummary, ScanRequest, SimConfig } from "./api/types";
 
-export function useJobs(onResult: (response: SimulationResponse) => void,
+export function useJobs(onResult: (response: SimulationResponse | {
+  result: SimulationResponse["result"]; cache: null;
+}, source: string | null) => void,
                         onError: (error: unknown) => void) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -44,7 +46,7 @@ export function useJobs(onResult: (response: SimulationResponse) => void,
     loaded.current = id;
     try {
       const response = await getJobResult(id);
-      if (selected.current === id) callbacks.current.onResult(response);
+      if (selected.current === id) callbacks.current.onResult(response, null);
     } catch (error) {
       if (selected.current === id) {
         loaded.current = null;
@@ -59,6 +61,19 @@ export function useJobs(onResult: (response: SimulationResponse) => void,
     loaded.current = null;
     const item = jobs.find((job) => job.id === id);
     if (item?.kind === "single" && item.status === "completed") void loadResult(id);
+  }
+
+  function selectPoint(id: string, index: number) {
+    const key = `${id}:${index}`;
+    selected.current = key;
+    setSelectedId(key);
+    loaded.current = key;
+    void getScanPointResult(id, index).then((result) => {
+      if (selected.current === key) callbacks.current.onResult(
+        { result, cache: null }, `扫描 ${id.slice(0, 8)} · 组合 #${index + 1}`);
+    }).catch((error: unknown) => {
+      if (selected.current === key) callbacks.current.onError(error);
+    });
   }
 
   useEffect(() => {
@@ -115,5 +130,5 @@ export function useJobs(onResult: (response: SimulationResponse) => void,
 
   async function stop(id: string) { merge(await cancelJob(id)); }
 
-  return { jobs, submitting, selectedId, select, submitSingle, submitSweep, stop };
+  return { jobs, submitting, selectedId, select, selectPoint, submitSingle, submitSweep, stop };
 }

@@ -148,6 +148,53 @@ def test_local_summary_parent_and_export(tmp_path: Path) -> None:
     assert [item.parent_request_id for item in plan.requests] == [None, 0, None]
     assert plan.requests[1].think_time_ms == 1000
     assert plan.requests[2].output_len == 0
+    assert summary["output_tokens"] == 2
+    estimate = summary["estimated_plan_bytes"]
+    assert len(plan.model_dump_json().encode("utf-8")) <= estimate < 1024
+    assert compile_plan(source, ["session-a"], max_bytes=estimate) == plan
+    with pytest.raises(PlanTooLargeError):
+        compile_plan(source, ["session-a"], max_bytes=estimate - 1)
+
+
+@pytest.mark.parametrize("session_id", ["会话-中文", 'session-"quoted"\\\\path'])
+def test_plan_size_estimate_counts_utf8_and_hashes(tmp_path: Path, session_id: str) -> None:
+    raw = json.loads(sample())
+    raw["id"] = session_id
+    source = tmp_path / "trace.jsonl"
+    source.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    summary = scan_trace(source)[0]
+    plan = compile_plan(source, [session_id])
+    assert summary["estimated_plan_bytes"] == (
+        128
+        + len(json.dumps(session_id, ensure_ascii=False).encode("utf-8"))
+        + 1
+        + sum(len(turn.model_dump_json().encode("utf-8")) + 1 for turn in plan.requests)
+    )
+
+    raw["requests"][1]["hash_ids"] = list(range(1000))
+    raw["requests"][1]["in"] = 64_000
+    source.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    larger = scan_trace(source)[0]
+    assert larger["estimated_plan_bytes"] > summary["estimated_plan_bytes"] + 3000
+    assert larger["input_tokens"] == 64_258
+
+
+def test_multiple_session_estimates_and_export_numbering(tmp_path: Path) -> None:
+    rows = [{**json.loads(sample()), "id": f"session-{index}"} for index in range(12)]
+    source = tmp_path / "trace.jsonl"
+    source.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    summaries = scan_trace(source)
+    plan = compile_plan(source, [row["id"] for row in reversed(rows)])
+    assert sum(row["requests"] for row in summaries) == len(plan.requests) == 36
+    assert sum(row["input_tokens"] for row in summaries) == 451 * 12
+    assert sum(row["output_tokens"] for row in summaries) == 24
+    assert [turn.request_id for turn in plan.requests] == list(range(36))
+    for index in range(12):
+        assert plan.requests[index * 3 + 1].parent_request_id == index * 3
+        assert plan.requests[index * 3].session_id == index
+    estimate = sum(row["estimated_plan_bytes"] for row in summaries)
+    serialized_bytes = len(plan.model_dump_json().encode("utf-8"))
+    assert serialized_bytes < estimate < serialized_bytes + 128 * len(rows)
 
 
 def test_upload_preview_export_and_reupload_plan() -> None:
@@ -163,9 +210,14 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert state["status"] == "ready", state
         page = client.get(f"/api/traces/{key}/sessions").json()
         assert page["total"] == 1
+        assert page["max_plan_bytes"] == 64 * 1024**2
         assert page["sessions"][0]["inferred_dependencies"] == 1
         exported = client.post(f"/api/traces/{key}/plans", json={"sessions": ["session-a"]})
         assert exported.status_code == 200
+        assert len(exported.content) <= page["sessions"][0]["estimated_plan_bytes"]
+        empty_page = client.get(f"/api/traces/{key}/sessions?offset=50").json()
+        assert empty_page["sessions"] == []
+        assert empty_page["max_plan_bytes"] == page["max_plan_bytes"]
         uploaded = client.post("/api/replay-plans", content=exported.content)
         assert uploaded.status_code == 201
         plan_id = uploaded.json()["id"]

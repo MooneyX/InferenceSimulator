@@ -19,6 +19,9 @@ class SessionSummary(BaseModel):
     subagent_groups: int
     input_tokens: int
     output_tokens: int
+    estimated_plan_bytes: int = Field(
+        description="单会话独立计划的预计 UTF-8 字节数；合并后编号变化可能导致差异。"
+    )
     start_s: float
     end_s: float
     open_loop_qps: float | None
@@ -39,6 +42,7 @@ class TraceJob(BaseModel):
 class SessionPage(BaseModel):
     total: int
     sessions: list[SessionSummary]
+    max_plan_bytes: int
 
 
 class PlanSelection(BaseModel):
@@ -107,7 +111,9 @@ def sessions(
     if job["status"] != "ready":
         raise HTTPException(409, "trace 尚未准备就绪")
     items = job["sessions"]
-    return SessionPage(total=len(items), sessions=items[offset : offset + limit])
+    return SessionPage(
+        total=len(items), sessions=items[offset : offset + limit], max_plan_bytes=MAX_PLAN_BYTES
+    )
 
 
 @router.post("/traces/{key}/plans", response_model=TracePlan)

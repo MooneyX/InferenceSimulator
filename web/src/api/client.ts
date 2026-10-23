@@ -13,7 +13,7 @@ import type {
   ValidationError,
   PlanReceipt,
   TraceJob,
-  TraceSessionSummary,
+  TraceSessionPage,
 } from "./types";
 
 export type { PlanReceipt, TraceJob, TraceSessionSummary } from "./types";
@@ -232,9 +232,7 @@ export async function traceStatus(id: string): Promise<TraceJob> {
   return (await replayRequest(`/api/traces/${id}`)).json() as Promise<TraceJob>;
 }
 
-export async function traceSessions(id: string, offset: number): Promise<{
-  total: number; sessions: TraceSessionSummary[];
-}> {
+export async function traceSessions(id: string, offset: number): Promise<TraceSessionPage> {
   return (await replayRequest(`/api/traces/${id}/sessions?offset=${offset}&limit=50`)).json();
 }
 

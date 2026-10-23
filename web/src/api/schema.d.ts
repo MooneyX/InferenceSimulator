@@ -1481,6 +1481,8 @@ export interface components {
             total: number;
             /** Sessions */
             sessions: components["schemas"]["SessionSummary"][];
+            /** Max Plan Bytes */
+            max_plan_bytes: number;
         };
         /** SessionSummary */
         SessionSummary: {
@@ -1494,6 +1496,11 @@ export interface components {
             input_tokens: number;
             /** Output Tokens */
             output_tokens: number;
+            /**
+             * Estimated Plan Bytes
+             * @description 单会话独立计划的预计 UTF-8 字节数；合并后编号变化可能导致差异。
+             */
+            estimated_plan_bytes: number;
             /** Start S */
             start_s: number;
             /** End S */

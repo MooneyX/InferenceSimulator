@@ -27,5 +27,6 @@ export type EmpiricalTimingConfig = Extract<TimingConfig, { mode: "empirical" }>
 export type AnalyticalTimingConfig = Extract<TimingConfig, { mode: "analytical" }>;
 export type PresetCatalog = components["schemas"]["PresetCatalog"];
 export type TraceSessionSummary = components["schemas"]["SessionSummary"];
+export type TraceSessionPage = components["schemas"]["SessionPage"];
 export type TraceJob = components["schemas"]["TraceJob"];
 export type PlanReceipt = components["schemas"]["PlanReceipt"];

@@ -3227,12 +3227,17 @@
             },
             "type": "array",
             "title": "Sessions"
+          },
+          "max_plan_bytes": {
+            "type": "integer",
+            "title": "Max Plan Bytes"
           }
         },
         "type": "object",
         "required": [
           "total",
-          "sessions"
+          "sessions",
+          "max_plan_bytes"
         ],
         "title": "SessionPage"
       },
@@ -3257,6 +3262,11 @@
           "output_tokens": {
             "type": "integer",
             "title": "Output Tokens"
+          },
+          "estimated_plan_bytes": {
+            "type": "integer",
+            "title": "Estimated Plan Bytes",
+            "description": "单会话独立计划的预计 UTF-8 字节数；合并后编号变化可能导致差异。"
           },
           "start_s": {
             "type": "number",
@@ -3305,6 +3315,7 @@
           "subagent_groups",
           "input_tokens",
           "output_tokens",
+          "estimated_plan_bytes",
           "start_s",
           "end_s",
           "open_loop_qps",

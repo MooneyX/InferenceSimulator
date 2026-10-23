@@ -20,12 +20,21 @@ interface TracePanelProps {
   onChange: (selection: ReplaySelection | null) => void;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(2)} KiB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(2)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
 export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProps) {
   const [job, setJob] = useState<TraceJob | null>(null);
   const [sessions, setSessions] = useState<TraceSessionSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Map<string, TraceSessionSummary>>(new Map());
+  const [maxPlanBytes, setMaxPlanBytes] = useState<number | null>(null);
+  const [exportedBytes, setExportedBytes] = useState<number | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const [mode, setMode] = useState<"open_loop" | "closed_loop">(initialReplay?.arrivalMode ?? "open_loop");
   const [rate, setRate] = useState(initialReplay?.sessionRate ?? 1);
@@ -60,7 +69,9 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
     if (!job || job.status !== "ready") return;
     let active = true;
     void traceSessions(job.id, offset).then((page) => {
-      if (active) { setSessions(page.sessions); setTotal(page.total); }
+      if (active) {
+        setSessions(page.sessions); setTotal(page.total); setMaxPlanBytes(page.max_plan_bytes);
+      }
     }).catch((error: unknown) => {
       if (active) setProblem(error instanceof Error ? error.message : "无法加载会话摘要");
     });
@@ -69,7 +80,8 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
 
   async function receiveTrace(file: File): Promise<void> {
     setBusy(true); setProblem(""); setMessage(""); setPlanId(null); setJob(null);
-    setSessions([]); setSelected(new Set()); setOffset(0);
+    setSessions([]); setSelected(new Map()); setOffset(0); setTotal(0);
+    setMaxPlanBytes(null); setExportedBytes(null);
     try {
       const response = await uploadTrace(file);
       setJob(response);
@@ -92,9 +104,10 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
 
   async function exportSelected(): Promise<void> {
     if (!job || selected.size === 0) return;
-    setBusy(true); setProblem(""); setPlanId(null);
+    setBusy(true); setProblem(""); setMessage(""); setPlanId(null); setExportedBytes(null);
     try {
-      const blob = await downloadTracePlan(job.id, [...selected]);
+      const blob = await downloadTracePlan(job.id, [...selected.keys()]);
+      setExportedBytes(blob.size);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url; anchor.download = "trace-plan.json"; anchor.click();
@@ -107,6 +120,13 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
     } finally { setBusy(false); }
   }
 
+  const totals = [...selected.values()].reduce((sum, session) => ({
+    requests: sum.requests + session.requests,
+    inputTokens: sum.inputTokens + session.input_tokens,
+    outputTokens: sum.outputTokens + session.output_tokens,
+    estimatedBytes: sum.estimatedBytes + session.estimated_plan_bytes,
+  }), { requests: 0, inputTokens: 0, outputTokens: 0, estimatedBytes: 0 });
+  const exceedsLimit = maxPlanBytes !== null && totals.estimatedBytes > maxPlanBytes;
   const locked = disabled || busy;
   return (
     <section className="trace-panel" aria-labelledby="trace-heading">
@@ -142,10 +162,10 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
           <tbody>{sessions.map((item) => <tr key={item.id}>
             <td><input type="checkbox" aria-label={`选择会话 ${item.id}`} checked={selected.has(item.id)}
               disabled={locked} onChange={(event) => {
-                const next = new Set(selected);
-                if (event.target.checked) next.add(item.id); else next.delete(item.id);
+                const next = new Map(selected);
+                if (event.target.checked) next.set(item.id, item); else next.delete(item.id);
                 setSelected(next);
-                setPlanId(null);
+                setPlanId(null); setExportedBytes(null); setMessage(""); setProblem("");
               }} /></td>
             <td title={item.id}><code>{item.id.slice(0, 12)}…</code></td><td>{item.requests}</td>
             <td>{item.input_tokens.toLocaleString()} / {item.output_tokens.toLocaleString()}</td>
@@ -154,6 +174,30 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
             <td>{item.inferred_dependencies} / {item.timed_roots}</td>
           </tr>)}</tbody>
         </table></div>
+        <section className="trace-selection-summary" aria-labelledby="trace-selection-heading">
+          <h5 id="trace-selection-heading">已选统计</h5>
+          <dl className="trace-selection-stats" aria-live="polite">
+            <div><dt>会话总数</dt><dd>{selected.size.toLocaleString()}</dd></div>
+            <div><dt>请求总数</dt><dd>{totals.requests.toLocaleString()}</dd></div>
+            <div><dt>输入 token 总数</dt><dd>{totals.inputTokens.toLocaleString()}</dd></div>
+            <div><dt>输出 token 总数</dt><dd>{totals.outputTokens.toLocaleString()}</dd></div>
+            <div>
+              <dt>计划大小（{exportedBytes === null ? "预计" : "实际"}）</dt>
+              <dd title={`${(exportedBytes ?? totals.estimatedBytes).toLocaleString()} 字节`}>
+                {formatBytes(exportedBytes ?? totals.estimatedBytes)}
+              </dd>
+            </div>
+          </dl>
+          <p className="trace-hint">统计包含跨页选择及子代理请求；输入 token 按各次请求累加，不去重、不扣除缓存命中。</p>
+          <p className="trace-hint">服务端上限：{maxPlanBytes === null ? "加载中…" : formatBytes(maxPlanBytes)}。
+            {exportedBytes === null
+              ? "预计大小按单会话计划累加，合并后的封装及编号变化可能产生差异，以实际导出为准。"
+              : "实际大小取自已导出的计划文件。"}
+          </p>
+          {exportedBytes === null && exceedsLimit && <p className="trace-notice trace-notice-error" role="alert">
+            预计计划大小超过服务端上限，请减少会话数量；最终以服务端校验为准。
+          </p>}
+        </section>
         <div className="trace-actions">
           <div className="trace-pagination">
             <button className="trace-button trace-button-secondary" type="button" disabled={locked || offset === 0}

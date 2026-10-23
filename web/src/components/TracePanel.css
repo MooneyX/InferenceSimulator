@@ -131,6 +131,42 @@
 .trace-table input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .trace-table code { color: var(--text); font-size: 0.75rem; }
 
+.trace-selection-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.trace-selection-summary h5 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.trace-selection-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.trace-selection-stats > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.trace-selection-stats dt { color: var(--text-dim); font-size: 0.7rem; }
+.trace-selection-stats dd {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .trace-actions,
 .trace-pagination {
   display: flex;

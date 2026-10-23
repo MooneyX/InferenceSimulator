@@ -11,6 +11,7 @@ from simcore.schemas import TracePlan, TraceTurn
 
 _TIME_TOLERANCE_S = 0.001
 _MAX_SESSION_BYTES = 256 * 1024**2
+_PLAN_ENVELOPE_BYTES = 128
 
 
 class PlanTooLargeError(ValueError):
@@ -142,6 +143,27 @@ def _inspect(
     return requests, parents, summary
 
 
+def _plan_turns(
+    requests: list[tuple[dict[str, Any], str]],
+    parents: list[int | None],
+    *,
+    session_id: int = 0,
+    base: int = 0,
+) -> Iterator[TraceTurn]:
+    origin = requests[0][0]["t"]
+    for index, ((item, _), parent) in enumerate(zip(requests, parents, strict=True)):
+        yield TraceTurn(
+            request_id=base + index,
+            session_id=session_id,
+            parent_request_id=base + parent if parent is not None else None,
+            arrival_offset_ms=(item["t"] - origin) * 1000,
+            think_time_ms=(item["think_time"] * 1000 if parent is not None else None),
+            prompt_len=item["in"],
+            output_len=item["out"],
+            hash_ids=tuple(item["hash_ids"]),
+        )
+
+
 def scan_trace(path: Path) -> list[dict[str, Any]]:
     """逐行解析；只保留小型会话摘要，不保留完整轨迹。"""
     summaries: list[dict[str, Any]] = []
@@ -150,7 +172,17 @@ def scan_trace(path: Path) -> list[dict[str, Any]]:
         if session["id"] in ids:
             raise ValueError(f"重复会话 ID: {session['id']}")
         ids.add(session["id"])
-        summaries.append(_inspect(session)[2])
+        requests, parents, summary = _inspect(session)
+        summary["estimated_plan_bytes"] = (
+            _PLAN_ENVELOPE_BYTES
+            + len(json.dumps(session["id"], ensure_ascii=False).encode("utf-8"))
+            + 1
+            + sum(
+                len(turn.model_dump_json().encode("utf-8")) + 1
+                for turn in _plan_turns(requests, parents)
+            )
+        )
+        summaries.append(summary)
     if not summaries:
         raise ValueError("trace 不包含会话")
     return summaries
@@ -162,7 +194,7 @@ def compile_plan(path: Path, selected: list[str], *, max_bytes: int | None = Non
         raise ValueError("须选择至少一个且不重复的会话")
     session_ids: list[str] = []
     turns: list[TraceTurn] = []
-    estimated_bytes = 128
+    estimated_bytes = _PLAN_ENVELOPE_BYTES
     wanted = set(selected)
     for session in _sessions(path):
         if session["id"] not in wanted:
@@ -173,19 +205,7 @@ def compile_plan(path: Path, selected: list[str], *, max_bytes: int | None = Non
         sid = len(session_ids)
         session_ids.append(session["id"])
         estimated_bytes += len(json.dumps(session["id"], ensure_ascii=False).encode("utf-8")) + 1
-        origin = requests[0][0]["t"]
-        base = len(turns)
-        for index, ((item, _), parent) in enumerate(zip(requests, parents, strict=True)):
-            turn = TraceTurn(
-                request_id=base + index,
-                session_id=sid,
-                parent_request_id=base + parent if parent is not None else None,
-                arrival_offset_ms=(item["t"] - origin) * 1000,
-                think_time_ms=(item["think_time"] * 1000 if parent is not None else None),
-                prompt_len=item["in"],
-                output_len=item["out"],
-                hash_ids=tuple(item["hash_ids"]),
-            )
+        for turn in _plan_turns(requests, parents, session_id=sid, base=len(turns)):
             if max_bytes is not None:
                 estimated_bytes += len(turn.model_dump_json().encode("utf-8")) + 1
                 if estimated_bytes > max_bytes:

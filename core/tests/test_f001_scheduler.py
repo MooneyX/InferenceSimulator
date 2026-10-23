@@ -129,22 +129,107 @@ def test_total_budget_can_fail_while_immediate_fits_without_reserving_pages() ->
     assert scheduler.num_waiting == 1
 
 
-def test_failed_pin_cannot_count_cached_page_as_available_or_refresh_lru() -> None:
+def test_repeated_budget_rejection_preserves_cache_until_capacity_is_released() -> None:
     scheduler, cache = make(capacity=320)
     old = request(0)
     hold(cache, old)
     cache.finish(0)
     active = request(9)
     hold(cache, active)
-    before = cache.page(encode(0, 0))
-    assert before is not None
-    scheduler.enqueue(request(1, prompt=65, maximum=80, inherited=(encode(0, 0),)), 1)
-    batch = scheduler.select_prefill({9: RunningRequest(active, 1)})
-    after = cache.page(encode(0, 0))
-    assert batch.admitted == () and scheduler.num_waiting == 1
-    assert after is not None and after.ref_count == 0
-    assert after.last_access_seq == before.last_access_seq
-    assert cache.available_tokens == 256 and cache.resident_pages == 2
+    shared = encode(0, 0)
+    pool = cache.pools["L1"]
+    before = (cache.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
+    candidate = request(1, prompt=65, maximum=80, inherited=(shared,))
+    scheduler.enqueue(candidate, 1)
+    accept = Mock(return_value=True)
+    with (
+        patch.object(cache, "probe", wraps=cache.probe) as probes,
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
+    ):
+        for _ in range(3):
+            batch = scheduler.select_prefill({9: RunningRequest(active, 1)}, accept_probe=accept)
+            assert not batch.admitted and scheduler.num_waiting == scheduler.ready_count == 1
+            assert (
+                cache.snapshot(),
+                pool.entries[shared].last_access_seq,
+                tuple(pool.heap),
+            ) == before
+            assert not cache._pins and not cache._pin_sources and not cache._chunk_pins
+        assert probes.call_count == accept.call_count == 3
+        pins.assert_not_called()
+        cancellations.assert_not_called()
+        cache.finish(9)
+        batch = scheduler.select_prefill({}, accept_probe=accept)
+        assert [item.waiting.request.request_id for item in batch.admitted] == [1]
+        pins.assert_called_once_with(candidate, batch.admitted[0].hit_sources)
+        cancellations.assert_not_called()
+    assert pool.entries[shared].ref_count == 1
+    assert scheduler.num_waiting == scheduler.ready_count == 0
+
+
+@pytest.mark.parametrize("budget,capacity", [("current", 12), ("future", 16), ("compute", 64)])
+def test_budget_rejection_never_pins_candidate(budget: str, capacity: int) -> None:
+    scheduler, cache = make(capacity=capacity, page_size=4, max_prefill=4)
+    active = request(0, prompt=4)
+    hold(cache, active)
+    shared = encode(90, 0)
+    cache.pools["L1"].insert(shared)
+    if budget == "compute":
+        scheduler.enqueue(request(1, prompt=4), 0)
+    scheduler.enqueue(request(2, prompt=5, inherited=(shared,)), 1)
+    with (
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
+    ):
+        batch = scheduler.select_prefill({0: RunningRequest(active, 1)})
+    expected = [1] if budget == "compute" else []
+    assert [item.waiting.request.request_id for item in batch.admitted] == expected
+    assert [call.args[0].request_id for call in pins.call_args_list] == expected
+    cancellations.assert_not_called()
+    assert scheduler.head_request_id == 2 and scheduler.num_waiting == 1
+    assert 2 not in cache._pins and shared not in cache._chunk_pins
+    assert cache.pools["L1"].entries[shared].ref_count == 0
+
+
+def test_duplicate_l1_sources_only_reduce_available_capacity_once() -> None:
+    scheduler, cache = make(capacity=192)
+    shared = encode(90, 0)
+    cache.pools["L1"].insert(shared)
+    candidate = request(1, prompt=129, inherited=(shared, shared))
+    scheduler.enqueue(candidate, 0)
+
+    batch = scheduler.select_prefill({})
+
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1]
+    assert batch.admitted[0].reused_tokens == 128
+    assert batch.admitted[0].hit_sources == ((shared, "L1"), (shared, "L1"))
+    assert cache.pools["L1"].entries[shared].ref_count == 1
+    assert cache.available_tokens == 128
+
+
+def test_capacity_forecast_only_deducts_newly_protected_l1_pages() -> None:
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=24, page_size=4, l2_capacity_tokens=4
+    )
+    cache = TieredKVCache(24, 4, 4)
+    scheduler = AdmissionScheduler(config, cache)
+    active = request(0, prompt=4)
+    hold(cache, active)
+    active_id, cold, remote = encode(0, 0), encode(90, 0), encode(91, 0)
+    cache.pools["L1"].insert(cold)
+    cache.pools["L2"].insert(remote)
+    scheduler.enqueue(request(1, prompt=13, inherited=(active_id, cold, remote)), 1)
+    before = cache.available_tokens
+
+    batch = scheduler.select_prefill({0: RunningRequest(active, 1)})
+
+    assert [item.waiting.request.request_id for item in batch.admitted] == [1]
+    assert batch.promote_ids == (remote,)
+    assert cache.available_tokens == before - 4 == 16
+    assert cache.pools["L1"].entries[active_id].ref_count == 2
+    assert cache.pools["L1"].entries[cold].ref_count == 1
+    assert cache.pools["L2"].entries[remote].ref_count == 1
 
 
 def test_shared_hits_only_pin_one_physical_page() -> None:
@@ -818,7 +903,7 @@ def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
     assert cache.pools["L1"].entries[shared].ref_count == 1
 
 
-def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
+def test_tiered_budget_rejection_does_not_pin_or_skip_head() -> None:
     config = EngineConfig(
         max_running_requests=2,
         max_total_tokens=8,
@@ -832,14 +917,22 @@ def test_tiered_fcfs_failed_pin_does_not_refresh_lru_or_skip_head() -> None:
     filler = request(99, prompt=8)
     hold(cache, filler)
     shared = encode(0, 0)
-    before = cache.page(shared)
-    assert before is not None and before.tier == "L2"
+    pool = cache.pools["L2"]
+    before = (pool.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
     counters = (cache.promotions, cache.demotions)
     scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1, prompt=5, inherited=(shared,)), 1)
     scheduler.enqueue(request(2, prompt=1), 1)
-    batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})
-    after = cache.page(shared)
-    assert batch.admitted == () and scheduler.num_waiting == 2
-    assert after == before and (cache.promotions, cache.demotions) == counters
+    with (
+        patch.object(cache, "pin", wraps=cache.pin) as pins,
+        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
+    ):
+        batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})
+    pins.assert_not_called()
+    cancellations.assert_not_called()
+    assert not batch.admitted and not batch.promote_ids
+    assert scheduler.head_request_id == 1 and scheduler.num_waiting == 2
+    assert (pool.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap)) == before
+    assert pool.entries[shared].ref_count == 0
+    assert (cache.promotions, cache.demotions) == counters
     assert cache.tier_snapshot("L2").resident_blocks == 1

@@ -202,7 +202,6 @@ class AdmissionScheduler:
                     pending_item = None
                     continue
                 hit = len(sources) * block_size
-                cache.pin(request, sources)
                 new_tokens = target - hit
                 new_promotions = [
                     chunk_id
@@ -234,15 +233,21 @@ class AdmissionScheduler:
                 # 和sglang中的处理一致
                 # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算,
                 # 但是后续cunked prefill可能出现这种情况
+                l1_entries = cache.pools["L1"].entries
+                newly_protected = {
+                    chunk_id
+                    for chunk_id, tier in sources
+                    if tier == "L1" and not l1_entries[chunk_id].ref_count
+                }
+                available_after_pin = cache.available_tokens - len(newly_protected) * block_size
                 future_ok = (
                     direct_restore
-                    or proposed_total <= cache.available_tokens
+                    or proposed_total <= available_after_pin
                     or not (running or selected or restored or restore_only)
                 )
                 if (
-                    proposed_current > cache.available_tokens or not future_ok or not compute_ok
-                ):  # 容量不足, 这个请求无法准入, 结束这次组批, 将已选入的请求提交计算
-                    cache.cancel_pin(request.request_id)  # 未准入，撤销对命中页的临时保护
+                    proposed_current > available_after_pin or not future_ok or not compute_ok
+                ):  # 预算不足，候选保留排队，不修改命中页的引用与 LRU。
                     if (
                         not running
                         and not selected
@@ -262,6 +267,7 @@ class AdmissionScheduler:
                         aborted.append(item)
                         continue
                     break
+                cache.pin(request, sources)
                 if item.restoring and new_tokens == 0:
                     if direct_restore:
                         cache.admit(request.request_id)

@@ -117,6 +117,8 @@ class Engine:
         self._prefetch_waiting: dict[int, set[int]] = {}
         self._prefetched_origins: dict[int, set[str]] = {}
         self._pending_selection: AdmissionBatch | None = None  # 等待 L2 回载后执行的准入批次
+        self._pending_selection_prompt_tokens: int = 0
+        self._pending_requeue_prompt_tokens: int = 0
         self._pending_loads: set[str] = set()  # 当前批次尚未回载到 L1 的页 ID
         self._pending_publish: tuple[int, ...] = ()
         self._pending_finished: tuple[int, ...] = ()
@@ -130,6 +132,16 @@ class Engine:
     def has_work(self) -> bool:  # 等待队列或运行集 → 是否仍有可执行请求
         """是否有等待或执行中的请求（不含等待完成结算的请求）。"""
         return bool(self._running or self._prefix_scheduler.num_waiting)
+
+    @property
+    def load_tokens(self) -> int:
+        """即时物理 L1 占用加逻辑等待输入量；不读取预推进的生成结果。"""
+        return (
+            self._prefix_cache.active_pages * self._prefix_cache.page_size
+            + self._prefix_scheduler.waiting_prompt_tokens
+            + self._pending_selection_prompt_tokens
+            - self._pending_requeue_prompt_tokens
+        )
 
     @property
     def num_steps(self) -> int:  # 无显式输入 → 累计 GPU 步数
@@ -377,6 +389,7 @@ class Engine:
             selection is not None
         ):  #  之前选中了一批请求准备开始prefill, 且load_back已完成, 可以开始prefill
             self._pending_selection = None
+            self._pending_selection_prompt_tokens = 0
         else:  # 之前没有尝试组织prefill批次, 现在组批
             running = {
                 key: RunningRequest(self._requests[key], generated)
@@ -399,6 +412,12 @@ class Engine:
                 return None
             if selection.promote_ids:
                 self._pending_selection = selection  # 将选择准入请求放入等待准入中
+                self._pending_selection_prompt_tokens = sum(
+                    candidate.waiting.request.prompt_len for candidate in selection.admitted
+                ) + sum(
+                    item.request.prompt_len
+                    for item in (*selection.restored, *selection.restore_only)
+                )
                 new_pages = sum(candidate.required_pages for candidate in selection.admitted)
                 _ = self._prefix_cache.ensure_free(len(selection.promote_ids) + new_pages)
                 # 调度器已保留上下文首次遇到顺序；串行链路按此顺序安排页完成时刻。
@@ -425,6 +444,7 @@ class Engine:
             self._pending_publish = ()
         finished = self._pending_finished
         self._pending_finished = ()
+        self._pending_requeue_prompt_tokens = 0
         return finished
 
     def _execute_step(
@@ -594,6 +614,7 @@ class Engine:
             self._pending_done[key] = end  # KV 等 Done 事件结算时才释放
         for key, generated in withdrawn:
             self._prefix_scheduler.requeue(self._requests[key], end, generated)
+            self._pending_requeue_prompt_tokens += self._requests[key].prompt_len
         if not withdrawn:
             _ = self._prefix_scheduler.advance_ratio(
                 {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},

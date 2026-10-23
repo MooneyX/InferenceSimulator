@@ -1457,6 +1457,13 @@ export interface components {
              */
             num_instances: number;
             shared_l3?: components["schemas"]["SharedL3Config"] | null;
+            /**
+             * Routing Policy
+             * @description 实例路由：round_robin 保留会话亲和；least_load 每轮选择最低 token 负载实例
+             * @default round_robin
+             * @enum {string}
+             */
+            routing_policy: "round_robin" | "least_load";
         };
         /**
          * SimMeta

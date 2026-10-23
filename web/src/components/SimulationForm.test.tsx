@@ -16,6 +16,21 @@ afterEach(() => {
 });
 
 describe("SimulationForm", () => {
+  it("selects least load routing and preserves it across workload modes", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    expect(screen.getByLabelText("实例路由策略")).toHaveValue("round_robin");
+    fireEvent.change(screen.getByLabelText("实例路由策略"), { target: { value: "least_load" } });
+    expect(screen.getByText(/每轮最低负载优先，不绑定会话/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ routing_policy: "least_load" }));
+    fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+    expect(screen.getByLabelText("实例路由策略")).toHaveValue("least_load");
+    expect(screen.queryByText(/同原会话的分支共享实例/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("实例路由策略"), { target: { value: "round_robin" } });
+    expect(screen.getByText(/同原会话的分支共享实例/)).toBeInTheDocument();
+  });
+
   it("validates force recalculation and disables it while running", () => {
     const onSubmit = vi.fn();
     const { rerender } = render(<SimulationForm onSubmit={onSubmit} />);

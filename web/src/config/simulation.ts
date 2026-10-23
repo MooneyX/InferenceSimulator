@@ -6,6 +6,7 @@ export type FormSimConfig = SimConfig & {
 
 export type ConfigField =
   | "num_instances"
+  | "routing_policy"
   | "workload.mode"
   | "workload.synthetic"
   | "workload.synthetic.num_requests"
@@ -43,9 +44,10 @@ export interface ConfigValidationError {
   message: string;
 }
 
-function createDefaultCommonConfig(): Pick<SimConfig, "num_instances" | "workload" | "scheduler"> {
+function createDefaultCommonConfig(): Pick<SimConfig, "num_instances" | "routing_policy" | "workload" | "scheduler"> {
   return {
     num_instances: 1,
+    routing_policy: "round_robin",
     workload: {
       mode: "synthetic",
       arrival_mode: "open_loop",
@@ -174,6 +176,9 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
   const { workload, scheduler, inference } = config;
   validatePositiveInteger(errors, "num_instances", config.num_instances);
+  if (config.routing_policy !== undefined && config.routing_policy !== "round_robin" && config.routing_policy !== "least_load") {
+    errors.push({ field: "routing_policy", message: "routing_policy 仅支持 round_robin 或 least_load" });
+  }
 
   const synthetic = workload.synthetic;
   if (workload.mode === "synthetic" && (synthetic === undefined || synthetic === null)) {

@@ -15,6 +15,23 @@ function serializeInference(inference: InferenceConfig): string {
 }
 
 describe("parameter JSON transfer", () => {
+  it.each(["round_robin", "least_load"] as const)("round-trips routing policy %s", (policy) => {
+    const config = { ...createDefaultSimConfig(), routing_policy: policy };
+    expect(parseSimConfigJson(serializeSimConfig(config)).routing_policy).toBe(policy);
+    config.workload = { mode: "trace", arrival_mode: "closed_loop", session_rate: 1, seed: 0, trace: {} };
+    expect(parseSimConfigJson(serializeSimConfig(config)).routing_policy).toBe(policy);
+  });
+
+  it("defaults omitted routing policy to round robin", () => {
+    const { routing_policy: _policy, ...config } = createDefaultSimConfig();
+    expect(parseSimConfigJson(JSON.stringify(config)).routing_policy).toBe("round_robin");
+  });
+
+  it.each([null, "power_of_two", "", 1])("rejects invalid routing policy %s", (policy) => {
+    const config = { ...createDefaultSimConfig(), routing_policy: policy };
+    expect(() => parseSimConfigJson(JSON.stringify(config))).toThrow("routing_policy");
+  });
+
   it("rejects legacy root layouts and resolved wrappers without compatibility", () => {
     const old = { num_instances: 1, workload: createDefaultSimConfig().workload, engine: {}, perf_model: {} };
     expect(() => parseSimConfigJson(JSON.stringify(old))).toThrow("缺少参数：scheduler");

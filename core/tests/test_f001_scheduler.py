@@ -434,6 +434,7 @@ def test_budget_stop_restores_skipped_prefix_and_failed_candidate_before_tail() 
     scheduler.set_ready(2, False)
     batch = scheduler.select_prefill({})
     assert scheduler.ready_count == 2
+    assert scheduler.waiting_prompt_tokens == 4 * 64
 
     assert [item.waiting.request.request_id for item in batch.admitted] == [1]
     assert waiting.pops == 4

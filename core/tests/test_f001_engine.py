@@ -81,10 +81,14 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
 def test_output_len_one_finishes_at_prefill_end_and_reclaims_partial_page() -> None:
     engine = make_engine(page_size=64, capacity=256)
     engine.submit(request(0, prompt=63, output=1), 0)
+    assert engine.load_tokens == 63
     assert engine.start_step(0, 0) == (63, (0,))
+    assert engine.load_tokens == 64
     assert engine.finish_step(63) == (0,)
+    assert engine.load_tokens == 64
     assert engine._prefix_cache.state(0).k == 63
     engine.complete(63, 0)
+    assert engine.load_tokens == 0
     run = engine.finalize()
     assert run.cache_snapshot.resident_blocks == 0
     assert run.records[0].prefill_end == run.records[0].finish == 63
@@ -281,14 +285,18 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     assert demoted is not None and demoted.tier == "L2"
     for key in (1, 2):
         engine.submit(request(key, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
+    assert engine.load_tokens == 10
     assert engine.start_step(0, 0) is None
+    assert engine.load_tokens == 14
     assert engine.num_steps == 0
     events = engine.drain_events()
     assert len(events) == 1
     now, kind, transfer_id = events[0]
     assert (now, kind) == (5, EventKind.L2_L1_DONE)
     engine.on_transfer_done(kind, transfer_id, now)
+    assert engine.load_tokens == 14
     assert engine.start_step(now, 0) == (2, (1, 2))
+    assert engine.load_tokens == 12
     assert engine.finish_step(7) == (1, 2)
     assert engine.num_steps == 1
     promoted_page = cache.page(shared)
@@ -437,9 +445,12 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
     assert len(events) == 1
     now, kind, transfer_id = events[0]
     assert (now, kind) == (13, EventKind.L2_L1_DONE)
+    assert engine.load_tokens == 12
     assert engine.start_step(8, 1) == (10, (1,))
+    assert engine.load_tokens == 16
     assert 0 not in engine._running
     engine.on_transfer_done(kind, transfer_id, now)
+    assert engine.load_tokens == 16
     assert engine.finish_step(18) == (1,)
     assert 0 not in engine._running
     assert engine._pending_selection is not None

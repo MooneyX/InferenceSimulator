@@ -75,7 +75,12 @@ class Coordinator:
             heapq.heappush(self._heap, event)
 
     def _submit(self, request: InferenceRequest, now_ms: float) -> None:  # 请求与时刻 → 选路并投放
-        instance_id = self.router.select(request)
+        loads = (
+            tuple(engine.load_tokens for engine in self.engines)
+            if self.router.policy == "least_load"
+            else ()
+        )
+        instance_id = self.router.select(request, loads)
         engine = self.engines[instance_id]
         accepted = engine.submit(request, now_ms)
         self._process_aborts(instance_id)

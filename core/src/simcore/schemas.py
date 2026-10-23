@@ -519,6 +519,10 @@ class SimConfig(_Frozen):
     inference: InferenceConfig
     num_instances: int = Field(ge=1, description="同构推理副本数量；各自独占 L1/L2，共享 L3")
     shared_l3: SharedL3Config | None = None
+    routing_policy: Literal["round_robin", "least_load"] = Field(
+        default="round_robin",
+        description="实例路由：round_robin 保留会话亲和；least_load 每轮选择最低 token 负载实例",
+    )
 
 
 class RankCapacityReport(_Record):

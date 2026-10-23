@@ -57,7 +57,9 @@ def test_default_values_and_object_order_share_key(tmp_path: Path) -> None:
     assert cache.identity(normalized, None) == cache.identity(reordered, None)
 
 
-@pytest.mark.parametrize("field", ["seed", "num_requests", "scheduler", "hardware", "timing"])
+@pytest.mark.parametrize(
+    "field", ["seed", "num_requests", "scheduler", "hardware", "timing", "routing_policy"]
+)
 def test_effective_inputs_change_key(tmp_path: Path, config: SimConfig, field: str) -> None:
     payload = config.model_dump(mode="json")
     if field == "seed":
@@ -68,6 +70,8 @@ def test_effective_inputs_change_key(tmp_path: Path, config: SimConfig, field: s
         payload["scheduler"]["max_running_requests"] += 1
     elif field == "hardware":
         payload["inference"]["hardware"]["effective_fp16_tflops"] += 1
+    elif field == "routing_policy":
+        payload["routing_policy"] = "least_load"
     else:
         payload["inference"]["timing"]["decode_d1"] += 1
     cache = ResultCache(tmp_path / "cache.sqlite3", fingerprint="engine")

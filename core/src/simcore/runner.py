@@ -52,7 +52,11 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
             for index in range(config.num_instances)
         ),
         client,
-        Router(config.num_instances, session_affinity=trace_plan is not None),
+        Router(
+            config.num_instances,
+            policy=config.routing_policy,
+            session_affinity=trace_plan is not None,
+        ),
     ).run()
     plan = client.plan
     instances: list[InstanceResult] = []

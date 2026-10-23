@@ -6,6 +6,7 @@
 
 ```yaml
 num_instances: int             # 必填，正整数；每实例独占 L1/L2，共享 L3
+routing_policy: round_robin | least_load  # 默认 round_robin；least_load 每轮最低 token 负载优先，无强制亲和
 shared_l3:                     # 可选，null 或容量 0 表示关闭；全场最多一个池
   available_gb: float          # 非负十进制 GB 总预算
   lookup_latency_ms: float     # 默认 0，非负

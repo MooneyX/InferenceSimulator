@@ -81,12 +81,18 @@ class AdmissionScheduler:
         self._queued: set[int] = set()
         self._blocked: set[int] = set()
         self._ready_count: int = 0
+        self._waiting_prompt_tokens: int = 0
         self._last_arrival = float("-inf")
         self._ratio = 0.7
 
     @property
     def num_waiting(self) -> int:  # 等待队列 → 等待请求数
         return len(self._waiting)
+
+    @property
+    def waiting_prompt_tokens(self) -> int:
+        """所有等待请求的原始输入总量，包含查询/预取阻塞与回撤项。"""
+        return self._waiting_prompt_tokens
 
     @property
     def head_request_id(self) -> int | None:  # 队列首项 → 请求 ID，空队列返回 None
@@ -145,6 +151,7 @@ class AdmissionScheduler:
         self._waiting.insert(index, item)
         self._queued.add(key)
         self._ready_count += 1
+        self._waiting_prompt_tokens += item.request.prompt_len
 
     def select_prefill(
         self,
@@ -256,6 +263,7 @@ class AdmissionScheduler:
                         )
                     ):
                         self._queued.remove(request.request_id)
+                        self._waiting_prompt_tokens -= request.prompt_len
                         self._ready_count -= 1
                         pending_item = None
                         aborted.append(item)
@@ -278,6 +286,7 @@ class AdmissionScheduler:
                     selected_future += future
                     selected_pages_tokens += required_tokens
                 self._queued.remove(request.request_id)
+                self._waiting_prompt_tokens -= request.prompt_len
                 self._ready_count -= 1
                 pending_item = None
                 # 预算通过后才提交候选贡献的页，失败候选不能污染去重集合或传输顺序。

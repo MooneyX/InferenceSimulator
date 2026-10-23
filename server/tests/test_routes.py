@@ -130,15 +130,18 @@ class TestSuccess:
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
 
+    @pytest.mark.parametrize("policy", ["round_robin", "least_load"])
     def test_two_instances_have_independent_capacity_and_request_owners(
-        self, client: TestClient
+        self, client: TestClient, policy: str
     ) -> None:
         payload = make_payload(num_requests=4)
         payload["num_instances"] = 2
+        payload["routing_policy"] = policy
         response = run_simulation(client, payload)
         assert response.status_code == 200
         body = response.json()
         assert body["meta"]["config"]["num_instances"] == 2
+        assert body["meta"]["config"]["routing_policy"] == policy
         assert [item["instance_id"] for item in body["instances"]] == [0, 1]
         assert (
             body["metrics"]["l1_capacity_blocks"]

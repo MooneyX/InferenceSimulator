@@ -102,7 +102,10 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
     occupy(engine._prefix_cache, 99, 20)
     assert engine._prefix_cache.free_pages == 0
     assert engine.start_step(12, 1) == (10, ())
+    active_tokens = engine._prefix_cache.active_pages * cfg.page_size
+    assert engine.load_tokens == active_tokens
     assert engine.finish_step(22) == ()
+    assert engine.load_tokens == active_tokens + 8
     assert engine._retry_counts == {1: 1}
     assert engine._prefix_cache.evictions == 1
     assert engine._prefix_scheduler.advance_ratio({}) == 1.0

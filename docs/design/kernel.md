@@ -1,6 +1,14 @@
 # 当前引擎与调度
 
-每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。根请求轮询分配，子请求严格送回父轮实例，过载也不改道；缓存亲和不保证实际命中。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。实例选路由 `routing_policy` 控制：默认 `round_robin` 下根请求轮询、合成子请求严格送回父轮实例、Trace 同会话绑定首次分配的实例，过载也不改道；`least_load` 每轮重新选择最低 token 负载实例，不保留强制亲和，不迁移已分配请求。缓存亲和不保证实际命中。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+
+## 最低负载路由
+
+`least_load` 采用 SGLang `v0.4.10` 普通实例的 token 负载评估思路：`L = L1.active_pages * page_size + waiting_prompt_tokens`。物理项等于总容量减空闲和可驱逐缓存，包含私有页、受保护共享页和 L1 回载占位，同一物理页只算一次；不计 L2/L3 驻留。等待项按原始输入 `prompt_len` 累加，不减预计命中，不加未来输出或回撤后已生成的输出。
+
+逻辑等待包含查询/预取阻塞及已出调度队列、等待 L2 回载或等待执行的准入/恢复批次。回载完成但 GPU 尚忙时仍计等待，真正执行批次时才移除。回撤在步首释放的物理页立即反映，预插入的步末重排队项在 `finish_step` 后才贡献等待量。步首已申请的物理页算当前占用，但不读取预推进的生成数、未来前缀去重或未来完成释放；完成请求到 `RequestDone` 才释放 KV。
+
+每个发送事件读取 `Engine.load_tokens`，以不可变整数元组交给 Router，选全部实例中最低负载者；并列时从游标循环查找，选中后游标移至下一实例。读取队列输入累计值为 O(1)，每次选路为 O(实例数)。同刻请求逐个分配、逐个入队，后一个看到前一个的负载变化。这里使用即时快照，不模拟 SGLang Router 的周期采样延迟，也不采用 `power_of_two` 抽样。单实例行为不变；因父请求失败而未发送的后代不执行选路，归属失败实例。
 
 ## 请求与两种执行模式
 

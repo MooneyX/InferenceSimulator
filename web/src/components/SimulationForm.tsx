@@ -449,8 +449,10 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>{workloadMode === "trace" ? "每实例独占 L1/L2 · 全场共享 L3 · 同原会话的分支共享实例"
-            : "每实例独占 L1/L2 · 全场共享 L3 · 根请求轮询 · 子请求严格继承父实例"}</p>
+          <p>{config.routing_policy === "least_load"
+            ? "每实例独占 L1/L2 · 全场共享 L3 · 每轮最低负载优先，不绑定会话"
+            : workloadMode === "trace" ? "每实例独占 L1/L2 · 全场共享 L3 · 同原会话的分支共享实例"
+              : "每实例独占 L1/L2 · 全场共享 L3 · 根请求轮询 · 子请求严格继承父实例"}</p>
         </div>
 
         <div className="form-grid">
@@ -464,6 +466,19 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             error={errorByField.get("num_instances")}
             onChange={(value) => setConfig({ ...config, num_instances: value })}
           />
+          <div className="form-field">
+            <label htmlFor="routing-policy">实例路由策略</label>
+            <select id="routing-policy" name="routing_policy" value={config.routing_policy ?? "round_robin"}
+              aria-describedby="routing-policy-help"
+              onChange={(event) => setConfig({ ...config,
+                routing_policy: event.target.value as SimConfig["routing_policy"] })}>
+              <option value="round_robin">轮询（保留会话亲和）</option>
+              <option value="least_load">最低负载优先</option>
+            </select>
+            <small id="routing-policy-help">{config.routing_policy === "least_load"
+              ? "不可驱逐 L1 KV token + 等待输入 token；每轮重新选路，并列轮询，可能降低本地缓存命中。"
+              : "新根请求或新会话轮询分配，后续请求留在原实例。"}</small>
+          </div>
           <NumberField
             id="max-running-requests"
             name="scheduler.max_running_requests"

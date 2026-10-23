@@ -3122,6 +3122,16 @@
                 "type": "null"
               }
             ]
+          },
+          "routing_policy": {
+            "type": "string",
+            "enum": [
+              "round_robin",
+              "least_load"
+            ],
+            "title": "Routing Policy",
+            "description": "实例路由：round_robin 保留会话亲和；least_load 每轮选择最低 token 负载实例",
+            "default": "round_robin"
           }
         },
         "additionalProperties": false,

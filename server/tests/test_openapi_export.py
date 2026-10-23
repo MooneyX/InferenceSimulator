@@ -65,6 +65,9 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
     } & set(schemas)
     config = schemas["SimConfig"]["properties"]
     assert config["inference"]["$ref"] == "#/components/schemas/InferenceConfig"
+    assert config["routing_policy"]["enum"] == ["round_robin", "least_load"]
+    assert config["routing_policy"]["default"] == "round_robin"
+    assert "routing_policy" not in schemas["SimConfig"]["required"]
 
 
 @pytest.mark.parametrize(

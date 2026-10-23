@@ -52,7 +52,8 @@ export function parseSimConfigJson(json: string): SimConfig {
     throw new Error("JSON 格式不正确");
   }
 
-  const root = objectWithKeys(parsed, "", ["num_instances", "workload", "scheduler", "inference", "shared_l3"], { shared_l3: null });
+  const root = objectWithKeys(parsed, "", ["num_instances", "routing_policy", "workload", "scheduler", "inference", "shared_l3"],
+    { shared_l3: null, routing_policy: "round_robin" });
   if (root.shared_l3 != null) {
     root.shared_l3 = objectWithKeys(root.shared_l3, "shared_l3", ["available_gb", "lookup_latency_ms"], { available_gb: 0, lookup_latency_ms: initialSharedL3.lookup_latency_ms });
     numericFields(root.shared_l3 as Record<string, unknown>, "shared_l3", ["available_gb", "lookup_latency_ms"]);

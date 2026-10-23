@@ -7,6 +7,7 @@ export type SimResult = components["schemas"]["SimResult"];
 export type HTTPValidationError = components["schemas"]["HTTPValidationError"];
 export type JobReceipt = components["schemas"]["JobReceipt"];
 export type JobSummary = components["schemas"]["JobSummary"];
+export type RequestProgress = components["schemas"]["RequestProgress"];
 export type ScanRequest = components["schemas"]["ScanRequest"];
 export type ScanPoint = components["schemas"]["ScanPoint"];
 export type ScanTaskPage = components["schemas"]["ScanTaskPage"];

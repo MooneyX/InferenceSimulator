@@ -147,6 +147,45 @@
   font-variant-numeric: tabular-nums;
 }
 
+.request-progress {
+  flex: 0 1 330px;
+  min-width: 0;
+  width: 100%;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  --progress-color: var(--accent3);
+}
+
+.request-progress-summary, .request-progress-details {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.request-progress-details { font-size: 0.7rem; }
+.request-progress-completed { --progress-color: var(--accent2); }
+.request-progress-failed, .request-progress-cancelled, .request-progress-interrupted {
+  --progress-color: var(--accent4);
+}
+
+.request-progress progress {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  margin: 5px 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: var(--border);
+  accent-color: var(--progress-color);
+}
+
+.request-progress progress::-webkit-progress-bar { background: var(--border); }
+.request-progress progress::-webkit-progress-value { background: var(--progress-color); }
+.request-progress progress::-moz-progress-bar { background: var(--progress-color); }
+
 .job-list li .secondary-button {
   white-space: nowrap;
 }

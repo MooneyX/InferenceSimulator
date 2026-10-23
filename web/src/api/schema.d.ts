@@ -756,6 +756,7 @@ export interface components {
              * @default 0
              */
             point_archive_version: number;
+            request_progress?: components["schemas"]["RequestProgress"] | null;
         };
         /**
          * LognormalLength
@@ -1215,6 +1216,23 @@ export interface components {
             expert_weights_bytes: number;
         };
         /**
+         * RequestProgress
+         * @description 请求处理快照；失败和跳过均计入已处理数，不表示耗时进度。
+         */
+        RequestProgress: {
+            /**
+             * Total
+             * @description 全部轮次的计划请求数
+             */
+            total: number;
+            /** Completed */
+            completed: number;
+            /** Aborted */
+            aborted: number;
+            /** Skipped */
+            skipped: number;
+        };
+        /**
          * RequestRecord
          * @description 单请求的生命周期区间记录，供甘特图与指标汇总消费。
          *
@@ -1400,11 +1418,12 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running" | "completed" | "failed" | "not_run";
+            status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted" | "not_run";
             /** Error */
             error: string | null;
             /** Result Available */
             result_available: boolean;
+            request_progress?: components["schemas"]["RequestProgress"] | null;
         };
         /** ScanTaskPage */
         ScanTaskPage: {

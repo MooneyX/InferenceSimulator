@@ -1,13 +1,14 @@
 """一条全局事件时间线编排多个独占 KV 的推理实例。"""
 
 import heapq
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from time import monotonic
 
 from simcore.client import Client
 from simcore.engine import Engine, EngineRun
 from simcore.events import Event, EventFactory, EventKind
 from simcore.router import Router
-from simcore.schemas import ClientWakeup, InferenceRequest
+from simcore.schemas import ClientWakeup, InferenceRequest, RequestProgress
 
 __all__ = ["Coordinator"]
 
@@ -20,7 +21,16 @@ class Coordinator:
         engines: Sequence[Engine],
         client: Client,
         router: Router,
+        *,
+        total_requests: int = 0,
+        on_progress: Callable[[RequestProgress], None] | None = None,
     ) -> None:  # 引擎副本、客户端、选路器 → 建立统一事件队列；无返回值
+        self._on_progress = on_progress
+        self._total_requests = total_requests
+        self._completed = 0
+        self._aborted = 0
+        self._skipped = 0
+        self._next_progress_at = 0.0
         self.engines = tuple(engines)
         self.client = client
         self.router = router
@@ -45,7 +55,10 @@ class Coordinator:
     ) -> None:  # 副本 ID → 通知客户端失败并标记后代；无返回值
         engine = self.engines[instance_id]
         for request_id in engine.drain_aborts():
-            engine.register_skipped(self.client.on_request_aborted(request_id))
+            skipped = self.client.on_request_aborted(request_id)
+            engine.register_skipped(skipped)
+            self._aborted += 1
+            self._skipped += len(skipped)
 
     def _schedule_step(
         self, instance_id: int, now_ms: float
@@ -88,8 +101,22 @@ class Coordinator:
         if accepted:
             self._schedule_step(instance_id, now_ms)
 
+    def _report_progress(self, *, force: bool = False) -> None:
+        if self._on_progress is None:
+            return
+        now = monotonic()
+        if force or now >= self._next_progress_at:
+            self._on_progress(RequestProgress(
+                total=self._total_requests, completed=self._completed,
+                aborted=self._aborted, skipped=self._skipped,
+            ))
+            self._next_progress_at = now + 1.0
+
     def run(self) -> tuple[EngineRun, ...]:  # 消费全局事件堆直至清空 → 每副本的原始仿真结果
+        self._report_progress(force=True)
         while self._heap:
+            if self._on_progress is not None:
+                self._report_progress()
             event = heapq.heappop(self._heap)
             now_ms = event.time
             if event.kind is EventKind.STEP_DONE:  # 引擎步完成
@@ -107,6 +134,7 @@ class Coordinator:
                 self._enqueue_wakeups(
                     self.client.on_request_completed(event.ref, now_ms)
                 )  # 生成新的发送事件
+                self._completed += 1
                 self._schedule_step(instance_id, now_ms)  # 可能冗余
             elif event.kind is EventKind.L3_LOOKUP_DONE:
                 instance_id = self.router.instance_of(event.ref)
@@ -136,4 +164,5 @@ class Coordinator:
                 end = now_ms + duration
                 self._busy_until[instance_id] = end
                 heapq.heappush(self._heap, self._factory.step_done(end, instance_id))
+        self._report_progress(force=True)
         return tuple(engine.finalize() for engine in self.engines)

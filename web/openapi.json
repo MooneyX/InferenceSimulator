@@ -1716,6 +1716,16 @@
             "type": "integer",
             "title": "Point Archive Version",
             "default": 0
+          },
+          "request_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -2619,6 +2629,41 @@
         ],
         "title": "RankCapacityReport"
       },
+      "RequestProgress": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "description": "全部轮次的计划请求数"
+          },
+          "completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completed"
+          },
+          "aborted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Aborted"
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Skipped"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "total",
+          "completed",
+          "aborted",
+          "skipped"
+        ],
+        "title": "RequestProgress",
+        "description": "请求处理快照；失败和跳过均计入已处理数，不表示耗时进度。"
+      },
       "RequestRecord": {
         "properties": {
           "id": {
@@ -3041,6 +3086,8 @@
               "running",
               "completed",
               "failed",
+              "cancelled",
+              "interrupted",
               "not_run"
             ],
             "title": "Status"
@@ -3059,6 +3106,16 @@
           "result_available": {
             "type": "boolean",
             "title": "Result Available"
+          },
+          "request_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

@@ -228,6 +228,20 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
   });
 
+  it("shows live request progress for a single background task", async () => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "active", kind: "single", status: "running",
+      total: 1, completed: 0, failed: 0, error: null, cache: null, lookup_ms: null,
+      axes: null, version: 2, code_fingerprint: "engine", code_version_status: "current", point_archive_version: 0,
+      request_progress: { total: 10, completed: 5, aborted: 1, skipped: 1 } }]);
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    expect(within(tasks).getByText("已处理 7 / 10 请求")).toBeInTheDocument();
+    expect(within(tasks).getByText("70%")).toBeInTheDocument();
+    expect(within(tasks).getByRole("progressbar")).toHaveAttribute("value", "7");
+    expect(within(tasks).getByRole("button", { name: "取消任务" })).toBeInTheDocument();
+    expect(within(tasks).queryByRole("button", { name: "查看结果" })).not.toBeInTheDocument();
+  });
+
   it("keeps results hidden after refresh even when completed tasks are listed", async () => {
     vi.mocked(listJobs).mockResolvedValue([{ id: "previous", kind: "single", status: "completed",
       total: 1, completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0,
@@ -271,7 +285,7 @@ describe("App", () => {
       point_archive_version: 1 }]);
     vi.mocked(getScanTasks).mockResolvedValue({ total: 2, items: [
       { index: 0, values: { num_instances: 1 }, status: "completed", error: null,
-        result_available: true },
+        result_available: true, request_progress: { total: 10, completed: 7, aborted: 1, skipped: 2 } },
       { index: 1, values: { num_instances: 0 }, status: "failed", error: "point failed",
         result_available: false },
     ] });
@@ -279,8 +293,11 @@ describe("App", () => {
     render(<App />);
     const tasks = await screen.findByLabelText("后台任务");
     expect(within(tasks).getByText(/1 点失败/)).toBeInTheDocument();
+    expect(within(tasks).getByText("已结束组合 2/2")).toBeInTheDocument();
     fireEvent.click(within(tasks).getByRole("button", { name: "展开组合" }));
     expect(await within(tasks).findByText("num_instances: 1")).toBeInTheDocument();
+    expect(within(tasks).getByText("已处理 10 / 10 请求")).toBeInTheDocument();
+    expect(within(tasks).getByRole("progressbar", { name: "请求处理进度" })).toHaveAttribute("value", "10");
     expect(within(tasks).getByText("point failed")).toBeInTheDocument();
     expect(within(tasks).getAllByRole("button", { name: "查看结果" })).toHaveLength(1);
     expect(within(tasks).getByRole("link", { name: "查看原始 JSON" }))

@@ -58,6 +58,28 @@ it("restores completed jobs after refresh without displaying their results until
   unmount();
 });
 
+it("updates request progress without reordering jobs or accepting stale progress", async () => {
+  const running = { ...queued, status: "running" as const,
+    request_progress: { total: 10, completed: 0, aborted: 0, skipped: 0 } };
+  vi.mocked(listJobs).mockResolvedValue([{ ...queued, id: "newer" }, running]);
+  const { result } = renderHook(() => useJobs(vi.fn(), vi.fn()));
+  await waitFor(() => expect(result.current.jobs).toHaveLength(2));
+  const updated = { ...running, version: 2,
+    request_progress: { total: 10, completed: 5, aborted: 1, skipped: 1 } };
+  act(() => { FakeEvents.current.emit("update", updated); });
+  expect(result.current.jobs.map((job) => job.id)).toEqual(["newer", "job-1"]);
+  expect(result.current.jobs[1].request_progress).toEqual(updated.request_progress);
+  act(() => { FakeEvents.current.emit("update", running); });
+  act(() => { FakeEvents.current.emit("snapshot", [{ ...queued, id: "newer" }, running]); });
+  expect(result.current.jobs[1].request_progress).toEqual(updated.request_progress);
+  act(() => { FakeEvents.current.emit("update", { ...finished, request_progress: {
+    total: 10, completed: 8, aborted: 1, skipped: 1,
+  } }); });
+  act(() => { FakeEvents.current.emit("update", updated); });
+  expect(result.current.jobs[1].status).toBe("completed");
+  expect(result.current.jobs[1].request_progress?.completed).toBe(8);
+});
+
 it("receives SSE completion, loads results and ignores an older status query", async () => {
   const onResult = vi.fn();
   const onError = vi.fn();

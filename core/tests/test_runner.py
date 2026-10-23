@@ -44,6 +44,46 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
     )
 
 
+@pytest.mark.parametrize("instances", [1, 2])
+def test_request_progress_is_throttled_and_matches_result(instances: int) -> None:
+    config = make_config(num_requests=8).model_copy(update={"num_instances": instances})
+    snapshots = []
+    clock = 0.0
+
+    def tick() -> float:
+        nonlocal clock
+        clock += 0.125
+        return clock
+
+    with patch("simcore.coordinator.monotonic", side_effect=tick):
+        result = simulate(config, on_progress=lambda item: snapshots.append((clock, item)))
+    assert len(snapshots) > 2
+    assert snapshots[0][1].model_dump() == {
+        "total": 8, "completed": 0, "aborted": 0, "skipped": 0,
+    }
+    assert all(b[0] - a[0] >= 1 for a, b in zip(snapshots, snapshots[1:-1]))
+    counts = [item.completed + item.aborted + item.skipped for _, item in snapshots]
+    assert counts == sorted(counts)
+    assert all(item.total == 8 for _, item in snapshots)
+    assert snapshots[-1][1].model_dump() == {
+        "total": result.meta.num_requests, "completed": result.meta.num_completed,
+        "aborted": result.meta.num_aborted, "skipped": result.meta.num_skipped,
+    }
+    baseline = simulate(config)
+    assert result.model_dump(exclude={"meta": {"wall_clock_ms"}}) == baseline.model_dump(
+        exclude={"meta": {"wall_clock_ms"}},
+    )
+
+
+def test_fast_simulation_reports_initial_and_final_progress() -> None:
+    snapshots = []
+    with patch("simcore.coordinator.monotonic", return_value=0):
+        simulate(make_config(num_requests=2), on_progress=snapshots.append)
+    assert len(snapshots) == 2
+    assert snapshots[0].completed == 0
+    assert snapshots[-1].completed == 2
+
+
 @pytest.fixture(scope="module")
 def result() -> SimResult:
     result = simulate(make_config())
@@ -425,12 +465,16 @@ class TestEndToEnd:
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
             perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
         )
-        result = simulate(cfg)
+        snapshots = []
+        result = simulate(cfg, on_progress=snapshots.append)
         assert (result.meta.num_completed, result.meta.num_aborted, result.meta.num_skipped) == (
             0,
             1,
             2,
         )
+        assert snapshots[-1].model_dump() == {
+            "total": 3, "completed": 0, "aborted": 1, "skipped": 2,
+        }
         assert result.metrics.arrival_qps is None
 
     def test_json_roundtrip(self, result: SimResult) -> None:

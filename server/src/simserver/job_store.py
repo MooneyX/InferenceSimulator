@@ -45,7 +45,16 @@ class JobStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS job_points_index
                 ON job_points(job_id, point_index)
             """)
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS job_request_progress (
+                    job_id TEXT NOT NULL,
+                    point_index INTEGER NOT NULL,
+                    progress TEXT NOT NULL,
+                    PRIMARY KEY (job_id, point_index),
+                    FOREIGN KEY (job_id) REFERENCES jobs(id)
+                )
+            """)
+            connection.execute("PRAGMA user_version = 3")
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
@@ -60,6 +69,7 @@ class JobStore:
         point: dict[str, Any] | None = None,
         point_index: int | None = None,
         point_result: str | None = None,
+        request_progress: dict[str, int] | None = None,
     ) -> None:
         with self._database() as connection:
             connection.execute(
@@ -76,7 +86,18 @@ class JobStore:
                     result,
                 ),
             )
+            if request_progress is not None:
+                connection.execute(
+                    "INSERT INTO job_request_progress (job_id, point_index, progress) "
+                    "VALUES (?, ?, ?) ON CONFLICT(job_id, point_index) "
+                    "DO UPDATE SET progress=excluded.progress",
+                    (summary["id"], point_index, json.dumps(request_progress)),
+                )
             if point is not None:
+                connection.execute(
+                    "DELETE FROM job_request_progress WHERE job_id = ? AND point_index = ?",
+                    (summary["id"], point_index),
+                )
                 connection.execute(
                     """
                     INSERT INTO job_points (job_id, sequence, point, point_index, result)
@@ -149,6 +170,14 @@ class JobStore:
                 )
             return {index: {**json.loads(point), "result_available": bool(available)}
                     for index, point, available in rows}
+
+    def progress_page(self, job_id: str, start: int, limit: int) -> dict[int, dict[str, int]]:
+        with self._database() as connection:
+            return {index: json.loads(progress) for index, progress in connection.execute(
+                "SELECT point_index, progress FROM job_request_progress "
+                "WHERE job_id = ? AND point_index >= ? AND point_index < ?",
+                (job_id, start, start + limit),
+            )}
 
     def point_result(self, job_id: str, index: int) -> str | None:
         with self._database() as connection:

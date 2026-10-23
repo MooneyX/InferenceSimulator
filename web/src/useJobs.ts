@@ -20,7 +20,9 @@ export function useJobs(onResult: (response: SimulationResponse | {
   function merge(item: JobSummary) {
     if ((versions.current.get(item.id) ?? -1) > item.version) return;
     versions.current.set(item.id, item.version);
-    setJobs((current) => [item, ...current.filter((job) => job.id !== item.id)]);
+    setJobs((current) => current.some((job) => job.id === item.id)
+      ? current.map((job) => job.id === item.id ? item : job)
+      : [item, ...current]);
     if (item.id === selected.current && item.kind === "single" && item.status === "completed"
         && loaded.current !== item.id) void loadResult(item.id);
   }

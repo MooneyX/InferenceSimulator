@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult
-from simcore.schemas import TracePlan
+from simcore.schemas import RequestProgress, TracePlan
 from simserver.jobs import JobManager
 from simserver.routes import ErrorResponse, FieldValidationResponse
 from simserver.sweep import PARAMETERS, ScanAxis, ScanRequest
@@ -36,14 +36,16 @@ class JobSummary(BaseModel):
     code_version_status: Literal["current", "stale", "unknown"]
     axes: list[ScanAxis] | None
     point_archive_version: int = 0
+    request_progress: RequestProgress | None = None
 
 
 class ScanTask(BaseModel):
     index: int
     values: dict[str, Any]
-    status: Literal["queued", "running", "completed", "failed", "not_run"]
+    status: Literal["queued", "running", "completed", "failed", "cancelled", "interrupted", "not_run"]
     error: str | None
     result_available: bool
+    request_progress: RequestProgress | None = None
 
 
 class ScanTaskPage(BaseModel):

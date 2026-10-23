@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getScanParameters, getScanTasks } from "../api/client";
 import type { JobSummary, ScanTaskPage } from "../api/types";
+import { RequestProgress } from "./RequestProgress";
 
 const PAGE_SIZE = 20;
 const statusLabels = {
@@ -9,6 +10,8 @@ const statusLabels = {
   running: "运行中",
   completed: "已完成",
   failed: "失败",
+  cancelled: "已取消",
+  interrupted: "已中断",
   not_run: "未执行",
 };
 
@@ -21,6 +24,7 @@ export function ScanTaskList({ job, onSelect }: {
   const [data, setData] = useState<ScanTaskPage | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const refreshPage = useRef<(() => void) | null>(null);
   const total = job.point_archive_version === 1 ? job.total : job.completed + job.failed;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
@@ -42,13 +46,42 @@ export function ScanTaskList({ job, onSelect }: {
   useEffect(() => {
     if (!expanded) return;
     let active = true;
-    void getScanTasks(job.id, currentPage * PAGE_SIZE, PAGE_SIZE).then((response) => {
-      if (active) { setData(response); setError(""); }
-    }).catch((cause: unknown) => {
-      if (active) setError(cause instanceof Error ? cause.message : "子任务加载失败");
-    });
-    return () => { active = false; };
-  }, [expanded, job.id, job.version, currentPage]);
+    let inFlight = false;
+    let dirty = false;
+    let lastStarted: number | null = null;
+    let timer: number | undefined;
+
+    async function refresh() {
+      dirty = true;
+      if (inFlight || timer !== undefined) return;
+      const delay = lastStarted === null ? 0 : Math.max(0, 1000 - (Date.now() - lastStarted));
+      if (delay > 0) {
+        timer = window.setTimeout(() => { timer = undefined; void refresh(); }, delay);
+        return;
+      }
+      dirty = false;
+      inFlight = true;
+      lastStarted = Date.now();
+      try {
+        const response = await getScanTasks(job.id, currentPage * PAGE_SIZE, PAGE_SIZE);
+        if (active) { setData(response); setError(""); }
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : "子任务加载失败");
+      } finally {
+        inFlight = false;
+        if (active && dirty) void refresh();
+      }
+    }
+
+    refreshPage.current = () => { void refresh(); };
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      refreshPage.current = null;
+    };
+  }, [expanded, job.id, currentPage]);
+
+  useEffect(() => { refreshPage.current?.(); }, [expanded, job.id, currentPage, job.version]);
 
   return <div className="scan-task-list">
     <button type="button" className="secondary-button secondary-button-small"
@@ -68,6 +101,7 @@ export function ScanTaskList({ job, onSelect }: {
             <span className="scan-task-values">{Object.entries(item.values).map(([key, value]) =>
               `${labels[key] ?? key}: ${value === null ? "null" : String(value)}`).join(" · ")}</span>
             <span className={`job-status job-status-${item.status}`}>{statusLabels[item.status]}</span>
+            <RequestProgress progress={item.request_progress} status={item.status} />
             {item.error && <span className="scan-task-error">{item.error}</span>}
             {item.result_available && <>
               <button type="button" className="secondary-button secondary-button-small"

@@ -4,6 +4,7 @@ import { clearSimulationCache, SimulationApiError, type SimulationCacheInfo } fr
 import type { ScanRequest, SimConfig, SimResult } from "./api/types";
 import { useJobs } from "./useJobs";
 import { MetricsPanel } from "./components/MetricsPanel";
+import { RequestProgress } from "./components/RequestProgress";
 import { SimulationForm } from "./components/SimulationForm";
 import { ScanTaskList } from "./components/ScanTaskList";
 import { WarningsPanel } from "./components/WarningsPanel";
@@ -157,7 +158,9 @@ export default function App() {
               title={job.code_fingerprint || "首次升级前的任务，无法追溯代码版本"}>
               {job.code_version_status === "current" ? "当前代码版本"
                 : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"}</span>
-            <span className="job-progress">{job.completed + job.failed}/{job.total}</span>
+            {job.kind === "scan"
+              ? <span className="job-progress">已结束组合 {job.completed + job.failed}/{job.total}</span>
+              : <RequestProgress progress={job.request_progress} status={job.status} />}
             {job.failed > 0 && job.kind === "scan" && ` · ${job.failed} 点失败`}
             {job.error && (job.kind !== "scan" || job.status === "interrupted") && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&

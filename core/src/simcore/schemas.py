@@ -39,6 +39,7 @@ __all__ = [
     "PerfModelConfig",
     "PoissonLength",
     "RankCapacityReport",
+    "RequestProgress",
     "RequestRecord",
     "ResolutionReport",
     "RouterSpec",
@@ -914,6 +915,15 @@ class Metrics(_Record):
             ):
                 raise ValueError(f"{tier.upper()} 物理块容量不守恒")
         return self
+
+
+class RequestProgress(_Record):
+    """请求处理快照；失败和跳过均计入已处理数，不表示耗时进度。"""
+
+    total: int = Field(ge=0, description="全部轮次的计划请求数")
+    completed: int = Field(ge=0)
+    aborted: int = Field(ge=0)
+    skipped: int = Field(ge=0)
 
 
 class SimMeta(_Record):

@@ -3,8 +3,10 @@
 开环模式按独立泊松时钟投放请求；显式闭环模式只预先规划根到达。
 """
 
+from collections.abc import Callable
 from dataclasses import fields
 from time import perf_counter
+from typing import cast
 
 from simcore.capacity import prepare_runtime
 from simcore.client import Client
@@ -18,11 +20,13 @@ from simcore.schemas import (
     AnalyticalSummary,
     InstanceResult,
     Metrics,
+    RequestProgress,
     RequestRecord,
     SimConfig,
     SimMeta,
     SimResult,
     SkippedRequest,
+    SyntheticWorkloadConfig,
     TracePlan,
     WorkloadPlan,
 )
@@ -30,8 +34,13 @@ from simcore.schemas import (
 __all__ = ["simulate"]
 
 
-def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimResult:
-    """按唯一配置运行仿真；Trace 计划内容通过独立资源参数提供。"""
+def simulate(
+    config: SimConfig,
+    *,
+    trace_plan: TracePlan | None = None,
+    on_progress: Callable[[RequestProgress], None] | None = None,
+) -> SimResult:
+    """按配置运行仿真；可选进度回调每秒触发，开始和请求结算结束时立即触发。"""
     if config.workload.mode == "trace" and trace_plan is None:
         raise ValueError("Trace 仿真须提供 trace_plan 请求计划")
     if config.workload.mode != "trace" and trace_plan is not None:
@@ -53,6 +62,11 @@ def simulate(config: SimConfig, *, trace_plan: TracePlan | None = None) -> SimRe
         ),
         client,
         Router(config.num_instances, policy=config.routing_policy),
+        total_requests=(
+            len(trace_plan.requests) if trace_plan is not None
+            else cast(SyntheticWorkloadConfig, config.workload.synthetic).num_requests
+        ),
+        on_progress=on_progress,
     ).run()
     plan = client.plan
     instances: list[InstanceResult] = []

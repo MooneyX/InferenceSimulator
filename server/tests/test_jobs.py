@@ -41,6 +41,10 @@ def test_single_task_and_cache(tmp_path: Path, monkeypatch) -> None:
         second = client.get(f"/api/jobs/{second_key}/result")
         assert second.headers["X-Simulation-Cache"] == "hit"
         assert second.json() == first.json()
+        for ident in (key, second_key):
+            assert client.get(f"/api/jobs/{ident}").json()["request_progress"] == {
+                "total": 2, "completed": 2, "aborted": 0, "skipped": 0,
+            }
         assert client.get("/api/jobs/not-found").status_code == 404
 
 
@@ -114,7 +118,8 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
         assert recovered["point_archive_version"] == 0
         page = client.get("/api/jobs/unfinished/tasks").json()
         assert page == {"total": 1, "items": [{"index": 0, "values": point["values"],
-                  "status": "completed", "error": None, "result_available": False}]}
+                  "status": "completed", "error": None, "result_available": False,
+                  "request_progress": None}]}
         assert client.get("/api/jobs/unfinished/points/0/result").status_code == 409
         assert (
             client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]

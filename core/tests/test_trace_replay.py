@@ -82,6 +82,21 @@ def plan(*, output: int = 1, second_offset: float = 1000) -> TracePlan:
     )
 
 
+@pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
+@pytest.mark.parametrize("output", [0, 1])
+def test_trace_progress_counts_turns_and_terminal_outcomes(mode, output) -> None:
+    snapshots = []
+    source = plan(output=output)
+    result = simulate(config(mode=mode), trace_plan=source, on_progress=snapshots.append)
+    assert all(item.total == len(source.requests) for item in snapshots)
+    assert snapshots[0].completed == snapshots[0].aborted == snapshots[0].skipped == 0
+    assert snapshots[-1].model_dump() == {
+        "total": 2, "completed": result.meta.num_completed,
+        "aborted": result.meta.num_aborted, "skipped": result.meta.num_skipped,
+    }
+    assert sum(snapshots[-1].model_dump().values()) == 4
+
+
 def test_trace_open_loop_reuses_input_pages_on_same_instance() -> None:
     original = config().model_copy(update={"routing_policy": "cache_affinity"})
     original_data = original.model_dump()

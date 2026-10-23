@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getScanParameters, uploadReplayPlan } from "../api/client";
 import type { ScanParameter, ScanRequest, SimConfig } from "../api/types";
-import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
+import { parseSimConfigJson, serializeScanPlan } from "../config/parameterTransfer";
 import { validateSimConfig } from "../config/simulation";
 import "./ScanPanel.css";
 
@@ -191,8 +191,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, disabled = false }: Pr
     try {
       const config = makeBase();
       scanDimensions(config, axes, catalog, mode, arrival);
-      const json = JSON.stringify({ version: 1, base: JSON.parse(serializeSimConfig(config)),
-        axes: axes.map(({ key, text }) => ({ key, text })) });
+      const json = serializeScanPlan(config, axes.map(({ key, text }) => ({ key, text })));
       setScanJson(json);
       const message = mode === "trace"
         ? "已生成扫描方案 JSON；再次使用时请重新上传回放计划"

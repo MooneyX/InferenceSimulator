@@ -68,10 +68,11 @@
   gap: 6px;
 }
 
-.scan-batches label {
+.scan-batch-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 8px 12px;
   min-width: 0;
   padding: 8px 12px;
   border: 1px solid var(--border);
@@ -80,10 +81,22 @@
   color: var(--text-dim);
   font-size: 0.75rem;
   overflow-wrap: anywhere;
+}
+
+.scan-batch-row > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   cursor: pointer;
 }
 
-.scan-batches label:hover {
+.scan-batch-row .result-parameter-export {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+.scan-batch-row:hover {
   border-color: var(--accent);
   color: var(--text);
 }

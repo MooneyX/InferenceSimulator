@@ -135,6 +135,14 @@ def test_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert "usage" in capsys.readouterr().err
 
 
+def test_job_summary_preserves_optional_scan_base() -> None:
+    schema = json.loads(render_openapi())["components"]["schemas"]["JobSummary"]
+    assert schema["properties"]["base"]["anyOf"] == [
+        {"$ref": "#/components/schemas/SimConfig"}, {"type": "null"},
+    ]
+    assert "base" not in schema["required"]
+
+
 def test_committed_openapi_up_to_date() -> None:
     """入库的 web/openapi.json 必须与当前模型一致；失败时在 web/ 下执行 ``npm run gen:api``。"""
     assert COMMITTED.is_file(), f"缺少 {COMMITTED}，请在 web/ 下执行 npm run gen:api"

@@ -751,6 +751,7 @@ export interface components {
             code_version_status: "current" | "stale" | "unknown";
             /** Axes */
             axes: components["schemas"]["ScanAxis"][] | null;
+            base?: components["schemas"]["SimConfig"] | null;
             /**
              * Point Archive Version
              * @default 0

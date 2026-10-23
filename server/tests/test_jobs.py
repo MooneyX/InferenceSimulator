@@ -5,8 +5,10 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
+from simcore import SimConfig
 from simserver import create_app
 from simserver.job_store import JobStore
 from test_routes import make_payload
@@ -58,11 +60,16 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         scan_id = client.post(
             "/api/scans",
             json={
-                "base": make_payload(num_requests=1),
+                "base": {**make_payload(num_requests=1), "num_instances": 3},
                 "axes": [{"key": "num_instances", "values": [1, 2]}],
             },
         ).json()["id"]
-        assert wait_job(client, scan_id)["status"] == "completed"
+        scan_summary = wait_job(client, scan_id)
+        assert scan_summary["status"] == "completed"
+        assert scan_summary["base"]["num_instances"] == 3
+        assert client.get("/api/jobs").json()[0]["base"] == scan_summary["base"]
+        changes = client.app.state.jobs.changes(0, timeout=0)[1]
+        assert next(item for item in changes if item["id"] == scan_id)["base"] == scan_summary["base"]
         points = client.get(f"/api/jobs/{scan_id}/points").json()
         page = client.get(f"/api/jobs/{scan_id}/tasks?offset=1&limit=1").json()
         assert page["total"] == 2
@@ -86,10 +93,16 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         assert restarted.get(f"/api/jobs/{scan_id}/points").json() == points
         assert restarted.get(f"/api/jobs/{scan_id}/points/1/result").content == archived_point
         assert restarted.get(f"/api/jobs/{scan_id}/tasks?offset=1&limit=1").json() == page
-        assert restarted.get(f"/api/jobs/{scan_id}").json()["code_version_status"] == "stale"
+        archived = restarted.get(f"/api/jobs/{scan_id}").json()
+        assert archived["code_version_status"] == "stale"
+        assert archived["base"] == scan_summary["base"]
+        assert archived["axes"] == scan_summary["axes"]
 
 
-def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path: Path) -> None:
+@pytest.mark.parametrize("base_snapshot", ["missing", "null", "present"])
+def test_restart_marks_unfinished_scan_interrupted_with_partial_points(
+    tmp_path: Path, base_snapshot: str,
+) -> None:
     path = tmp_path / "results.sqlite3"
     store = JobStore(path.with_name("jobs.sqlite3"))
     summary = {
@@ -106,10 +119,18 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
         "axes": [{"key": "num_instances", "values": [1, 2, 3]}],
         "code_fingerprint": "old-engine",
     }
+    base = SimConfig.model_validate(make_payload(num_requests=1)).model_dump(mode="json")
+    expected_base = base if base_snapshot == "present" else None
+    if base_snapshot != "missing":
+        summary["base"] = expected_base
     point = {"values": {"num_instances": 1}, "status": "completed", "signature": "old"}
     store.save(summary, point=point)
     with TestClient(create_app(cache_path=path)) as client:
         recovered = client.get("/api/jobs/unfinished").json()
+        assert recovered["base"] == expected_base
+        assert store.get("unfinished")["base"] == expected_base
+        assert client.get("/api/jobs").json()[0]["base"] == expected_base
+        assert client.app.state.jobs.changes(0, timeout=0)[1][0]["base"] == expected_base
         assert recovered["status"] == "interrupted"
         assert recovered["completed"] == 1
         assert recovered["failed"] == 0
@@ -126,7 +147,9 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(tmp_path:
         )
         assert client.delete("/api/jobs/unfinished").json()["status"] == "interrupted"
     with TestClient(create_app(cache_path=path)) as client:
-        assert client.get("/api/jobs/unfinished").json()["status"] == "interrupted"
+        recovered = client.get("/api/jobs/unfinished").json()
+        assert recovered["status"] == "interrupted"
+        assert recovered["base"] == expected_base
         assert (
             client.get("/api/jobs/unfinished/points").json()[0]["signature"] == point["signature"]
         )

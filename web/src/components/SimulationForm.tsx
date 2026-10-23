@@ -468,15 +468,11 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
           <div className="form-field">
             <label htmlFor="routing-policy">实例路由策略</label>
             <select id="routing-policy" name="routing_policy" value={config.routing_policy ?? "least_load"}
-              aria-describedby="routing-policy-help"
               onChange={(event) => setConfig({ ...config,
                 routing_policy: event.target.value as SimConfig["routing_policy"] })}>
               <option value="least_load">最低负载优先</option>
               <option value="cache_affinity">缓存亲和（新会话轮询）</option>
             </select>
-            <small id="routing-policy-help">{(config.routing_policy ?? "least_load") === "least_load"
-              ? "不可驱逐 L1 KV token + 等待输入 token；每轮重新选路，并列轮询，可能降低本地缓存命中。"
-              : "新会话轮询分配，同会话的所有请求固定在首次分配的实例，不保证缓存命中。"}</small>
           </div>
           <NumberField
             id="max-running-requests"

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanPoint } from "../api/types";
 import { ScanResults } from "./ScanResults";
+import { createDefaultSimConfig } from "../config/simulation";
 
 const { setOption } = vi.hoisted(() => ({ setOption: vi.fn() }));
 vi.mock("../api/client", () => ({ getScanParameters: vi.fn(), getScanPoints: vi.fn() }));
@@ -37,6 +38,27 @@ beforeEach(() => {
 });
 
 describe("ScanResults", () => {
+  it("exports each original scan independently of chart selection and filtering", async () => {
+    const base = { ...createDefaultSimConfig(), num_instances: 7 };
+    render(<ScanResults jobs={[{ ...job("scan-a"), base },
+      { ...job("scan-b"), base: { ...base, num_instances: 9 } }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    await waitFor(() => expect(screen.getByText(/独立配置点 4/)).toBeInTheDocument());
+    fireEvent.click(within(screen.getByLabelText("横轴参数值")).getByRole("checkbox", { name: "2" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "导出扫描方案" })[1]);
+    expect(screen.getByText("已选 2 / 2 项")).toBeInTheDocument();
+    expect(JSON.parse((screen.getByLabelText("扫描方案 JSON") as HTMLInputElement).value)).toEqual({
+      version: 1, base: { ...base, num_instances: 9 },
+      axes: axes.map(({ key, values }) => ({ key, text: values.map(String).join(",") })),
+    });
+  });
+
+  it("does not reconstruct an original plan from legacy point configs", () => {
+    render(<ScanResults jobs={[job("legacy")]} />);
+    expect(screen.getByRole("button", { name: "导出扫描方案" })).toBeDisabled();
+    expect(screen.getByText("历史任务未保存完整扫描方案，无法导出")).toBeInTheDocument();
+  });
+
   it("paginates scan checkboxes and applies global or page-only selection across pages", async () => {
     render(<ScanResults jobs={Array.from({ length: 12 }, (_, index) =>
       job(`scan-${String(index + 1).padStart(2, "0")}`))} />);

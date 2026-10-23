@@ -130,6 +130,8 @@ class Job:
             "version": self.version,
             "code_fingerprint": self.code_fingerprint,
             "axes": self.axes if self.kind == "scan" else None,
+            "base": self.base.model_dump(mode="json")
+            if self.kind == "scan" and self.base is not None else None,
             "point_archive_version": self.point_archive_version,
             "request_progress": self.request_progress,
         }
@@ -169,7 +171,7 @@ class JobManager:
             job = Job(
                 record["id"],
                 record["kind"],
-                None,
+                SimConfig.model_validate(record["base"]) if record.get("base") is not None else None,
                 None,
                 False,
                 record["total"],
@@ -206,7 +208,7 @@ class JobManager:
             if not fingerprint
             else ("current" if fingerprint == self.code_fingerprint else "stale")
         )
-        return {**summary, "code_version_status": status}
+        return {**summary, "base": summary.get("base"), "code_version_status": status}
 
     def _changed(self, job: Job, *, point: dict[str, Any] | None = None,
                  point_index: int | None = None, point_result: str | None = None,

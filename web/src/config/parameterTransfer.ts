@@ -361,3 +361,7 @@ export function serializeSimConfig(config: SimConfig): string {
   parseSimConfigJson(json);
   return json;
 }
+
+export function serializeScanPlan(base: SimConfig, axes: { key: string; text: string }[]): string {
+  return JSON.stringify({ version: 1, base: JSON.parse(serializeSimConfig(base)), axes });
+}

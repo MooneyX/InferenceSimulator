@@ -35,6 +35,7 @@ class JobSummary(BaseModel):
     code_fingerprint: str
     code_version_status: Literal["current", "stale", "unknown"]
     axes: list[ScanAxis] | None
+    base: SimConfig | None = None
     point_archive_version: int = 0
     request_progress: RequestProgress | None = None
 

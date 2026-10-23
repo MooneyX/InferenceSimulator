@@ -10,6 +10,7 @@ import { availableKeys, buildChart, metricCharts, metricUnit, metricsOf, palette
   type Roles, type Role, type ScanData } from "../scan/chart";
 import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
 import { formatScanTooltip } from "../scan/tooltip.js";
+import { ParameterExport } from "./ParameterExport";
 import "./ScanResults.css";
 
 echarts.use([LineChart, CanvasRenderer, DataZoomComponent, GridComponent, LegendComponent,
@@ -172,11 +173,17 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
           onClick={() => updateSelected(pageScans.map((job) => job.id), false)}>当页全不选</button>
       </div>
     </div>
-    <div className="scan-batches" role="group" aria-label="扫描结果列表">{pageScans.map((job) => <label key={job.id}>
-      <input type="checkbox" checked={selectedIds.has(job.id)}
-        onChange={(event) => updateSelected([job.id], event.target.checked)} />
-      扫描 {job.id.slice(0, 8)} · {job.status} · {job.code_version_status === "current" ? "当前代码版本" : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"} · {job.completed + job.failed}/{job.total}
-      {job.failed > 0 && ` · ${job.failed} 点失败`}</label>)}</div>
+    <div className="scan-batches" role="group" aria-label="扫描结果列表">{pageScans.map((job) =>
+      <div className="scan-batch-row" key={job.id}>
+        <label>
+          <input type="checkbox" checked={selectedIds.has(job.id)}
+            onChange={(event) => updateSelected([job.id], event.target.checked)} />
+          扫描 {job.id.slice(0, 8)} · {job.status} · {job.code_version_status === "current" ? "当前代码版本" : job.code_version_status === "stale" ? "旧代码版本" : "代码版本未知"} · {job.completed + job.failed}/{job.total}
+          {job.failed > 0 && ` · ${job.failed} 点失败`}
+        </label>
+        <ParameterExport config={job.base} axes={job.axes} label="导出扫描方案"
+          unavailable={!job.base || !job.axes?.length ? "历史任务未保存完整扫描方案，无法导出" : undefined} />
+      </div>)}</div>
     <nav className="scan-batch-pagination" aria-label="扫描结果分页">
       <button type="button" disabled={currentPage === 0}
         onClick={() => setPage(currentPage - 1)}>上一页</button>

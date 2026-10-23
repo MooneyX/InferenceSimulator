@@ -20,6 +20,8 @@ describe("SimulationForm", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     expect(screen.getByLabelText("实例路由策略")).toHaveValue("least_load");
+    expect(screen.getByLabelText("实例路由策略")).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText(/不可驱逐 L1 KV token/)).not.toBeInTheDocument();
     expect(screen.getByText(/每轮最低负载优先，不绑定会话/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ routing_policy: "least_load" }));

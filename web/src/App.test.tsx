@@ -259,9 +259,17 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "等待仿真结果" })).toBeInTheDocument();
     expect(resultMock).not.toHaveBeenCalled();
 
+    const scroll = vi.fn();
+    document.getElementById("results-heading")!.scrollIntoView = scroll;
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
     fireEvent.click(within(tasks).getByRole("button", { name: "查看结果" }));
+    expect(scroll).toHaveBeenCalledWith({ behavior: "smooth" });
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(resultMock).toHaveBeenCalledWith("previous");
+    fireEvent.click(screen.getByRole("button", { name: "导出本次参数" }));
+    expect(JSON.parse((screen.getByLabelText("本次参数 JSON") as HTMLInputElement).value))
+      .toEqual(result.meta.config);
+    expect(simulateMock).not.toHaveBeenCalled();
   });
 
   it("keeps legacy imported results downloadable when the code version is unknown", async () => {
@@ -289,7 +297,9 @@ describe("App", () => {
       { index: 1, values: { num_instances: 0 }, status: "failed", error: "point failed",
         result_available: false },
     ] });
-    vi.mocked(getScanPointResult).mockResolvedValue(result);
+    const pointResult = { ...result, meta: { ...result.meta,
+      config: { ...result.meta.config, num_instances: 5 } } };
+    vi.mocked(getScanPointResult).mockResolvedValue(pointResult);
     render(<App />);
     const tasks = await screen.findByLabelText("后台任务");
     expect(within(tasks).getByText(/1 点失败/)).toBeInTheDocument();
@@ -302,11 +312,19 @@ describe("App", () => {
     expect(within(tasks).getAllByRole("button", { name: "查看结果" })).toHaveLength(1);
     expect(within(tasks).getByRole("link", { name: "查看原始 JSON" }))
       .toHaveAttribute("href", "/api/jobs/scan-a/points/0/result");
+    expect(within(tasks).queryByRole("button", { name: "导出本次参数" })).not.toBeInTheDocument();
+    const scroll = vi.fn();
+    document.getElementById("results-heading")!.scrollIntoView = scroll;
     fireEvent.click(within(tasks).getByRole("button", { name: "查看结果" }));
+    expect(scroll).toHaveBeenCalledWith({ behavior: "smooth" });
     expect(await screen.findByText("扫描 scan-a · 组合 #1")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.queryByLabelText("结果缓存状态")).not.toBeInTheDocument();
     expect(getScanPointResult).toHaveBeenCalledWith("scan-a", 0);
+    fireEvent.click(screen.getByRole("button", { name: "导出本次参数" }));
+    expect(JSON.parse((screen.getByLabelText("本次参数 JSON") as HTMLInputElement).value))
+      .toEqual(pointResult.meta.config);
+    expect(simulateMock).not.toHaveBeenCalled();
   });
 
   it("paginates recorded scan points and does not offer a fabricated historical result", async () => {

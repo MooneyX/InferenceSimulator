@@ -4,6 +4,7 @@ import { clearSimulationCache, SimulationApiError, type SimulationCacheInfo } fr
 import type { ScanRequest, SimConfig, SimResult } from "./api/types";
 import { useJobs } from "./useJobs";
 import { MetricsPanel } from "./components/MetricsPanel";
+import { ParameterExport } from "./components/ParameterExport";
 import { RequestProgress } from "./components/RequestProgress";
 import { SimulationForm } from "./components/SimulationForm";
 import { ScanTaskList } from "./components/ScanTaskList";
@@ -55,7 +56,7 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [cacheInfo, setCacheInfo] = useState<SimulationCacheInfo | null>(null);
   const [resultSource, setResultSource] = useState<string | null>(null);
-  const [loadingPoint, setLoadingPoint] = useState(false);
+  const [loadingResult, setLoadingResult] = useState(false);
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [cacheNotice, setCacheNotice] = useState<{ message: string; error: boolean } | null>(null);
   const selectedInstance = result?.instances.find((item) => item.instance_id === selectedInstanceId);
@@ -72,11 +73,11 @@ export default function App() {
     setCacheInfo(response.cache);
     setResultSource(source);
     setError(null);
-    setLoadingPoint(false);
+    setLoadingResult(false);
     setSelectedInstanceId(null);
     setIsRunning(false);
   }, (cause) => {
-    setLoadingPoint(false);
+    setLoadingResult(false);
     setError(presentError(cause));
   });
 
@@ -87,6 +88,17 @@ export default function App() {
     try { await tasks.submitSingle(config, force); }
     catch (cause) { setError(presentError(cause)); }
     finally { setIsRunning(false); }
+  }
+
+  function handleSelectResult(id: string, index?: number): void {
+    setResult(null);
+    setCacheInfo(null);
+    setResultSource(null);
+    setError(null);
+    setLoadingResult(true);
+    if (index === undefined) tasks.select(id);
+    else tasks.selectPoint(id, index);
+    document.getElementById("results-heading")?.scrollIntoView?.({ behavior: "smooth" });
   }
 
   async function handleScanSubmit(request: ScanRequest): Promise<void> {
@@ -161,10 +173,11 @@ export default function App() {
             {job.kind === "scan"
               ? <span className="job-progress">已结束组合 {job.completed + job.failed}/{job.total}</span>
               : <RequestProgress progress={job.request_progress} status={job.status} />}
+            {job.kind === "scan" && <ScanTaskList job={job} onSelect={handleSelectResult} />}
             {job.failed > 0 && job.kind === "scan" && ` · ${job.failed} 点失败`}
             {job.error && (job.kind !== "scan" || job.status === "interrupted") && ` · ${job.error}`}
             {job.kind === "single" && job.status === "completed" &&
-              <button type="button" className="secondary-button secondary-button-small" onClick={() => tasks.select(job.id)}>
+              <button type="button" className="secondary-button secondary-button-small" onClick={() => handleSelectResult(job.id)}>
                 查看结果</button>}
             {job.kind === "single" && job.status === "completed" && job.code_version_status !== "current" &&
               <a className="secondary-button secondary-button-small job-download" href={`/api/jobs/${encodeURIComponent(job.id)}/result`}
@@ -176,15 +189,6 @@ export default function App() {
               <button type="button" className="secondary-button secondary-button-small" onClick={() =>
                 void tasks.stop(job.id).catch((cause: unknown) => setError(presentError(cause)))}>
                 取消任务</button>}
-            {job.kind === "scan" && <ScanTaskList job={job} onSelect={(id, index) => {
-              setResult(null);
-              setCacheInfo(null);
-              setResultSource(null);
-              setError(null);
-              setLoadingPoint(true);
-              tasks.selectPoint(id, index);
-              document.getElementById("results-heading")?.scrollIntoView?.({ behavior: "smooth" });
-            }} />}
           </li>)}</ul>
         </section>}
         {tasks.jobs.some((job) => job.kind === "scan") && <Suspense fallback={<p>正在加载扫描图表…</p>}>
@@ -206,6 +210,7 @@ export default function App() {
               </button>
             </div>
           </div>
+          {result && <ParameterExport key={tasks.selectedId} config={result.meta.config} />}
           {cacheNotice && <section className={cacheNotice.error ? "simulation-error" : "simulation-status"}
             role={cacheNotice.error ? "alert" : "status"}>{cacheNotice.message}</section>}
           {cacheInfo && result && <section className={cacheInfo.status === "miss" ? "simulation-info" : "simulation-status"} aria-label="结果缓存状态">
@@ -214,8 +219,8 @@ export default function App() {
             {" · "}缓存查找/读取 {cacheInfo.lookupMs.toFixed(2)} ms
             {" · "}原始仿真计算 {result.meta.wall_clock_ms.toFixed(2)} ms
           </section>}
-          {loadingPoint && <section className="simulation-status" role="status">
-            <span className="status-indicator" aria-hidden="true" />正在读取扫描点结果…
+          {loadingResult && <section className="simulation-status" role="status">
+            <span className="status-indicator" aria-hidden="true" />正在读取仿真结果…
           </section>}
           {isRunning ? (
             <section className="simulation-status" role="status">
@@ -333,7 +338,7 @@ export default function App() {
             </>
           ) : null}
 
-          {!isRunning && !loadingPoint && !error && !result ? (
+          {!isRunning && !loadingResult && !error && !result ? (
             <section className="results-placeholder" aria-labelledby="placeholder-heading">
               <h2 id="placeholder-heading">等待仿真结果</h2>
               <p>调整参数并运行仿真后，此处将展示指标、告警和请求生命周期。</p>

@@ -1712,6 +1712,16 @@
             ],
             "title": "Axes"
           },
+          "base": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SimConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "point_archive_version": {
             "type": "integer",
             "title": "Point Archive Version",

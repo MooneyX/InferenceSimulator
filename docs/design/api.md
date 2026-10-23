@@ -119,13 +119,13 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 
 ## Trace 文件与计划接口
 
-原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划，最大 64 MiB；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID、请求数、会话数和块大小。这些端点只管理计划资源，保留原有上传、扫描、预览及下载路径。
+原始 `traces.jsonl` 可本地处理，也可通过 `POST /api/traces` 用 `application/octet-stream` 直接上传原始字节（无需 multipart，最大 3 GiB）；返回 202 和任务 ID。`GET /api/traces/{id}` 查 `processing/ready/failed`，`GET /api/traces/{id}/sessions?offset=0&limit=50` 分页查看实际扫描摘要。`POST /api/traces/{id}/plans` 接受 `{"sessions":["原始会话ID"]}`，下载 JSON 计划；计划导出和上传不设文件大小上限，但仍受服务器及浏览器可用内存约束；`POST /api/replay-plans` 直接上传本地导出的计划字节并返回计划 ID、请求数、会话数和块大小。这些端点只管理计划资源，保留原有上传、扫描、预览及下载路径。
 
 回放将同一个 `SimConfig.workload` 设为 `{"mode":"trace","arrival_mode":"open_loop","session_rate":1,"seed":0,"trace":{"plan_id":"已上传计划ID"}}`，向唯一 `POST /api/simulate` 提交完整配置。提交时服务层根据 ID 加载 `TracePlan` 并在任务中持有其快照，worker 调用 `simulate(config, trace_plan=plan)`；回放设置不在独立包装体中。任务完成后的结果接口返回 `SimResult`，解析计时保留 TP/EP 通信与 `analysis`，经验计时为 `analysis=null`。
 
 公共层 `workload.target_qps` 只允许在 `workload.arrival_mode=open_loop` 时设置；先由 `session_rate` 生成会话起点，再按整个所选计划的首末发送跨度等比例缩放所有请求到达时间。单请求或所有请求同刻到达时任务失败；闭环携带该参数、非正数及非有限数在提交阶段返回 422。不设置时沿用原开环时间；缩放不保证均匀投放或完成吞吐。
 
-原始文件与计划暂存于服务进程的临时目录，闲置 24 小时后在后续访问时清理；服务进程退出后失效，当前版本不支持跨实例共享任务或断点续传。文件超限为 413，解析/校验失败为 422，处理中尝试导出为 409，未知或过期 ID 为 404。上传计划的块 ID 必须是会话局部一致的前缀身份；原始输入块参与运行时连续缓存匹配，不包含原始输出块身份。计划内容不嵌入 `SimConfig`；HTTP 运行使用 `workload.trace.plan_id` 引用独立资源。参数 JSON 导出将临时 `plan_id` 清为 `null`，保留开环/闭环、会话速率、种子与可选目标 QPS，导入后提示重新上传计划。
+原始文件与计划暂存于服务进程的临时目录，闲置 24 小时后在后续访问时清理；服务进程退出后失效，当前版本不支持跨实例共享任务或断点续传。原始 trace 上传超限为 413，解析/校验失败为 422，处理中尝试导出为 409，未知或过期 ID 为 404。上传计划的块 ID 必须是会话局部一致的前缀身份；原始输入块参与运行时连续缓存匹配，不包含原始输出块身份。计划内容不嵌入 `SimConfig`；HTTP 运行使用 `workload.trace.plan_id` 引用独立资源。参数 JSON 导出将临时 `plan_id` 清为 `null`，保留开环/闭环、会话速率、种子与可选目标 QPS，导入后提示重新上传计划。
 
 ## 自动解析与 TP/EP 容量预览
 

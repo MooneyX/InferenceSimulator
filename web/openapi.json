@@ -3286,17 +3286,12 @@
             },
             "type": "array",
             "title": "Sessions"
-          },
-          "max_plan_bytes": {
-            "type": "integer",
-            "title": "Max Plan Bytes"
           }
         },
         "type": "object",
         "required": [
           "total",
-          "sessions",
-          "max_plan_bytes"
+          "sessions"
         ],
         "title": "SessionPage"
       },

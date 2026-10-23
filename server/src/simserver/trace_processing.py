@@ -14,10 +14,6 @@ _MAX_SESSION_BYTES = 256 * 1024**2
 _PLAN_ENVELOPE_BYTES = 128
 
 
-class PlanTooLargeError(ValueError):
-    """所选计划超过当前服务可接受的文件大小。"""
-
-
 def _sessions(path: Path) -> Iterator[dict[str, Any]]:
     with path.open("rb") as source:
         line_number = 0
@@ -188,13 +184,12 @@ def scan_trace(path: Path) -> list[dict[str, Any]]:
     return summaries
 
 
-def compile_plan(path: Path, selected: list[str], *, max_bytes: int | None = None) -> TracePlan:
-    """仅为选中的会话物化请求块，逐条限制服务器导出体积。"""
+def compile_plan(path: Path, selected: list[str]) -> TracePlan:
+    """仅为选中的会话物化请求块。"""
     if not selected or len(selected) != len(set(selected)):
         raise ValueError("须选择至少一个且不重复的会话")
     session_ids: list[str] = []
     turns: list[TraceTurn] = []
-    estimated_bytes = _PLAN_ENVELOPE_BYTES
     wanted = set(selected)
     for session in _sessions(path):
         if session["id"] not in wanted:
@@ -204,13 +199,7 @@ def compile_plan(path: Path, selected: list[str], *, max_bytes: int | None = Non
         requests, parents, _ = _inspect(session)
         sid = len(session_ids)
         session_ids.append(session["id"])
-        estimated_bytes += len(json.dumps(session["id"], ensure_ascii=False).encode("utf-8")) + 1
-        for turn in _plan_turns(requests, parents, session_id=sid, base=len(turns)):
-            if max_bytes is not None:
-                estimated_bytes += len(turn.model_dump_json().encode("utf-8")) + 1
-                if estimated_bytes > max_bytes:
-                    raise PlanTooLargeError("选中的计划超过服务端允许的大小，请减少会话数量")
-            turns.append(turn)
+        turns.extend(_plan_turns(requests, parents, session_id=sid, base=len(turns)))
         if len(session_ids) == len(wanted):
             break
     if set(session_ids) != wanted:

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from conftest import await_task, run_simulation
 from simserver import create_app
-from simserver.trace_processing import PlanTooLargeError, compile_plan, scan_trace
+from simserver.trace_processing import compile_plan, scan_trace
 
 
 def sample() -> bytes:
@@ -151,9 +151,6 @@ def test_local_summary_parent_and_export(tmp_path: Path) -> None:
     assert summary["output_tokens"] == 2
     estimate = summary["estimated_plan_bytes"]
     assert len(plan.model_dump_json().encode("utf-8")) <= estimate < 1024
-    assert compile_plan(source, ["session-a"], max_bytes=estimate) == plan
-    with pytest.raises(PlanTooLargeError):
-        compile_plan(source, ["session-a"], max_bytes=estimate - 1)
 
 
 @pytest.mark.parametrize("session_id", ["会话-中文", 'session-"quoted"\\\\path'])
@@ -210,14 +207,14 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert state["status"] == "ready", state
         page = client.get(f"/api/traces/{key}/sessions").json()
         assert page["total"] == 1
-        assert page["max_plan_bytes"] == 64 * 1024**2
+        assert "max_plan_bytes" not in page
         assert page["sessions"][0]["inferred_dependencies"] == 1
         exported = client.post(f"/api/traces/{key}/plans", json={"sessions": ["session-a"]})
         assert exported.status_code == 200
         assert len(exported.content) <= page["sessions"][0]["estimated_plan_bytes"]
         empty_page = client.get(f"/api/traces/{key}/sessions?offset=50").json()
         assert empty_page["sessions"] == []
-        assert empty_page["max_plan_bytes"] == page["max_plan_bytes"]
+        assert "max_plan_bytes" not in empty_page
         uploaded = client.post("/api/replay-plans", content=exported.content)
         assert uploaded.status_code == 201
         plan_id = uploaded.json()["id"]
@@ -341,12 +338,53 @@ def test_ambiguous_time_match_stays_timed_root(tmp_path: Path) -> None:
     path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
     assert scan_trace(path)[0]["ambiguous_dependencies"] == 1
     assert compile_plan(path, ["session-a"]).requests[2].parent_request_id is None
-    with pytest.raises(PlanTooLargeError):
-        compile_plan(path, ["session-a"], max_bytes=128)
+
+
+def test_export_and_reupload_plan_above_64_mib() -> None:
+    raw = json.loads(sample())
+    request = {
+        **raw["requests"][0],
+        "in": 65_536 * 64,
+        "hash_ids": list(range(10**14, 10**14 + 65_536)),
+    }
+    raw["requests"] = [{**request, "t": float(index)} for index in range(65)]
+    with TestClient(create_app()) as client:
+        receipt = client.post(
+            "/api/traces", content=json.dumps(raw, separators=(",", ":")).encode()
+        )
+        assert receipt.status_code == 202
+        key = receipt.json()["id"]
+        deadline = time.monotonic() + 30
+        while True:
+            state = client.get(f"/api/traces/{key}").json()
+            if state["status"] != "processing" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert state["status"] == "ready", state
+        page = client.get(f"/api/traces/{key}/sessions").json()
+        assert page["sessions"][0]["estimated_plan_bytes"] > 64 * 1024**2
+        exported = client.post(f"/api/traces/{key}/plans", json={"sessions": ["session-a"]})
+        assert exported.status_code == 200
+        assert len(exported.content) > 64 * 1024**2
+        uploaded = client.post("/api/replay-plans", content=exported.content)
+        assert uploaded.status_code == 201
+        assert uploaded.json()["sessions"] == 1
+        assert uploaded.json()["requests"] == 65
+
+
+def test_raw_trace_upload_limit_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    from simserver import trace_routes
+
+    monkeypatch.setattr(trace_routes, "MAX_TRACE_BYTES", len(sample()) - 1)
+    with TestClient(create_app()) as client:
+        response = client.post("/api/traces", content=sample())
+        assert response.status_code == 413
+        assert "上传大小" in response.json()["detail"]
 
 
 def test_invalid_plan_and_missing_trace() -> None:
     with TestClient(create_app()) as client:
+        assert client.post("/api/replay-plans", content=b"").status_code == 422
         assert client.post("/api/replay-plans", content=b"not-json").status_code == 422
         assert client.get("/api/traces/unknown").status_code == 404
         assert client.post("/api/traces", content=b"").status_code == 422

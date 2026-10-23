@@ -7,8 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from simcore.schemas import TracePlan
-from simserver.trace_processing import PlanTooLargeError
-from simserver.trace_store import MAX_PLAN_BYTES, MAX_TRACE_BYTES, TraceStore
+from simserver.trace_store import MAX_TRACE_BYTES, TraceStore
 
 router = APIRouter(prefix="/api")
 
@@ -42,7 +41,6 @@ class TraceJob(BaseModel):
 class SessionPage(BaseModel):
     total: int
     sessions: list[SessionSummary]
-    max_plan_bytes: int
 
 
 class PlanSelection(BaseModel):
@@ -60,7 +58,9 @@ def _store(request: Request) -> TraceStore:
     return request.app.state.trace_store
 
 
-async def _receive(request: Request, *, suffix: str, maximum: int) -> tuple[str, Path]:
+async def _receive(
+    request: Request, *, suffix: str, maximum: int | None = None
+) -> tuple[str, Path]:
     store = _store(request)
     key, path = store.new_path(suffix)
     size = 0
@@ -68,7 +68,7 @@ async def _receive(request: Request, *, suffix: str, maximum: int) -> tuple[str,
         with path.open("wb") as output:
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > maximum:
+                if maximum is not None and size > maximum:
                     raise HTTPException(413, "文件超过此服务允许的上传大小")
                 output.write(chunk)
         if size == 0:
@@ -111,9 +111,7 @@ def sessions(
     if job["status"] != "ready":
         raise HTTPException(409, "trace 尚未准备就绪")
     items = job["sessions"]
-    return SessionPage(
-        total=len(items), sessions=items[offset : offset + limit], max_plan_bytes=MAX_PLAN_BYTES
-    )
+    return SessionPage(total=len(items), sessions=items[offset : offset + limit])
 
 
 @router.post("/traces/{key}/plans", response_model=TracePlan)
@@ -122,12 +120,8 @@ def export_plan(key: str, selection: PlanSelection, request: Request) -> Respons
         body = _store(request).export(key, selection.sessions).model_dump_json().encode("utf-8")
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
-    except PlanTooLargeError as exc:
-        raise HTTPException(413, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if len(body) > MAX_PLAN_BYTES:
-        raise HTTPException(413, "选中的计划超过 64 MiB，请减少会话数量")
     return Response(
         content=body,
         media_type="application/json",
@@ -137,7 +131,7 @@ def export_plan(key: str, selection: PlanSelection, request: Request) -> Respons
 
 @router.post("/replay-plans", response_model=PlanReceipt, status_code=201)
 async def upload_plan(request: Request) -> PlanReceipt:
-    key, path = await _receive(request, suffix=".json", maximum=MAX_PLAN_BYTES)
+    key, path = await _receive(request, suffix=".json")
     try:
         plan = _store(request).add_plan(key, path)
     except (ValidationError, ValueError) as exc:

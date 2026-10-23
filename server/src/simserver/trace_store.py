@@ -12,7 +12,6 @@ from simcore.schemas import TracePlan
 from simserver.trace_processing import compile_plan, scan_trace
 
 MAX_TRACE_BYTES = 3 * 1024**3
-MAX_PLAN_BYTES = 64 * 1024**2
 _MAX_AGE_S = 24 * 3600
 
 
@@ -77,7 +76,7 @@ class TraceStore:
     def export(self, key: str, selected: list[str]) -> TracePlan:
         if self.job(key)["status"] != "ready":
             raise ValueError("trace 尚未扫描完成")
-        return compile_plan(self.root / f"{key}.jsonl", selected, max_bytes=MAX_PLAN_BYTES)
+        return compile_plan(self.root / f"{key}.jsonl", selected)
 
     def add_plan(self, key: str, path: Path) -> TracePlan:
         plan = TracePlan.model_validate_json(path.read_bytes())

@@ -33,7 +33,6 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Map<string, TraceSessionSummary>>(new Map());
-  const [maxPlanBytes, setMaxPlanBytes] = useState<number | null>(null);
   const [exportedBytes, setExportedBytes] = useState<number | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const [mode, setMode] = useState<"open_loop" | "closed_loop">(initialReplay?.arrivalMode ?? "open_loop");
@@ -69,9 +68,7 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
     if (!job || job.status !== "ready") return;
     let active = true;
     void traceSessions(job.id, offset).then((page) => {
-      if (active) {
-        setSessions(page.sessions); setTotal(page.total); setMaxPlanBytes(page.max_plan_bytes);
-      }
+      if (active) { setSessions(page.sessions); setTotal(page.total); }
     }).catch((error: unknown) => {
       if (active) setProblem(error instanceof Error ? error.message : "无法加载会话摘要");
     });
@@ -81,7 +78,7 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
   async function receiveTrace(file: File): Promise<void> {
     setBusy(true); setProblem(""); setMessage(""); setPlanId(null); setJob(null);
     setSessions([]); setSelected(new Map()); setOffset(0); setTotal(0);
-    setMaxPlanBytes(null); setExportedBytes(null);
+    setExportedBytes(null);
     try {
       const response = await uploadTrace(file);
       setJob(response);
@@ -126,7 +123,6 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
     outputTokens: sum.outputTokens + session.output_tokens,
     estimatedBytes: sum.estimatedBytes + session.estimated_plan_bytes,
   }), { requests: 0, inputTokens: 0, outputTokens: 0, estimatedBytes: 0 });
-  const exceedsLimit = maxPlanBytes !== null && totals.estimatedBytes > maxPlanBytes;
   const locked = disabled || busy;
   return (
     <section className="trace-panel" aria-labelledby="trace-heading">
@@ -189,14 +185,11 @@ export function TracePanel({ disabled, initialReplay, onChange }: TracePanelProp
             </div>
           </dl>
           <p className="trace-hint">统计包含跨页选择及子代理请求；输入 token 按各次请求累加，不去重、不扣除缓存命中。</p>
-          <p className="trace-hint">服务端上限：{maxPlanBytes === null ? "加载中…" : formatBytes(maxPlanBytes)}。
+          <p className="trace-hint">
             {exportedBytes === null
               ? "预计大小按单会话计划累加，合并后的封装及编号变化可能产生差异，以实际导出为准。"
               : "实际大小取自已导出的计划文件。"}
           </p>
-          {exportedBytes === null && exceedsLimit && <p className="trace-notice trace-notice-error" role="alert">
-            预计计划大小超过服务端上限，请减少会话数量；最终以服务端校验为准。
-          </p>}
         </section>
         <div className="trace-actions">
           <div className="trace-pagination">

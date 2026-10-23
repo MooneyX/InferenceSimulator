@@ -135,7 +135,7 @@ describe("TracePanel", () => {
       output_tokens: index === 50 ? 20 : 10, estimated_plan_bytes: index === 50 ? 2048 : 1024,
     }));
     vi.mocked(traceSessions).mockImplementation(async (_, offset) => ({
-      total: 51, max_plan_bytes: 64 * 1024 ** 2, sessions: sessions.slice(offset, offset + 50),
+      total: 51, sessions: sessions.slice(offset, offset + 50),
     }));
     render(<TracePanel disabled={false} onChange={vi.fn()} />);
     uploadRawTrace();
@@ -154,7 +154,7 @@ describe("TracePanel", () => {
     expectStat("输入 token 总数", (1280).toLocaleString());
     expectStat("输出 token 总数", "30");
     expectStat("计划大小（预计）", "3.00 KiB");
-    expect(screen.getByText(/服务端上限：64.00 MiB/)).toBeInTheDocument();
+    expect(screen.queryByText(/服务端上限/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "上一页" }));
     expect(await screen.findByRole("checkbox", { name: "选择会话 session-0" })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "选择会话 session-0" }));
@@ -166,27 +166,34 @@ describe("TracePanel", () => {
     expect(downloadTracePlan).not.toHaveBeenCalled();
   });
 
-  it("warns using the server limit without treating an estimate as a hard block", async () => {
+  it("exports plans estimated above 64 MiB without a size warning", async () => {
     vi.mocked(uploadTrace).mockResolvedValue({ id: "trace-1", status: "ready", session_count: 1 });
     vi.mocked(traceSessions).mockResolvedValue({
-      total: 1, max_plan_bytes: 1024, sessions: [sessionSummary("session-a", { estimated_plan_bytes: 2048 })],
+      total: 1, sessions: [sessionSummary("session-a", { estimated_plan_bytes: 128 * 1024 ** 2 })],
     });
+    const blob = new Blob(["{}"]);
+    vi.mocked(downloadTracePlan).mockResolvedValue(blob);
+    vi.mocked(uploadReplayPlan).mockResolvedValue({ id: "plan-1", sessions: 1, requests: 2 });
     render(<TracePanel disabled={false} onChange={vi.fn()} />);
     uploadRawTrace();
     fireEvent.click(await screen.findByRole("checkbox", { name: "选择会话 session-a" }));
-    expectStat("计划大小（预计）", "2.00 KiB");
-    expect(screen.getByText(/服务端上限：1.00 KiB/)).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("预计计划大小超过服务端上限");
-    expect(screen.getByRole("button", { name: "导出并载入选中会话计划" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "选择会话 session-a" }));
+    expectStat("计划大小（预计）", "128.00 MiB");
+    expect(screen.queryByText(/服务端上限/)).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expectStat("计划大小（预计）", "0 B");
+    expect(screen.getByRole("button", { name: "导出并载入选中会话计划" })).toBeEnabled();
+    mockDownload();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "导出并载入选中会话计划" }));
+    });
+    expect(downloadTracePlan).toHaveBeenCalledWith("trace-1", ["session-a"]);
+    expect(uploadReplayPlan).toHaveBeenCalledWith(blob);
+    expectStat("计划大小（实际）", "2 B");
   });
 
   it("shows actual download bytes and resets them when selection or trace changes", async () => {
     vi.mocked(uploadTrace).mockResolvedValue({ id: "trace-1", status: "ready", session_count: 1 });
     vi.mocked(traceSessions).mockResolvedValue({
-      total: 1, max_plan_bytes: 64 * 1024 ** 2, sessions: [sessionSummary("session-a")],
+      total: 1, sessions: [sessionSummary("session-a")],
     });
     const blob = new Blob(['{"sessions":["会话"]}'], { type: "application/json" });
     vi.mocked(downloadTracePlan).mockResolvedValue(blob);
@@ -229,14 +236,14 @@ describe("TracePanel", () => {
   it("keeps the estimate after export failure and actual bytes after reload failure", async () => {
     vi.mocked(uploadTrace).mockResolvedValue({ id: "trace-1", status: "ready", session_count: 1 });
     vi.mocked(traceSessions).mockResolvedValue({
-      total: 1, max_plan_bytes: 64 * 1024 ** 2, sessions: [sessionSummary("session-a")],
+      total: 1, sessions: [sessionSummary("session-a")],
     });
-    vi.mocked(downloadTracePlan).mockRejectedValueOnce(new Error("选中的计划超过服务端允许的大小，请减少会话数量"));
+    vi.mocked(downloadTracePlan).mockRejectedValueOnce(new Error("无法连接轨迹处理服务"));
     render(<TracePanel disabled={false} onChange={vi.fn()} />);
     uploadRawTrace();
     fireEvent.click(await screen.findByRole("checkbox", { name: "选择会话 session-a" }));
     fireEvent.click(screen.getByRole("button", { name: "导出并载入选中会话计划" }));
-    await screen.findByText("选中的计划超过服务端允许的大小，请减少会话数量");
+    await screen.findByText("无法连接轨迹处理服务");
     expectStat("计划大小（预计）", "1.00 KiB");
     expect(screen.queryByText("计划大小（实际）")).not.toBeInTheDocument();
     const blob = new Blob(["{}"]);

@@ -1482,8 +1482,6 @@ export interface components {
             total: number;
             /** Sessions */
             sessions: components["schemas"]["SessionSummary"][];
-            /** Max Plan Bytes */
-            max_plan_bytes: number;
         };
         /** SessionSummary */
         SessionSummary: {

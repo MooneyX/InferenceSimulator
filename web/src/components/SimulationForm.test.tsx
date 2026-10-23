@@ -142,6 +142,48 @@ describe("SimulationForm", () => {
     }));
   });
 
+  it("uses resolved counts for scans and validates them before submission or export", async () => {
+    vi.mocked(getScanParameters).mockResolvedValue([{ key: "scheduler.max_running_requests", label: "最多同时运行请求",
+      kind: "integer", modes: ["synthetic/closed_loop"] }]);
+    const onScanSubmit = vi.fn();
+    render(<SimulationForm onSubmit={vi.fn()} onScanSubmit={onScanSubmit} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "导出扫描方案" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("请求到达模式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "sessions" } });
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "3" } });
+    fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+    fireEvent.click(screen.getByRole("option", { name: /最多同时运行请求/ }));
+    fireEvent.change(screen.getByLabelText("扫描档位 1"), { target: { value: "2,4" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onScanSubmit).not.toHaveBeenCalled();
+    expect(screen.getByText("基础配置不合法：请求数量必须是每会话轮次数的整数倍")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "导出扫描方案" }));
+    expect(screen.getByLabelText("扫描方案 JSON")).toHaveValue("");
+    expect(screen.getByText("扫描方案导出失败：基础配置不合法：请求数量必须是每会话轮次数的整数倍")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onScanSubmit.mock.lastCall![0].base.workload.synthetic).toMatchObject({
+      num_requests: 10, session: { num_sessions: 5 },
+    });
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "requests" } });
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onScanSubmit.mock.lastCall![0].base.workload.synthetic).toMatchObject({
+      num_requests: 14, session: { num_sessions: 7 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导出扫描方案" }));
+    const exported = JSON.parse((screen.getByLabelText("扫描方案 JSON") as HTMLInputElement).value);
+    expect(exported.base).toEqual(onScanSubmit.mock.lastCall![0].base);
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+    expect(screen.getByLabelText("自动推定项")).toHaveValue("turns");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(14);
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("2");
+  });
+
   it("imports Trace scan settings into both panels without reusing a plan ID", async () => {
     vi.mocked(getScanParameters).mockResolvedValue([{ key: "workload.target_qps", label: "目标 QPS",
       kind: "number", modes: ["trace/open_loop"] }]);
@@ -256,14 +298,125 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("引擎输出上限（token）")).toHaveValue(512);
   });
 
-  it("allows clearing a closed-loop session count to use the request count default", () => {
+  it("requires both specified closed-loop counts", () => {
     const onSubmit = vi.fn();
     render(<SimulationForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
     fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmit.mock.lastCall![0].workload.synthetic.session.num_sessions).toBeNull();
-    expect(screen.getByLabelText("会话数量（根请求数）")).not.toHaveAttribute("aria-invalid");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("");
+  });
+
+  it("derives exactly one read-only count and preserves values when switching the derived field", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    expect(screen.queryByLabelText("自动推定项")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    expect(screen.getByLabelText("自动推定项")).toHaveValue("turns");
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("50");
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("请求数量")).not.toHaveAttribute("readonly");
+    expect(screen.getByLabelText("会话数量（根请求数）")).not.toHaveAttribute("readonly");
+
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "requests" } });
+    expect(screen.getByLabelText("请求数量")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).not.toHaveAttribute("readonly");
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "4" } });
+    expect(screen.getByLabelText("请求数量")).toHaveValue(12);
+    fireEvent.change(screen.getByLabelText("随机种子"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.lastCall![0].workload).toMatchObject({ seed: 7,
+      synthetic: { num_requests: 12, session: { num_sessions: 3 } } });
+
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "sessions" } });
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("请求数量")).not.toHaveAttribute("readonly");
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue(4);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "20" } });
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(5);
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "turns" } });
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("4");
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(5);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "open_loop" } });
+    expect(screen.queryByLabelText("每会话轮次数（含首轮）")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("请求数量")).not.toHaveAttribute("readonly");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(20);
+  });
+
+  it("preserves remainder allocation through submission, export and import", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "3" } });
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("(3 / 4)");
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    const submitted = onSubmit.mock.lastCall![0];
+    expect(submitted.workload.synthetic).toMatchObject({ num_requests: 10, session: { num_sessions: 3 } });
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
+    expect(JSON.parse(exported)).toEqual(submitted);
+    expect(exported).not.toContain("turns_per_session");
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "requests" } });
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("自动推定项")).toHaveValue("turns");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(10);
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(3);
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("(3 / 4)");
+    fireEvent.change(screen.getByLabelText("会话数量（根请求数）"), { target: { value: "2" } });
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("5");
+  });
+
+  it("requires an exact multiple only when deriving sessions and recovers without rounding", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "sessions" } });
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    fireEvent.click(screen.getByRole("button", { name: "强制重新计算" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("请求数量")).toHaveAccessibleDescription("请求数量必须是每会话轮次数的整数倍");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(10);
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue(3);
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    expect(screen.getByLabelText("参数 JSON")).toHaveValue("");
+    expect(screen.getByText("参数导出失败：请求数量必须是每会话轮次数的整数倍")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "12" } });
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(4);
+    expect(screen.getByLabelText("请求数量")).not.toHaveAttribute("aria-invalid");
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit.mock.lastCall![0].workload.synthetic).toMatchObject({ num_requests: 12, session: { num_sessions: 4 } });
+  });
+
+  it.each(["", "0", "-1", "1.5"])("rejects invalid specified turns: %s", (turns) => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求投放方式"), { target: { value: "closed_loop" } });
+    fireEvent.change(screen.getByLabelText("自动推定项"), { target: { value: "requests" } });
+    fireEvent.change(screen.getByLabelText("每会话轮次数（含首轮）"), { target: { value: turns } });
+    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(null);
+  });
+
+  it("displays the backend default when imported closed-loop sessions are unspecified", () => {
+    const imported = createDefaultSimConfig();
+    imported.workload.arrival_mode = "closed_loop";
+    imported.workload.session_rate = 1;
+    delete imported.workload.target_qps;
+    render(<SimulationForm onSubmit={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(imported) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByLabelText("会话数量（根请求数）")).toHaveValue(1000);
+    expect(screen.getByLabelText("每会话轮次数（含首轮）")).toHaveValue("1");
   });
 
   it("uses the selected closed_loop workload in automatic resolution too", () => {

@@ -1,7 +1,51 @@
 import { describe, expect, it } from "vitest";
 
 import type { LengthDistribution, SimConfig } from "../api/types";
-import { createDefaultSimConfig, createDefaultEmpiricalTiming, validateSimConfig } from "./simulation";
+import { createDefaultSimConfig, createDefaultEmpiricalTiming, resolveClosedLoopCounts, validateSimConfig } from "./simulation";
+
+describe("resolveClosedLoopCounts", () => {
+  it.each([
+    [12, 3, "4"], [10, 3, "(3 / 4)"], [7, 5, "(1 / 2)"], [1, 1, "1"],
+  ])("derives turns from %i requests and %i sessions", (requests, sessions, display) => {
+    expect(resolveClosedLoopCounts(requests, sessions, NaN, "turns")).toMatchObject({
+      numRequests: requests, numSessions: sessions, turnsDisplay: display, errors: [],
+    });
+  });
+
+  it("derives requests from sessions and exact turns", () => {
+    expect(resolveClosedLoopCounts(NaN, 3, 4, "requests")).toEqual({
+      numRequests: 12, numSessions: 3, turnsPerSession: 4, turnsDisplay: "4", errors: [],
+    });
+  });
+
+  it("derives sessions only for an exact multiple", () => {
+    expect(resolveClosedLoopCounts(12, NaN, 4, "sessions")).toMatchObject({
+      numRequests: 12, numSessions: 3, turnsDisplay: "4", errors: [],
+    });
+    for (const [requests, turns] of [[10, 3], [10, 6], [2, 3]]) {
+      expect(resolveClosedLoopCounts(requests, NaN, turns, "sessions")).toMatchObject({
+        numRequests: requests, numSessions: NaN, turnsDisplay: "",
+        errors: [{ field: "workload.synthetic.num_requests", message: "请求数量必须是每会话轮次数的整数倍" }],
+      });
+    }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])("rejects invalid specified counts: %s", (value) => {
+    expect(resolveClosedLoopCounts(value, 1, NaN, "turns").errors[0].field)
+      .toBe("workload.synthetic.num_requests");
+    expect(resolveClosedLoopCounts(10, value, NaN, "turns").errors[0].field)
+      .toBe("workload.synthetic.session.num_sessions");
+    for (const derived of ["requests", "sessions"] as const) {
+      expect(resolveClosedLoopCounts(10, 2, value, derived).errors[0].field).toBe("turns_per_session");
+    }
+  });
+
+  it("rejects more sessions than requests", () => {
+    expect(resolveClosedLoopCounts(3, 4, NaN, "turns")).toMatchObject({ turnsDisplay: "",
+      errors: [{ field: "workload.synthetic.session.num_sessions", message: "会话数量不能超过请求数量" }],
+    });
+  });
+});
 
 describe("createDefaultSimConfig", () => {
   it("creates a complete synthetic configuration", () => {

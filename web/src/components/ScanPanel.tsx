@@ -88,10 +88,11 @@ interface Props {
   base: SimConfig;
   onSubmit: (request: ScanRequest) => void;
   onImportBase: (config: SimConfig) => void;
+  closedLoopCountError?: string;
   disabled?: boolean;
 }
 
-export function ScanPanel({ base, onSubmit, onImportBase, disabled = false }: Props) {
+export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, disabled = false }: Props) {
   const [mode, setMode] = useState<"synthetic" | "trace">("synthetic");
   const [arrival, setArrival] = useState<"open_loop" | "closed_loop">(base.workload.arrival_mode);
   const [planId, setPlanId] = useState<string | null>(null);
@@ -174,6 +175,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, disabled = false }: Pr
   function run() {
     try {
       if (mode === "trace" && !planId) throw new Error("请上传回放计划 JSON");
+      if (mode === "synthetic" && arrival === "closed_loop" && closedLoopCountError) {
+        throw new Error(`基础配置不合法：${closedLoopCountError}`);
+      }
       const config = makeBase();
       const errors = validateSimConfig(config);
       if (errors.length) throw new Error(`基础配置不合法：${errors[0].message}`);
@@ -189,6 +193,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, disabled = false }: Pr
   }
   function exportScan() {
     try {
+      if (mode === "synthetic" && arrival === "closed_loop" && closedLoopCountError) {
+        throw new Error(`基础配置不合法：${closedLoopCountError}`);
+      }
       const config = makeBase();
       scanDimensions(config, axes, catalog, mode, arrival);
       const json = serializeScanPlan(config, axes.map(({ key, text }) => ({ key, text })));

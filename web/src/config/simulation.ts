@@ -4,7 +4,10 @@ export type FormSimConfig = SimConfig & {
   inference: InferenceConfig & { timing: NonNullable<InferenceConfig["timing"]> };
 };
 
+export type ClosedLoopDerivedField = "requests" | "sessions" | "turns";
+
 export type ConfigField =
+  | "turns_per_session"
   | "num_instances"
   | "routing_policy"
   | "workload.mode"
@@ -152,6 +155,42 @@ function validatePositiveInteger(
   if (!Number.isInteger(value) || value < 1) {
     errors.push({ field, message: "必须是大于或等于 1 的整数" });
   }
+}
+
+export function resolveClosedLoopCounts(
+  numRequests: number,
+  numSessions: number,
+  turnsPerSession: number,
+  derivedField: ClosedLoopDerivedField,
+) {
+  const errors: ConfigValidationError[] = [];
+  if (derivedField !== "requests") {
+    validatePositiveInteger(errors, "workload.synthetic.num_requests", numRequests);
+  }
+  if (derivedField !== "sessions") {
+    validatePositiveInteger(errors, "workload.synthetic.session.num_sessions", numSessions);
+  }
+  if (derivedField !== "turns") {
+    validatePositiveInteger(errors, "turns_per_session", turnsPerSession);
+  }
+
+  if (derivedField === "requests") {
+    numRequests = errors.length ? NaN : numSessions * turnsPerSession;
+    if (!errors.length) validatePositiveInteger(errors, "workload.synthetic.num_requests", numRequests);
+  } else if (derivedField === "sessions") {
+    if (!errors.length && numRequests % turnsPerSession !== 0) {
+      errors.push({ field: "workload.synthetic.num_requests", message: "请求数量必须是每会话轮次数的整数倍" });
+    }
+    numSessions = errors.length ? NaN : numRequests / turnsPerSession;
+  } else if (!errors.length && numSessions > numRequests) {
+    errors.push({ field: "workload.synthetic.session.num_sessions", message: "会话数量不能超过请求数量" });
+  }
+
+  const baseTurns = errors.length ? NaN : Math.floor(numRequests / numSessions);
+  const turnsDisplay = errors.length ? "" : numRequests % numSessions === 0
+    ? String(baseTurns) : `(${baseTurns} / ${baseTurns + 1})`;
+  return { numRequests, numSessions, turnsPerSession: derivedField === "turns" ? baseTurns : turnsPerSession,
+    turnsDisplay, errors };
 }
 
 function validateLengthDistribution(

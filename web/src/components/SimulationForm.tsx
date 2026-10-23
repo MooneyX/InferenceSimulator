@@ -6,7 +6,9 @@ import {
   createDefaultSimConfig,
   createDefaultEmpiricalTiming,
   initialSharedL3,
+  resolveClosedLoopCounts,
   validateSimConfig,
+  type ClosedLoopDerivedField,
   type FormSimConfig,
   type ConfigField,
 } from "../config/simulation";
@@ -31,6 +33,7 @@ interface NumberFieldProps {
   integer?: boolean;
   min?: number;
   max?: number;
+  readOnly?: boolean;
   onChange: (value: number) => void;
 }
 
@@ -47,6 +50,7 @@ function NumberField({
   integer = false,
   min = 0,
   max,
+  readOnly = false,
   onChange,
 }: NumberFieldProps) {
   const errorId = `${id}-error`;
@@ -58,6 +62,7 @@ function NumberField({
         id={id}
         name={name}
         type="number"
+        readOnly={readOnly}
         min={min}
         max={max}
         step={integer ? 1 : "any"}
@@ -80,7 +85,19 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
   const [replay, setReplay] = useState<ReplaySelection | null>(null);
   const [traceKey, setTraceKey] = useState(0);
   const [traceDraft, setTraceDraft] = useState({ arrival_mode: "open_loop" as "open_loop" | "closed_loop", session_rate: 1, seed: 0, target_qps: undefined as number | undefined });
-  const [config, setConfig] = useState<FormSimConfig>(createDefaultSimConfig);
+  const [draftConfig, setConfig] = useState<FormSimConfig>(createDefaultSimConfig);
+  const [derivedField, setDerivedField] = useState<ClosedLoopDerivedField>("turns");
+  const [turnsDraft, setTurnsDraft] = useState(NaN);
+  const draftSynthetic = draftConfig.workload.synthetic!;
+  const closedLoopCounts = draftConfig.workload.arrival_mode === "closed_loop"
+    ? resolveClosedLoopCounts(draftSynthetic.num_requests,
+      draftSynthetic.session?.num_sessions ?? draftSynthetic.num_requests, turnsDraft, derivedField)
+    : null;
+  const config: FormSimConfig = closedLoopCounts ? { ...draftConfig, workload: { ...draftConfig.workload,
+    synthetic: { ...draftSynthetic, num_requests: closedLoopCounts.numRequests,
+      session: { ...draftSynthetic.session, topology: "linear",
+        think_time_ms: draftSynthetic.session?.think_time_ms ?? 0,
+        num_sessions: closedLoopCounts.numSessions } } } } : draftConfig;
   const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
   const { model, hardware, tp_size: tpSize, ep_size: epSize } = config.inference;
   const timing = config.inference.timing.mode;
@@ -106,9 +123,10 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
       ...(replay.targetQps === undefined ? {} : { target_qps: replay.targetQps }),
     } : traceDraft), trace: { plan_id: replay?.id ?? null } } }
     : config;
-  const validationErrors = showValidation ? validateSimConfig(submissionConfig) : [];
+  const countErrors = workloadMode === "synthetic" ? closedLoopCounts?.errors ?? [] : [];
+  const validationErrors = [...validateSimConfig(submissionConfig), ...countErrors];
   const errorByField = new Map(
-    validationErrors.map(({ field, message }) => [field, message]),
+    (showValidation ? validationErrors : []).map(({ field, message }) => [field, message]),
   );
   const needsTpCommunication = tpSize > 1;
   const needsEpCommunication = model.moe_layers > 0 && epSize > 1;
@@ -121,7 +139,14 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
     (needsEpCommunication && hardware.ep_communication_latency_ms == null)
   );
   const synthetic = config.workload.synthetic!;
+  function changeDerivedField(next: ClosedLoopDerivedField): void {
+    setConfig(config);
+    if (derivedField === "turns") setTurnsDraft(closedLoopCounts?.turnsPerSession ?? NaN);
+    setDerivedField(next);
+    setShowValidation(false);
+  }
   function changeArrivalMode(arrivalMode: "open_loop" | "closed_loop"): void {
+    setDerivedField("turns");
     const { session: _session, ...current } = config.workload.synthetic!;
     const { target_qps: _targetQps, session_rate: _sessionRate, ...workload } = config.workload;
     setConfig({ ...config, workload: { ...workload, arrival_mode: arrivalMode,
@@ -138,7 +163,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
     event.preventDefault();
     setShowValidation(true);
 
-    if (validateSimConfig(submissionConfig).length > 0 || runUnavailable) return;
+    if (validationErrors.length > 0 || runUnavailable) return;
     if (workloadMode === "trace" && !replay) return;
     const force = (event.nativeEvent as SubmitEvent).submitter?.getAttribute("value") === "force";
     if (force) onSubmit(submissionConfig, true);
@@ -147,6 +172,10 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
 
   function handleExport(): void {
     try {
+      if (countErrors.length) {
+        setShowValidation(true);
+        throw new Error(countErrors[0].message);
+      }
       const json = serializeSimConfig(submissionConfig);
       setParamsJson(json);
       const exportMessage = workloadMode === "trace" ? "已生成参数 JSON，可手动复制；再次使用时请重新上传请求计划" : "已生成参数 JSON，可手动复制";
@@ -177,6 +206,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
       workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
     if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
     setWorkloadMode(imported.workload.mode);
+    if (imported.workload.mode === "synthetic") setDerivedField("turns");
     if (imported.workload.mode === "trace") {
       setTraceDraft({ arrival_mode: imported.workload.arrival_mode ?? "closed_loop",
         session_rate: imported.workload.session_rate ?? 1, seed: imported.workload.seed ?? 0,
@@ -195,6 +225,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
         workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
       if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
       setWorkloadMode(imported.workload.mode);
+      if (imported.workload.mode === "synthetic") setDerivedField("turns");
       if (imported.workload.mode === "trace" && imported.workload.trace) {
         const workload = imported.workload;
         setTraceDraft({ arrival_mode: workload.arrival_mode ?? "closed_loop",
@@ -287,6 +318,15 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
               <option value="closed_loop">闭环：按新会话频率投放</option>
             </select>
           </div>
+          {closedLoopCounts && <div className="form-field">
+            <label htmlFor="closed-loop-derived-field">自动推定项</label>
+            <select id="closed-loop-derived-field" value={derivedField}
+              onChange={(event) => changeDerivedField(event.currentTarget.value as ClosedLoopDerivedField)}>
+              <option value="turns">每会话轮次数</option>
+              <option value="requests">请求数量</option>
+              <option value="sessions">会话数量</option>
+            </select>
+          </div>}
           <NumberField
             id="num-requests"
             name="workload.synthetic.num_requests"
@@ -294,7 +334,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             value={synthetic.num_requests}
             integer
             min={1}
-            error={errorByField.get("workload.synthetic.num_requests")}
+            readOnly={closedLoopCounts !== null && derivedField === "requests"}
+            error={closedLoopCounts && derivedField === "requests" ? undefined : errorByField.get("workload.synthetic.num_requests")}
             onChange={(numRequests) =>
               setConfig({
                 ...config,
@@ -320,12 +361,20 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <NumberField id="num-sessions" name="workload.synthetic.session.num_sessions"
               label="会话数量（根请求数）" integer min={1}
               value={synthetic.session?.num_sessions ?? NaN}
-              error={errorByField.get("workload.synthetic.session.num_sessions")}
+              readOnly={derivedField === "sessions"}
+              error={derivedField === "sessions" ? undefined : errorByField.get("workload.synthetic.session.num_sessions")}
               onChange={(numSessions) => setConfig({ ...config, workload: { ...config.workload,
                 synthetic: { ...synthetic, session: { ...synthetic.session, topology: "linear",
                   think_time_ms: synthetic.session?.think_time_ms ?? 0,
-                  num_sessions: Number.isNaN(numSessions) ? null : numSessions } } } })}
+                  num_sessions: numSessions } } } })}
             />
+            {derivedField === "turns" ? <div className="form-field">
+              <label htmlFor="turns-per-session">每会话轮次数（含首轮）</label>
+              <input id="turns-per-session" type="text" readOnly
+                value={closedLoopCounts?.turnsDisplay ?? ""} />
+            </div> : <NumberField id="turns-per-session" name="turns_per_session"
+              label="每会话轮次数（含首轮）" integer min={1} value={turnsDraft}
+              error={errorByField.get("turns_per_session")} onChange={setTurnsDraft} />}
             <NumberField id="session-rate" name="workload.session_rate"
               label="新会话投放频率（会话/秒，泊松到达）"
               value={config.workload.session_rate ?? NaN}
@@ -356,6 +405,10 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
         </div>
 
         <div className="workload-notes">
+          {closedLoopCounts && <p>请求数量、会话数量、每会话轮次数只填写两项，另一项自动推定且只读。
+            {derivedField === "sessions" ? "请求数量必须是每会话轮次数的整数倍。"
+              : derivedField === "turns" ? "不能整除时显示两种轮次数，余数随机分配给部分会话，各增加一轮。"
+                : "请求数量等于会话数量乘以每会话轮次数。"}</p>}
           <p>每请求生成上限由实际输出长度向上取二次幂自动确定，不可编辑；
             输出长度超过引擎输出上限的请求将失败，不会截断输出。</p>
           <p>{config.workload.arrival_mode === "open_loop"
@@ -595,6 +648,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
           <p>请先选择会话并导出计划，或直接上传请求计划；同时检查回放参数。</p>}
       </div>
       {onScanSubmit && <ScanPanel base={config} onSubmit={onScanSubmit}
+        closedLoopCountError={closedLoopCounts?.errors[0]?.message}
         onImportBase={handleScanBaseImport} disabled={disabled} />}
     </form>
   );

@@ -1,0 +1,32 @@
+[
+  {
+    "seed": 0,
+    "l3_gb_s": 512,
+    "max_active_sessions": 272,
+    "mean_active_sessions": 159.69165131643445,
+    "fraction_time_over_256_active_sessions": 0.06090046745299286,
+    "fraction_time_over_300_active_sessions": 0.0,
+    "root_min_100session_span_s": 4638.100583376647,
+    "root_max_100session_span_s": 6799.523022651311
+  },
+  {
+    "seed": 1,
+    "l3_gb_s": 512,
+    "max_active_sessions": 337,
+    "mean_active_sessions": 195.51655618094682,
+    "fraction_time_over_256_active_sessions": 0.4005374482512631,
+    "fraction_time_over_300_active_sessions": 0.14625620073922568,
+    "root_min_100session_span_s": 4437.0272793300255,
+    "root_max_100session_span_s": 5907.255978287615
+  },
+  {
+    "seed": 2,
+    "l3_gb_s": 512,
+    "max_active_sessions": 270,
+    "mean_active_sessions": 166.64381931438203,
+    "fraction_time_over_256_active_sessions": 0.12698438848559043,
+    "fraction_time_over_300_active_sessions": 0.0,
+    "root_min_100session_span_s": 5021.632181061702,
+    "root_max_100session_span_s": 6345.627771906141
+  }
+]

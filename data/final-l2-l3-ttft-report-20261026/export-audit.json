@@ -1,0 +1,19 @@
+{
+  "file": "L2-L3-TTFT-qualified-scan.html",
+  "size_bytes": 1393025,
+  "sha256": "2d5b75e2ab3140451fbbf2a0a78b82da2481733dd96f625ee3f6cef47678d433",
+  "unique_points": 47,
+  "batches": 12,
+  "capacities": {
+    "4096": 12,
+    "2048": 12,
+    "256": 3,
+    "512": 10,
+    "1024": 10
+  },
+  "max_ttft_s": 9.812312050851094,
+  "matches_selection_manifest": true,
+  "all_points_pass": true,
+  "exporter": "web/src/scan/report.ts: downloadReport -> renderReport; unmodified native HTML",
+  "external_script_count": 0
+}

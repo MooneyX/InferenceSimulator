@@ -1,0 +1,22 @@
+{
+  "report": "L2-all-capacities-L3-bandwidth.html",
+  "bytes": 1343612,
+  "sha256": "5a14882e9c406ee3b5f01355c38bc84a45602a8e0be15517ddbf2cc60f773498",
+  "native_exporter": "web/src/scan/report.ts: downloadReport",
+  "batch_count": 5,
+  "point_count": 40,
+  "identical_to_five_source_reports": true,
+  "by_l2": {
+    "256": 8,
+    "512": 8,
+    "1024": 8,
+    "2048": 8,
+    "4096": 8
+  },
+  "varying_keys": [
+    "inference.storage.l3_to_l2_gb_s",
+    "inference.storage.l2_available_gb"
+  ],
+  "retains_ttft_over_10s_points": 32,
+  "external_script_count": 0
+}

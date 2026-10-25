@@ -1,0 +1,27 @@
+﻿[
+    {
+        "l2_gb":  256,
+        "id":  "6ec318d6d12f45fe83531184a384c7a7",
+        "reused":  false
+    },
+    {
+        "l2_gb":  512,
+        "id":  "027a5425c61c4db7bfcf0f4b7da0fbe9",
+        "reused":  false
+    },
+    {
+        "l2_gb":  1024,
+        "id":  "b54bd3e5da4a479892e4cec9136a62ac",
+        "reused":  false
+    },
+    {
+        "l2_gb":  2048,
+        "id":  "38ae905ca7864a0ea3c123127b44b099",
+        "reused":  false
+    },
+    {
+        "l2_gb":  4096,
+        "id":  "a5f53ca2e37247e19faa3947222bcdb6",
+        "reused":  true
+    }
+]

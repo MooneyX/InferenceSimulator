@@ -23,6 +23,8 @@ const catalog = [
     modes: ["synthetic/open_loop", "synthetic/closed_loop"] },
   { key: "workload.synthetic.output_len", label: "平均输出长度", kind: "number",
     modes: ["synthetic/open_loop", "synthetic/closed_loop"] },
+  { key: "inference.hardware.memory_bytes_per_gpu", label: "单卡显存容量 (GB)", kind: "number",
+    modes: ["synthetic/open_loop", "synthetic/closed_loop", "trace/open_loop", "trace/closed_loop"] },
   { key: "inference.parallelism", label: "每实例 GPU / TP / EP 数", kind: "integer",
     modes: ["synthetic/open_loop", "synthetic/closed_loop", "trace/open_loop", "trace/closed_loop"] },
 ];
@@ -46,6 +48,20 @@ describe("ScanPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       axes: [{ key: "workload.synthetic.num_requests", values: [10, 20] }],
+    }));
+  });
+
+  it("uses GPU memory in GB as the default memory scan level", async () => {
+    const onSubmit = vi.fn();
+    render(<ScanPanel base={createDefaultSimConfig()} onSubmit={onSubmit} onImportBase={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+    fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+    fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "显存" } });
+    fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: /单卡显存容量/ }));
+    expect(screen.getByLabelText("扫描档位 1")).toHaveValue("288");
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      axes: [{ key: "inference.hardware.memory_bytes_per_gpu", values: [288] }],
     }));
   });
 

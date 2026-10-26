@@ -219,20 +219,18 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
         )  # 单 rank 每 token 的 K/V BF16 字节
     group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
-    l1 = _bytes_from_gb(storage.l1_available_gb)
+    l1 = hardware.memory_bytes_per_gpu
     l2 = _bytes_from_gb(storage.l2_available_gb)
     shared = config.shared_l3
     l3 = _bytes_from_gb(shared.available_gb) if shared is not None else 0
-    if l1 > hardware.memory_bytes_per_gpu:
-        raise ValueError("L1 可用容量不能超过单卡显存")
     rank_reports: list[RankCapacityReport] = []
     sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
         _weight_budget(model, tp_size)
     )
     local_page_bytes = kv_bytes * page_size
-    l1_kv = l1 - sharded - replicated - expert - storage.runtime_reserve_bytes
+    l1_kv = l1 - sharded - replicated - expert
     if l1_kv < local_page_bytes:
-        raise ValueError("至少一张 GPU 扣除权重和预留后不足一个本地 KV 页")
+        raise ValueError("至少一张 GPU 扣除权重后不足一个本地 KV 页")
     l1_pages = l1_kv // local_page_bytes
     if tp_size > 1 or is_moe:
         rank_reports = [

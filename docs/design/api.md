@@ -36,8 +36,8 @@ inference:
   page_size: int               # 默认 64
   max_output_tokens: int       # 默认 65536，正整数；引擎输出上限
   model: ModelSpec             # 必填；结构、权重与 KV 精度
-  hardware: HardwareSpec       # 必填；每实例的 GPU/有效性能
-  storage: StorageSpec         # 必填；每卡 L1/每实例 L2 预算与接入带宽
+  hardware: HardwareSpec       # 必填；每实例 GPU 数、单卡显存容量与有效性能
+  storage: StorageSpec         # 必填；每实例 L2 预算与接入带宽，可为空对象
   tp_size: int                 # 默认 1
   ep_size: int                 # 默认 1
   timing:                     # 可选，默认解析计时
@@ -59,7 +59,7 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-合成开环在 `workload` 公共层只传 `target_qps=q`（期望请求/秒），不传 `session_rate`，全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。运行时 `max_total_tokens` 从每卡 L1 预算扣除权重和预留后向下取整页推导，至少保留一页；不能直接填写 token 容量。合成采样输出与 Trace 原始输出视为已发生结果，不按 KV 容量或输出上限截短。每请求可见 `max_new_tokens=min(next_power_of_two(max(1,output_len)), inference.max_output_tokens)`，真实输出目标随内部 `InferenceRequest.output_len` 传递，但当前调度仍只用生成上限与进度估算；超过引擎上限时返回请求级 `output_exceeds_engine_limit`。公共投放字段只位于 `workload`，旧合成子层 `arrival_mode`、`seed`、`session_rate`、`arrival_rate`、`max_new_tokens` 及 Trace 子层 `mode`、`seed`、`session_rate`、`target_qps` 均按未知字段返回 422。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型、硬件与存储都属于唯一的 `inference` 输入。低层预算为零时保持原有 L1 行为；启用 L2 要求 L2→L1 带宽，启用 L3 还要求有 L2 及 L3→L2 带宽。运行规格从模型推导 KV 字节/token，预算须至少容纳一个完整页；非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
+合成开环在 `workload` 公共层只传 `target_qps=q`（期望请求/秒），不传 `session_rate`，全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。运行时 `max_total_tokens` 从单卡显存容量扣除每卡模型权重后向下取整页推导，至少保留一页；不能直接填写 token 容量。合成采样输出与 Trace 原始输出视为已发生结果，不按 KV 容量或输出上限截短。每请求可见 `max_new_tokens=min(next_power_of_two(max(1,output_len)), inference.max_output_tokens)`，真实输出目标随内部 `InferenceRequest.output_len` 传递，但当前调度仍只用生成上限与进度估算；超过引擎上限时返回请求级 `output_exceeds_engine_limit`。公共投放字段只位于 `workload`，旧合成子层 `arrival_mode`、`seed`、`session_rate`、`arrival_rate`、`max_new_tokens` 及 Trace 子层 `mode`、`seed`、`session_rate`、`target_qps` 均按未知字段返回 422。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型、硬件与存储都属于唯一的 `inference` 输入。低层预算为零时保持原有 L1 行为；启用 L2 要求 L2→L1 带宽，启用 L3 还要求有 L2 及 L3→L2 带宽。运行规格从模型推导 KV 字节/token，预算须至少容纳一个完整页；非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
 
 ## API
 
@@ -92,6 +92,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 - `POST /api/simulate?force=true` 提交跳过已完成缓存的重算任务，默认 `force=false`。结果接口响应头 `X-Simulation-Cache` 为 `hit` / `miss` / `shared`，`X-Simulation-Cache-Lookup-Ms` 为查找/读取耗时，`meta.wall_clock_ms` 保留原计算耗时。
 - `DELETE /api/simulation-cache` 返回 204；跨进程共享缓存代际防止清空前开始的计算重新写入。单条超容量仍返回但不保存，容量超限按最久未使用记录清理。
 - 不改变 Trace 临时资源的有效期；失效计划仍返回 404，重新上传相同计划后可复用缓存。
+- 归档中的旧配置不参与恢复执行；不符合当前配置契约时，任务摘要 `base` 与扫描点 `config` 返回 `null`，不阻断服务启动和列表查询。原始配置与完整结果仍保留在归档中，已归档的完整结果可下载；不把旧字段转换为当前运行参数。
 
 ### 错误响应
 
@@ -130,7 +131,7 @@ analysis:          # AnalyticalSummary | null；经验计时为 null
 ## 自动解析与 TP/EP 容量预览
 
 - `GET /api/presets` 仅返回 `models` 和 `hardware` 目录，不返回搭配场景列表。模型包含 Qwen3-8B、Qwen3-235B-A22B 和固定修订的 HY4-Preview 主干参考结构以及 B300 单卡显存、互联带宽标称值；不提供已测有效算力或模型修订认证，目录条目不等于已验证部署。B300 的 1800 GB/s 是单卡双向标称值；页面以 600 GB/s 作为未经校准的单 rank 有效带宽试算值，非实测值。
-- `POST /api/resolve` 接受与运行完全相同的 `SimConfig`，返回 `ResolutionReport`，不产生另一套可提交的配置。`ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size` 均位于 `inference`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；支持全注意力 GQA/MQA、按层数组合的 GQA/MLA/MLA+DSA BF16/FP16 粗估，以及以完整组件配置表示的 HY4-Preview 参考预设，参数可修改，不以名称或修订号锁定结构，容量和性能均复用通用路径。组数不限但层数之和须等于模型层数；组只描述注意力，FFN/MoE 按全模型独立配置，不支持需逐层顺序或可变页成本的注意力。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。L1 输入为**每卡**含权重可用预算，按 rank 扣除非专家、全部驻留专家权重与预留后取最紧整页容量；L2 输入为**单实例整组**仅放 KV 的预算；L3 输入为顶层 `shared_l3.available_gb` 的**全场总预算**。两者均按一个 TP 组保存一份逻辑页的字节数换算，L3 不乘实例数量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；可用 `norms`、`router`、`ihc` 和注意力组辅助字段配置 BF16/FP16/FP32 权重，类型及形状决定逻辑参数数，精度与放置决定驻留字节。辅助容量配置不扩展性能算子模型，未建模权重仍不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；单卡支持经验或解析计时，多卡 TP/EP 仅支持通信参数齐备时的解析计时。
+- `POST /api/resolve` 接受与运行完全相同的 `SimConfig`，返回 `ResolutionReport`，不产生另一套可提交的配置。`ModelSpec`、`HardwareSpec`、`StorageSpec`、`timing`、`tp_size`、`ep_size` 均位于 `inference`。TP 数须等于 GPU 数；Dense 使用 EP1，MoE 首版须 EP=TP；支持全注意力 GQA/MQA、按层数组合的 GQA/MLA/MLA+DSA BF16/FP16 粗估，以及以完整组件配置表示的 HY4-Preview 参考预设，参数可修改，不以名称或修订号锁定结构，容量和性能均复用通用路径。组数不限但层数之和须等于模型层数；组只描述注意力，FFN/MoE 按全模型独立配置，不支持需逐层顺序或可变页成本的注意力。MoE 须填写专家结构，各 MoE 层规格相同；所有驻留专家均匀放置到 EP ranks。显存只接受 `inference.hardware.memory_bytes_per_gpu`（**单卡**总容量，字节），页面默认采用所选 GPU 规格；按 rank 扣除非专家及全部驻留专家权重后取最紧 L1 整页容量，不扣额外运行时空间。`StorageSpec` 不再接受 `l1_available_gb` 和 `runtime_reserve_bytes`，旧配置须删除这两个字段，API 与前端导入均拒绝它们；L2 输入为**单实例整组**仅放 KV 的预算；L3 输入为顶层 `shared_l3.available_gb` 的**全场总预算**。两者均按一个 TP 组保存一份逻辑页的字节数换算，L3 不乘实例数量。模型词表大小与结构维度必填；总参数、每 token 激活参数和全部专家参数由结构估算，BF16/FP16 全部驻留权重按参数矩阵和逐卡复制/分片关系计入，不再接受总参数或实际驻留字节覆盖。报告包含参数估算、每 rank TP 分片/复制权重、EP 专家权重、KV 字节与页数；可用 `norms`、`router`、`ihc` 和注意力组辅助字段配置 BF16/FP16/FP32 权重，类型及形状决定逻辑参数数，精度与放置决定驻留字节。辅助容量配置不扩展性能算子模型，未建模权重仍不计入，结果不能解释为真实部署占用。缺失结构、显存不足或不支持拓扑返回 422。缺少 TP/EP 通信计时参数仍可预览容量，但 `runnable=false`；单卡支持经验或解析计时，多卡 TP/EP 仅支持通信参数齐备时的解析计时。
 - `ResolutionReport` 包含 `capacity: CapacityReport`、`max_total_tokens`、`l2_capacity_tokens`、`l3_capacity_tokens`、`runnable` 与可空 `reason`；报告只描述容量与可运行性，不替换原输入，不可作为 `simulate` 的参数。
 - 后台 worker 对每场配置独立准备物理运行规格后执行；支持 Dense TP 与平均负载 MoE/EP 的解析计时，缺通信参数或 TP/EP>1 经验四系数模式使任务失败。任务结果接口返回单个 `SimResult`：`resolution` 给出逐 rank 容量与运行容量，`analysis` 分列 TP 同步、EP dispatch/combine 的时间与逻辑流量；这些费用已计入 `device_ms`，KV 恢复时间独立。422 `detail` 可为字段错误列表或业务错误字符串，OpenAPI 同时登记两种格式。前端不复用上次容量预览的 token 数作为运行配置；结构估算参数和权重占用未经部署核验，旧配置 JSON 结构会被拒绝。
 - 合成/Trace 负载均使用唯一 `/api/simulate`。四系数仅在 `inference.timing.mode=empirical` 使用，解析模式的逐步估计见 [性能模型](perf-model.md)。

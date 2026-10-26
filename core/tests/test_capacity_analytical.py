@@ -85,9 +85,7 @@ def example_request() -> SimConfig:
                 effective_hbm_gb_s=1,
             ),
             storage=StorageSpec(
-                l1_available_gb=0.001,
                 l2_available_gb=0.000000512,
-                runtime_reserve_bytes=1000,
                 l2_to_l1_gb_s=0.001,
                 l3_to_l2_gb_s=0.002,
                 l2_latency_ms=3,
@@ -359,7 +357,6 @@ def hy4_request() -> SimConfig:
     )
     storage = inference_config(request).storage.model_copy(
         update={
-            "l1_available_gb": 260,
             "l2_available_gb": 0,
         }
     )
@@ -431,7 +428,6 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
     )
     storage = inference_config(request).storage.model_copy(
         update={
-            "l1_available_gb": 2000,
             "l2_available_gb": 10 if hierarchical else 0,
         }
     )
@@ -1265,9 +1261,10 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     assert report.estimated_total_parameters == report.estimated_active_parameters == 5232
     assert report.estimated_expert_parameters == 0
     assert report.weights_resident_bytes == 10464
-    assert report.l1_kv_budget_bytes == 988_536
+    assert report.l1_budget_bytes == 2_000_000
+    assert report.l1_kv_budget_bytes == 1_989_536
     assert (report.l1_capacity_pages, report.l2_capacity_pages, report.l3_capacity_pages) == (
-        3861,
+        7771,
         2,
         1,
     )
@@ -1275,7 +1272,7 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
         resolved.max_total_tokens,
         resolved.l2_capacity_tokens,
         resolved.l3_capacity_tokens,
-    ) == (3861 * 4, 8, 4)
+    ) == (7771 * 4, 8, 4)
     assert report.l2_to_l1_tokens_per_ms == pytest.approx(1000 / 64)
     assert report.l3_to_l2_tokens_per_ms == pytest.approx(2000 / 64)
     runtime = prepare_runtime(example_request())
@@ -1283,6 +1280,41 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
     assert runtime.perf_model.kv_bytes_per_token == 64
     assert runtime.perf_model.l3_lookup_latency_ms == 1.25
     assert runtime.engine.l3_prefetch_min_tokens == 256
+
+
+@pytest.mark.parametrize("extra_bytes,expected_pages", [(0, 1), (255, 1), (256, 2)])
+def test_gpu_memory_directly_sets_l1_capacity(extra_bytes: int, expected_pages: int) -> None:
+    base = example_request()
+    memory_bytes = 10_464 + 256 + extra_bytes
+    request = update_inference(
+        base,
+        update={
+            "hardware": base.inference.hardware.model_copy(
+                update={"memory_bytes_per_gpu": memory_bytes}
+            ),
+        },
+    )
+    resolved = resolve_config(request)
+    assert resolved.capacity.l1_budget_bytes == memory_bytes
+    assert resolved.capacity.l1_kv_budget_bytes == 256 + extra_bytes
+    assert resolved.capacity.l1_capacity_pages == expected_pages
+    assert prepare_runtime(request).engine.max_total_tokens == expected_pages * 4
+    assert (resolved.capacity.l2_capacity_pages, resolved.capacity.l3_capacity_pages) == (2, 1)
+
+
+@pytest.mark.parametrize("memory_bytes", [10_464 - 1, 10_464 + 256 - 1])
+def test_gpu_memory_must_fit_weights_and_one_kv_page(memory_bytes: int) -> None:
+    base = example_request()
+    request = update_inference(
+        base,
+        update={
+            "hardware": base.inference.hardware.model_copy(
+                update={"memory_bytes_per_gpu": memory_bytes}
+            ),
+        },
+    )
+    with pytest.raises(ValueError, match="扣除权重后不足一个本地 KV 页"):
+        resolve_config(request)
 
 
 @pytest.mark.parametrize("instances", [1, 4])
@@ -1324,7 +1356,6 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
                 ),
                 "storage": inference_config(request).storage.model_copy(
                     update={
-                        "l1_available_gb": 200,
                         "l2_available_gb": 0,
                         "l2_to_l1_gb_s": None,
                         "l3_to_l2_gb_s": None,
@@ -1337,7 +1368,7 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
     assert resolved.capacity.estimated_total_parameters == 8_190_735_360
     assert resolved.capacity.estimated_active_parameters == 8_190_735_360
     assert resolved.capacity.weights_resident_bytes == 2 * 8_190_735_360
-    assert resolved.capacity.l1_capacity_pages == (200_000_000_000 - 2 * 8_190_735_360 - 1000) // (
+    assert resolved.capacity.l1_capacity_pages == (288_000_000_000 - 2 * 8_190_735_360) // (
         4 * 144 * 1024
     )
 
@@ -1382,10 +1413,8 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
             update_inference(
                 original,
                 update={
-                    "storage": inference_config(original).storage.model_copy(
-                        update={
-                            "l1_available_gb": 0.000001,
-                        }
+                    "hardware": inference_config(original).hardware.model_copy(
+                        update={"memory_bytes_per_gpu": 1000}
                     )
                 },
             )
@@ -1414,7 +1443,6 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     )
     storage = inference_config(request).storage.model_copy(
         update={
-            "l1_available_gb": 20,
             "l2_available_gb": 1,
         }
     )
@@ -1453,8 +1481,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
             rank.sharded_weights_bytes
             + rank.replicated_weights_bytes
             + rank.l1_kv_budget_bytes
-            + storage.runtime_reserve_bytes
-        ) == 20_000_000_000
+        ) == hardware.memory_bytes_per_gpu
         assert rank.l1_capacity_pages == rank.l1_kv_budget_bytes // (rank.kv_bytes_per_token * 4)
     assert (
         result.max_total_tokens == min(rank.l1_capacity_pages for rank in report.rank_reports) * 4
@@ -1485,7 +1512,6 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     )
     storage = inference_config(request).storage.model_copy(
         update={
-            "l1_available_gb": 50,
             "l2_available_gb": 1,
         }
     )
@@ -1593,14 +1619,10 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
         experts_per_token=2,
         vocab_size=16,
     )
-    hardware = inference_config(base).hardware.model_copy(update={"gpu_count": 2})
-    storage = inference_config(base).storage.model_copy(
-        update={
-            "l1_available_gb": 0.00001,
-            "l2_available_gb": 0,
-            "runtime_reserve_bytes": 0,
-        }
+    hardware = inference_config(base).hardware.model_copy(
+        update={"gpu_count": 2, "memory_bytes_per_gpu": 10_000}
     )
+    storage = inference_config(base).storage.model_copy(update={"l2_available_gb": 0})
     request = update_inference(
         base,
         update={
@@ -1835,7 +1857,7 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
             "hardware": hardware,
             "tp_size": 2,
             "ep_size": 2,
-            "storage": StorageSpec(l1_available_gb=0.001),
+            "storage": StorageSpec(),
         },
     ).model_copy(
         update={
@@ -2080,7 +2102,6 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
     )
     storage = inference_config(base).storage.model_copy(
         update={
-            "l1_available_gb": 0.0002,
             "l2_available_gb": 0,
         }
     )

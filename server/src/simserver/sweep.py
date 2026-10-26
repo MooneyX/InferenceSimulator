@@ -38,7 +38,7 @@ PARAMETERS: dict[str, Parameter] = {
     "workload.synthetic.output_len": Parameter("平均输出长度", modes=SYNTHETIC),
     "workload.session_rate": Parameter("会话投放频率", modes=("synthetic/closed_loop", *TRACE)),
     "inference.parallelism": Parameter("每实例 GPU / TP / EP 数", "integer"),
-    "inference.hardware.memory_bytes_per_gpu": Parameter("单卡显存 (GB)"),
+    "inference.hardware.memory_bytes_per_gpu": Parameter("单卡显存容量 (GB)"),
     "inference.hardware.effective_fp16_tflops": Parameter("有效 FP16/BF16 算力 (TFLOPS)"),
     "inference.hardware.effective_fp8_tflops": Parameter("有效 FP8 算力 (TFLOPS)"),
     "inference.hardware.effective_hbm_gb_s": Parameter("有效 HBM 带宽 (GB/s)"),
@@ -46,9 +46,7 @@ PARAMETERS: dict[str, Parameter] = {
     "inference.hardware.collective_latency_ms": Parameter("TP 集合通信延迟 (ms)"),
     "inference.hardware.ep_communication_latency_ms": Parameter("EP 通信延迟 (ms)"),
     "inference.hardware.kernel_overhead_ms": Parameter("算子固定开销 (ms)"),
-    "inference.storage.l1_available_gb": Parameter("L1 可用容量 (GB)"),
     "inference.storage.l2_available_gb": Parameter("L2 可用容量 (GB)"),
-    "inference.storage.runtime_reserve_bytes": Parameter("运行时预留 (GB)"),
     "inference.storage.l2_to_l1_gb_s": Parameter("L2 → L1 带宽 (GB/s)"),
     "inference.storage.l3_to_l2_gb_s": Parameter("L3 → L2 带宽 (GB/s)"),
     "inference.storage.l2_latency_ms": Parameter("L2 固定延迟 (ms)"),
@@ -143,10 +141,7 @@ def build_point(base: SimConfig, values: dict[str, Any], plan: TracePlan | None)
             target = target[part]
         if key == "shared_l3.available_gb":
             value *= 1000
-        if key in (
-            "inference.hardware.memory_bytes_per_gpu",
-            "inference.storage.runtime_reserve_bytes",
-        ):
+        if key == "inference.hardware.memory_bytes_per_gpu":
             value *= 1_000_000_000
             if not float(value).is_integer():
                 raise ValueError(f"{key} 换算后必须为整数字节")

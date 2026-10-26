@@ -187,9 +187,9 @@ function validateInference(value: unknown): InferenceConfig {
     "effective_fp16_tflops", "effective_hbm_gb_s"], ["gpu_count", "effective_fp8_tflops",
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
     "kernel_overhead_ms"]) } as Record<string, unknown>;
-  const storage = { l2_available_gb: 0, runtime_reserve_bytes: 0, l2_latency_ms: initialStorage.l2_latency_ms,
-    l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", ["l1_available_gb"],
-    ["l2_available_gb", "runtime_reserve_bytes", "l2_to_l1_gb_s",
+  const storage = { l2_available_gb: 0, l2_latency_ms: initialStorage.l2_latency_ms,
+    l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", [],
+    ["l2_available_gb", "l2_to_l1_gb_s",
       "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
   root.model = model;
   root.hardware = hardware;
@@ -320,11 +320,9 @@ function validateInference(value: unknown): InferenceConfig {
     configNumber(hardware, "hardware", key, 0, false, true);
   }
   configNumber(hardware, "hardware", "kernel_overhead_ms", 0);
-  configNumber(storage, "storage", "l1_available_gb", Number.MIN_VALUE);
   for (const key of ["l2_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
     configNumber(storage, "storage", key, 0);
   }
-  configNumber(storage, "storage", "runtime_reserve_bytes", 0, true);
   for (const key of ["l2_to_l1_gb_s", "l3_to_l2_gb_s"] as const) {
     configNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
   }

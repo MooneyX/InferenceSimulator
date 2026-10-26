@@ -323,14 +323,12 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                 ),
                 hardware=HardwareSpec(
                     name="toy",
-                    memory_bytes_per_gpu=2_000_000,
+                    memory_bytes_per_gpu=100_000,
                     effective_fp16_tflops=1,
                     effective_hbm_gb_s=1,
                 ),
                 storage=StorageSpec(
-                    l1_available_gb=0.0001,
                     l2_available_gb=0.000008192,
-                    runtime_reserve_bytes=1000,
                     l2_to_l1_gb_s=0.001,
                     l3_to_l2_gb_s=0.002,
                     l2_latency_ms=3,

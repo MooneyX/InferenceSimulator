@@ -698,7 +698,7 @@ describe("SimulationForm", () => {
     render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
-    fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
+    fireEvent.change(screen.getByLabelText("单卡显存容量（GB）"), { target: { value: "300" } });
     fireEvent.change(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）"), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText("L3 查找延迟（ms）"), { target: { value: "2.5" } });
     fireEvent.change(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）"), { target: { value: "1024" } });
@@ -713,12 +713,12 @@ describe("SimulationForm", () => {
       shared_l3: { available_gb: 1500, lookup_latency_ms: 2.5 },
     });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
-    fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "288" } });
+    fireEvent.change(screen.getByLabelText("单卡显存容量（GB）"), { target: { value: "288" } });
     fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("隐藏维度")).toHaveValue(2048);
-    expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(300);
+    expect(screen.getByLabelText("单卡显存容量（GB）")).toHaveValue(300);
     expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(1.5);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(2.5);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(1024);

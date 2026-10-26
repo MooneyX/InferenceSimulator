@@ -49,7 +49,6 @@ def payload() -> dict[str, Any]:
                 "effective_hbm_gb_s": 1,
             },
             "storage": {
-                "l1_available_gb": 0.001,
                 "l2_available_gb": 0.000000512,
                 "l2_to_l1_gb_s": 0.001,
                 "l3_to_l2_gb_s": 0.002,
@@ -296,7 +295,7 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
             "ep_communication_latency_ms": 0.02,
         }
     )
-    request["inference"]["storage"].update({"l1_available_gb": 260, "l2_available_gb": 0})
+    request["inference"]["storage"].update({"l2_available_gb": 0})
     request["shared_l3"] = None
     request["inference"].update({"tp_size": 8, "ep_size": 8})
     preview = client.post("/api/resolve", json=request)
@@ -367,7 +366,7 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
             "collective_latency_ms": 0.1,
         }
     )
-    request["inference"]["storage"].update({"l1_available_gb": 20, "l2_available_gb": 1})
+    request["inference"]["storage"].update({"l2_available_gb": 1})
     request["shared_l3"]["available_gb"] = 0.5
     request["inference"]["tp_size"] = 4
     preview = client.post("/api/resolve", json=request)
@@ -410,7 +409,7 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
             "effective_interconnect_gb_s": 600,
         }
     )
-    request["inference"]["storage"].update({"l1_available_gb": 200, "l2_available_gb": 0})
+    request["inference"]["storage"].update({"l2_available_gb": 0})
     request["shared_l3"] = None
     request["inference"].update({"tp_size": 8, "ep_size": 8})
     response = client.post("/api/resolve", json=request)
@@ -546,7 +545,7 @@ def test_presets_and_unsupported_modes() -> None:
                 "ep_communication_latency_ms": 0.02,
             }
         )
-        request["inference"]["storage"].update({"l1_available_gb": 200, "l2_available_gb": 0})
+        request["inference"]["storage"].update({"l2_available_gb": 0})
         request["shared_l3"] = None
         request["inference"].update({"tp_size": 8, "ep_size": 8 if model["moe_layers"] else 1})
         explicit = client.post("/api/resolve", json=request)
@@ -590,4 +589,9 @@ def test_presets_and_unsupported_modes() -> None:
         assert rejected.json()["detail"][0]["loc"] == ["body", "inference", "model", field]
         del request["inference"]["model"][field]
     request["inference"]["model"]["moe_layers"] = 2
-    assert run_simulation(client, request).status_code == 422
+    assert client.post("/api/resolve", json=request).status_code == 422
+    submitted = client.post("/api/simulate", json=request)
+    assert submitted.status_code == 202
+    job = await_task(client, submitted.json()["id"])
+    assert job["status"] == "failed"
+    assert "MoE 需要专家数" in job["error"]

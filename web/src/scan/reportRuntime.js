@@ -23,8 +23,7 @@
       current = current.dist === 'fixed' ? current.value : current.mean;
     }
     if (key === 'shared_l3.available_gb' && typeof current === 'number') current /= 1000;
-    if (['inference.hardware.memory_bytes_per_gpu', 'inference.storage.runtime_reserve_bytes'].includes(key)
-        && typeof current === 'number') current /= 1e9;
+    if (key === 'inference.hardware.memory_bytes_per_gpu' && typeof current === 'number') current /= 1e9;
     return current ?? null;
   };
   const option = (v, text) => new Option(text, v);

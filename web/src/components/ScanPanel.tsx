@@ -20,8 +20,7 @@ function initialValue(config: SimConfig, key: string, fallbackQps = 64): string 
     value = length.dist === "fixed" ? length.value : length.mean;
   }
   if (key === "shared_l3.available_gb" && typeof value === "number") value /= 1000;
-  if ((key === "inference.hardware.memory_bytes_per_gpu" ||
-       key === "inference.storage.runtime_reserve_bytes") && typeof value === "number") value /= 1e9;
+  if (key === "inference.hardware.memory_bytes_per_gpu" && typeof value === "number") value /= 1e9;
   return value === undefined || value === null ? "null" : String(value);
 }
 

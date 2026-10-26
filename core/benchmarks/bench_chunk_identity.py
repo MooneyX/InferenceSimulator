@@ -66,11 +66,11 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
             ),
             hardware=HardwareSpec(
                 name="toy",
-                memory_bytes_per_gpu=2_000_000,
+                memory_bytes_per_gpu=10_464 + 4096 * 64,
                 effective_fp16_tflops=1,
                 effective_hbm_gb_s=1,
             ),
-            storage=StorageSpec(l1_available_gb=(10_464 + 4096 * 64) / 1_000_000_000),
+            storage=StorageSpec(),
             timing=EmpiricalTimingConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
         ),
     )

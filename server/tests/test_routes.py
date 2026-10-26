@@ -42,12 +42,11 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
             },
             "hardware": {
                 "name": "toy",
-                "memory_bytes_per_gpu": 2_000_000,
+                "memory_bytes_per_gpu": 10_464 + budget * 64,
                 "effective_fp16_tflops": 1,
                 "effective_hbm_gb_s": 1,
             },
             "storage": {
-                "l1_available_gb": (10_464 + budget * 64) / 1_000_000_000,
                 "l2_available_gb": 0,
             },
             "timing": {
@@ -115,8 +114,8 @@ class TestSuccess:
         payload["scheduler"]["max_running_requests"] = 1
         payload["inference"]["page_size"] = 4
         payload["shared_l3"] = {"available_gb": 8 * 64 / 1_000_000_000}
+        payload["inference"]["hardware"]["memory_bytes_per_gpu"] = 10_464 + 12 * 64
         payload["inference"]["storage"].update(
-            l1_available_gb=(10_464 + 12 * 64) / 1_000_000_000,
             l2_available_gb=4 * 64 / 1_000_000_000,
             l2_to_l1_gb_s=64 / 1_000_000,
             l3_to_l2_gb_s=32 / 1_000_000,
@@ -343,7 +342,6 @@ class TestErrors:
     @pytest.mark.parametrize(
         "storage,shared,message",
         [
-            ({"l1_available_gb": 0.00001}, None, "不足一个本地 KV 页"),
             ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
             (
                 {"l2_available_gb": 0, "l2_to_l1_gb_s": None},
@@ -373,6 +371,32 @@ class TestErrors:
         job = await_task(client, receipt.json()["id"])
         assert job["status"] == "failed"
         assert message in job["error"]
+
+    @pytest.mark.parametrize("memory_bytes", [10_000, 10_464 + 64 - 1])
+    def test_insufficient_gpu_memory_fails_task(
+        self, client: TestClient, memory_bytes: int
+    ) -> None:
+        payload = make_payload(num_requests=1)
+        payload["inference"]["hardware"]["memory_bytes_per_gpu"] = memory_bytes
+        receipt = client.post(URL, json=payload)
+        assert receipt.status_code == 202
+        job = await_task(client, receipt.json()["id"])
+        assert job["status"] == "failed"
+        assert "扣除权重后不足一个本地 KV 页" in job["error"]
+
+    @pytest.mark.parametrize("url", [URL, "/api/resolve"])
+    @pytest.mark.parametrize("field", ["l1_available_gb", "runtime_reserve_bytes"])
+    def test_removed_memory_inputs_are_rejected(
+        self, client: TestClient, url: str, field: str
+    ) -> None:
+        payload = make_payload(num_requests=1)
+        payload["inference"]["storage"][field] = 1
+        response = client.post(url, json=payload)
+        assert response.status_code == 422
+        assert any(
+            error["loc"][-1] == field and error["type"] == "extra_forbidden"
+            for error in response.json()["detail"]
+        )
 
     @pytest.mark.parametrize("legacy", ["max_batch_size", "kv_token_budget", "prefix_cache"])
     def test_legacy_engine_inputs_are_rejected(self, client: TestClient, legacy: str) -> None:

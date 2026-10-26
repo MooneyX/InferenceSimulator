@@ -89,11 +89,11 @@ def config() -> dict:
             },
             "hardware": {
                 "name": "toy",
-                "memory_bytes_per_gpu": 2_000_000,
+                "memory_bytes_per_gpu": 10_464 + 2048 * 64,
                 "effective_fp16_tflops": 1,
                 "effective_hbm_gb_s": 1,
             },
-            "storage": {"l1_available_gb": (10_464 + 2048 * 64) / 1_000_000_000},
+            "storage": {},
             "timing": {
                 "mode": "empirical",
                 "prefill_c1": 0.01,
@@ -265,7 +265,7 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
             "effective_fp16_tflops": 1,
             "effective_hbm_gb_s": 1,
         },
-        "storage": {"l1_available_gb": 0.001},
+        "storage": {},
         "timing": {"mode": "analytical"},
     }
     with TestClient(create_app()) as client:

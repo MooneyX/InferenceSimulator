@@ -60,7 +60,7 @@ npm run dev
 调用 `POST /api/simulate`：
 
 ```powershell
-$body = '{"num_instances":1,"workload":{"mode":"synthetic","arrival_mode":"open_loop","target_qps":50.0,"seed":0,"synthetic":{"num_requests":1000,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128}}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"page_size":64,"model":{"name":"toy","num_layers":2,"hidden_size":16,"num_attention_heads":2,"num_kv_heads":1,"head_dim":8,"ffn_intermediate_size":32,"vocab_size":16},"hardware":{"name":"toy","memory_bytes_per_gpu":10000000,"effective_fp16_tflops":1,"effective_hbm_gb_s":1},"storage":{"l1_available_gb":0.004204768},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
+$body = '{"num_instances":1,"workload":{"mode":"synthetic","arrival_mode":"open_loop","target_qps":50.0,"seed":0,"synthetic":{"num_requests":1000,"prompt_len":{"dist":"lognormal","mean":512,"sigma":1.0},"turn_increment_len":{"dist":"poisson","mean":128},"output_len":{"dist":"poisson","mean":128}}},"scheduler":{"max_running_requests":32,"max_prefill_tokens":16384,"pd_mutually_exclusive":true},"inference":{"page_size":64,"model":{"name":"toy","num_layers":2,"hidden_size":16,"num_attention_heads":2,"num_kv_heads":1,"head_dim":8,"ffn_intermediate_size":32,"vocab_size":16},"hardware":{"name":"toy","memory_bytes_per_gpu":10000000,"effective_fp16_tflops":1,"effective_hbm_gb_s":1},"storage":{},"timing":{"mode":"empirical","prefill_c1":0.05,"prefill_c2":0.00001,"decode_d1":8.0,"decode_d2":0.002}}}'
 $body | Set-Content -Encoding ascii simulate-request.json
 curl.exe -X POST http://127.0.0.1:8000/api/simulate `
   -H "Content-Type: application/json" --data-binary '@simulate-request.json'
@@ -136,7 +136,7 @@ result = simulate(
                           "ffn_intermediate_size": 32, "vocab_size": 16},
                 "hardware": {"name": "toy", "memory_bytes_per_gpu": 10_000_000,
                              "effective_fp16_tflops": 1, "effective_hbm_gb_s": 1},
-                "storage": {"l1_available_gb": 0.004204768},
+                "storage": {},
                 "timing": {
                     "mode": "empirical",
                     "prefill_c1": 0.05,

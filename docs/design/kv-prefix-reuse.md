@@ -10,7 +10,7 @@
 
 ## 容量与状态
 
-`inference.page_size=B` 同时规定完整页身份与分配粒度。物理配置按 L1/L2 预算和 `shared_l3.available_gb` 解析每层容量；L1 扣除权重和预留后至少容纳一页，运行时的 `max_total_tokens`、`l2_capacity_tokens` 和 `l3_capacity_tokens` 均按完整页向下取整。页字节成本是单个 TP 组保存一份逻辑页的字节数，共享 L3 不乘实例数量。启用 L3 要求启用本地 L2 及对应接入带宽。
+`inference.page_size=B` 同时规定完整页身份与分配粒度。物理配置按单卡显存 `inference.hardware.memory_bytes_per_gpu`、L2 预算和 `shared_l3.available_gb` 解析每层容量；单卡显存扣除每卡全部模型权重后用于 L1 KV，不扣额外运行时空间，至少容纳一页，运行时的 `max_total_tokens`、`l2_capacity_tokens` 和 `l3_capacity_tokens` 均按完整页向下取整。页字节成本是单个 TP 组保存一份逻辑页的字节数，共享 L3 不乘实例数量。启用 L3 要求启用本地 L2 及对应接入带宽。
 
 `F` 是 `B` 的整数倍，`0≤F≤K`；`[F,K)` 是请求私有 KV，页数为 `ceil(K/B)-F/B`，只占 L1。每池满足 `free+resident=capacity`，`active+evictable=resident`。驻留包含完整页、L1 私有页及实际在途目的占位；目的占位尚不可命中。未来生成估算只进入调度预算，`reserved_future_blocks` 为零。
 

@@ -87,7 +87,7 @@ describe("parameter JSON transfer", () => {
       inference: { model: { name: "toy", num_layers: 1, hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
         hardware: { name: "GPU", memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
-        storage: { l1_available_gb: 0.001 } },
+        storage: {} },
     }));
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" }, model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
@@ -449,11 +449,22 @@ describe("parameter JSON transfer", () => {
         head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
       hardware: { name: "GPU", gpu_count: 1, memory_bytes_per_gpu: 1000000,
         effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
-      storage: { l1_available_gb: 0.001, l2_available_gb: 0 },
+      storage: { l2_available_gb: 0 },
     };
     expect(parseInferenceJson(JSON.stringify(request)).ep_size).toBe(1);
     expect(() => parseInferenceJson(JSON.stringify({ ...request, ep_size: 0 })))
       .toThrow("ep_size 必须是正整数");
+  });
+
+  it.each(["l1_available_gb", "runtime_reserve_bytes"])("rejects removed memory field %s on import and export", (field) => {
+    const config = createDefaultSimConfig();
+    const inference = { ...config.inference, storage: { ...config.inference.storage, [field]: 1 } };
+    const draft = { ...config, inference };
+    const message = `不支持的参数：storage.${field}`;
+    expect(() => parseInferenceJson(JSON.stringify(inference))).toThrow(message);
+    expect(() => serializeInference(inference)).toThrow(message);
+    expect(() => parseSimConfigJson(JSON.stringify(draft))).toThrow(message);
+    expect(() => serializeSimConfig(draft)).toThrow(message);
   });
 
   it("rejects malformed model specs and non-finite configuration drafts", () => {
@@ -466,7 +477,7 @@ describe("parameter JSON transfer", () => {
       hardware: { ...initialHardware, name: "GPU", gpu_count: 1,
         memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1,
         ep_communication_latency_ms: null },
-      storage: { ...initialStorage, l1_available_gb: 0.001 }, tp_size: 1, ep_size: 1,
+      storage: { ...initialStorage }, tp_size: 1, ep_size: 1,
       timing: { mode: "analytical" as const },
     };
     expect(parseInferenceJson(serializeInference(base))).toEqual(base);
@@ -477,7 +488,7 @@ describe("parameter JSON transfer", () => {
       [{ ...base, model: { ...base.model, moe_layers: -1 } }, "model.moe_layers"],
       [{ ...base, hardware: { ...base.hardware, extra: 2 } }, "不支持的参数：hardware.extra"],
       [{ ...base, hardware: { ...base.hardware, ep_communication_latency_ms: -1 } }, "hardware.ep_communication_latency_ms"],
-      [{ ...base, storage: { ...base.storage, l1_available_gb: -1 } }, "storage.l1_available_gb"],
+      [{ ...base, hardware: { ...base.hardware, memory_bytes_per_gpu: -1 } }, "hardware.memory_bytes_per_gpu"],
       [{ ...base, storage: { ...base.storage, l3_lookup_latency_ms: -1 } }, "storage.l3_lookup_latency_ms"],
       [{ ...base, ep_size: 2 }, "Dense 模型"],
       [{ ...base, model: { ...base.model, weight_dtype: "fp8" } }, "BF16/FP16"],

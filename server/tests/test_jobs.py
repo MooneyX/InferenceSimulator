@@ -99,7 +99,9 @@ def test_archived_jobs_survive_restart_and_cache_clear(tmp_path: Path, monkeypat
         assert archived["axes"] == scan_summary["axes"]
 
 
-@pytest.mark.parametrize("base_snapshot", ["missing", "null", "present"])
+@pytest.mark.parametrize(
+    "base_snapshot", ["missing", "null", "present", "l1_available_gb", "runtime_reserve_bytes"]
+)
 def test_restart_marks_unfinished_scan_interrupted_with_partial_points(
     tmp_path: Path, base_snapshot: str,
 ) -> None:
@@ -121,14 +123,20 @@ def test_restart_marks_unfinished_scan_interrupted_with_partial_points(
     }
     base = SimConfig.model_validate(make_payload(num_requests=1)).model_dump(mode="json")
     expected_base = base if base_snapshot == "present" else None
+    archived_base = base if base_snapshot not in ("missing", "null") else None
+    if base_snapshot in ("l1_available_gb", "runtime_reserve_bytes"):
+        base["inference"]["storage"][base_snapshot] = 1
     if base_snapshot != "missing":
-        summary["base"] = expected_base
-    point = {"values": {"num_instances": 1}, "status": "completed", "signature": "old"}
+        summary["base"] = archived_base
+    point = {"values": {"num_instances": 1}, "status": "completed", "signature": "old",
+             "config": archived_base}
     store.save(summary, point=point)
     with TestClient(create_app(cache_path=path)) as client:
         recovered = client.get("/api/jobs/unfinished").json()
         assert recovered["base"] == expected_base
-        assert store.get("unfinished")["base"] == expected_base
+        assert store.get("unfinished")["base"] == archived_base
+        assert store.points("unfinished")[0]["config"] == archived_base
+        assert client.get("/api/jobs/unfinished/points").json()[0]["config"] == expected_base
         assert client.get("/api/jobs").json()[0]["base"] == expected_base
         assert client.app.state.jobs.changes(0, timeout=0)[1][0]["base"] == expected_base
         assert recovered["status"] == "interrupted"
@@ -190,6 +198,43 @@ def test_legacy_point_table_is_migrated_without_losing_rows(tmp_path: Path) -> N
                point={"values": {"num_instances": 1}, "status": "completed"})
     assert store.point_page("old", 0, 20, legacy=True)[0]["result_available"] is False
     assert store.points("old")[0]["values"] == {"num_instances": 1}
+
+
+def test_memory_scan_uses_gpu_capacity_and_rejects_removed_axes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SIMULATOR_WORKERS", "1")
+    memory_key = "inference.hardware.memory_bytes_per_gpu"
+    with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:
+        catalog = {item["key"]: item for item in client.get("/api/scans/parameters").json()}
+        assert catalog[memory_key]["label"] == "单卡显存容量 (GB)"
+        base = make_payload(num_requests=1)
+        for field in ("l1_available_gb", "runtime_reserve_bytes"):
+            legacy_key = f"inference.storage.{field}"
+            assert legacy_key not in catalog
+            response = client.post("/api/scans", json={
+                "base": base, "axes": [{"key": legacy_key, "values": [1]}],
+            })
+            assert response.status_code == 422
+        submitted = client.post("/api/scans", json={
+            "base": base, "axes": [{"key": memory_key, "values": [0.001, 0.002]}],
+        })
+        assert submitted.status_code == 202
+        key = submitted.json()["id"]
+        summary = wait_job(client, key)
+        assert (summary["completed"], summary["failed"]) == (2, 0)
+        capacities = []
+        for index, memory_bytes in enumerate((1_000_000, 2_000_000)):
+            result = client.get(f"/api/jobs/{key}/points/{index}/result").json()
+            hardware = result["meta"]["config"]["inference"]["hardware"]
+            assert hardware["memory_bytes_per_gpu"] == memory_bytes
+            capacity = result["resolution"]["capacity"]
+            assert capacity["l1_budget_bytes"] == memory_bytes
+            assert capacity["l1_kv_budget_bytes"] == (
+                memory_bytes - capacity["weights_resident_bytes"]
+            )
+            capacities.append(capacity["l1_capacity_pages"])
+        assert capacities[1] > capacities[0]
 
 
 def test_scan_point_failures_and_duplicate_values_have_distinct_indices(

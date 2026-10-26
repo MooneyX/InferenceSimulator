@@ -120,8 +120,8 @@ export const initialHardware: InferenceConfig["hardware"] = {
   collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0.005,
 };
 export const initialStorage: InferenceConfig["storage"] = {
-  l1_available_gb: 200, l2_available_gb: 2048,
-  runtime_reserve_bytes: 0, l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
+  l2_available_gb: 2048,
+  l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
   l2_latency_ms: 0.01, l3_latency_ms: 0.1,
 };
 export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {

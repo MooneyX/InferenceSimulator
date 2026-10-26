@@ -55,6 +55,11 @@ def test_workload_common_fields_and_engine_output_limit_schema() -> None:
     assert set(schemas["TraceWorkloadConfig"]["properties"]) == {"plan_id"}
     assert schemas["InferenceConfig"]["properties"]["max_output_tokens"]["default"] == 65536
     assert "mode" not in schemas["InferenceConfig"]["properties"]
+    assert "memory_bytes_per_gpu" in schemas["HardwareSpec"]["required"]
+    assert not {"l1_available_gb", "runtime_reserve_bytes"} & set(
+        schemas["StorageSpec"]["properties"]
+    )
+    assert not schemas["StorageSpec"].get("required")
     assert "mode" not in schemas["SharedL3Config"]["properties"]
     assert not {
         "PhysicalInferenceConfig",

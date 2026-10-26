@@ -1388,7 +1388,8 @@
           "memory_bytes_per_gpu": {
             "type": "integer",
             "exclusiveMinimum": 0.0,
-            "title": "Memory Bytes Per Gpu"
+            "title": "Memory Bytes Per Gpu",
+            "description": "单卡显存容量（字节），扣除模型权重后用于 KV"
           },
           "effective_fp16_tflops": {
             "type": "number",
@@ -3639,22 +3640,11 @@
       },
       "StorageSpec": {
         "properties": {
-          "l1_available_gb": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "title": "L1 Available Gb"
-          },
           "l2_available_gb": {
             "type": "number",
             "minimum": 0.0,
             "title": "L2 Available Gb",
             "default": 0.0
-          },
-          "runtime_reserve_bytes": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Runtime Reserve Bytes",
-            "default": 0
           },
           "l2_to_l1_gb_s": {
             "anyOf": [
@@ -3697,11 +3687,8 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "l1_available_gb"
-        ],
         "title": "StorageSpec",
-        "description": "单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。"
+        "description": "单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。"
       },
       "SyntheticWorkloadConfig": {
         "properties": {

@@ -247,6 +247,23 @@ describe("scan projections", () => {
     return { group, background, setOption, rows: () => document.querySelectorAll("#data-body tr") };
   }
 
+  it("uses GB for GPU memory from point configs in live charts and offline reports", () => {
+    const key = "inference.hardware.memory_bytes_per_gpu";
+    const scans: ScanData[] = [{ job: { ...job, axes: [{ key, values: [128, 288] }] },
+      points: [128, 288].map((memory) => ({ ...point(memory, 1, `memory-${memory}`), values: {},
+        config: { inference: { hardware: { memory_bytes_per_gpu: memory * 1e9 } } } as ScanData["points"][number]["config"],
+      })),
+    }];
+    expect(buildChart(scans, { x: key, color: "", shape: "", line: "" }, "throughput").xValues)
+      .toEqual(["128", "288"]);
+    const { group, rows } = openReport(scans);
+    expect(group("values-x").getByRole("checkbox", { name: "128" })).toBeChecked();
+    expect(group("values-x").getByRole("checkbox", { name: "288" })).toBeChecked();
+    expect(rows()).toHaveLength(2);
+    expect(within(rows()[0] as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent(/^128$/);
+    expect(within(rows()[1] as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent(/^288$/);
+  });
+
   it("filters identical scan axes by distinct base configs in the offline table and CSV selection", () => {
     const { group, background, rows } = openReport(differentBases);
     expect(group("role-color").getByRole("option", { name: "scheduler.max_prefill_tokens" }))

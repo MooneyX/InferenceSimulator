@@ -154,7 +154,7 @@ try {
             page_size = 64
             model = @{ name = 'toy'; num_layers = 2; hidden_size = 16; num_attention_heads = 2; num_kv_heads = 1; head_dim = 8; ffn_intermediate_size = 32; vocab_size = 16 }
             hardware = @{ name = 'toy'; memory_bytes_per_gpu = 10000000; effective_fp16_tflops = 1; effective_hbm_gb_s = 1 }
-            storage = @{ l1_available_gb = (10464 + 65536 * 64) / 1000000000 }
+            storage = @{}
             timing = @{ mode = 'empirical'; prefill_c1 = 0.05; prefill_c2 = 0.00001; decode_d1 = 8.0; decode_d2 = 0.002 }
         }
     } | ConvertTo-Json -Depth 10 -Compress

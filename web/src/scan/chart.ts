@@ -22,8 +22,7 @@ export function valueOf(point: ScanPoint, key: string): unknown {
     value = length.dist === "fixed" ? length.value : length.mean;
   }
   if (key === "shared_l3.available_gb" && typeof value === "number") value /= 1000;
-  if ((key === "inference.hardware.memory_bytes_per_gpu" ||
-       key === "inference.storage.runtime_reserve_bytes") && typeof value === "number") value /= 1e9;
+  if (key === "inference.hardware.memory_bytes_per_gpu" && typeof value === "number") value /= 1e9;
   return value ?? null;
 }
 

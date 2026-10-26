@@ -77,6 +77,9 @@ describe("createDefaultSimConfig", () => {
       },
     });
     expect(createDefaultSimConfig().workload.synthetic).not.toHaveProperty("session");
+    expect(createDefaultSimConfig().inference.hardware.memory_bytes_per_gpu).toBe(288e9);
+    expect(createDefaultSimConfig().inference.storage).not.toHaveProperty("l1_available_gb");
+    expect(createDefaultSimConfig().inference.storage).not.toHaveProperty("runtime_reserve_bytes");
   });
 
   it("returns independent objects", () => {

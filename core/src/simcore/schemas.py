@@ -436,7 +436,9 @@ class HardwareSpec(_Frozen):
 
     name: str = Field(min_length=1)
     gpu_count: int = Field(default=1, ge=1)
-    memory_bytes_per_gpu: int = Field(gt=0)
+    memory_bytes_per_gpu: int = Field(
+        gt=0, description="单卡显存容量（字节），扣除模型权重后用于 KV"
+    )
     effective_fp16_tflops: float = Field(gt=0, allow_inf_nan=False)
     effective_fp8_tflops: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     effective_hbm_gb_s: float = Field(gt=0, allow_inf_nan=False)
@@ -452,11 +454,9 @@ class HardwareSpec(_Frozen):
 
 
 class StorageSpec(_Frozen):
-    """单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。"""
+    """单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。"""
 
-    l1_available_gb: float = Field(gt=0, allow_inf_nan=False)
     l2_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    runtime_reserve_bytes: int = Field(default=0, ge=0)
     l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(

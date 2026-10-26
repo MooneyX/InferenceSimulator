@@ -147,8 +147,6 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
               attention_layout: model.attention_groups ? "grouped" : "full_gqa" },
               ...(selected?.name === "tencent/Hy4-preview" ? {
                 tp_size: 8, ep_size: 8, hardware: { ...hardware, gpu_count: 8 },
-                ...(storage.l1_available_gb === 200 && hardware.memory_bytes_per_gpu >= 260e9
-                  ? { storage: { ...storage, l1_available_gb: 260 } } : {}),
               } : selected ? { ep_size: selected.moe_layers ? tpSize : 1 } : {}),
             });
           }}>{catalog?.models.map((entry) =>
@@ -340,7 +338,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         onEpSizeChange(value ?? NaN)} />
       {([
       ["gpu_count", "本实例 GPU 卡数"],
-      ["memory_bytes_per_gpu", "单卡标称显存（GB）"],
+      ["memory_bytes_per_gpu", "单卡显存容量（GB）"],
       ["effective_fp16_tflops", "有效 FP16/BF16 算力（TFLOPS）"],
       ["effective_fp8_tflops", "有效 FP8 算力（TFLOPS，可选）"],
       ["effective_hbm_gb_s", "有效 HBM 带宽（GB/s）"],
@@ -356,19 +354,17 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         ...(field === "memory_bytes_per_gpu" ? { name: "自定义 GPU" } : {}),
         [field]: field === "memory_bytes_per_gpu" && value !== null ? value * 1e9 : value })} />)}
       {([
-        ["l1_available_gb", "L1 可用容量（GB，含权重）"],
         ["l2_available_gb", "L2 可用容量（GB，仅 KV）"],
-        ["runtime_reserve_bytes", "额外运行时预留（GB）"],
         ["l2_to_l1_gb_s", "L2 → L1 带宽（GB/s）"],
         ["l3_to_l2_gb_s", "L3 → L2 带宽（GB/s）"],
         ["l2_latency_ms", "L2 固定延迟（ms）"],
         ["l3_latency_ms", "L3 固定延迟（ms）"],
       ] as const).map(([field, label]) => <Input key={field} label={label}
-        value={field === "runtime_reserve_bytes" ? storage[field] / 1e9 : storage[field]}
+        value={storage[field]}
         optional={field === "l2_to_l1_gb_s" || field === "l3_to_l2_gb_s"}
-        onChange={(value) => onStorageChange({ ...storage,
-          [field]: field === "runtime_reserve_bytes" && value !== null ? value * 1e9 : value })} />)}
+        onChange={(value) => onStorageChange({ ...storage, [field]: value })} />)}
     </div>
+    <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
     <p>单算子开销默认 0.005 ms/建模计算阶段，仅用于解析计时；L2（本地 DRAM）→ L1 固定延迟默认 0.01 ms/页，L3（低延迟共享存储）→ L2 默认 0.1 ms/页，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、

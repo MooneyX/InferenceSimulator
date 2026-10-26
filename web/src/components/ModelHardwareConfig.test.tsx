@@ -114,7 +114,7 @@ describe("ModelHardwareConfig", () => {
     expect(screen.getByRole("heading", { name: "第 1 组注意力" }).closest(".model-group-card")).toBeInTheDocument();
   });
 
-  it("selects HY4 BF16 with TP8/EP8 and a viable default L1 budget", async () => {
+  it("selects HY4 BF16 with TP8/EP8 without changing GPU memory", async () => {
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, hy4], hardware: [] });
     const onInferenceChange = vi.fn();
     render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
@@ -123,7 +123,7 @@ describe("ModelHardwareConfig", () => {
     expect(onInferenceChange).toHaveBeenCalledTimes(1);
     expect(onInferenceChange).toHaveBeenCalledWith({ ...createDefaultSimConfig().inference,
       model: hy4, tp_size: 8, ep_size: 8,
-      hardware: { ...initialHardware, gpu_count: 8 }, storage: { ...initialStorage, l1_available_gb: 260 } });
+      hardware: { ...initialHardware, gpu_count: 8 } });
   });
 
   it("directly edits HY4 structure, precision, auxiliary weights and groups while preserving the preview request", async () => {
@@ -538,6 +538,7 @@ describe("ModelHardwareConfig", () => {
     expect(onInferenceChange).toHaveBeenLastCalledWith(inference);
     rerender(<ModelHardwareConfig config={{ ...config, inference }}
       onInferenceChange={onInferenceChange} disabled={false} />);
+    expect(screen.getByLabelText("单卡显存容量（GB）")).toHaveValue(preset.memory_bytes_per_gpu / 1e9);
     expect(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）")).toHaveValue(preset.peak_fp16_tflops);
     expect(screen.getByLabelText("有效 FP8 算力（TFLOPS，可选）")).toHaveValue(preset.peak_fp8_tflops);
     fireEvent.change(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）"), { target: { value: "123" } });
@@ -572,7 +573,7 @@ describe("ModelHardwareConfig", () => {
     expect(screen.queryByLabelText(/实际驻留权重/)).not.toBeInTheDocument();
     expect(screen.getByLabelText("TP 每次集合通信固定延迟（ms，TP>1 运行必填）")).toHaveValue(0.01);
     expect(screen.getByLabelText("EP 每次 dispatch/combine 固定开销（ms，EP>1 运行必填）")).toHaveValue(0.02);
-    expect(screen.getByLabelText("单卡标称显存（GB）")).toHaveValue(288);
+    expect(screen.getByLabelText("单卡显存容量（GB）")).toHaveValue(288);
     expect(screen.queryByLabelText("L3 查找延迟（ms）")).not.toBeInTheDocument();
     expect(screen.getByText(/2,250 TFLOPS 稠密 BF16\/FP16 算力/)).toBeInTheDocument();
     expect(screen.getByText(/8,000 GB\/s HBM 带宽/)).toBeInTheDocument();
@@ -599,16 +600,16 @@ describe("ModelHardwareConfig", () => {
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
       model: { ...config.inference.model, name: "自定义模型", hidden_size: 2048 } });
     refresh();
-    fireEvent.change(screen.getByLabelText("单卡标称显存（GB）"), { target: { value: "300" } });
+    fireEvent.change(screen.getByLabelText("单卡显存容量（GB）"), { target: { value: "300" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
       hardware: { ...config.inference.hardware, name: "自定义 GPU", memory_bytes_per_gpu: 300_000_000_000 } });
     refresh();
-    fireEvent.change(screen.getByLabelText("额外运行时预留（GB）"), { target: { value: "2" } });
-    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
-      storage: { ...config.inference.storage, runtime_reserve_bytes: 2_000_000_000 } });
-    refresh();
+    expect(screen.queryByLabelText(/L1 可用容量/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/预留/)).not.toBeInTheDocument();
+    expect(config.inference.storage).not.toHaveProperty("l1_available_gb");
+    expect(config.inference.storage).not.toHaveProperty("runtime_reserve_bytes");
     expect(config.inference.model).toEqual(expect.objectContaining({ moe_layers: 94, hidden_size: 2048 }));
-    expect(config.shared_l3?.lookup_latency_ms).toBe(0);
+    expect(config.shared_l3).toEqual(createDefaultSimConfig().shared_l3);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(resolveConfig).toHaveBeenCalledWith(config));
   });

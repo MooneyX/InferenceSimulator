@@ -81,7 +81,7 @@ def resolved_config(
         decode_d1=perf_model.decode_d1,
         decode_d2=perf_model.decode_d2,
     )
-    storage = StorageSpec(l1_available_gb=0.001)
+    storage = StorageSpec()
     base = SimConfig(
         workload=workload,
         scheduler=scheduler,
@@ -101,7 +101,6 @@ def resolved_config(
     l2_bytes = engine.l2_capacity_tokens * kv_bytes_per_token
     l3_bytes = engine.l3_capacity_tokens * kv_bytes_per_token
     physical_storage = StorageSpec(
-        l1_available_gb=l1_bytes / 1_000_000_000,
         l2_available_gb=l2_bytes / 1_000_000_000,
         l2_to_l1_gb_s=(
             (perf_model.l2_to_l1_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
@@ -118,7 +117,12 @@ def resolved_config(
     )
     return base.model_copy(
         update={
-            "inference": base.inference.model_copy(update={"storage": physical_storage}),
+            "inference": base.inference.model_copy(
+                update={
+                    "hardware": TOY_HARDWARE.model_copy(update={"memory_bytes_per_gpu": l1_bytes}),
+                    "storage": physical_storage,
+                }
+            ),
             "shared_l3": SharedL3Config(
                 available_gb=l3_bytes / 1_000_000_000,
                 lookup_latency_ms=perf_model.l3_lookup_latency_ms,
@@ -1003,11 +1007,19 @@ class TestConfigValidation:
         with pytest.raises(ValidationError):
             cfg.inference.page_size = 1
         with pytest.raises(ValidationError):
-            cfg.inference.storage.l1_available_gb = 0.001
+            cfg.inference.storage.l2_available_gb = 0.001
         timing = cfg.inference.timing
         assert isinstance(timing, EmpiricalTimingConfig)
         with pytest.raises(ValidationError):
             timing.prefill_c1 = 1
+
+    @pytest.mark.parametrize("field", ["l1_available_gb", "runtime_reserve_bytes"])
+    def test_removed_memory_inputs_are_rejected(self, field: str) -> None:
+        assert field not in StorageSpec().model_dump()
+        payload = make_config().model_dump()
+        payload["inference"]["storage"][field] = 1
+        with pytest.raises(ValidationError, match=field):
+            SimConfig.model_validate(payload)
 
     @pytest.mark.parametrize("field", ["engine", "perf_model", "model", "hardware", "storage"])
     def test_removed_top_level_configuration_fields_are_rejected(self, field: str) -> None:
@@ -1055,7 +1067,7 @@ class TestConfigValidation:
                 "effective_fp16_tflops": 1,
                 "effective_hbm_gb_s": 1,
             },
-            "storage": {"l1_available_gb": 0.001},
+            "storage": {},
             "timing": {"mode": "analytical"},
         }
         config = SimConfig.model_validate(payload)

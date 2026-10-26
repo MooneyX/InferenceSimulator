@@ -627,7 +627,10 @@ export interface components {
              * @default 1
              */
             gpu_count: number;
-            /** Memory Bytes Per Gpu */
+            /**
+             * Memory Bytes Per Gpu
+             * @description 单卡显存容量（字节），扣除模型权重后用于 KV
+             */
             memory_bytes_per_gpu: number;
             /** Effective Fp16 Tflops */
             effective_fp16_tflops: number;
@@ -1643,21 +1646,14 @@ export interface components {
         };
         /**
          * StorageSpec
-         * @description 单实例 L1/L2 预算及接入链路；GB 为十进制，L1 包含权重。
+         * @description 单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。
          */
         StorageSpec: {
-            /** L1 Available Gb */
-            l1_available_gb: number;
             /**
              * L2 Available Gb
              * @default 0
              */
             l2_available_gb: number;
-            /**
-             * Runtime Reserve Bytes
-             * @default 0
-             */
-            runtime_reserve_bytes: number;
             /** L2 To L1 Gb S */
             l2_to_l1_gb_s?: number | null;
             /** L3 To L2 Gb S */

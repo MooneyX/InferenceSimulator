@@ -16,11 +16,23 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from simcore import SimConfig, simulate
 from simcore.schemas import RequestProgress, SyntheticWorkloadConfig, TracePlan
 from simserver.job_store import JobStore
 from simserver.result_cache import DEFAULT_MAX_BYTES, ResultCache, engine_fingerprint
 from simserver.sweep import ScanRequest, build_point
+
+
+def _current_config(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """旧配置只保留在归档中，不作为当前可提交配置返回。"""
+    if snapshot is None:
+        return None
+    try:
+        return SimConfig.model_validate(snapshot).model_dump(mode="json")
+    except ValidationError:
+        return None
 
 
 def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
@@ -99,7 +111,7 @@ def _worker(connection: Connection, cache_path: str, cache_size: int) -> None:
 class Job:
     id: str
     kind: str
-    base: SimConfig | None
+    base: SimConfig | dict[str, Any] | None
     plan: TracePlan | None
     force: bool
     total: int
@@ -130,8 +142,9 @@ class Job:
             "version": self.version,
             "code_fingerprint": self.code_fingerprint,
             "axes": self.axes if self.kind == "scan" else None,
-            "base": self.base.model_dump(mode="json")
-            if self.kind == "scan" and self.base is not None else None,
+            "base": (
+                self.base.model_dump(mode="json") if isinstance(self.base, SimConfig) else self.base
+            ) if self.kind == "scan" else None,
             "point_archive_version": self.point_archive_version,
             "request_progress": self.request_progress,
         }
@@ -171,7 +184,7 @@ class JobManager:
             job = Job(
                 record["id"],
                 record["kind"],
-                SimConfig.model_validate(record["base"]) if record.get("base") is not None else None,
+                record.get("base"),
                 None,
                 False,
                 record["total"],
@@ -208,7 +221,8 @@ class JobManager:
             if not fingerprint
             else ("current" if fingerprint == self.code_fingerprint else "stale")
         )
-        return {**summary, "base": summary.get("base"), "code_version_status": status}
+        return {**summary, "base": _current_config(summary.get("base")),
+                "code_version_status": status}
 
     def _changed(self, job: Job, *, point: dict[str, Any] | None = None,
                  point_index: int | None = None, point_result: str | None = None,
@@ -325,7 +339,7 @@ class JobManager:
                     if job_and_values is None:
                         continue
                     job, index, values = job_and_values
-                    assert job.base is not None
+                    assert isinstance(job.base, SimConfig)
                     config = (
                         build_point(job.base, values, job.plan) if job.kind == "scan" else job.base
                     )
@@ -445,7 +459,10 @@ class JobManager:
         with self._condition:
             if self.store.get(job_id)["kind"] != "scan":
                 raise ValueError("这不是参数扫描任务")
-            return self.store.points(job_id)
+            return [
+                {**point, "config": _current_config(point.get("config"))}
+                for point in self.store.points(job_id)
+            ]
 
     def point_page(self, job_id: str, offset: int, limit: int) -> dict[str, Any]:
         with self._condition:

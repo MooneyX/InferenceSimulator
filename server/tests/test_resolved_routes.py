@@ -458,6 +458,32 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert await_task(client, refused.json()["id"])["status"] == "failed"
 
 
+@pytest.mark.parametrize(
+    ("name", "memory_bytes_per_gpu", "peak_hbm_gb_s"),
+    [
+        ("Huawei Ascend 950PR", 128_000_000_000, 1600),
+        ("Huawei Ascend 950DT", 144_000_000_000, 4000),
+    ],
+)
+def test_ascend_hardware_presets(
+    name: str, memory_bytes_per_gpu: int, peak_hbm_gb_s: int
+) -> None:
+    client = TestClient(create_app())
+    response = client.get("/api/presets")
+    assert response.status_code == 200
+    hardware = response.json()["hardware"]
+    assert [item for item in hardware if item["name"] == name] == [
+        {
+            "name": name,
+            "gpu_count": 8,
+            "memory_bytes_per_gpu": memory_bytes_per_gpu,
+            "peak_fp16_tflops": 500,
+            "peak_hbm_gb_s": peak_hbm_gb_s,
+            "peak_interconnect_gb_s": 2000,
+        }
+    ]
+
+
 def test_presets_and_unsupported_modes() -> None:
     client = TestClient(create_app())
     catalog = client.get("/api/presets")

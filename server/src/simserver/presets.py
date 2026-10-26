@@ -111,4 +111,23 @@ HARDWARE = (
         "peak_hbm_gb_s": 8000,
         "peak_interconnect_gb_s": 1800,
     },
+    # 昇腾规格沿用 refs/KVCacheModeling/src/core/presets.js。
+    # 路线图：https://www.huawei.com/cn/news/2025/9/hc-xu-keynote-speech
+    # FP16/BF16 按 FP8 1000 TFLOPS 的一半估算，500 TFLOPS 非官方披露值。
+    {
+        "name": "Huawei Ascend 950PR",
+        "gpu_count": 8,
+        "memory_bytes_per_gpu": 128_000_000_000,
+        "peak_fp16_tflops": 500,
+        "peak_hbm_gb_s": 1600,
+        "peak_interconnect_gb_s": 2000,
+    },
+    {
+        "name": "Huawei Ascend 950DT",
+        "gpu_count": 8,
+        "memory_bytes_per_gpu": 144_000_000_000,
+        "peak_fp16_tflops": 500,
+        "peak_hbm_gb_s": 4000,
+        "peak_interconnect_gb_s": 2000,
+    },
 )

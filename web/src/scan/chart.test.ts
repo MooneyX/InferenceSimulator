@@ -247,6 +247,72 @@ describe("scan projections", () => {
     return { group, background, setOption, rows: () => document.querySelectorAll("#data-body tr") };
   }
 
+  function presetScan(): ScanData {
+    const models = ["model-a", "model-b"];
+    const hardware = ["NVIDIA B300", "Huawei Ascend 950PR"];
+    return { job: { ...job, axes: [
+      { key: "inference.model", values: models }, { key: "inference.hardware", values: hardware },
+      { key: "num_instances", values: [1, 2] },
+    ] }, points: models.flatMap((model, m) => hardware.flatMap((gpu, h) => [1, 2].map((x) => ({
+      ...point(x, 1, `${model}-${gpu}-${x}`),
+      values: { "inference.model": model, "inference.hardware": gpu, num_instances: x },
+      config: { num_instances: x, workload: { seed: 7 }, inference: { tp_size: 1, ep_size: 1,
+        model: { name: model, hidden_size: 2048 * (m + 1), attention_groups: [{ layers: 32 * (m + 1) }],
+          ihc: m ? { mult: 4, dtype: "fp32" } : null },
+        hardware: { name: gpu, gpu_count: 1, memory_bytes_per_gpu: h ? 128e9 : 288e9,
+          effective_hbm_gb_s: h ? 500 : 1000, kernel_overhead_ms: h ? 0.01 : 0.005 },
+      } } as unknown as NonNullable<ScanData["points"][number]["config"]>,
+    })))) };
+  }
+
+  it("groups preset-controlled fields without hiding models, hardware or explicit axes", () => {
+    const scan = presetScan();
+    const keys = availableKeys([scan]);
+    expect(keys).toEqual(["inference.model", "inference.hardware", "num_instances"]);
+    const roles = { x: "inference.model", color: "inference.hardware", shape: "num_instances", line: "" };
+    expect(resolveSelection([scan], roles, "throughput").visible[0].points).toHaveLength(8);
+    expect(buildChart([scan], roles, "throughput").xValues).toEqual(["model-a", "model-b"]);
+    const memory = "inference.hardware.memory_bytes_per_gpu";
+    scan.job.axes!.push({ key: memory, values: [128, 288] });
+    expect(availableKeys([scan])).toContain(memory);
+  });
+
+  it("retains independent changes under the same preset and across custom batches", () => {
+    const scan = presetScan();
+    const other = structuredClone(scan);
+    other.job.id = "other";
+    for (const entry of other.points) entry.config!.inference.hardware.effective_hbm_gb_s *= 2;
+    expect(availableKeys([scan, other])).toContain("inference.hardware.effective_hbm_gb_s");
+    other.job.axes = [{ key: "num_instances", values: [1, 2] }];
+    for (const entry of other.points) {
+      entry.values = { num_instances: entry.config!.num_instances };
+      entry.config!.inference.model.name = "custom";
+      entry.config!.inference.hardware.name = "custom GPU";
+      entry.config!.workload.seed = 9;
+    }
+    const keys = availableKeys([scan, other]);
+    expect(keys).toContain("inference.model.hidden_size");
+    expect(keys).toContain("inference.hardware.effective_hbm_gb_s");
+    expect(keys).toContain("workload.seed");
+  });
+
+  it("shows preset names and all combinations in offline reports with legacy config fallback", () => {
+    const scan = presetScan();
+    const old = structuredClone(scan);
+    old.job.id = "old";
+    old.job.axes = [{ key: "num_instances", values: [1, 2] }];
+    for (const entry of old.points) {
+      entry.signature += "-old";
+      entry.values = { num_instances: entry.config!.num_instances };
+    }
+    const { group, rows } = openReport([scan, old]);
+    expect(group("values-x").getByRole("checkbox", { name: "model-a" })).toBeChecked();
+    expect(group("values-x").getByRole("checkbox", { name: "model-b" })).toBeChecked();
+    expect(group("values-color").getByRole("checkbox", { name: "NVIDIA B300" })).toBeChecked();
+    expect(rows()).toHaveLength(16);
+    expect(document.querySelectorAll(".background-group")).toHaveLength(0);
+  });
+
   it("uses GB for GPU memory from point configs in live charts and offline reports", () => {
     const key = "inference.hardware.memory_bytes_per_gpu";
     const scans: ScanData[] = [{ job: { ...job, axes: [{ key, values: [128, 288] }] },

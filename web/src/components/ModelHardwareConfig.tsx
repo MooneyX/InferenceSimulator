@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { InferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
 import type { FormSimConfig } from "../config/simulation";
+import { hardwarePresetFields } from "../config/presets";
 export { initialModel, initialHardware, initialStorage } from "../config/simulation";
 
 export type Model = InferenceConfig["model"];
@@ -321,10 +322,8 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         <select id="gpu-preset" value={selectedHardware?.name ?? "custom"}
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
-            onHardwareChange(selected ? { ...hardware, name: selected.name,
-              memory_bytes_per_gpu: selected.memory_bytes_per_gpu,
-              effective_fp16_tflops: selected.peak_fp16_tflops,
-              effective_fp8_tflops: selected.peak_fp8_tflops } :
+            onHardwareChange(selected ? { ...hardware,
+              ...Object.fromEntries(hardwarePresetFields.map((field) => [field, selected[field]])) } :
               { ...hardware, name: "自定义 GPU" });
           }}>{catalog?.hardware.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
@@ -373,7 +372,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       <a href="https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html" target="_blank" rel="noreferrer">显存来源</a>、
       <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>、
       <a href="https://www.nvidia.com/en-us/data-center/hgx/" target="_blank" rel="noreferrer">互联来源</a>；
-      有效互联 600 GB/s、TP 固定延迟 0.01 ms/次、EP 固定开销 0.02 ms/次均为未经校准的试算假设，可在上方修改；1800 GB/s 是双向标称值，不等于单 rank 有效带宽。</p>}
+      {selectedHardware.performance_note}</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>

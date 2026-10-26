@@ -2,6 +2,7 @@ import { useId, useRef, useState } from "react";
 
 import type { ScanRequest, SimConfig } from "../api/types";
 import { serializeScanPlan, serializeSimConfig } from "../config/parameterTransfer";
+import { isPresetAxis } from "../config/presets";
 
 export function ParameterExport({ config, axes, label = "导出本次参数", unavailable }: {
   config: SimConfig | null | undefined;
@@ -19,7 +20,8 @@ export function ParameterExport({ config, axes, label = "导出本次参数", un
     try {
       if (!config) throw new Error(unavailable ?? "历史结果未保存完整参数，无法导出");
       const text = axes
-        ? serializeScanPlan(config, axes.map(({ key, values }) => ({ key, text: values.map(String).join(",") })))
+        ? serializeScanPlan(config, axes.map(({ key, values }) => ({ key,
+          text: isPresetAxis(key) ? JSON.stringify(values) : values.map(String).join(",") })))
         : serializeSimConfig(config);
       setJson(text);
       const reminder = config.workload.mode === "trace" ? "；再次使用时请重新上传请求计划" : "";

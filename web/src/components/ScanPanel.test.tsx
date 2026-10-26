@@ -1,12 +1,28 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getScanParameters, uploadReplayPlan } from "../api/client";
-import { createDefaultSimConfig } from "../config/simulation";
+import { getPresets, getScanParameters, uploadReplayPlan } from "../api/client";
+import { createDefaultSimConfig, initialHardware, initialModel } from "../config/simulation";
 import { ScanPanel, parseLevels } from "./ScanPanel";
 
-vi.mock("../api/client", () => ({ getScanParameters: vi.fn(), uploadReplayPlan: vi.fn() }));
+vi.mock("../api/client", () => ({ getPresets: vi.fn(), getScanParameters: vi.fn(), uploadReplayPlan: vi.fn() }));
+const presetHardware = { ...initialHardware, effective_fp8_tflops: 4500,
+  effective_interconnect_gb_s: 600, collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02 };
+const presets = {
+  models: [initialModel, { ...initialModel, name: "another/model" }],
+  hardware: [
+    { ...presetHardware, peak_fp16_tflops: 2250, peak_fp8_tflops: 4500,
+      peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800, performance_note: "未经实测校准" },
+    { ...presetHardware, name: "Huawei Ascend 950PR", memory_bytes_per_gpu: 128e9,
+      peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 1600,
+      peak_interconnect_gb_s: 2000, performance_note: "未经实测校准" },
+  ],
+};
 const catalog = [
+  { key: "inference.model", label: "模型", kind: "model_preset",
+    modes: ["synthetic/open_loop", "synthetic/closed_loop", "trace/open_loop", "trace/closed_loop"] },
+  { key: "inference.hardware", label: "硬件", kind: "hardware_preset",
+    modes: ["synthetic/open_loop", "synthetic/closed_loop", "trace/open_loop", "trace/closed_loop"] },
   { key: "workload.synthetic.num_requests", label: "请求数量", kind: "integer",
     modes: ["synthetic/open_loop", "synthetic/closed_loop"] },
   { key: "workload.session_rate", label: "会话投放频率", kind: "number",
@@ -31,6 +47,7 @@ const catalog = [
 
 beforeEach(() => {
   vi.mocked(getScanParameters).mockReset().mockResolvedValue(catalog);
+  vi.mocked(getPresets).mockReset().mockResolvedValue(presets);
   vi.mocked(uploadReplayPlan).mockReset();
 });
 
@@ -219,6 +236,69 @@ describe("ScanPanel", () => {
       axes: [{ key: "workload.target_qps", values: [8, 16] }] });
     expect(uploadReplayPlan).toHaveBeenCalledTimes(2);
   });
+});
+
+it("selects preset checkboxes, overrides and round-trips names containing spaces", async () => {
+  const base = createDefaultSimConfig();
+  const original = structuredClone(base);
+  const onSubmit = vi.fn();
+  const onImportBase = vi.fn();
+  render(<ScanPanel base={base} onSubmit={onSubmit} onImportBase={onImportBase} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  for (const [index, name] of ["模型", "硬件", "单卡显存容量"].entries()) {
+    if (index) fireEvent.click(screen.getByRole("button", { name: "添加参数" }));
+    fireEvent.focus(screen.getByLabelText(`扫描参数 ${index + 1}`));
+    fireEvent.change(screen.getByLabelText(`扫描参数 ${index + 1}`), { target: { value: name } });
+    fireEvent.click(screen.getByRole("option", { name: new RegExp(name) }));
+  }
+  const models = within(screen.getByRole("group", { name: "模型预设" }));
+  const hardware = within(screen.getByRole("group", { name: "硬件预设" }));
+  expect(models.getByRole("checkbox", { name: initialModel.name })).toBeChecked();
+  expect(hardware.getByRole("checkbox", { name: initialHardware.name })).toBeChecked();
+  fireEvent.click(models.getByRole("button", { name: "全选" }));
+  fireEvent.click(hardware.getByRole("button", { name: "全选" }));
+  fireEvent.change(screen.getByLabelText("扫描档位 3"), { target: { value: "160,192" } });
+  expect(screen.getByText(/当前约 8 点/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+  const axes = [
+    { key: "inference.model", values: presets.models.map((entry) => entry.name) },
+    { key: "inference.hardware", values: presets.hardware.map((entry) => entry.name) },
+    { key: "inference.hardware.memory_bytes_per_gpu", values: [160, 192] },
+  ];
+  expect(onSubmit.mock.lastCall?.[0].axes).toEqual(axes);
+  expect(base).toEqual(original);
+  fireEvent.click(screen.getByRole("button", { name: "导出扫描方案" }));
+  const saved = (screen.getByLabelText("扫描方案 JSON") as HTMLInputElement).value;
+  expect(JSON.parse(JSON.parse(saved).axes[1].text)).toEqual(axes[1].values);
+  fireEvent.click(hardware.getByRole("button", { name: "清空" }));
+  fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("请至少选择一个硬件预设");
+  expect(onSubmit).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+  expect(hardware.getAllByRole("checkbox").every((input) => (input as HTMLInputElement).checked)).toBe(true);
+  expect(onImportBase).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+  expect(onSubmit.mock.lastCall?.[0].axes).toEqual(axes);
+  fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({
+    ...JSON.parse(saved), axes: [{ key: "inference.hardware", text: '["unknown"]' }],
+  }) } });
+  fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("硬件预设不存在");
+  expect(onImportBase).toHaveBeenCalledTimes(1);
+});
+
+it("keeps preset selections when changing workload mode and starts custom models unchecked", async () => {
+  const base = createDefaultSimConfig();
+  base.inference.model.name = "自定义模型";
+  render(<ScanPanel base={base} onSubmit={vi.fn()} onImportBase={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+  fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "模型" } });
+  fireEvent.keyDown(screen.getByLabelText("扫描参数 1"), { key: "Enter" });
+  expect(screen.getAllByRole("checkbox").every((input) => !(input as HTMLInputElement).checked)).toBe(true);
+  fireEvent.click(screen.getByRole("checkbox", { name: "another/model" }));
+  fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
+  expect(screen.getByRole("checkbox", { name: "another/model" })).toBeChecked();
 });
 
 it("accepts number, boolean and range levels", () => {

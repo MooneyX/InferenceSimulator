@@ -17,6 +17,8 @@
     if (Object.prototype.hasOwnProperty.call(point.values, key)) return point.values[key];
     if (!point.config) return null;
     if (key === 'inference.parallelism') return point.config.inference.tp_size;
+    if (key === 'inference.model') return point.config.inference?.model?.name ?? null;
+    if (key === 'inference.hardware') return point.config.inference?.hardware?.name ?? null;
     let current = point.config;
     for (const field of key.split('.')) current = current?.[field];
     if (key.endsWith('_len') && current && typeof current === 'object') {

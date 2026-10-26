@@ -217,9 +217,29 @@ MODELS = (
 # 稠密 BF16 和 HBM 标称峰值：https://inferencex.semianalysis.com/zh/chips/b300
 # 单 GPU NVLink 互联标称 1.8 TB/s（双向合计）：https://www.nvidia.com/en-us/data-center/hgx/
 # FP8 与 FP16/BF16 峰值算力统一按 2:1 补齐。
+HARDWARE_PRESET_FIELDS = (
+    "name", "memory_bytes_per_gpu", "effective_fp16_tflops", "effective_fp8_tflops",
+    "effective_hbm_gb_s", "effective_interconnect_gb_s", "collective_latency_ms",
+    "ep_communication_latency_ms", "kernel_overhead_ms",
+)
+HARDWARE_TRIAL_DEFAULTS = {
+    "effective_hbm_gb_s": 1000,
+    "effective_interconnect_gb_s": 600,
+    "collective_latency_ms": 0.01,
+    "ep_communication_latency_ms": 0.02,
+    "kernel_overhead_ms": 0.005,
+    "performance_note": (
+        "未经实测校准：算力沿用普通配置的峰值初始化规则，仅作理想试算；"
+        "HBM 1000 GB/s、单 rank 互联 600 GB/s、TP 0.01 ms/次、EP 0.02 ms/次、"
+        "单算子 0.005 ms 均沿用项目通用试算假设，不代表该硬件实测性能，可单独扫描覆盖。"
+    ),
+}
 HARDWARE = (
     {
+        **HARDWARE_TRIAL_DEFAULTS,
         "name": "NVIDIA B300",
+        "effective_fp16_tflops": 2250,
+        "effective_fp8_tflops": 4500,
         "gpu_count": 8,
         "memory_bytes_per_gpu": 288_000_000_000,
         "peak_fp16_tflops": 2250,
@@ -231,7 +251,10 @@ HARDWARE = (
     # 路线图：https://www.huawei.com/cn/news/2025/9/hc-xu-keynote-speech
     # FP16/BF16 按 FP8 1000 TFLOPS 的一半估算，500 TFLOPS 非官方披露值。
     {
+        **HARDWARE_TRIAL_DEFAULTS,
         "name": "Huawei Ascend 950PR",
+        "effective_fp16_tflops": 500,
+        "effective_fp8_tflops": 1000,
         "gpu_count": 8,
         "memory_bytes_per_gpu": 128_000_000_000,
         "peak_fp16_tflops": 500,
@@ -240,7 +263,10 @@ HARDWARE = (
         "peak_interconnect_gb_s": 2000,
     },
     {
+        **HARDWARE_TRIAL_DEFAULTS,
         "name": "Huawei Ascend 950DT",
+        "effective_fp16_tflops": 500,
+        "effective_fp8_tflops": 1000,
         "gpu_count": 8,
         "memory_bytes_per_gpu": 144_000_000_000,
         "peak_fp16_tflops": 500,

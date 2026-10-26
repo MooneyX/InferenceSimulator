@@ -489,8 +489,17 @@ def test_hardware_presets(
             "peak_fp8_tflops": peak_fp8_tflops,
             "peak_hbm_gb_s": peak_hbm_gb_s,
             "peak_interconnect_gb_s": peak_interconnect_gb_s,
+            "effective_fp16_tflops": peak_fp16_tflops,
+            "effective_fp8_tflops": peak_fp8_tflops,
+            "effective_hbm_gb_s": 1000,
+            "effective_interconnect_gb_s": 600,
+            "collective_latency_ms": 0.01,
+            "ep_communication_latency_ms": 0.02,
+            "kernel_overhead_ms": 0.005,
+            "performance_note": hardware[0]["performance_note"],
         }
     ]
+    assert "未经实测校准" in hardware[0]["performance_note"]
 
 
 @pytest.mark.parametrize("l2_available_gb", [0, 1])

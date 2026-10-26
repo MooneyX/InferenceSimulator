@@ -316,6 +316,39 @@ def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:
         assert client.get(f"/api/jobs/{another}/points/7/result").status_code == 409
 
 
+def test_scan_model_hardware_presets_archive_successes_and_failures(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SIMULATOR_WORKERS", "1")
+    with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:
+        config = make_payload(num_requests=1)
+        config["inference"]["timing"] = {"mode": "analytical"}
+        axes = [
+            {"key": "inference.hardware.memory_bytes_per_gpu", "values": [1, 192]},
+            {"key": "inference.model", "values": ["Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B"]},
+            {"key": "inference.hardware", "values": ["NVIDIA B300", "Huawei Ascend 950PR"]},
+            {"key": "inference.parallelism", "values": [8]},
+        ]
+        submitted = client.post("/api/scans", json={"base": config, "axes": axes})
+        assert submitted.status_code == 202, submitted.text
+        key = submitted.json()["id"]
+        status = wait_job(client, key)
+        assert (status["total"], status["completed"], status["failed"]) == (8, 4, 4)
+        assert status["axes"] == axes
+        points = client.get(f"/api/jobs/{key}/points").json()
+        assert len(points) == 8
+        for point in points:
+            assert point["values"]["inference.hardware"] in axes[2]["values"]
+            if point["status"] == "completed":
+                inference = point["config"]["inference"]
+                assert inference["model"]["name"] == point["values"]["inference.model"]
+                assert inference["hardware"]["memory_bytes_per_gpu"] == 192_000_000_000
+                assert inference["ep_size"] == (8 if inference["model"]["moe_layers"] else 1)
+            else:
+                assert point["error"]
+        parameters = {item["key"]: item for item in client.get("/api/scans/parameters").json()}
+        assert parameters["inference.model"]["kind"] == "model_preset"
+        assert parameters["inference.hardware"]["kind"] == "hardware_preset"
+
+
 def test_two_workers_run_distinct_points(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SIMULATOR_WORKERS", "2")
     with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:

@@ -51,6 +51,14 @@ class HardwareCatalogEntry(BaseModel):
     peak_fp8_tflops: float
     peak_hbm_gb_s: float
     peak_interconnect_gb_s: float
+    effective_fp16_tflops: float
+    effective_fp8_tflops: float | None
+    effective_hbm_gb_s: float
+    effective_interconnect_gb_s: float | None
+    collective_latency_ms: float | None
+    ep_communication_latency_ms: float | None
+    kernel_overhead_ms: float
+    performance_note: str
 
 
 class PresetCatalog(BaseModel):

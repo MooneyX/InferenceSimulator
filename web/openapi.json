@@ -1358,6 +1358,66 @@
           "peak_interconnect_gb_s": {
             "type": "number",
             "title": "Peak Interconnect Gb S"
+          },
+          "effective_fp16_tflops": {
+            "type": "number",
+            "title": "Effective Fp16 Tflops"
+          },
+          "effective_fp8_tflops": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Fp8 Tflops"
+          },
+          "effective_hbm_gb_s": {
+            "type": "number",
+            "title": "Effective Hbm Gb S"
+          },
+          "effective_interconnect_gb_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Interconnect Gb S"
+          },
+          "collective_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collective Latency Ms"
+          },
+          "ep_communication_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ep Communication Latency Ms"
+          },
+          "kernel_overhead_ms": {
+            "type": "number",
+            "title": "Kernel Overhead Ms"
+          },
+          "performance_note": {
+            "type": "string",
+            "title": "Performance Note"
           }
         },
         "type": "object",
@@ -1368,7 +1428,15 @@
           "peak_fp16_tflops",
           "peak_fp8_tflops",
           "peak_hbm_gb_s",
-          "peak_interconnect_gb_s"
+          "peak_interconnect_gb_s",
+          "effective_fp16_tflops",
+          "effective_fp8_tflops",
+          "effective_hbm_gb_s",
+          "effective_interconnect_gb_s",
+          "collective_latency_ms",
+          "ep_communication_latency_ms",
+          "kernel_overhead_ms",
+          "performance_note"
         ],
         "title": "HardwareCatalogEntry"
       },

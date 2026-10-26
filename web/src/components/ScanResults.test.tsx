@@ -53,6 +53,16 @@ describe("ScanResults", () => {
     });
   });
 
+  it("exports preset names as arrays without splitting hardware names on spaces", () => {
+    const scanAxes = [{ key: "inference.model", values: ["Qwen/Qwen3-8B"] },
+      { key: "inference.hardware", values: ["NVIDIA B300", "Huawei Ascend 950PR"] }];
+    render(<ScanResults jobs={[{ ...job("scan-a"), base: createDefaultSimConfig(), axes: scanAxes }]} />);
+    fireEvent.click(screen.getByRole("button", { name: "导出扫描方案" }));
+    const plan = JSON.parse((screen.getByLabelText("扫描方案 JSON") as HTMLInputElement).value);
+    expect(plan.axes.map((axis: { key: string; text: string }) => ({ key: axis.key, values: JSON.parse(axis.text) })))
+      .toEqual(scanAxes);
+  });
+
   it("does not reconstruct an original plan from legacy point configs", () => {
     render(<ScanResults jobs={[job("legacy")]} />);
     expect(screen.getByRole("button", { name: "导出扫描方案" })).toBeDisabled();

@@ -1,4 +1,5 @@
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
+import { hardwarePresetFields, isPresetAxis } from "../config/presets";
 
 export type Role = "x" | "color" | "shape" | "line";
 export type Roles = Record<Role, string>;
@@ -15,6 +16,8 @@ export function valueOf(point: ScanPoint, key: string): unknown {
   const config = point.config;
   if (!config) return null;
   if (key === "inference.parallelism") return config.inference.tp_size;
+  if (key === "inference.model") return config.inference?.model?.name ?? null;
+  if (key === "inference.hardware") return config.inference?.hardware?.name ?? null;
   let value: unknown = config;
   for (const segment of key.split(".")) value = (value as Record<string, unknown> | null)?.[segment];
   if (key.endsWith("_len") && value && typeof value === "object") {
@@ -33,7 +36,7 @@ function configPaths(config: unknown, prefix = ""): string[] {
 
 export function availableKeys(data: ScanData[], parameters: ScanParameter[] = []): string[] {
   const axes = data.flatMap(({ job }) => (job.axes ?? []).map((axis) => axis.key));
-  const configs = data.map(({ points }) => points.find((point) => point.config)?.config).filter(Boolean);
+  const configs = data.flatMap(({ points }) => points.map((point) => point.config)).filter(Boolean);
   const paths = new Set(configs.flatMap((config) => configPaths(config)));
   for (const key of [...axes, ...parameters.map((parameter) => parameter.key)]) {
     if (key.endsWith("_len")) {
@@ -47,9 +50,28 @@ export function availableKeys(data: ScanData[], parameters: ScanParameter[] = []
     paths.delete("inference.ep_size");
     paths.add("inference.parallelism");
   }
-  const candidates = [...new Set([...axes, ...parameters.map((parameter) => parameter.key), ...paths])];
+  const candidates = [...new Set([...axes, ...parameters.map((parameter) => parameter.key), ...paths])]
+    .filter((key) => !isPresetAxis(key) || axes.includes(key));
   const points = data.flatMap(({ points }) => points);
-  const varying = candidates.filter((key) => new Set(points.filter((point) =>
+  const rows = data.flatMap(({ job, points }) => points.filter((point) => point.config).map((point) => ({ job, point })));
+  const hardwarePaths = hardwarePresetFields.map((field) => `inference.hardware.${field}`);
+  const linkedToPreset = (key: string): boolean => {
+    if (axes.includes(key)) return false;
+    const owner = key.startsWith("inference.model.") ? "inference.model"
+      : hardwarePaths.includes(key) ? "inference.hardware" : "";
+    if (!owner || !axes.includes(owner)) return false;
+    const presets = new Map<string, string>();
+    for (const { job, point } of rows) {
+      if (!job.axes?.some((axis) => axis.key === owner)) continue;
+      const name = JSON.stringify(valueOf(point, owner));
+      const value = JSON.stringify(valueOf(point, key));
+      if (presets.has(name) && presets.get(name) !== value) return false;
+      presets.set(name, value);
+    }
+    return rows.length > 0 && rows.every(({ point }) =>
+      presets.get(JSON.stringify(valueOf(point, owner))) === JSON.stringify(valueOf(point, key)));
+  };
+  const varying = candidates.filter((key) => !linkedToPreset(key) && new Set(points.filter((point) =>
     point.config || key in point.values).map((point) => JSON.stringify(valueOf(point, key)))).size > 1);
   return varying.length ? varying : points.length ? axes.slice(0, 1) : [];
 }

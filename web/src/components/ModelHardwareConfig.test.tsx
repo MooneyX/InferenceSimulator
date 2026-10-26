@@ -559,7 +559,10 @@ describe("ModelHardwareConfig", () => {
       peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 1600, peak_interconnect_gb_s: 2000 },
     { name: "Huawei Ascend 950DT", gpu_count: 8, memory_bytes_per_gpu: 144_000_000_000,
       peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 4000, peak_interconnect_gb_s: 2000 },
-  ])("applies $name peak compute without changing other settings", async (preset) => {
+  ])("applies every $name GPU preset field without changing deployment or storage", async (spec) => {
+    const preset = { ...initialHardware, ...spec, effective_fp16_tflops: spec.peak_fp16_tflops,
+      effective_fp8_tflops: spec.peak_fp8_tflops, effective_interconnect_gb_s: 600,
+      collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, performance_note: "未经实测校准" };
     vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [preset] });
     const onInferenceChange = vi.fn();
     const config = formConfig({ hardware: { ...initialHardware, name: "自定义 GPU",
@@ -573,7 +576,10 @@ describe("ModelHardwareConfig", () => {
     fireEvent.change(screen.getByLabelText("GPU 选择"), { target: { value: preset.name } });
     const inference = { ...config.inference, hardware: { ...config.inference.hardware,
       name: preset.name, memory_bytes_per_gpu: preset.memory_bytes_per_gpu,
-      effective_fp16_tflops: preset.peak_fp16_tflops, effective_fp8_tflops: preset.peak_fp8_tflops } };
+      effective_fp16_tflops: preset.effective_fp16_tflops, effective_fp8_tflops: preset.effective_fp8_tflops,
+      effective_hbm_gb_s: preset.effective_hbm_gb_s, effective_interconnect_gb_s: preset.effective_interconnect_gb_s,
+      collective_latency_ms: preset.collective_latency_ms, ep_communication_latency_ms: preset.ep_communication_latency_ms,
+      kernel_overhead_ms: preset.kernel_overhead_ms } };
     expect(onInferenceChange).toHaveBeenLastCalledWith(inference);
     rerender(<ModelHardwareConfig config={{ ...config, inference }}
       onInferenceChange={onInferenceChange} disabled={false} />);
@@ -595,7 +601,9 @@ describe("ModelHardwareConfig", () => {
         moe_layers: 94, num_experts: 128, experts_per_token: 8, expert_intermediate_size: 1536,
         attention_groups: [{ ...initialModel.attention_groups![0],
           layers: 94, num_attention_heads: 64, num_kv_heads: 4 }] }],
-      hardware: [{ name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
+      hardware: [{ ...initialHardware, effective_fp8_tflops: 4500, effective_interconnect_gb_s: 600,
+        collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02,
+        performance_note: "未经实测校准", name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
         peak_fp16_tflops: 2250, peak_fp8_tflops: 4500, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
     });
     const onInferenceChange = vi.fn();

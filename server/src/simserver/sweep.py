@@ -9,6 +9,15 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from simcore import SimConfig
 from simcore.schemas import TracePlan
+from simserver.presets import HARDWARE, HARDWARE_PRESET_FIELDS, MODELS
+
+
+PRESETS = {
+    "inference.model": {model.name: model.model_dump(mode="python") for model in MODELS},
+    "inference.hardware": {
+        item["name"]: {key: item[key] for key in HARDWARE_PRESET_FIELDS} for item in HARDWARE
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +38,8 @@ CLOSED = ("synthetic/closed_loop",)
 TRACE = ("trace/open_loop", "trace/closed_loop")
 
 PARAMETERS: dict[str, Parameter] = {
+    "inference.model": Parameter("模型", "model_preset"),
+    "inference.hardware": Parameter("硬件", "hardware_preset"),
     "workload.synthetic.num_requests": Parameter("请求数量", "integer", SYNTHETIC),
     "workload.synthetic.session.num_sessions": Parameter("会话数量", "integer", CLOSED),
     "workload.target_qps": Parameter("目标 QPS", modes=("synthetic/open_loop", "trace/open_loop")),
@@ -74,10 +85,10 @@ class ScanAxis(BaseModel):
 
         for value in values:
             if value is not None and (
-                type(value) not in (int, float, bool)
+                type(value) not in (int, float, bool, str)
                 or (type(value) is float and not math.isfinite(value))
             ):
-                raise ValueError("扫描值必须是有限数字、布尔值或 null")
+                raise ValueError("扫描值必须是预设名称、有限数字、布尔值或 null")
         return values
 
 
@@ -96,14 +107,17 @@ class ScanRequest(BaseModel):
             if parameter is None or mode not in parameter.modes:
                 raise ValueError(f"当前负载模式不支持参数 {axis.key}")
             for value in axis.values:
-                if value is None:
+                if axis.key in PRESETS:
+                    if type(value) is not str or value not in PRESETS[axis.key]:
+                        raise ValueError(f"{parameter.label}预设不存在：{value}")
+                elif value is None:
                     if axis.key not in NULLABLE:
                         raise ValueError(f"{axis.key} 不接受 null")
                 elif parameter.kind == "boolean":
                     if type(value) is not bool:
                         raise ValueError(f"{axis.key} 需要布尔值")
-                elif type(value) is bool or (
-                    parameter.kind == "integer" and (type(value) is float or type(value) is not int)
+                elif type(value) not in (int, float) or (
+                    parameter.kind == "integer" and type(value) is not int
                 ):
                     raise ValueError(f"{axis.key} 需要{parameter.kind}数值")
         return self
@@ -120,12 +134,20 @@ NULLABLE = {
 
 
 def build_point(base: SimConfig, values: dict[str, Any], plan: TracePlan | None) -> SimConfig:
+    from copy import deepcopy
+
     data = base.model_dump(mode="python")
+    if "inference.model" in values:
+        data["inference"]["model"] = deepcopy(PRESETS["inference.model"][values["inference.model"]])
+    if "inference.hardware" in values:
+        data["inference"]["hardware"].update(PRESETS["inference.hardware"][values["inference.hardware"]])
     for key, value in values.items():
+        if key in PRESETS:
+            continue
         if key == "inference.parallelism":
             data["inference"]["hardware"]["gpu_count"] = value
             data["inference"]["tp_size"] = value
-            data["inference"]["ep_size"] = value if base.inference.model.moe_layers else 1
+            data["inference"]["ep_size"] = value if data["inference"]["model"]["moe_layers"] else 1
             continue
         if key.startswith("workload.synthetic.") and key.endswith("_len"):
             length = data["workload"]["synthetic"]

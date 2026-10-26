@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
-import { getScanParameters, uploadReplayPlan } from "../api/client";
-import type { ScanParameter, ScanRequest, SimConfig } from "../api/types";
+import { getPresets, getScanParameters, uploadReplayPlan } from "../api/client";
+import type { PresetCatalog, ScanParameter, ScanRequest, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeScanPlan } from "../config/parameterTransfer";
+import { isPresetAxis, parsePresetNames, presetEntries } from "../config/presets";
 import { validateSimConfig } from "../config/simulation";
 import "./ScanPanel.css";
 
@@ -54,7 +55,8 @@ export function parseLevels(text: string, kind: string): (number | boolean | nul
 }
 
 function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "text">[], catalog: ScanParameter[],
-  mode: "synthetic" | "trace", arrival: "open_loop" | "closed_loop", blockSize: number | null = null): ScanRequest["axes"] {
+  mode: "synthetic" | "trace", arrival: "open_loop" | "closed_loop", presets: PresetCatalog | null,
+  blockSize: number | null = null): ScanRequest["axes"] {
   if (!entries.length) throw new Error("请至少选择一个扫描参数");
   const available = catalog.filter((item) => item.modes.includes(`${mode}/${arrival}`));
   const seen = new Set<string>();
@@ -63,6 +65,15 @@ function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "tex
     if (!item) throw new Error(`当前负载模式不支持扫描参数：${axis.key || "未选择"}`);
     if (seen.has(axis.key)) throw new Error(`扫描参数重复：${axis.key}`);
     seen.add(axis.key);
+    if (isPresetAxis(axis.key)) {
+      if (!presets) throw new Error("预设目录尚未加载，请稍后重试");
+      const values = parsePresetNames(axis.text);
+      if (!values.length) throw new Error(`请至少选择一个${item.label}预设`);
+      const names = presetEntries(presets, axis.key).map((entry) => entry.name);
+      const unknown = values.find((value) => !names.includes(value));
+      if (unknown !== undefined) throw new Error(`${item.label}预设不存在：${unknown}`);
+      return { key: item.key, values };
+    }
     const values = parseLevels(axis.text, item.kind);
     if (item.key === "inference.parallelism" && config.inference.timing?.mode === "empirical"
         && values.some((value) => value !== 1)) {
@@ -99,6 +110,8 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
   const [planNotice, setPlanNotice] = useState("");
   const [planBusy, setPlanBusy] = useState(false);
   const [catalog, setCatalog] = useState<ScanParameter[]>([]);
+  const [presets, setPresets] = useState<PresetCatalog | null>(null);
+  const [presetError, setPresetError] = useState("");
   const [axes, setAxes] = useState<AxisDraft[]>([{ id: 0, key: "", text: "", search: "" }]);
   const nextId = useRef(1);
   const [focused, setFocused] = useState<number | null>(null);
@@ -112,6 +125,8 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
     let active = true;
     void getScanParameters().then((items) => { if (active) setCatalog(items); })
       .catch(() => { if (active) setProblem("无法加载扫描参数目录"); });
+    void getPresets().then((items) => { if (active) setPresets(items); })
+      .catch(() => { if (active) setPresetError("无法加载模型与硬件预设，请刷新重试"); });
     return () => { active = false; };
   }, []);
 
@@ -122,6 +137,16 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
     !axes.some((other) => other.id !== id && other.key === item.key));
   function updateAxis(id: number, update: Partial<AxisDraft>) {
     setAxes((current) => current.map((axis) => axis.id === id ? { ...axis, ...update } : axis));
+  }
+  function chooseParameter(id: number, key: string) {
+    if (isPresetAxis(key) && !presets) return;
+    const config = makeBase();
+    const name = key === "inference.model" ? config.inference.model.name : config.inference.hardware.name;
+    const text = isPresetAxis(key)
+      ? JSON.stringify(presetEntries(presets, key).some((entry) => entry.name === name) ? [name] : [])
+      : initialValue(config, key);
+    updateAxis(id, { key, text, search: "" });
+    setFocused(null);
   }
   function changeContext(nextMode: "synthetic" | "trace", nextArrival: "open_loop" | "closed_loop") {
     setMode(nextMode); setArrival(nextArrival);
@@ -180,7 +205,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
       const config = makeBase();
       const errors = validateSimConfig(config);
       if (errors.length) throw new Error(`基础配置不合法：${errors[0].message}`);
-      const dimensions = scanDimensions(config, axes, catalog, mode, arrival, blockSize);
+      const dimensions = scanDimensions(config, axes, catalog, mode, arrival, presets, blockSize);
       if (mode === "trace" && blockSize != null &&
           !dimensions.some((axis) => axis.key === "inference.page_size") &&
           config.inference.page_size !== blockSize) {
@@ -196,7 +221,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
         throw new Error(`基础配置不合法：${closedLoopCountError}`);
       }
       const config = makeBase();
-      scanDimensions(config, axes, catalog, mode, arrival);
+      scanDimensions(config, axes, catalog, mode, arrival, presets);
       const json = serializeScanPlan(config, axes.map(({ key, text }) => ({ key, text })));
       setScanJson(json);
       const message = mode === "trace"
@@ -239,7 +264,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
         throw new Error("扫描维度必须包含参数 key 和档位 text");
       }
       const importedAxes = record.axes as { key: string; text: string }[];
-      scanDimensions(imported, importedAxes, catalog, importedMode, importedArrival);
+      scanDimensions(imported, importedAxes, catalog, importedMode, importedArrival, presets);
       if (importedMode === "trace") imported.workload.trace = { plan_id: null };
       onImportBase(imported);
       setImportedTraceWorkload(importedMode === "trace" ? imported.workload : null);
@@ -258,6 +283,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
 
   const total = axes.reduce((count, axis) => {
     if (!selected(axis)) return count;
+    if (isPresetAxis(axis.key)) return count * BigInt(parsePresetNames(axis.text).length);
     const text = axis.text.trim();
     const range = text.match(/^(-?[\d.]+):(-?[\d.]+):(-?[\d.]+)$/);
     if (range) {
@@ -308,7 +334,7 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
     <div className="scan-axes">{axes.map((axis, index) => {
       const options = usable(axis.id).filter((item) =>
         `${item.label} ${item.key}`.toLowerCase().includes(axis.search.trim().toLowerCase()));
-      return <div className="scan-axis" key={axis.id}>
+      return <div className={`scan-axis${isPresetAxis(axis.key) ? " scan-axis-presets" : ""}`} key={axis.id}>
         <div className="scan-axis-parameter">
           <label htmlFor={`scan-search-${axis.id}`}>扫描参数 {index + 1}</label>
           <input id={`scan-search-${axis.id}`} role="combobox" aria-expanded={focused === axis.id}
@@ -320,24 +346,42 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
             onKeyDown={(event) => {
               if (event.key === "Escape") setFocused(null);
               if (event.key === "Enter" && options.length) {
-                event.preventDefault(); updateAxis(axis.id, { key: options[0].key,
-                  text: initialValue(makeBase(), options[0].key), search: "" });
-                setFocused(null);
+                event.preventDefault(); chooseParameter(axis.id, options[0].key);
               }
             }} />
           {focused === axis.id && <div id={`scan-options-${axis.id}`} className="scan-options" role="listbox">
             {options.map((item) => <button type="button" role="option" aria-selected={axis.key === item.key}
-              key={item.key} onMouseDown={(event) => event.preventDefault()}
-              onClick={() => { updateAxis(axis.id, { key: item.key,
-                text: initialValue(makeBase(), item.key), search: "" }); setFocused(null); }}>
+              key={item.key} disabled={isPresetAxis(item.key) && !presets}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseParameter(axis.id, item.key)}>
               {item.label}<small>{item.key}</small></button>)}
             {!options.length && <p>没有匹配参数</p>}</div>}
         </div>
         <div className="scan-axis-levels">
-          <label htmlFor={`scan-values-${axis.id}`}>扫描档位 {index + 1}</label>
-          <input id={`scan-values-${axis.id}`} value={axis.text} disabled={!selected(axis)}
-            placeholder="逗号分隔，或 起点:终点:步长"
-            onChange={(event) => updateAxis(axis.id, { text: event.target.value })} />
+          {isPresetAxis(axis.key) ? <fieldset className="scan-preset-picker" disabled={disabled || !presets}>
+            <legend>{selected(axis)?.label}预设</legend>
+            <div className="scan-preset-actions">
+              <button type="button" className="secondary-button secondary-button-small"
+                onClick={() => updateAxis(axis.id, { text: JSON.stringify(presetEntries(presets, axis.key).map((entry) => entry.name)) })}>全选</button>
+              <button type="button" className="secondary-button secondary-button-small"
+                onClick={() => updateAxis(axis.id, { text: "[]" })}>清空</button>
+              <span>已选 {parsePresetNames(axis.text).length} / {presetEntries(presets, axis.key).length}</span>
+            </div>
+            <div className="scan-preset-options">{presetEntries(presets, axis.key).map((entry) =>
+              <label key={entry.name}><input type="checkbox" checked={parsePresetNames(axis.text).includes(entry.name)}
+                onChange={(event) => {
+                  const names = parsePresetNames(axis.text);
+                  updateAxis(axis.id, { text: JSON.stringify(event.target.checked
+                    ? [...names, entry.name] : names.filter((name) => name !== entry.name)) });
+                }} />{entry.name}</label>)}</div>
+            {axis.key === "inference.hardware" && presets?.hardware[0] &&
+              <p className="scan-hint">{presets.hardware[0].performance_note}</p>}
+          </fieldset> : <>
+            <label htmlFor={`scan-values-${axis.id}`}>扫描档位 {index + 1}</label>
+            <input id={`scan-values-${axis.id}`} value={axis.text} disabled={disabled || !selected(axis)}
+              placeholder="逗号分隔，或 起点:终点:步长"
+              onChange={(event) => updateAxis(axis.id, { text: event.target.value })} />
+          </>}
         </div>
         <button type="button" className="secondary-button secondary-button-small scan-remove-axis" disabled={axes.length === 1}
           aria-label={`删除扫描参数 ${index + 1}`}
@@ -349,6 +393,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
       onClick={() => { setAxes((current) => [...current, { id: nextId.current++, key: "", text: "", search: "" }]);
         setFocused(null); }}>添加参数</button>
     <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>
+    <p className="scan-hint">模型包含全部模型配置与注意力组合；硬件包含单卡显存、算力、带宽、通信和单算子开销，不改变 GPU 卡数或 TP/EP。
+      先应用预设，再用其他扫描参数覆盖；添加顺序不影响配置。不支持的组合单点失败，其余继续。</p>
+    {presetError && <p className="field-error" role="alert">{presetError}</p>}
     <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
       固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>
     <div className="form-actions"><button type="button" className="run-button" onClick={run}

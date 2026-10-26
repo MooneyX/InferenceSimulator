@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearSimulationCache, getJob, getJobResult, getScanParameters, getScanTasks,
+import { clearSimulationCache, getJob, getJobResult, getPresets, getScanParameters, getScanTasks,
   getScanPointResult, listJobs, simulate, uploadReplayPlan, SimulationApiError } from "./api/client";
 import type { InferenceConfig, SimResult } from "./api/types";
 import { createDefaultSimConfig } from "./config/simulation";
@@ -11,7 +11,7 @@ vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
   return { ...actual, simulate: vi.fn(), uploadReplayPlan: vi.fn(), clearSimulationCache: vi.fn(),
     listJobs: vi.fn(), getJob: vi.fn(), getJobResult: vi.fn(), getScanParameters: vi.fn(),
-    getScanTasks: vi.fn(), getScanPointResult: vi.fn() };
+    getScanTasks: vi.fn(), getScanPointResult: vi.fn(), getPresets: vi.fn() };
 });
 
 vi.mock("./components/RequestGantt", () => ({
@@ -164,6 +164,7 @@ beforeEach(() => {
   vi.mocked(listJobs).mockResolvedValue([]);
   vi.mocked(getScanParameters).mockReset();
   vi.mocked(getScanParameters).mockResolvedValue([]);
+  vi.mocked(getPresets).mockReset().mockResolvedValue({ models: [], hardware: [] });
   jobMock.mockResolvedValue({ id: "job-1", kind: "single", status: "completed", total: 1,
     completed: 1, failed: 0, error: null, cache: "miss", lookup_ms: 0, axes: null, version: 1,
     code_fingerprint: "engine-1", code_version_status: "current",

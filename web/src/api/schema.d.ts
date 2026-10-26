@@ -614,6 +614,22 @@ export interface components {
             peak_hbm_gb_s: number;
             /** Peak Interconnect Gb S */
             peak_interconnect_gb_s: number;
+            /** Effective Fp16 Tflops */
+            effective_fp16_tflops: number;
+            /** Effective Fp8 Tflops */
+            effective_fp8_tflops: number | null;
+            /** Effective Hbm Gb S */
+            effective_hbm_gb_s: number;
+            /** Effective Interconnect Gb S */
+            effective_interconnect_gb_s: number | null;
+            /** Collective Latency Ms */
+            collective_latency_ms: number | null;
+            /** Ep Communication Latency Ms */
+            ep_communication_latency_ms: number | null;
+            /** Kernel Overhead Ms */
+            kernel_overhead_ms: number;
+            /** Performance Note */
+            performance_note: string;
         };
         /**
          * HardwareSpec

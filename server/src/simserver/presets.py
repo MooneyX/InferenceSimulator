@@ -97,6 +97,120 @@ MODELS = (
             )
         ],
     ),
+    # https://huggingface.co/zai-org/GLM-5/blob/c183ef8/config.json
+    # BF16 主干（含索引投影），路由修正向量为 FP32；不计独立 MTP 层。
+    ModelSpec(
+        name="zai-org/GLM-5",
+        revision="c183ef8",
+        num_layers=78,
+        hidden_size=6144,
+        num_attention_heads=64,
+        num_kv_heads=64,
+        head_dim=64,
+        ffn_intermediate_size=12288,
+        expert_intermediate_size=2048,
+        vocab_size=154_880,
+        tie_word_embeddings=False,
+        num_experts=256,
+        experts_per_token=8,
+        moe_layers=75,
+        num_shared_experts=1,
+        shared_expert_intermediate_size=2048,
+        router=RouterSpec(correction_bias=True),
+        attention_layout="grouped",
+        attention_groups=[
+            AttentionGroup(
+                kind="mla_dsa",
+                layers=78,
+                num_attention_heads=64,
+                q_rank=2048,
+                kv_rank=512,
+                rope_dim=64,
+                nope_dim=192,
+                value_dim=256,
+                index_heads=32,
+                index_dim=128,
+                topk=2048,
+                full_indexer_layers=78,
+            )
+        ],
+    ),
+    # https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct/blob/main/config.json
+    ModelSpec(
+        name="Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        num_layers=62,
+        hidden_size=6144,
+        num_attention_heads=96,
+        num_kv_heads=8,
+        head_dim=128,
+        ffn_intermediate_size=8192,
+        expert_intermediate_size=2560,
+        vocab_size=151_936,
+        tie_word_embeddings=False,
+        num_experts=160,
+        experts_per_token=8,
+        moe_layers=62,
+        attention_layout="grouped",
+        attention_groups=[
+            AttentionGroup(
+                kind="gqa",
+                layers=62,
+                num_attention_heads=96,
+                num_kv_heads=8,
+                head_dim=128,
+                qk_norm=True,
+            )
+        ],
+    ),
+    # https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct
+    # 结构核对：https://huggingface.co/second-state/Meta-Llama-3.1-70B-Instruct-GGUF/blob/main/config.json
+    ModelSpec(
+        name="meta-llama/Llama-3.1-70B-Instruct",
+        num_layers=80,
+        hidden_size=8192,
+        num_attention_heads=64,
+        num_kv_heads=8,
+        head_dim=128,
+        ffn_intermediate_size=28672,
+        vocab_size=128_256,
+        tie_word_embeddings=False,
+        attention_layout="grouped",
+        attention_groups=[
+            AttentionGroup(
+                kind="gqa",
+                layers=80,
+                num_attention_heads=64,
+                num_kv_heads=8,
+                head_dim=128,
+                qk_norm=False,
+            )
+        ],
+    ),
+    # https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct
+    # 结构核对（仅结构，不沿用量化）：
+    # https://huggingface.co/neuralmagic/Meta-Llama-3.1-405B-Instruct-quantized.w4a16/blob/main/config.json
+    ModelSpec(
+        name="meta-llama/Llama-3.1-405B-Instruct",
+        num_layers=126,
+        hidden_size=16384,
+        num_attention_heads=128,
+        num_kv_heads=8,
+        head_dim=128,
+        ffn_intermediate_size=53248,
+        vocab_size=128_256,
+        tie_word_embeddings=False,
+        attention_layout="grouped",
+        attention_groups=[
+            AttentionGroup(
+                kind="gqa",
+                layers=126,
+                num_attention_heads=128,
+                num_kv_heads=8,
+                head_dim=128,
+                qk_norm=False,
+            )
+        ],
+    ),
 )
 
 # 单卡显存：https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html

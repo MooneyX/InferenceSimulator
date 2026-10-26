@@ -493,6 +493,93 @@ def test_hardware_presets(
     ]
 
 
+@pytest.mark.parametrize("l2_available_gb", [0, 1])
+@pytest.mark.parametrize(
+    ("name", "total_parameters", "active_parameters", "expert_parameters", "rank_kv_bytes"),
+    [
+        ("zai-org/GLM-5", 743_911_218_432, 41_784_728_832, 724_775_731_200, 100_152),
+        (
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            480_154_875_392, 35_474_765_312, 468_084_326_400, 31_744,
+        ),
+        ("meta-llama/Llama-3.1-70B-Instruct", 70_553_706_496, 70_553_706_496, 0, 40_960),
+        ("meta-llama/Llama-3.1-405B-Instruct", 405_853_388_800, 405_853_388_800, 0, 64_512),
+    ],
+)
+def test_flagship_presets_preview_and_simulation(
+    name: str,
+    total_parameters: int,
+    active_parameters: int,
+    expert_parameters: int,
+    rank_kv_bytes: int,
+    l2_available_gb: int,
+) -> None:
+    client = TestClient(create_app())
+    catalog = client.get("/api/presets").json()
+    model = next(item for item in catalog["models"] if item["name"] == name)
+    assert model["weight_dtype"] == model["kv_dtype"] == "bf16"
+    assert model["tie_word_embeddings"] is False
+    assert model["ihc"] is None
+    (group,) = model["attention_groups"]
+    assert group["layers"] == model["num_layers"]
+    assert group["output_gate"] is False
+    assert group["sink_dtype"] is None
+    if name == "zai-org/GLM-5":
+        assert group["kind"] == "mla_dsa"
+        assert group["full_indexer_layers"] == model["num_layers"] == 78
+        assert (
+            group["q_rank"],
+            group["kv_rank"],
+            group["rope_dim"],
+            group["nope_dim"],
+            group["value_dim"],
+        ) == (2048, 512, 64, 192, 256)
+        assert (group["index_heads"], group["index_dim"], group["topk"]) == (32, 128, 2048)
+        assert model["moe_layers"] == 75
+        assert model["num_shared_experts"] == 1
+        assert model["router"]["correction_bias"] is True
+    else:
+        assert group["kind"] == "gqa"
+        assert group["qk_norm"] == name.startswith("Qwen/")
+        assert group["num_kv_heads"] == 8
+        assert group["head_dim"] == 128
+
+    request = payload()
+    request["shared_l3"] = None
+    request["inference"].update(model=model, tp_size=8, ep_size=8 if expert_parameters else 1)
+    request["inference"]["hardware"].update(
+        gpu_count=8,
+        memory_bytes_per_gpu=288_000_000_000,
+        effective_fp16_tflops=1000,
+        effective_hbm_gb_s=4000,
+        effective_interconnect_gb_s=600,
+        collective_latency_ms=0.01,
+        ep_communication_latency_ms=0.02,
+    )
+    request["inference"]["storage"]["l2_available_gb"] = l2_available_gb
+    response = client.post("/api/resolve", json=request)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["runnable"] is True
+    capacity = preview["capacity"]
+    assert capacity["estimated_total_parameters"] == total_parameters
+    assert capacity["estimated_active_parameters"] == active_parameters
+    assert capacity["estimated_expert_parameters"] == expert_parameters
+    assert capacity["kv_bytes_per_token"] == 8 * rank_kv_bytes
+    assert len(capacity["rank_reports"]) == 8
+    for rank in capacity["rank_reports"]:
+        assert rank["kv_bytes_per_token"] == rank_kv_bytes
+        assert rank["expert_weights_bytes"] == expert_parameters // 8 * 2
+    assert capacity["weights_resident_bytes"] >= total_parameters * 2
+    result = run_simulation(client, request)
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["resolution"] == preview
+    assert data["meta"]["num_completed"] == 1
+    assert data["analysis"]["communication_ms"] > 0
+    assert (data["analysis"]["ep_exchanges"] > 0) == bool(expert_parameters)
+
+
 def test_presets_and_unsupported_modes() -> None:
     client = TestClient(create_app())
     catalog = client.get("/api/presets")
@@ -501,6 +588,10 @@ def test_presets_and_unsupported_modes() -> None:
         "Qwen/Qwen3-8B",
         "Qwen/Qwen3-235B-A22B",
         "tencent/Hy4-preview",
+        "zai-org/GLM-5",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "meta-llama/Llama-3.1-70B-Instruct",
+        "meta-llama/Llama-3.1-405B-Instruct",
     }
     assert catalog.json()["hardware"][0]["gpu_count"] == 8
     assert catalog.json()["hardware"][0]["memory_bytes_per_gpu"] == 288_000_000_000

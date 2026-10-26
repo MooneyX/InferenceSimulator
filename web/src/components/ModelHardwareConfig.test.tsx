@@ -236,6 +236,45 @@ describe("ModelHardwareConfig", () => {
       model: { ...hy4, name: "自定义模型", revision: null } });
   });
 
+  it.each([
+    { ...hy4, name: "zai-org/GLM-5", revision: "c183ef8", num_kv_heads: 64, head_dim: 64,
+      ffn_intermediate_size: 12288, vocab_size: 154880, moe_layers: 75, ihc: null,
+      router: { ...hy4.router, dtype: null },
+      attention_groups: [{ ...hy4.attention_groups[0], full_indexer_layers: 78,
+        output_gate: false, index_norm_dtype: null, sink_dtype: null }] },
+    { ...initialModel, name: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      num_layers: 62, hidden_size: 6144, num_attention_heads: 96,
+      ffn_intermediate_size: 8192, expert_intermediate_size: 2560,
+      num_experts: 160, experts_per_token: 8, moe_layers: 62,
+      attention_groups: [{ ...initialModel.attention_groups![0], layers: 62, num_attention_heads: 96 }] },
+    ...[
+      { name: "meta-llama/Llama-3.1-70B-Instruct", num_layers: 80, hidden_size: 8192,
+        num_attention_heads: 64, ffn_intermediate_size: 28672 },
+      { name: "meta-llama/Llama-3.1-405B-Instruct", num_layers: 126, hidden_size: 16384,
+        num_attention_heads: 128, ffn_intermediate_size: 53248 },
+    ].map((spec) => ({ ...initialModel, ...spec, vocab_size: 128256,
+      attention_groups: [{ ...initialModel.attention_groups![0], layers: spec.num_layers,
+        num_attention_heads: spec.num_attention_heads, qk_norm: false }] })),
+  ])("selects and previews $name without changing hardware or storage", async (model) => {
+    vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, model], hardware: [] });
+    const onInferenceChange = vi.fn();
+    const config = formConfig({ tp_size: 8, ep_size: 8,
+      hardware: { ...initialHardware, gpu_count: 8 } });
+    const props = { config, onInferenceChange, disabled: false };
+    const { rerender } = render(<ModelHardwareConfig {...props} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: model.name })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: model.name } });
+    const inference = { ...config.inference, model, ep_size: model.moe_layers ? 8 : 1 };
+    expect(onInferenceChange).toHaveBeenCalledTimes(1);
+    expect(onInferenceChange).toHaveBeenCalledWith(inference);
+    rerender(<ModelHardwareConfig {...props} config={{ ...config, inference }} />);
+    expect(screen.getByLabelText("模型选择")).toHaveValue(model.name);
+    expect(screen.getByLabelText("第 1 组注意力方式")).toHaveValue(model.attention_groups[0].kind);
+    expect(screen.getByLabelText("第 1 组 Q/K 归一化")).toHaveProperty("checked", model.attention_groups[0].qk_norm);
+    fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
+    await waitFor(() => expect(resolveConfig).toHaveBeenCalledWith({ ...config, inference }));
+  });
+
   it("does not apply HY4 parallelism or storage defaults to other grouped presets", async () => {
     const other = { ...hy4, name: "another-grouped-model" };
     vi.mocked(getPresets).mockResolvedValue({ models: [other], hardware: [] });

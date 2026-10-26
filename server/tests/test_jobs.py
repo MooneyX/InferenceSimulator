@@ -324,8 +324,10 @@ def test_scan_model_hardware_presets_archive_successes_and_failures(tmp_path: Pa
         axes = [
             {"key": "inference.hardware.memory_bytes_per_gpu", "values": [1, 192]},
             {"key": "inference.model", "values": ["Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B"]},
-            {"key": "inference.hardware", "values": ["NVIDIA B300", "Huawei Ascend 950PR"]},
-            {"key": "inference.parallelism", "values": [8]},
+            {"key": "inference.hardware", "values": [
+                {"name": "NVIDIA B300", "parallelism": 8},
+                {"name": "Huawei Ascend 950PR", "parallelism": 16},
+            ]},
         ]
         submitted = client.post("/api/scans", json={"base": config, "axes": axes})
         assert submitted.status_code == 202, submitted.text
@@ -341,12 +343,20 @@ def test_scan_model_hardware_presets_archive_successes_and_failures(tmp_path: Pa
                 inference = point["config"]["inference"]
                 assert inference["model"]["name"] == point["values"]["inference.model"]
                 assert inference["hardware"]["memory_bytes_per_gpu"] == 192_000_000_000
-                assert inference["ep_size"] == (8 if inference["model"]["moe_layers"] else 1)
+                parallelism = point["values"]["inference.hardware"]["parallelism"]
+                assert inference["tp_size"] == inference["hardware"]["gpu_count"] == parallelism
+                assert inference["ep_size"] == (parallelism if inference["model"]["moe_layers"] else 1)
             else:
                 assert point["error"]
         parameters = {item["key"]: item for item in client.get("/api/scans/parameters").json()}
         assert parameters["inference.model"]["kind"] == "model_preset"
         assert parameters["inference.hardware"]["kind"] == "hardware_preset"
+        tasks = client.get(f"/api/jobs/{key}/tasks").json()["items"]
+        assert [item["values"]["inference.hardware"] for item in tasks] == axes[2]["values"] * 4
+    with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:
+        assert client.get(f"/api/jobs/{key}").json()["axes"] == axes
+        restored = client.get(f"/api/jobs/{key}/points").json()
+        assert restored == points
 
 
 def test_two_workers_run_distinct_points(tmp_path: Path, monkeypatch) -> None:

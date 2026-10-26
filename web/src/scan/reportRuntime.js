@@ -14,11 +14,16 @@
   const label = key => parameters.find(item => item.key === key)?.label || key;
   const value = (point, key) => {
     if (!key) return null;
+    if (key === 'inference.hardware') {
+      const hardware = point.values[key] ?? point.config?.inference?.hardware?.name;
+      if (hardware && typeof hardware === 'object') return `${hardware.name} · TP${hardware.parallelism}`;
+      const tp = point.config?.inference?.tp_size;
+      return typeof hardware === 'string' ? (tp == null ? hardware : `${hardware} · TP${tp}`) : null;
+    }
     if (Object.prototype.hasOwnProperty.call(point.values, key)) return point.values[key];
     if (!point.config) return null;
     if (key === 'inference.parallelism') return point.config.inference.tp_size;
     if (key === 'inference.model') return point.config.inference?.model?.name ?? null;
-    if (key === 'inference.hardware') return point.config.inference?.hardware?.name ?? null;
     let current = point.config;
     for (const field of key.split('.')) current = current?.[field];
     if (key.endsWith('_len') && current && typeof current === 'object') {

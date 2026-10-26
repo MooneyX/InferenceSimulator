@@ -249,17 +249,17 @@ describe("scan projections", () => {
 
   function presetScan(): ScanData {
     const models = ["model-a", "model-b"];
-    const hardware = ["NVIDIA B300", "Huawei Ascend 950PR"];
+    const hardware = [{ name: "NVIDIA B300", parallelism: 8 }, { name: "Huawei Ascend 950PR", parallelism: 16 }];
     return { job: { ...job, axes: [
       { key: "inference.model", values: models }, { key: "inference.hardware", values: hardware },
       { key: "num_instances", values: [1, 2] },
     ] }, points: models.flatMap((model, m) => hardware.flatMap((gpu, h) => [1, 2].map((x) => ({
-      ...point(x, 1, `${model}-${gpu}-${x}`),
+      ...point(x, 1, `${model}-${gpu.name}-${x}`),
       values: { "inference.model": model, "inference.hardware": gpu, num_instances: x },
-      config: { num_instances: x, workload: { seed: 7 }, inference: { tp_size: 1, ep_size: 1,
+      config: { num_instances: x, workload: { seed: 7 }, inference: { tp_size: gpu.parallelism, ep_size: 1,
         model: { name: model, hidden_size: 2048 * (m + 1), attention_groups: [{ layers: 32 * (m + 1) }],
           ihc: m ? { mult: 4, dtype: "fp32" } : null },
-        hardware: { name: gpu, gpu_count: 1, memory_bytes_per_gpu: h ? 128e9 : 288e9,
+        hardware: { name: gpu.name, gpu_count: gpu.parallelism, memory_bytes_per_gpu: h ? 128e9 : 288e9,
           effective_hbm_gb_s: h ? 500 : 1000, kernel_overhead_ms: h ? 0.01 : 0.005 },
       } } as unknown as NonNullable<ScanData["points"][number]["config"]>,
     })))) };
@@ -308,9 +308,41 @@ describe("scan projections", () => {
     const { group, rows } = openReport([scan, old]);
     expect(group("values-x").getByRole("checkbox", { name: "model-a" })).toBeChecked();
     expect(group("values-x").getByRole("checkbox", { name: "model-b" })).toBeChecked();
-    expect(group("values-color").getByRole("checkbox", { name: "NVIDIA B300" })).toBeChecked();
+    expect(group("values-color").getByRole("checkbox", { name: "NVIDIA B300 · TP8" })).toBeChecked();
+    expect(group("values-color").getByRole("checkbox", { name: "Huawei Ascend 950PR · TP16" })).toBeChecked();
     expect(rows()).toHaveLength(16);
     expect(document.querySelectorAll(".background-group")).toHaveLength(0);
+  });
+
+  it("distinguishes the same GPU at different TP sizes and normalizes equivalent object values", () => {
+    const first = presetScan();
+    first.job.axes = [{ key: "inference.hardware", values: [{ name: "NVIDIA B300", parallelism: 8 }] }];
+    first.points = [first.points[0]];
+    const second = structuredClone(first);
+    second.job.id = "tp16";
+    second.job.axes![0].values = [{ name: "NVIDIA B300", parallelism: 16 }];
+    second.points[0].values["inference.hardware"] = { parallelism: 16, name: "NVIDIA B300" };
+    second.points[0].config!.inference.tp_size = second.points[0].config!.inference.hardware.gpu_count = 16;
+    second.points[0].signature += "-tp16";
+    const duplicate = structuredClone(first);
+    duplicate.job.id = "duplicate";
+    duplicate.points[0].values["inference.hardware"] = { parallelism: 8, name: "NVIDIA B300" };
+    const scans = [first, second, duplicate];
+    const keys = availableKeys(scans);
+    expect(keys).toEqual(["inference.hardware"]);
+    const roles = { x: "inference.hardware", color: "", shape: "", line: "" };
+    const selection = resolveSelection(scans, roles, "throughput");
+    expect(selection.roleChoices.x).toHaveLength(2);
+    const chart = buildChart(selection.visible, roles, "throughput");
+    expect(chart.xValues).toEqual(["NVIDIA B300 · TP16", "NVIDIA B300 · TP8"]);
+    expect(chart.entries).toHaveLength(2);
+    expect(chart.deduplicated).toBe(1);
+    const { group, rows } = openReport(scans);
+    expect(group("values-x").getAllByRole("checkbox")).toHaveLength(2);
+    expect(rows()).toHaveLength(2);
+    fireEvent.click(group("values-x").getByRole("checkbox", { name: "NVIDIA B300 · TP8" }));
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("NVIDIA B300 · TP16");
   });
 
   it("uses GB for GPU memory from point configs in live charts and offline reports", () => {

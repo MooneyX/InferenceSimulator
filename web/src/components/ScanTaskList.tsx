@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { getScanParameters, getScanTasks } from "../api/client";
 import type { JobSummary, ScanTaskPage } from "../api/types";
 import { RequestProgress } from "./RequestProgress";
+import { hardwareLevelLabel } from "../config/presets";
 
 const PAGE_SIZE = 20;
 const statusLabels = {
@@ -99,7 +100,7 @@ export function ScanTaskList({ job, onSelect }: {
           {data.items.map((item) => <li key={item.index}>
             <span className="scan-task-number">#{item.index + 1}</span>
             <span className="scan-task-values">{Object.entries(item.values).map(([key, value]) =>
-              `${labels[key] ?? key}: ${value === null ? "null" : String(value)}`).join(" · ")}</span>
+              `${labels[key] ?? key}: ${key === "inference.hardware" ? hardwareLevelLabel(value) : value === null ? "null" : String(value)}`).join(" · ")}</span>
             <span className={`job-status job-status-${item.status}`}>{statusLabels[item.status]}</span>
             <RequestProgress progress={item.request_progress} status={item.status} />
             {item.error && <span className="scan-task-error">{item.error}</span>}

@@ -1,5 +1,5 @@
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
-import { hardwarePresetFields, isPresetAxis } from "../config/presets";
+import { hardwareLevelLabel, hardwarePresetFields, isPresetAxis } from "../config/presets";
 
 export type Role = "x" | "color" | "shape" | "line";
 export type Roles = Record<Role, string>;
@@ -12,12 +12,13 @@ export const lineStyles: ("solid" | "dashed" | "dotted" | number[])[] = [
 
 export function valueOf(point: ScanPoint, key: string): unknown {
   if (!key) return null;
+  if (key === "inference.hardware") return hardwareLevelLabel(
+    point.values[key] ?? point.config?.inference?.hardware?.name, point.config?.inference?.tp_size);
   if (key in point.values) return point.values[key];
   const config = point.config;
   if (!config) return null;
   if (key === "inference.parallelism") return config.inference.tp_size;
   if (key === "inference.model") return config.inference?.model?.name ?? null;
-  if (key === "inference.hardware") return config.inference?.hardware?.name ?? null;
   let value: unknown = config;
   for (const segment of key.split(".")) value = (value as Record<string, unknown> | null)?.[segment];
   if (key.endsWith("_len") && value && typeof value === "object") {
@@ -58,7 +59,7 @@ export function availableKeys(data: ScanData[], parameters: ScanParameter[] = []
   const linkedToPreset = (key: string): boolean => {
     if (axes.includes(key)) return false;
     const owner = key.startsWith("inference.model.") ? "inference.model"
-      : hardwarePaths.includes(key) ? "inference.hardware" : "";
+      : hardwarePaths.includes(key) || key === "inference.parallelism" ? "inference.hardware" : "";
     if (!owner || !axes.includes(owner)) return false;
     const presets = new Map<string, string>();
     for (const { job, point } of rows) {

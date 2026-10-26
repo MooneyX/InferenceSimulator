@@ -6,7 +6,7 @@ import { DataZoomComponent, GridComponent, LegendComponent, ToolboxComponent, To
 
 import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
-import { availableKeys, buildChart, metricCharts, metricUnit, metricsOf, palette, symbols, lineStyles,
+import { availableKeys, buildChart, metricCharts, metricUnit, metricsOf, palette, symbols, lineStyles, valueOf,
   type Roles, type Role, type ScanData } from "../scan/chart";
 import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
 import { formatScanTooltip } from "../scan/tooltip.js";
@@ -58,7 +58,7 @@ function Curve({ data, roles, metrics, complete, keys, styleSlots, summary }: { 
     }, true);
   }, [model, roles.x, metrics, units.join(",")]);
   const used = data.reduce((sum, batch) => sum + batch.points.length, 0);
-  const levels = (key: string) => new Set(model.entries.map(({ point }) => key && point.values[key])).size;
+  const levels = (key: string) => new Set(model.entries.map(({ point }) => JSON.stringify(valueOf(point, key)))).size;
   return <section className="scan-chart-panel">
     {metrics.length > 1 || !summary ? <h3>{metrics.join(" · ")}</h3> : null}
     <div ref={host} className="scan-chart" role="img" aria-label={`${metrics.join("、")}参数扫描折线图`} />

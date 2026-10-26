@@ -3,11 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { getPresets, getScanParameters, uploadReplayPlan } from "../api/client";
 import type { PresetCatalog, ScanParameter, ScanRequest, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeScanPlan } from "../config/parameterTransfer";
-import { isPresetAxis, parsePresetNames, presetEntries } from "../config/presets";
+import { isPresetAxis, parseHardwareLevels, parsePresetNames, presetEntries } from "../config/presets";
 import { validateSimConfig } from "../config/simulation";
 import "./ScanPanel.css";
 
-type AxisDraft = { id: number; key: string; text: string; search: string };
+type AxisDraft = { id: number; key: string; text: string; search: string; hardwareTp?: Record<string, string> };
 
 function initialValue(config: SimConfig, key: string, fallbackQps = 64): string {
   if (key === "inference.parallelism") return String(config.inference.tp_size);
@@ -54,10 +54,14 @@ export function parseLevels(text: string, kind: string): (number | boolean | nul
   });
 }
 
-function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "text">[], catalog: ScanParameter[],
+function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "text" | "hardwareTp">[], catalog: ScanParameter[],
   mode: "synthetic" | "trace", arrival: "open_loop" | "closed_loop", presets: PresetCatalog | null,
   blockSize: number | null = null): ScanRequest["axes"] {
   if (!entries.length) throw new Error("请至少选择一个扫描参数");
+  if (entries.some((axis) => axis.key === "inference.hardware") &&
+      entries.some((axis) => axis.key === "inference.parallelism")) {
+    throw new Error("硬件已绑定并行数量，不能同时扫描独立并行度，请移除其中一个参数");
+  }
   const available = catalog.filter((item) => item.modes.includes(`${mode}/${arrival}`));
   const seen = new Set<string>();
   return entries.map((axis) => {
@@ -72,6 +76,15 @@ function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "tex
       const names = presetEntries(presets, axis.key).map((entry) => entry.name);
       const unknown = values.find((value) => !names.includes(value));
       if (unknown !== undefined) throw new Error(`${item.label}预设不存在：${unknown}`);
+      if (axis.key === "inference.hardware") {
+        const hardware = parseHardwareLevels(JSON.stringify(values.map((name) => ({ name,
+          parallelism: Number(axis.hardwareTp?.[name] ?? config.inference.tp_size),
+        }))));
+        if (config.inference.timing?.mode === "empirical" && hardware.some((entry) => entry.parallelism !== 1)) {
+          throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
+        }
+        return { key: item.key, values: hardware };
+      }
       return { key: item.key, values };
     }
     const values = parseLevels(axis.text, item.kind);
@@ -138,14 +151,26 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
   function updateAxis(id: number, update: Partial<AxisDraft>) {
     setAxes((current) => current.map((axis) => axis.id === id ? { ...axis, ...update } : axis));
   }
+  function parallelismConflict(key: string) {
+    const other = key === "inference.hardware" ? "inference.parallelism"
+      : key === "inference.parallelism" ? "inference.hardware" : null;
+    return other !== null && axes.some((axis) => axis.key === other);
+  }
   function chooseParameter(id: number, key: string) {
+    if (parallelismConflict(key)) {
+      setProblem("硬件已绑定并行数量，不能同时扫描独立并行度，请移除其中一个参数");
+      return;
+    }
     if (isPresetAxis(key) && !presets) return;
     const config = makeBase();
     const name = key === "inference.model" ? config.inference.model.name : config.inference.hardware.name;
     const text = isPresetAxis(key)
       ? JSON.stringify(presetEntries(presets, key).some((entry) => entry.name === name) ? [name] : [])
       : initialValue(config, key);
-    updateAxis(id, { key, text, search: "" });
+    updateAxis(id, { key, text, search: "", hardwareTp: key === "inference.hardware"
+      ? Object.fromEntries(presetEntries(presets, key).map((entry) => [entry.name, String(config.inference.tp_size)]))
+      : undefined });
+    setProblem("");
     setFocused(null);
   }
   function changeContext(nextMode: "synthetic" | "trace", nextArrival: "open_loop" | "closed_loop") {
@@ -221,8 +246,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
         throw new Error(`基础配置不合法：${closedLoopCountError}`);
       }
       const config = makeBase();
-      scanDimensions(config, axes, catalog, mode, arrival, presets);
-      const json = serializeScanPlan(config, axes.map(({ key, text }) => ({ key, text })));
+      const dimensions = scanDimensions(config, axes, catalog, mode, arrival, presets);
+      const json = serializeScanPlan(config, axes.map(({ key, text }, index) => ({ key,
+        text: key === "inference.hardware" ? JSON.stringify(dimensions[index].values) : text })));
       setScanJson(json);
       const message = mode === "trace"
         ? "已生成扫描方案 JSON；再次使用时请重新上传回放计划"
@@ -263,7 +289,12 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
         Object.keys(axis).some((key) => !["key", "text"].includes(key)))) {
         throw new Error("扫描维度必须包含参数 key 和档位 text");
       }
-      const importedAxes = record.axes as { key: string; text: string }[];
+      const importedAxes = (record.axes as { key: string; text: string }[]).map((axis) => {
+        if (axis.key !== "inference.hardware") return axis;
+        const hardware = parseHardwareLevels(axis.text);
+        return { key: axis.key, text: JSON.stringify(hardware.map((entry) => entry.name)),
+          hardwareTp: Object.fromEntries(hardware.map((entry) => [entry.name, String(entry.parallelism)])) };
+      });
       scanDimensions(imported, importedAxes, catalog, importedMode, importedArrival, presets);
       if (importedMode === "trace") imported.workload.trace = { plan_id: null };
       onImportBase(imported);
@@ -351,10 +382,11 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
             }} />
           {focused === axis.id && <div id={`scan-options-${axis.id}`} className="scan-options" role="listbox">
             {options.map((item) => <button type="button" role="option" aria-selected={axis.key === item.key}
-              key={item.key} disabled={isPresetAxis(item.key) && !presets}
+              key={item.key} disabled={(isPresetAxis(item.key) && !presets) || parallelismConflict(item.key)}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => chooseParameter(axis.id, item.key)}>
-              {item.label}<small>{item.key}</small></button>)}
+              {item.label}<small>{parallelismConflict(item.key)
+                ? "与硬件绑定并行数量互斥，请先移除另一参数" : item.key}</small></button>)}
             {!options.length && <p>没有匹配参数</p>}</div>}
         </div>
         <div className="scan-axis-levels">
@@ -368,12 +400,23 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
               <span>已选 {parsePresetNames(axis.text).length} / {presetEntries(presets, axis.key).length}</span>
             </div>
             <div className="scan-preset-options">{presetEntries(presets, axis.key).map((entry) =>
-              <label key={entry.name}><input type="checkbox" checked={parsePresetNames(axis.text).includes(entry.name)}
-                onChange={(event) => {
-                  const names = parsePresetNames(axis.text);
-                  updateAxis(axis.id, { text: JSON.stringify(event.target.checked
-                    ? [...names, entry.name] : names.filter((name) => name !== entry.name)) });
-                }} />{entry.name}</label>)}</div>
+              <div key={entry.name} className="scan-preset-row">
+                <label><input type="checkbox" checked={parsePresetNames(axis.text).includes(entry.name)}
+                  onChange={(event) => {
+                    const names = parsePresetNames(axis.text);
+                    updateAxis(axis.id, { text: JSON.stringify(event.target.checked
+                      ? [...names, entry.name] : names.filter((name) => name !== entry.name)) });
+                  }} />{entry.name}</label>
+                {axis.key === "inference.hardware" && <label className="scan-hardware-tp">GPU / TP
+                  <input type="number" min="1" step="1" aria-label={`${entry.name} 每实例 GPU / TP 数`}
+                    disabled={!parsePresetNames(axis.text).includes(entry.name)}
+                    value={axis.hardwareTp?.[entry.name] ?? String(base.inference.tp_size)}
+                    onChange={(event) => updateAxis(axis.id, { hardwareTp: { ...axis.hardwareTp,
+                      [entry.name]: event.target.value } })} />
+                </label>}
+              </div>)}</div>
+            {axis.key === "inference.hardware" && <p className="scan-hint">每行硬件与 GPU / TP 数固定组合；MoE 的 EP＝TP，Dense 的 EP＝1。
+              卡数不同，结果代表部署配置对比，不代表单卡性能对比。</p>}
             {axis.key === "inference.hardware" && presets?.hardware[0] &&
               <p className="scan-hint">{presets.hardware[0].performance_note}</p>}
           </fieldset> : <>
@@ -393,8 +436,8 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
       onClick={() => { setAxes((current) => [...current, { id: nextId.current++, key: "", text: "", search: "" }]);
         setFocused(null); }}>添加参数</button>
     <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>
-    <p className="scan-hint">模型包含全部模型配置与注意力组合；硬件包含单卡显存、算力、带宽、通信和单算子开销，不改变 GPU 卡数或 TP/EP。
-      先应用预设，再用其他扫描参数覆盖；添加顺序不影响配置。不支持的组合单点失败，其余继续。</p>
+    <p className="scan-hint">模型包含全部模型配置与注意力组合；硬件包含单卡显存、算力、带宽、通信和单算子开销，并绑定各自的 GPU / TP 数。
+      硬件与独立并行度扫描互斥；其余扫描参数仍覆盖预设，添加顺序不影响配置。不支持的组合单点失败，其余继续。</p>
     {presetError && <p className="field-error" role="alert">{presetError}</p>}
     <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
       固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>

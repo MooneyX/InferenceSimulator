@@ -63,6 +63,18 @@ it("ignores an old page response after pagination", async () => {
   expect(screen.getByText("已处理 2 / 10 请求")).toBeInTheDocument();
 });
 
+it("labels hardware and bound parallelism in pending and failed task rows", async () => {
+  vi.mocked(getScanTasks).mockResolvedValue({ total: 2, items: [
+    { ...page(0, 0).items[0], status: "not_run", values: { "inference.hardware": { name: "NVIDIA B300", parallelism: 8 } } },
+    { ...page(1, 0).items[0], status: "failed", values: { "inference.hardware": { parallelism: 16, name: "NVIDIA B300" } } },
+  ] });
+  render(<ScanTaskList job={job} onSelect={vi.fn()} />);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "展开组合" })); });
+  expect(screen.getByText("inference.hardware: NVIDIA B300 · TP8")).toBeInTheDocument();
+  expect(screen.getByText("inference.hardware: NVIDIA B300 · TP16")).toBeInTheDocument();
+  expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+});
+
 it("stops scheduled refreshes while collapsed", async () => {
   vi.mocked(getScanTasks).mockResolvedValue(page(0, 1));
   const { rerender } = render(<ScanTaskList job={job} onSelect={vi.fn()} />);

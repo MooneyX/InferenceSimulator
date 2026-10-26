@@ -256,13 +256,21 @@ it("selects preset checkboxes, overrides and round-trips names containing spaces
   expect(models.getByRole("checkbox", { name: initialModel.name })).toBeChecked();
   expect(hardware.getByRole("checkbox", { name: initialHardware.name })).toBeChecked();
   fireEvent.click(models.getByRole("button", { name: "全选" }));
+  expect(screen.getByLabelText("NVIDIA B300 每实例 GPU / TP 数")).toHaveValue(1);
+  expect(screen.getByLabelText("Huawei Ascend 950PR 每实例 GPU / TP 数")).toBeDisabled();
   fireEvent.click(hardware.getByRole("button", { name: "全选" }));
+  fireEvent.change(screen.getByLabelText("NVIDIA B300 每实例 GPU / TP 数"), { target: { value: "8" } });
+  fireEvent.change(screen.getByLabelText("Huawei Ascend 950PR 每实例 GPU / TP 数"), { target: { value: "16" } });
+  fireEvent.click(hardware.getByRole("checkbox", { name: "Huawei Ascend 950PR" }));
+  expect(screen.getByLabelText("Huawei Ascend 950PR 每实例 GPU / TP 数")).toBeDisabled();
+  fireEvent.click(hardware.getByRole("checkbox", { name: "Huawei Ascend 950PR" }));
+  expect(screen.getByLabelText("Huawei Ascend 950PR 每实例 GPU / TP 数")).toHaveValue(16);
   fireEvent.change(screen.getByLabelText("扫描档位 3"), { target: { value: "160,192" } });
   expect(screen.getByText(/当前约 8 点/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
   const axes = [
     { key: "inference.model", values: presets.models.map((entry) => entry.name) },
-    { key: "inference.hardware", values: presets.hardware.map((entry) => entry.name) },
+    { key: "inference.hardware", values: presets.hardware.map((entry, index) => ({ name: entry.name, parallelism: index ? 16 : 8 })) },
     { key: "inference.hardware.memory_bytes_per_gpu", values: [160, 192] },
   ];
   expect(onSubmit.mock.lastCall?.[0].axes).toEqual(axes);
@@ -280,7 +288,7 @@ it("selects preset checkboxes, overrides and round-trips names containing spaces
   fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
   expect(onSubmit.mock.lastCall?.[0].axes).toEqual(axes);
   fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({
-    ...JSON.parse(saved), axes: [{ key: "inference.hardware", text: '["unknown"]' }],
+    ...JSON.parse(saved), axes: [{ key: "inference.hardware", text: '[{"name":"unknown","parallelism":8}]' }],
   }) } });
   fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
   expect(screen.getByRole("alert")).toHaveTextContent("硬件预设不存在");
@@ -299,6 +307,64 @@ it("keeps preset selections when changing workload mode and starts custom models
   fireEvent.click(screen.getByRole("checkbox", { name: "another/model" }));
   fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "trace" } });
   expect(screen.getByRole("checkbox", { name: "another/model" })).toBeChecked();
+});
+
+it.each(["硬件", "每实例 GPU / TP / EP 数"])("makes %s mutually exclusive with the other parallelism axis", async (first) => {
+  render(<ScanPanel base={createDefaultSimConfig()} onSubmit={vi.fn()} onImportBase={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+  fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: first } });
+  fireEvent.click(screen.getByRole("option", { name: new RegExp(first) }));
+  fireEvent.click(screen.getByRole("button", { name: "添加参数" }));
+  const other = first === "硬件" ? "每实例 GPU / TP / EP 数" : "硬件";
+  fireEvent.focus(screen.getByLabelText("扫描参数 2"));
+  fireEvent.change(screen.getByLabelText("扫描参数 2"), { target: { value: other } });
+  expect(screen.getByRole("option", { name: new RegExp(other) })).toBeDisabled();
+  fireEvent.keyDown(screen.getByLabelText("扫描参数 2"), { key: "Enter" });
+  expect(screen.getByRole("alert")).toHaveTextContent("不能同时扫描独立并行度");
+  fireEvent.click(screen.getByRole("button", { name: "删除扫描参数 1" }));
+  fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+  fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: other } });
+  expect(screen.getByRole("option", { name: new RegExp(other) })).toBeEnabled();
+});
+
+it("rejects invalid bound counts and conflicting imported axes without updating the base", async () => {
+  const base = createDefaultSimConfig();
+  const onSubmit = vi.fn();
+  const onImportBase = vi.fn();
+  render(<ScanPanel base={base} onSubmit={onSubmit} onImportBase={onImportBase} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+  fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "硬件" } });
+  fireEvent.click(screen.getByRole("option", { name: /硬件/ }));
+  for (const value of ["", "0", "-1", "1.5"]) {
+    fireEvent.change(screen.getByLabelText("NVIDIA B300 每实例 GPU / TP 数"), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("每实例 GPU / TP 数必须为正整数");
+  }
+  expect(onSubmit).not.toHaveBeenCalled();
+  const hardware = { key: "inference.hardware", text: '[{"name":"NVIDIA B300","parallelism":8}]' };
+  fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({ version: 1, base,
+    axes: [hardware, { key: "inference.parallelism", text: "4,8" }],
+  }) } });
+  fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+  expect(screen.getByText(/扫描方案导入失败.*不能同时扫描独立并行度/)).toBeInTheDocument();
+  expect(onImportBase).not.toHaveBeenCalled();
+});
+
+it("rejects bound multi-GPU presets for empirical timing", async () => {
+  const base = createDefaultSimConfig();
+  base.inference.timing = { mode: "empirical", prefill_c1: 1, prefill_c2: 0, decode_d1: 1, decode_d2: 0 };
+  const onSubmit = vi.fn();
+  render(<ScanPanel base={base} onSubmit={onSubmit} onImportBase={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  fireEvent.focus(screen.getByLabelText("扫描参数 1"));
+  fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "硬件" } });
+  fireEvent.click(screen.getByRole("option", { name: /硬件/ }));
+  fireEvent.change(screen.getByLabelText("NVIDIA B300 每实例 GPU / TP 数"), { target: { value: "8" } });
+  fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("经验计时仅支持每实例 GPU / TP 数为 1");
+  expect(onSubmit).not.toHaveBeenCalled();
 });
 
 it("accepts number, boolean and range levels", () => {

@@ -85,11 +85,18 @@ class ScanAxis(BaseModel):
 
         for value in values:
             if value is not None and (
-                type(value) not in (int, float, bool, str)
+                type(value) not in (int, float, bool, str, dict)
                 or (type(value) is float and not math.isfinite(value))
             ):
-                raise ValueError("扫描值必须是预设名称、有限数字、布尔值或 null")
+                raise ValueError("扫描值必须是预设名称、硬件与并行数量组合、有限数字、布尔值或 null")
         return values
+
+
+class HardwareScanLevel(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    parallelism: int = Field(gt=0, strict=True)
 
 
 class ScanRequest(BaseModel):
@@ -101,11 +108,22 @@ class ScanRequest(BaseModel):
         selected = [axis.key for axis in self.axes]
         if len(selected) != len(set(selected)):
             raise ValueError("各维度不能选择同一参数")
+        if "inference.hardware" in selected and "inference.parallelism" in selected:
+            raise ValueError("硬件已绑定并行数量，不能同时扫描独立并行度，请移除其中一个参数")
         mode = f"{self.base.workload.mode}/{self.base.workload.arrival_mode}"
         for axis in self.axes:
             parameter = PARAMETERS.get(axis.key)
             if parameter is None or mode not in parameter.modes:
                 raise ValueError(f"当前负载模式不支持参数 {axis.key}")
+            if axis.key == "inference.hardware":
+                levels = [HardwareScanLevel.model_validate(value) for value in axis.values]
+                if len({level.name for level in levels}) != len(levels):
+                    raise ValueError("每种硬件只能设置一个并行数量")
+                for level in levels:
+                    if level.name not in PRESETS[axis.key]:
+                        raise ValueError(f"硬件预设不存在：{level.name}")
+                axis.values = [level.model_dump() for level in levels]
+                continue
             for value in axis.values:
                 if axis.key in PRESETS:
                     if type(value) is not str or value not in PRESETS[axis.key]:
@@ -139,15 +157,17 @@ def build_point(base: SimConfig, values: dict[str, Any], plan: TracePlan | None)
     data = base.model_dump(mode="python")
     if "inference.model" in values:
         data["inference"]["model"] = deepcopy(PRESETS["inference.model"][values["inference.model"]])
+    parallelism = values.get("inference.parallelism")
     if "inference.hardware" in values:
-        data["inference"]["hardware"].update(PRESETS["inference.hardware"][values["inference.hardware"]])
+        hardware = values["inference.hardware"]
+        data["inference"]["hardware"].update(PRESETS["inference.hardware"][hardware["name"]])
+        parallelism = hardware["parallelism"]
+    if parallelism is not None:
+        data["inference"]["hardware"]["gpu_count"] = parallelism
+        data["inference"]["tp_size"] = parallelism
+        data["inference"]["ep_size"] = parallelism if data["inference"]["model"]["moe_layers"] else 1
     for key, value in values.items():
-        if key in PRESETS:
-            continue
-        if key == "inference.parallelism":
-            data["inference"]["hardware"]["gpu_count"] = value
-            data["inference"]["tp_size"] = value
-            data["inference"]["ep_size"] = value if data["inference"]["model"]["moe_layers"] else 1
+        if key in PRESETS or key == "inference.parallelism":
             continue
         if key.startswith("workload.synthetic.") and key.endswith("_len"):
             length = data["workload"]["synthetic"]

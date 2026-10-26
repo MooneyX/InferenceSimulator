@@ -55,7 +55,9 @@ describe("ScanResults", () => {
 
   it("exports preset names as arrays without splitting hardware names on spaces", () => {
     const scanAxes = [{ key: "inference.model", values: ["Qwen/Qwen3-8B"] },
-      { key: "inference.hardware", values: ["NVIDIA B300", "Huawei Ascend 950PR"] }];
+      { key: "inference.hardware", values: [
+        { name: "NVIDIA B300", parallelism: 8 }, { name: "Huawei Ascend 950PR", parallelism: 16 },
+      ] }];
     render(<ScanResults jobs={[{ ...job("scan-a"), base: createDefaultSimConfig(), axes: scanAxes }]} />);
     fireEvent.click(screen.getByRole("button", { name: "导出扫描方案" }));
     const plan = JSON.parse((screen.getByLabelText("扫描方案 JSON") as HTMLInputElement).value);

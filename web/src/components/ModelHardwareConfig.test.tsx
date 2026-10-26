@@ -513,6 +513,41 @@ describe("ModelHardwareConfig", () => {
       .toHaveTextContent("body → inference → model → num_experts：专家数必须为正"));
   });
 
+  it.each([
+    { name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
+      peak_fp16_tflops: 2250, peak_fp8_tflops: 4500, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 },
+    { name: "Huawei Ascend 950PR", gpu_count: 8, memory_bytes_per_gpu: 128_000_000_000,
+      peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 1600, peak_interconnect_gb_s: 2000 },
+    { name: "Huawei Ascend 950DT", gpu_count: 8, memory_bytes_per_gpu: 144_000_000_000,
+      peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 4000, peak_interconnect_gb_s: 2000 },
+  ])("applies $name peak compute without changing other settings", async (preset) => {
+    vi.mocked(getPresets).mockResolvedValue({ models: [], hardware: [preset] });
+    const onInferenceChange = vi.fn();
+    const config = formConfig({ hardware: { ...initialHardware, name: "自定义 GPU",
+      effective_fp16_tflops: 100, effective_fp8_tflops: null,
+      effective_hbm_gb_s: 750, effective_interconnect_gb_s: 300,
+      collective_latency_ms: 0.03, ep_communication_latency_ms: 0.04 } });
+    const { rerender } = render(<ModelHardwareConfig config={config}
+      onInferenceChange={onInferenceChange} disabled={false} />);
+    await screen.findByRole("option", { name: preset.name });
+    expect(onInferenceChange).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("GPU 选择"), { target: { value: preset.name } });
+    const inference = { ...config.inference, hardware: { ...config.inference.hardware,
+      name: preset.name, memory_bytes_per_gpu: preset.memory_bytes_per_gpu,
+      effective_fp16_tflops: preset.peak_fp16_tflops, effective_fp8_tflops: preset.peak_fp8_tflops } };
+    expect(onInferenceChange).toHaveBeenLastCalledWith(inference);
+    rerender(<ModelHardwareConfig config={{ ...config, inference }}
+      onInferenceChange={onInferenceChange} disabled={false} />);
+    expect(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）")).toHaveValue(preset.peak_fp16_tflops);
+    expect(screen.getByLabelText("有效 FP8 算力（TFLOPS，可选）")).toHaveValue(preset.peak_fp8_tflops);
+    fireEvent.change(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）"), { target: { value: "123" } });
+    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...inference,
+      hardware: { ...inference.hardware, effective_fp16_tflops: 123 } });
+    fireEvent.change(screen.getByLabelText("GPU 选择"), { target: { value: "custom" } });
+    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...inference,
+      hardware: { ...inference.hardware, name: "自定义 GPU" } });
+  });
+
   it("separates model and hardware cards and converts GB inputs to API units", async () => {
     vi.mocked(getPresets).mockResolvedValue({
       models: [initialModel, { ...initialModel, name: "Qwen/Qwen3-235B-A22B",
@@ -521,7 +556,7 @@ describe("ModelHardwareConfig", () => {
         attention_groups: [{ ...initialModel.attention_groups![0],
           layers: 94, num_attention_heads: 64, num_kv_heads: 4 }] }],
       hardware: [{ name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
-        peak_fp16_tflops: 2250, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
+        peak_fp16_tflops: 2250, peak_fp8_tflops: 4500, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 }],
     });
     const onInferenceChange = vi.fn();
     let config = createDefaultSimConfig();

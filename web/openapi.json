@@ -1347,6 +1347,10 @@
             "type": "number",
             "title": "Peak Fp16 Tflops"
           },
+          "peak_fp8_tflops": {
+            "type": "number",
+            "title": "Peak Fp8 Tflops"
+          },
           "peak_hbm_gb_s": {
             "type": "number",
             "title": "Peak Hbm Gb S"
@@ -1362,6 +1366,7 @@
           "gpu_count",
           "memory_bytes_per_gpu",
           "peak_fp16_tflops",
+          "peak_fp8_tflops",
           "peak_hbm_gb_s",
           "peak_interconnect_gb_s"
         ],

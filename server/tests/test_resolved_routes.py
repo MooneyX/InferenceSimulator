@@ -459,14 +459,23 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "memory_bytes_per_gpu", "peak_hbm_gb_s"),
+    (
+        "name", "memory_bytes_per_gpu", "peak_fp16_tflops", "peak_fp8_tflops",
+        "peak_hbm_gb_s", "peak_interconnect_gb_s",
+    ),
     [
-        ("Huawei Ascend 950PR", 128_000_000_000, 1600),
-        ("Huawei Ascend 950DT", 144_000_000_000, 4000),
+        ("NVIDIA B300", 288_000_000_000, 2250, 4500, 8000, 1800),
+        ("Huawei Ascend 950PR", 128_000_000_000, 500, 1000, 1600, 2000),
+        ("Huawei Ascend 950DT", 144_000_000_000, 500, 1000, 4000, 2000),
     ],
 )
-def test_ascend_hardware_presets(
-    name: str, memory_bytes_per_gpu: int, peak_hbm_gb_s: int
+def test_hardware_presets(
+    name: str,
+    memory_bytes_per_gpu: int,
+    peak_fp16_tflops: int,
+    peak_fp8_tflops: int,
+    peak_hbm_gb_s: int,
+    peak_interconnect_gb_s: int,
 ) -> None:
     client = TestClient(create_app())
     response = client.get("/api/presets")
@@ -477,9 +486,10 @@ def test_ascend_hardware_presets(
             "name": name,
             "gpu_count": 8,
             "memory_bytes_per_gpu": memory_bytes_per_gpu,
-            "peak_fp16_tflops": 500,
+            "peak_fp16_tflops": peak_fp16_tflops,
+            "peak_fp8_tflops": peak_fp8_tflops,
             "peak_hbm_gb_s": peak_hbm_gb_s,
-            "peak_interconnect_gb_s": 2000,
+            "peak_interconnect_gb_s": peak_interconnect_gb_s,
         }
     ]
 

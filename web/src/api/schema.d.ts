@@ -608,6 +608,8 @@ export interface components {
             memory_bytes_per_gpu: number;
             /** Peak Fp16 Tflops */
             peak_fp16_tflops: number;
+            /** Peak Fp8 Tflops */
+            peak_fp8_tflops: number;
             /** Peak Hbm Gb S */
             peak_hbm_gb_s: number;
             /** Peak Interconnect Gb S */

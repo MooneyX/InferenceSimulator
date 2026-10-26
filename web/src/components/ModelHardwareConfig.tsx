@@ -324,7 +324,9 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
           onChange={(event) => {
             const selected = catalog?.hardware.find((entry) => entry.name === event.target.value);
             onHardwareChange(selected ? { ...hardware, name: selected.name,
-              memory_bytes_per_gpu: selected.memory_bytes_per_gpu } :
+              memory_bytes_per_gpu: selected.memory_bytes_per_gpu,
+              effective_fp16_tflops: selected.peak_fp16_tflops,
+              effective_fp8_tflops: selected.peak_fp8_tflops } :
               { ...hardware, name: "自定义 GPU" });
           }}>{catalog?.hardware.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}

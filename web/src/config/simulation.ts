@@ -115,7 +115,7 @@ export const initialModel: InferenceConfig["model"] = {
 };
 export const initialHardware: InferenceConfig["hardware"] = {
   name: "NVIDIA B300", gpu_count: 1, memory_bytes_per_gpu: 288_000_000_000,
-  effective_fp16_tflops: 100, effective_fp8_tflops: null,
+  effective_fp16_tflops: 2250, effective_fp8_tflops: 4500,
   effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
   collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0.005,
 };

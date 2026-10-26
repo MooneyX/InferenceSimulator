@@ -48,6 +48,7 @@ class HardwareCatalogEntry(BaseModel):
     gpu_count: int
     memory_bytes_per_gpu: int
     peak_fp16_tflops: float
+    peak_fp8_tflops: float
     peak_hbm_gb_s: float
     peak_interconnect_gb_s: float
 

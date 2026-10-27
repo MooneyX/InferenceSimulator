@@ -49,13 +49,6 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
             "storage": {
                 "l2_available_gb": 0,
             },
-            "timing": {
-                "mode": "empirical",
-                "prefill_c1": 0.05,
-                "prefill_c2": 1e-5,
-                "decode_d1": 8.0,
-                "decode_d2": 0.002,
-            },
         },
     }
 
@@ -104,7 +97,8 @@ class TestSuccess:
         assert body["meta"]["num_aborted"] == body["meta"]["num_skipped"] == 0
         assert body["aborted_requests"] == body["skipped_requests"] == []
         assert body["resolution"]["max_total_tokens"] == 16_000
-        assert body["analysis"] is None
+        assert body["analysis"]["steps"] == body["meta"]["num_engine_steps"]
+        assert "timing" not in body["meta"]["config"]["inference"]
 
     def test_enabled_tiers_use_existing_route_and_echo_metrics(self, client: TestClient) -> None:
         payload = make_payload(num_requests=1)
@@ -319,6 +313,34 @@ class TestErrors:
         assert response.status_code == 422
         assert "num_instances" in response.text
 
+    @pytest.mark.parametrize("url", [URL, "/api/resolve"])
+    @pytest.mark.parametrize(
+        "timing",
+        [
+            {},
+            {"mode": "analytical"},
+            {
+                "mode": "empirical",
+                "prefill_c1": 0.05,
+                "prefill_c2": 1e-5,
+                "decode_d1": 8.0,
+                "decode_d2": 0.002,
+            },
+        ],
+    )
+    def test_removed_timing_is_rejected(
+        self, client: TestClient, url: str, timing: dict[str, object]
+    ) -> None:
+        payload = make_payload(num_requests=1)
+        payload["inference"]["timing"] = timing
+        response = client.post(url, json=payload)
+        assert response.status_code == 422
+        assert any(
+            error["type"] == "extra_forbidden"
+            and error["loc"] == ["body", "inference", "timing"]
+            for error in response.json()["detail"]
+        )
+
     @pytest.mark.parametrize("field", ["inference", "shared_l3"])
     @pytest.mark.parametrize("url", [URL, "/api/resolve"])
     def test_removed_physical_mode_field_is_rejected(
@@ -520,9 +542,9 @@ class TestErrors:
                 ["body", "scheduler", "max_running_requests"],
             ),
             (
-                ("inference", "timing", "decode_d1"),
+                ("inference", "hardware", "kernel_overhead_ms"),
                 -1,
-                ["body", "inference", "timing", "empirical", "decode_d1"],
+                ["body", "inference", "hardware", "kernel_overhead_ms"],
             ),
             (("inference", "kv"), {"max_total_tokens": 128}, ["body", "inference", "kv"]),
         ],

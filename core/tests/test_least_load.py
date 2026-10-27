@@ -57,7 +57,7 @@ def test_simultaneous_sends_observe_previous_enqueue(exclusive: bool) -> None:
     cfg = EngineConfig(
         max_running_requests=4, max_total_tokens=128, page_size=4, pd_mutually_exclusive=exclusive
     )
-    runtime = runtime_config(cfg, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0))
+    runtime = runtime_config(cfg, PerfModelConfig())
     turns = {
         key: TurnPlan(key, key, None, 0, None, prompt, 1, 1, 0)
         for key, prompt in enumerate((20, 4, 4, 4))
@@ -74,15 +74,18 @@ def test_simultaneous_sends_observe_previous_enqueue(exclusive: bool) -> None:
 def test_load_counts_blocked_inputs_but_not_output_predictions_or_evictable_cache() -> None:
     engine = make_engine()
     engine.submit(request(0, prompt=4, output=1), 0)
-    assert engine.start_step(0, 0) == (4, (0,))
-    engine.finish_step(4)
-    engine.complete(4, 0)
+    started = engine.start_step(0, 0)
+    assert started is not None
+    duration, completed = started
+    assert completed == (0,)
+    engine.finish_step(duration)
+    engine.complete(duration, 0)
     assert engine._prefix_cache.evictable_pages == 1
     assert engine.load_tokens == 0
-    engine.submit(request(1, prompt=5, maximum=100, output=90), 4)
+    engine.submit(request(1, prompt=5, maximum=100, output=90), duration)
     engine._prefix_scheduler.set_ready(1, False)
     assert engine.load_tokens == 5
-    engine.submit(request(2, prompt=3, maximum=1, output=1), 4)
+    engine.submit(request(2, prompt=3, maximum=1, output=1), duration)
     assert engine.load_tokens == 8
 
 

@@ -364,9 +364,8 @@ it("rejects invalid bound counts and conflicting imported axes without updating 
   expect(onImportBase).not.toHaveBeenCalled();
 });
 
-it("rejects bound multi-GPU presets for empirical timing", async () => {
+it("accepts bound multi-GPU presets without timing configuration", async () => {
   const base = createDefaultSimConfig();
-  base.inference.timing = { mode: "empirical", prefill_c1: 1, prefill_c2: 0, decode_d1: 1, decode_d2: 0 };
   const onSubmit = vi.fn();
   render(<ScanPanel base={base} onSubmit={onSubmit} onImportBase={vi.fn()} />);
   await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
@@ -375,8 +374,25 @@ it("rejects bound multi-GPU presets for empirical timing", async () => {
   fireEvent.click(screen.getByRole("option", { name: /硬件/ }));
   fireEvent.change(screen.getByLabelText("NVIDIA B300 每实例 GPU / TP 数"), { target: { value: "8" } });
   fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
-  expect(screen.getByRole("alert")).toHaveTextContent("经验计时仅支持每实例 GPU / TP 数为 1");
-  expect(onSubmit).not.toHaveBeenCalled();
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    base: expect.objectContaining({ inference: base.inference }),
+    axes: [{ key: "inference.hardware", values: [{ name: "NVIDIA B300", parallelism: 8 }] }],
+  }));
+  expect(onSubmit.mock.lastCall![0].base.inference).not.toHaveProperty("timing");
+});
+
+it.each(["analytical", "empirical"])("rejects removed %s timing in imported scan bases", async (mode) => {
+  const base = createDefaultSimConfig();
+  const onImportBase = vi.fn();
+  render(<ScanPanel base={base} onSubmit={vi.fn()} onImportBase={onImportBase} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+  fireEvent.change(screen.getByLabelText("扫描方案 JSON"), { target: { value: JSON.stringify({
+    version: 1, base: { ...base, inference: { ...base.inference, timing: { mode } } },
+    axes: [{ key: "inference.parallelism", text: "1,4" }],
+  }) } });
+  fireEvent.click(screen.getByRole("button", { name: "导入扫描方案" }));
+  expect(screen.getByText(/扫描方案导入失败.*不支持的参数：inference.timing/)).toBeInTheDocument();
+  expect(onImportBase).not.toHaveBeenCalled();
 });
 
 it("accepts number, boolean and range levels", () => {

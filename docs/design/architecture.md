@@ -19,10 +19,11 @@ schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
 workload     build_synthetic_closed_loop_plan 规划合成闭环长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
 client       Client：_prepare_workload 统一负载准备，on_wakeup 统一请求构造与投放（依赖 schemas、workload、prefix_hash）
-perf_model   性能模型：步长纯函数（依赖 schemas）
+perf_model   不可变 StepWorkload 与 Prefill/Decode 工作量描述
+analytical   唯一性能模型：逐阶段 Roofline、TP/EP 通信纯函数（依赖 perf_model、schemas）
 kv_cache     CachePool：逐池页索引、容量、稳定 LRU；TieredKVCache：请求状态、连续匹配与跨池操作（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
-engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
+engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model、analytical）
 events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
 router       默认逐请求最低 token 负载优先，或新会话轮询、按 session_id 绑定的缓存亲和；接收不可变负载元组（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
@@ -34,11 +35,11 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 `runner.simulate` 是统一的完整仿真入口，包顶层导出 `SimConfig`、`TracePlan` 与 `simulate`：
 
-- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference`、可选 `shared_l3` 和默认 `least_load` 的 `routing_policy` 组成。`inference` 从模型/硬件/存储推导容量，并选择经验或解析计时。
+- `config: SimConfig`：唯一外部配置由 `num_instances`、`workload`、`scheduler`、`inference`、可选 `shared_l3` 和默认 `least_load` 的 `routing_policy` 组成。`inference` 从模型/硬件/存储推导容量，所有运行使用同一性能模型；不接受 `inference.timing` 或旧计时类型。
 - `trace_plan: TracePlan | None`（仅关键字参数）：仅注入已解析的计划资源；开环/闭环、会话速率、种子和可选目标 QPS 都属于 `config.workload` 公共层；`workload.trace` 只保存可选 `plan_id`。Trace 缺少计划资源时拒绝运行，合成负载不接受 Trace 资源；服务层根据临时 `plan_id` 获取计划，内核不执行 IO。
-- 始终返回单个 `SimResult`，成功运行时包含 `resolution`；经验计时的 `analysis` 为 `None`。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
-- 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、可空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
-- `EngineConfig` / `PerfModelConfig` 是解析后使用的内部组件规格，外部不能直接填写 KV token 容量。运行墙钟不包含配置解析；结果回显包含模型默认字段的原规范化 `SimConfig`。
+- 始终返回单个 `SimResult`，新运行包含 `resolution` 和非空 `analysis`（即使没有 GPU 步也返回零值汇总）。结果字段 `analysis` 的类型仍允许为空；这不表示旧配置满足当前 schema，也不转换旧配置。`meta.config` 完整回显输入配置，不改写成运行时容量配置，也不修改调用方输入。
+- 一场仿真只调用一次 `capacity.prepare_runtime`，再用 `Engine(runtime)` 将同一只读 `RuntimeConfig` 注入各实例。`RuntimeConfig` 包含内部 `engine`、`perf_model`、具名 `links`、非空 `analytical` 与 `resolution`；`AnalyticalSpec` 只共享模型/硬件与 TP/EP 规格，不持有动态状态。`TransferLinks.l2_to_l1` / `l3_to_l2` 预计算每页传输时间和固定延迟，保持原浮点运算顺序、成本公式和支持限制。
+- `EngineConfig` / `PerfModelConfig` 是解析后使用的内部组件规格；`PerfModelConfig` 仅保存 KV 字节数、链路速率和延迟，不再保存 GPU 四系数。外部不能直接填写 KV token 容量。运行墙钟不包含配置解析；结果回显包含模型默认字段的原规范化 `SimConfig`。
 
 四种负载组合均使用单个 `Client`，只读 `workload_mode` 与 `arrival_mode` 区分请求来源及投放模式，专用状态按需初始化；统一入口 `simulate` 使用 `Coordinator → start_step → 内部 _execute_step(selection 必填) → finish_step → complete` 生命周期。GPU 步完成与异步页传输分别通过事件推进，再统一汇总指标。
 

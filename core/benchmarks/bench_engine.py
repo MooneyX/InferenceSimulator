@@ -32,7 +32,6 @@ from simcore import (
     simulate,
 )
 from simcore.schemas import (
-    EmpiricalTimingConfig,
     HardwareSpec,
     InferenceConfig,
     ModelSpec,
@@ -47,10 +46,8 @@ REPEATS = 3
 def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) -> SimConfig:
     """基准负载：长尾 prompt + 泊松 output。
 
-    到达率（50 req/s）约为服务能力（约 5.6 req/s）的 9 倍，刻意过载：batch 常驻满载、
-    等待队列持续增长，覆盖最重的调度路径。
-
-    固定不变——修改会使历史耗时不可比。
+    到达率固定为 50 req/s，使用模型与硬件参数计算每步耗时。
+    仅比较相同配置与同一计时算法的结果，不沿用旧计时模型的历史耗时。
     """
     return SimConfig(
         num_instances=1,
@@ -84,12 +81,6 @@ def bench_config(num_requests: int, seed: int = 0, *, exclusive: bool = True) ->
                 effective_hbm_gb_s=1,
             ),
             storage=StorageSpec(),
-            timing=EmpiricalTimingConfig(
-                prefill_c1=0.05,
-                prefill_c2=1e-5,
-                decode_d1=8.0,
-                decode_d2=0.002,
-            ),
         ),
     )
 

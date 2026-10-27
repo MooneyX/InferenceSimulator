@@ -41,7 +41,7 @@ def config(think: float = 0) -> SimConfig:
             ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=200, page_size=4),
-        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=5, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
 
 
@@ -65,7 +65,7 @@ def test_all_client_modes_use_send_events_with_time_and_request_id(source: str, 
     client = Client(workload, engine_config, trace_plan=trace_plan() if source == "trace" else None)
     initial = client.initial_wakeups()
     engine = Engine(
-        runtime_config(engine_config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)),
+        runtime_config(engine_config, PerfModelConfig()),
     )
     with (
         patch.object(

@@ -429,9 +429,9 @@ describe("App", () => {
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
       workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1,
         seed: 0, target_qps: 9, trace: { plan_id: "plan-1" } },
-      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
+      inference: createDefaultSimConfig().inference,
     }));
-    expect(await screen.findByLabelText("解析配置与成本")).toHaveTextContent("自动解析");
+    expect(await screen.findByLabelText("性能模型配置与成本")).toHaveTextContent("性能模型");
     expect(screen.getByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getAllByText("目标发送 QPS").at(-1)?.closest(".metric-card"))
       .toHaveTextContent("9 请求/秒");
@@ -446,8 +446,8 @@ describe("App", () => {
     expect(simulateMock).toHaveBeenCalledWith(createDefaultSimConfig());
     expect(await screen.findByRole("heading", { name: "仿真指标" })).toBeInTheDocument();
     expect(screen.getByText("实际运行耗时").closest(".metric-card")).toHaveTextContent("42.5 ms");
-    const summary = screen.getByLabelText("解析配置与成本");
-    expect(summary).toHaveTextContent("自动解析");
+    const summary = screen.getByLabelText("性能模型配置与成本");
+    expect(summary).toHaveTextContent("性能模型");
     expect(summary).toHaveTextContent("模型 Qwen/Qwen3-8B");
     expect(summary).toHaveTextContent("L1 4,096 token · L2 8,192 token · 全场共享 L3 16,384 token");
   });
@@ -474,7 +474,7 @@ describe("App", () => {
     expect(simulateMock).toHaveBeenCalledWith(expect.objectContaining({
       inference: expect.objectContaining({ tp_size: 4 }),
     }));
-    const summary = await screen.findByLabelText("解析配置与成本");
+    const summary = await screen.findByLabelText("性能模型配置与成本");
     expect(summary).toHaveTextContent("TP4");
     expect(summary).toHaveTextContent("总计 4 GPU");
     expect(summary).toHaveTextContent("TP 同步 1.25 ms");
@@ -502,7 +502,7 @@ describe("App", () => {
     resolveSimulation(resolved);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    const summary = await screen.findByLabelText("解析配置与成本");
+    const summary = await screen.findByLabelText("性能模型配置与成本");
     expect(summary).toHaveTextContent("TP4 + EP4");
     expect(summary).toHaveTextContent("整组权重 0.00 GB");
     expect(screen.getByLabelText("逐卡容量账单")).toHaveTextContent("GPU 0");

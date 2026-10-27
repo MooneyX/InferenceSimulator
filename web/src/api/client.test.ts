@@ -26,10 +26,7 @@ const config: SimConfig = {
     max_prefill_tokens: 16_384,
     pd_mutually_exclusive: true,
   },
-  inference: {
-    ...createDefaultSimConfig().inference,
-    timing: { mode: "empirical", prefill_c1: 0.1, prefill_c2: 0, decode_d1: 0.2, decode_d2: 0.001 },
-  },
+  inference: createDefaultSimConfig().inference,
 };
 
 const result: SimResult = {
@@ -316,8 +313,8 @@ describe("resolveConfig", () => {
     });
   });
 
-  it("recognizes unsupported timing combinations", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "四系数不支持 EP" })));
-    await expect(simulate(config)).rejects.toMatchObject({ message: "四系数不支持 EP" });
+  it("recognizes unsupported performance configurations", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(501, { detail: "性能模型暂不支持该注意力结构" })));
+    await expect(simulate(config)).rejects.toMatchObject({ message: "性能模型暂不支持该注意力结构" });
   });
 });

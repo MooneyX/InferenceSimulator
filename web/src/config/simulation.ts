@@ -1,8 +1,6 @@
-import type { EmpiricalTimingConfig, InferenceConfig, LengthDistribution, SimConfig } from "../api/types";
+import type { InferenceConfig, LengthDistribution, SimConfig } from "../api/types";
 
-export type FormSimConfig = SimConfig & {
-  inference: InferenceConfig & { timing: NonNullable<InferenceConfig["timing"]> };
-};
+export type FormSimConfig = SimConfig;
 
 export type ClosedLoopDerivedField = "requests" | "sessions" | "turns";
 
@@ -36,11 +34,7 @@ export type ConfigField =
   | "scheduler.pd_mutually_exclusive"
   | "inference.page_size"
   | "shared_l3.available_gb"
-  | "shared_l3.lookup_latency_ms"
-  | "inference.timing.prefill_c1"
-  | "inference.timing.prefill_c2"
-  | "inference.timing.decode_d1"
-  | "inference.timing.decode_d2";
+  | "shared_l3.lookup_latency_ms";
 
 export interface ConfigValidationError {
   field: ConfigField;
@@ -82,17 +76,13 @@ function createDefaultCommonConfig(): Pick<SimConfig, "num_instances" | "routing
   };
 }
 
-export function createDefaultEmpiricalTiming(): EmpiricalTimingConfig {
-  return { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0.000_01, decode_d1: 8, decode_d2: 0.002 };
-}
-
 export function createDefaultSimConfig(): FormSimConfig {
   return {
     ...createDefaultCommonConfig(),
     shared_l3: { ...initialSharedL3 },
     inference: { page_size: 64, max_output_tokens: 65_536,
       model: structuredClone(initialModel), hardware: { ...initialHardware }, storage: { ...initialStorage },
-      tp_size: 1, ep_size: 1, timing: { mode: "analytical" } },
+      tp_size: 1, ep_size: 1 },
   };
 }
 
@@ -284,12 +274,6 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   validatePositiveInteger(errors, "inference.max_output_tokens", inference.max_output_tokens ?? 65_536);
   if (typeof scheduler.pd_mutually_exclusive !== "boolean") {
     errors.push({ field: "scheduler.pd_mutually_exclusive", message: "必须选择 P/D 执行模式" });
-  }
-  const timing = inference.timing ?? { mode: "analytical" as const };
-  if (timing.mode === "empirical") {
-    for (const field of ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"] as const) {
-      validateFiniteNumber(errors, `inference.timing.${field}`, timing[field], 0);
-    }
   }
   const shared = config.shared_l3;
   if (shared != null) {

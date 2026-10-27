@@ -1,4 +1,4 @@
-import type { InferenceConfig, SimConfig, TimingConfig } from "../api/types";
+import type { InferenceConfig, SimConfig } from "../api/types";
 import { initialHardware, initialSharedL3, initialStorage, validateSimConfig } from "./simulation";
 
 function objectWithKeys(value: unknown, path: string, keys: readonly string[], defaults: Record<string, unknown> = {}): Record<string, unknown> {
@@ -158,23 +158,11 @@ function configDtype(record: Record<string, unknown>, path: string, key: string,
   }
 }
 
-function validateTiming(value: unknown): TimingConfig {
-  const mode = (value as Record<string, unknown> | null)?.mode;
-  if (mode === "analytical") {
-    return objectWithKeys(value, "inference.timing", ["mode"]) as TimingConfig;
-  } else if (mode === "empirical") {
-    const timing = objectWithKeys(value, "inference.timing", ["mode", "prefill_c1", "prefill_c2", "decode_d1", "decode_d2"], { mode: "empirical", prefill_c2: 0 });
-    numericFields(timing, "inference.timing", ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"]);
-    return timing as TimingConfig;
-  } else throw new Error("inference.timing.mode 不支持该计时模式");
-}
-
 function validateInference(value: unknown): InferenceConfig {
-  const root = objectWithKeys(value, "inference", ["page_size", "max_output_tokens", "model", "hardware", "storage", "timing", "tp_size", "ep_size"], {
-    page_size: 64, max_output_tokens: 65_536, timing: { mode: "analytical" }, tp_size: 1, ep_size: 1,
+  const root = objectWithKeys(value, "inference", ["page_size", "max_output_tokens", "model", "hardware", "storage", "tp_size", "ep_size"], {
+    page_size: 64, max_output_tokens: 65_536, tp_size: 1, ep_size: 1,
   });
   numericFields(root, "inference", ["page_size", "max_output_tokens"]);
-  root.timing = validateTiming(root.timing);
   const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
     num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
     ...configObject(root.model, "model", ["name", "num_layers", "hidden_size",

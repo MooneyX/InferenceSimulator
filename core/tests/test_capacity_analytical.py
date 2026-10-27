@@ -14,10 +14,8 @@ from simcore.events import EventKind
 from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
 from simcore.prefix_hash import encode
 from simcore.schemas import (
-    AnalyticalTimingConfig,
     AttentionGroup,
     AuxWeightDtype,
-    EmpiricalTimingConfig,
     FixedLength,
     HardwareSpec,
     IHCSpec,
@@ -67,7 +65,6 @@ def example_request() -> SimConfig:
         scheduler=SchedulerConfig(max_running_requests=1),
         inference=InferenceConfig(
             page_size=4,
-            timing=AnalyticalTimingConfig(),
             model=ModelSpec(
                 name="toy",
                 num_layers=2,
@@ -1460,18 +1457,6 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     )
     report = result.capacity
     assert result.runnable and hardware.gpu_count == 4
-    assert not resolve_config(
-        update_inference(
-            request,
-            update={
-                "model": model,
-                "hardware": hardware,
-                "storage": storage,
-                "tp_size": 4,
-                "timing": EmpiricalTimingConfig(prefill_c1=1, decode_d1=2, decode_d2=1),
-            },
-        )
-    ).runnable
     assert len(report.rank_reports) == 4
     assert {rank.kv_bytes_per_token for rank in report.rank_reports} == {36 * 1024}
     assert report.kv_bytes_per_token == 144 * 1024
@@ -1766,7 +1751,7 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
         assert step_cost(with_restore, model, hardware, tp_size=2, ep_size=2) == expected
 
 
-def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> None:
+def test_moe_run_uses_ep_cost() -> None:
     base = example_request()
     model = inference_config(base).model.model_copy(
         update={
@@ -1814,15 +1799,6 @@ def test_moe_analytical_run_uses_ep_cost_and_keeps_empirical_unavailable() -> No
     assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
         summary.device_ms + summary.restore_ms
     )
-    with pytest.raises(NotImplementedError, match="四系数"):
-        simulate(
-            update_inference(
-                request,
-                update={
-                    "timing": EmpiricalTimingConfig(prefill_c1=1, decode_d1=2, decode_d2=1),
-                },
-            )
-        )
 
 
 def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
@@ -2126,15 +2102,6 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
     assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
         analysis.device_ms + analysis.restore_ms
     )
-    with pytest.raises(NotImplementedError, match="四系数"):
-        simulate(
-            update_inference(
-                request,
-                update={
-                    "timing": EmpiricalTimingConfig(prefill_c1=1, decode_d1=2, decode_d2=1),
-                },
-            )
-        )
 
 
 def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
@@ -2201,7 +2168,7 @@ def test_prefill_kv_hbm_reads_scale_with_context_not_attention_pairs() -> None:
     assert cost(1024) - cost(1) == (1024 - 1) * 2 * 8 * 2 * 2
 
 
-def test_analytical_clock_uses_workload_not_empirical_coefficients() -> None:
+def test_clock_uses_workload_and_preserves_config() -> None:
     request = example_request()
     original_data = request.model_dump()
     result = simulate(request)

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
+from simcore.analytical import StepCost
 from simcore.engine import Engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
@@ -28,6 +29,7 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
+from test_f001_engine import start_step_end
 from test_schemas import metric_inputs, resolved_config, runtime_config
 
 
@@ -46,7 +48,7 @@ def config() -> SimConfig:
             ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4),
-        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
 
 
@@ -81,22 +83,26 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     assert [request.id for request in result.requests] == [0, 1]
     assert [request.id for request in result.aborted_requests] == [2]
     assert [request.id for request in result.skipped_requests] == [3]
+    parent, child = result.requests
     aborted = result.aborted_requests[0]
     assert (aborted.arrival, aborted.failed_at, aborted.reason, aborted.generated_tokens) == (
         0,
-        4,
+        parent.finish,
         "input_exceeds_kv_capacity",
         0,
     )
     assert result.skipped_requests[0].parent_request_id == 2
     assert "arrival" not in result.skipped_requests[0].model_dump()
-    assert (result.requests[0].prefill_end, result.requests[0].finish) == (4, 4)
-    assert (result.requests[1].arrival, result.requests[1].prefill_end) == (4, 5)
-    assert result.metrics.ttft_mean == 2.5
-    assert result.metrics.ttft_p50 == 2.5
-    assert result.metrics.ttft_p99 == pytest.approx(3.97)
+    assert parent.prefill_end == parent.finish > 0
+    assert child.arrival == child.prefill_start == parent.finish
+    assert child.prefill_end == child.finish > child.arrival
+    ttfts = sorted(record.prefill_end - record.arrival for record in result.requests)
+    assert result.metrics.ttft_mean == pytest.approx(sum(ttfts) / 2)
+    assert result.metrics.ttft_p50 == pytest.approx(sum(ttfts) / 2)
+    assert result.metrics.ttft_p99 == pytest.approx(ttfts[0] * 0.01 + ttfts[1] * 0.99)
     assert result.metrics.tpot_mean is None
-    assert (result.metrics.makespan, result.metrics.throughput) == (5, 400)
+    assert result.metrics.makespan == child.finish
+    assert result.metrics.throughput == pytest.approx(2000 / child.finish)
     assert result.metrics.total_input_tokens == 9
     assert result.metrics.ideal_hit_tokens == result.metrics.actual_hit_tokens == 4
     assert result.metrics.actual_prefill_tokens == 5
@@ -113,7 +119,10 @@ def test_mixed_result_lists_status_counts_and_only_success_metrics() -> None:
     assert SimResult.model_validate_json(result.model_dump_json()) == result
 
 
-def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
+def test_zero_duration_success_has_no_throughput_but_defined_tpot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.engine.step_cost", lambda *args: StepCost(0, 0, 0, 0, 0))
     settings = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
@@ -127,7 +136,7 @@ def test_zero_duration_success_has_no_throughput_but_defined_tpot() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=16, page_size=4),
-        perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
     result = simulate(settings)
     assert (result.meta.num_completed, result.meta.num_engine_steps) == (1, 2)
@@ -188,28 +197,28 @@ def test_no_success_metrics_are_undefined_but_physical_pages_remain_counted() ->
 def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     """组件故障注入：重算后以外部占用触发失败，验证结果汇总不丢重算成本。"""
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
-    perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
+    perf = PerfModelConfig()
     engine = Engine(runtime_config(cfg, perf))
     req = InferenceRequest(0, 0, None, 3, 3, 3, (), 0)
     engine.submit(req, 0)
-    assert engine.start_step(0, 0) == (3, ())
-    assert engine.finish_step(3) == ()
-    assert engine.start_step(3, 1) == (0, ())
-    assert engine.finish_step(3) == ()
+    now = start_step_end(engine, 0, 0)
+    assert engine.finish_step(now) == ()
+    now = start_step_end(engine, now, 1)
+    assert engine.finish_step(now) == ()
     assert engine._prefix_cache.state(0).k == 4 and engine._running[0] == 2
     engine._prefix_cache.withdraw(0)
     del engine._running[0]
     engine._retry_counts[0] = 1
-    engine._prefix_scheduler.requeue(req, 3, generated_tokens=2)
-    assert engine.start_step(3, 2) == (4, ())
-    assert engine.finish_step(7) == ()
+    engine._prefix_scheduler.requeue(req, now, generated_tokens=2)
+    now = start_step_end(engine, now, 2)
+    assert engine.finish_step(now) == ()
     assert engine._replayed_tokens[0] == 4
     holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0)
     engine._prefix_cache.pin(holder, ())
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)
-    assert engine.start_step(7, 3) == (0, ())
-    assert engine.finish_step(7) == ()
+    assert engine.start_step(now, 3) == (0, ())
+    assert engine.finish_step(now) == ()
     engine._prefix_cache.withdraw(99)
     run = engine.finalize()
     assert run.records == () and run.aborted_requests[0].retry_count == 1

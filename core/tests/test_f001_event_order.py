@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from simcore import simulate
+from simcore.analytical import StepCost, step_cost
 from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
@@ -40,18 +41,16 @@ def make_plan(*, ordinary_at: float = 8, think: float = 0) -> WorkloadPlan:
     return WorkloadPlan(turns, (2, 1, 0), {0: (3,), 1: (4,)})
 
 
-def make_run(plan: WorkloadPlan, *, zero_cost: bool = False) -> tuple[Coordinator, Engine]:
+def make_run(plan: WorkloadPlan) -> tuple[Coordinator, Engine]:
     config = EngineConfig(max_running_requests=5, max_total_tokens=128, page_size=4)
-    perf = PerfModelConfig(
-        prefill_c1=0 if zero_cost else 1,
-        decode_d1=0,
-        decode_d2=0,
-    )
-    engine = Engine(runtime_config(config, perf))
+    engine = Engine(runtime_config(config, PerfModelConfig()))
     return Coordinator((engine,), planned_client(plan, config), Router(1)), engine
 
 
-def test_parent_done_callback_precedes_sends_including_immediate_children() -> None:
+def test_parent_done_callback_precedes_sends_including_immediate_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.engine.step_cost", lambda *args: StepCost(8, 0, 0, 0, 0))
     coordinator, engine = make_run(make_plan())
     order = Mock()
     with (
@@ -98,7 +97,10 @@ def test_parent_done_callback_precedes_sends_including_immediate_children() -> N
     assert run.num_engine_steps == 2
 
 
-def test_future_think_time_child_is_ordered_like_other_same_time_send() -> None:
+def test_future_think_time_child_is_ordered_like_other_same_time_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.engine.step_cost", lambda *args: StepCost(8, 0, 0, 0, 0))
     coordinator, engine = make_run(make_plan(ordinary_at=12, think=4))
     with patch.object(engine, "submit", wraps=engine.submit) as submissions:
         run = coordinator.run()[0]
@@ -121,8 +123,16 @@ def test_same_time_roots_are_sent_in_id_order_even_if_created_in_reverse() -> No
 @pytest.mark.parametrize("lookup_ms", [0.0, 3.0])
 @pytest.mark.parametrize("l2_pages", [1, 2])
 def test_immediate_child_and_normal_send_share_l3_prefetch_order(
-    lookup_ms: float, l2_pages: int
+    lookup_ms: float, l2_pages: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        "simcore.engine.step_cost",
+        lambda workload, *args: (
+            StepCost(1, 0, 0, 0, 0)
+            if workload.prefill and workload.prefill[0].request_id == 0
+            else step_cost(workload, *args)
+        ),
+    )
     config = EngineConfig(
         max_running_requests=2,
         max_total_tokens=64,
@@ -132,9 +142,6 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         l3_prefetch_min_tokens=0,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=0,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -261,9 +268,6 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         l3_prefetch_min_tokens=prefetch_threshold,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=0,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -316,9 +320,11 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     assert engine._lookup_waiting == {1}
     assert engine._prefix_scheduler.head_request_id == 1
     if with_ready_root:
-        assert started == (1, (2,))
-        assert engine.finish_step(1) == (2,)
-        engine.complete(1, 2)
+        assert started is not None and started[1] == (2,)
+        end = started[0]
+        assert 0 < end < 2
+        assert engine.finish_step(end) == (2,)
+        engine.complete(end, 2)
     else:
         assert started is None and not engine.can_step
         assert engine.num_steps == 0
@@ -369,7 +375,7 @@ def test_lookup_burst_readiness_checks_do_not_scan_waiting_queue() -> None:
         l2_capacity_tokens=16,
         l3_capacity_tokens=16,
     )
-    perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, l3_lookup_latency_ms=10)
+    perf = PerfModelConfig(l3_lookup_latency_ms=10)
     engine = Engine(runtime_config(config, perf))
     scheduler = engine._prefix_scheduler
     waiting = TrackedWaitingQueue()
@@ -392,7 +398,7 @@ def test_zero_ready_waiters_do_not_stop_decode_or_trigger_queue_scan() -> None:
         l2_capacity_tokens=16,
         l3_capacity_tokens=16,
     )
-    perf = PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, l3_lookup_latency_ms=100)
+    perf = PerfModelConfig(l3_lookup_latency_ms=100)
     engine = Engine(runtime_config(config, perf))
     assert engine.submit(InferenceRequest(0, 0, None, 1, 4, 4, (), 0), 0)
     started = engine.start_step(0, 0)
@@ -423,9 +429,6 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
         l3_prefetch_min_tokens=0,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=1,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -486,7 +489,7 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
         l2_capacity_tokens=8,
         l3_capacity_tokens=16,
     )
-    engine = Engine(runtime_config(config, PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0)))
+    engine = Engine(runtime_config(config, PerfModelConfig()))
     cache = engine._prefix_cache
     inherited = (encode(90, 0),)
     cache.pools["L1"].insert(inherited[0])
@@ -543,9 +546,6 @@ def test_transfer_completions_preserve_context_order(tier: str, trace: bool) -> 
         l3_prefetch_min_tokens=0,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=0,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -620,9 +620,6 @@ def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
         l2_capacity_tokens=8,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=0,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
@@ -640,8 +637,9 @@ def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
     engine = Engine(runtime_config(config, perf))
     run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     child = next(item for item in run.records if item.id == 1)
-    assert child.arrival == 50
-    assert child.prefill_start == pytest.approx(55)
+    parent = next(item for item in run.records if item.id == 0)
+    assert child.arrival == parent.finish + 45
+    assert child.prefill_start == pytest.approx(child.arrival + 5)
     assert (child.actual_hit_tokens, child.l2_hit_tokens) == (4, 4)
     assert run.restore_time_ms == pytest.approx(5)
     assert run.num_engine_steps == 4
@@ -658,9 +656,6 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         l3_prefetch_min_tokens=0,
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=0,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l3_to_l2_bandwidth_bytes_per_ms=2,
@@ -688,8 +683,9 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
     else:
         run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     child = next(item for item in run.records if item.id == 1)
-    assert child.arrival == 78
-    assert child.prefill_start == pytest.approx(81 if prefetch_fails else 95)
+    parent = next(item for item in run.records if item.id == 0)
+    assert child.arrival == parent.finish + 70
+    assert child.prefill_start == pytest.approx(child.arrival + (3 if prefetch_fails else 17))
     assert (child.actual_hit_tokens, child.l3_hit_tokens) == ((0, 0) if prefetch_fails else (4, 4))
     assert run.restore_time_ms == pytest.approx(0 if prefetch_fails else 14)
 
@@ -699,9 +695,6 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
         max_running_requests=2, max_total_tokens=16, page_size=4, l2_capacity_tokens=8
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        decode_d1=5,
-        decode_d2=0,
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
         l2_latency_ms=3,
@@ -740,21 +733,36 @@ def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:
         max_running_requests=8, max_total_tokens=512, page_size=64, l2_capacity_tokens=512
     )
     perf = PerfModelConfig(
-        prefill_c1=1,
-        prefill_c2=0,
-        decode_d1=5,
-        decode_d2=0,
         kv_bytes_per_token=1,
         l2_to_l1_bandwidth_bytes_per_ms=64,
     )
+    from simcore.perf_model import PrefillWork, StepWorkload
+    from test_engine import duration
+    from test_schemas import TOY_HARDWARE, TOY_MODEL
+
+    def reused_prefill(reused: int, new: int) -> float:
+        return step_cost(
+            StepWorkload("PREFILL", (PrefillWork(0, reused, new, reused + new),), (), 0, 1),
+            TOY_MODEL,
+            TOY_HARDWARE,
+        ).duration_ms
+
+    first_end = duration(prefill=(64,))
+    second_end = first_end + duration(prefill=(128,))
+    decode_start = second_end + reused_prefill(128, 1)
+    third_start = decode_start + duration(decode=(130,))
+    fourth_start = third_start + reused_prefill(64, 64)
+    fifth_start = fourth_start + duration(prefill=(64,))
+    withdrawal_start = fifth_start + duration(prefill=(128,))
     rows = (
         (0, 0, 64, 1, (1,)),
-        (1, 64, 128, 1, (10, 11)),
-        (2, 192, 129, 3, (10, 11)),
-        (3, 194, 128, 2, (10, 11)),
-        (4, 200, 64, 2, (30,)),
-        (5, 270, 128, 2, (40, 41)),
-        (6, 455, 448, 1, (1, 20, 21, 22, 23, 24, 25)),
+        (1, first_end, 128, 1, (10, 11)),
+        (2, second_end, 129, 3, (10, 11)),
+        (3, (decode_start + third_start) / 2, 128, 2, (10, 11)),
+        (4, (third_start + fourth_start) / 2, 64, 2, (30,)),
+        (5, (fourth_start + fifth_start) / 2, 128, 2, (40, 41)),
+        (6, withdrawal_start + duration(decode=(131, 65, 129)) / 2,
+         448, 1, (1, 20, 21, 22, 23, 24, 25)),
     )
     source = TracePlan(
         block_size=64,
@@ -794,24 +802,30 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
                 self.observed_during_step = self._prefix_cache.page("chunk:0:0")
             return super().submit(request, now_ms)
 
+    from test_engine import duration
+
     config = EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=4)
-    perf = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
+    end = duration(prefill=(8,))
     plan = WorkloadPlan(
         turns={
             0: TurnPlan(0, 0, None, 0, None, 8, 1, 1, 0),
-            1: TurnPlan(1, 1, None, 1, None, 4, 1, 1, 0),
+            1: TurnPlan(1, 1, None, end / 2, None, 4, 1, 1, 0),
         },
         root_request_ids=(0, 1),
         children={},
     )
-    engine = ObservingEngine(runtime_config(config, perf))
+    engine = ObservingEngine(runtime_config(config, PerfModelConfig()))
     run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
     assert engine._prefix_cache.page("chunk:0:0") is not None
-    assert [item.prefill_start for item in run.records] == [0, 8]
+    assert [item.prefill_start for item in run.records] == pytest.approx([0, end])
 
 
-def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() -> None:
+def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.engine.step_cost", lambda *args: StepCost(0, 0, 0, 0, 0))
+
     class CheckedCoordinator(Coordinator):
         max_pending = 0
 
@@ -823,7 +837,7 @@ def test_zero_cost_multiple_steps_same_timestamp_keep_one_pending_at_a_time() ->
 
     plan = make_plan(ordinary_at=0)
     config = EngineConfig(max_running_requests=5, max_total_tokens=128, page_size=4)
-    zero = PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0)
+    zero = PerfModelConfig()
     engine = Engine(runtime_config(config, zero))
     coordinator = CheckedCoordinator((engine,), planned_client(plan, config), Router(1))
     run = coordinator.run()[0]

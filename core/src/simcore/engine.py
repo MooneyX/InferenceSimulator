@@ -4,18 +4,13 @@
 """
 
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from simcore.analytical import step_cost
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CachePool, L1Snapshot, TieredKVCache, TierSnapshot
-from simcore.perf_model import (
-    DecodeWork,
-    PrefillWork,
-    StepWorkload,
-    workload_time,
-)
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
 from simcore.runtime import RuntimeConfig
 from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import (
@@ -60,7 +55,7 @@ class EngineRun:
     demotions: int = 0
     restore_bytes: int = 0
     restore_time_ms: float = 0.0
-    analysis: AnalyticalSummary | None = None
+    analysis: AnalyticalSummary = field(default_factory=AnalyticalSummary)
 
 
 @dataclass(slots=True)
@@ -81,7 +76,7 @@ class Engine:
         engine, perf = runtime.engine, runtime.perf_model
         self._links = runtime.links
         self._analytical = runtime.analytical
-        self._analysis = AnalyticalSummary() if runtime.analytical is not None else None
+        self._analysis = AnalyticalSummary()
         self._engine_config = engine
         self._perf = perf
         self._prefix_cache = TieredKVCache(
@@ -302,8 +297,7 @@ class Engine:
             page_bytes = self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
             self._restore_bytes += page_bytes
             self._restore_time_ms += task.service_ms
-            if self._analysis is not None:
-                self._analysis.restore_ms += task.service_ms
+            self._analysis.restore_ms += task.service_ms
         if kind is EventKind.L3_L2_DONE:
             for request_id in task.waiting_requests:
                 self._prefetched_origins.setdefault(request_id, set()).add(task.chunk_id)
@@ -540,35 +534,30 @@ class Engine:
             len(prefill) + len(decode) + len(selection.restore_only),
             tuple(item.request.request_id for item in selection.restore_only),
         )
-        if self._analytical is None:
-            device_time = workload_time(workload, self._perf)
-        else:
-            cost = step_cost(
-                workload,
-                self._analytical.model,
-                self._analytical.hardware,
-                self._analytical.tp_size,
-                self._analytical.ep_size,
-            )
-            device_time = cost.duration_ms
-            if self._analysis is not None:
-                self._analysis.steps += 1
-                self._analysis.flops += cost.flops
-                self._analysis.hbm_bytes += cost.hbm_bytes
-                self._analysis.compute_ms += cost.compute_ms
-                self._analysis.memory_ms += cost.memory_ms
-                self._analysis.device_ms += device_time
-                self._analysis.communication_ms += cost.communication_ms
-                self._analysis.communication_bytes += cost.communication_bytes
-                self._analysis.collectives += cost.collectives
-                self._analysis.tp_communication_ms += cost.tp_communication_ms
-                self._analysis.tp_communication_bytes += cost.tp_communication_bytes
-                self._analysis.ep_dispatch_ms += cost.ep_dispatch_ms
-                self._analysis.ep_combine_ms += cost.ep_combine_ms
-                self._analysis.ep_dispatch_bytes += cost.ep_dispatch_bytes
-                self._analysis.ep_combine_bytes += cost.ep_combine_bytes
-                self._analysis.ep_exchanges += cost.ep_exchanges
-        duration = device_time
+        cost = step_cost(
+            workload,
+            self._analytical.model,
+            self._analytical.hardware,
+            self._analytical.tp_size,
+            self._analytical.ep_size,
+        )
+        duration = cost.duration_ms
+        self._analysis.steps += 1
+        self._analysis.flops += cost.flops
+        self._analysis.hbm_bytes += cost.hbm_bytes
+        self._analysis.compute_ms += cost.compute_ms
+        self._analysis.memory_ms += cost.memory_ms
+        self._analysis.device_ms += duration
+        self._analysis.communication_ms += cost.communication_ms
+        self._analysis.communication_bytes += cost.communication_bytes
+        self._analysis.collectives += cost.collectives
+        self._analysis.tp_communication_ms += cost.tp_communication_ms
+        self._analysis.tp_communication_bytes += cost.tp_communication_bytes
+        self._analysis.ep_dispatch_ms += cost.ep_dispatch_ms
+        self._analysis.ep_combine_ms += cost.ep_combine_ms
+        self._analysis.ep_dispatch_bytes += cost.ep_dispatch_bytes
+        self._analysis.ep_combine_bytes += cost.ep_combine_bytes
+        self._analysis.ep_exchanges += cost.ep_exchanges
         end = now_ms + duration
         for candidate in selection.admitted:
             cache.admit(candidate.waiting.request.request_id)

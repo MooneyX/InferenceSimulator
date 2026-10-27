@@ -8,17 +8,17 @@
 |---|---|---|---|
 | `F003` | 完整块 ID 的前缀复用 | **已实现** 跨层连续复用；不包括真实内容哈希 | [身份](../design/chunk-hash-encoding.md)、[分层 KV](../design/kv-prefix-reuse.md)、[负载](../design/workload.md) |
 | `F001` | 单实例连续调度主干 | **已实现** 两种 P/D 模式、FCFS 预算、回撤、三类结果及服务/页面接入；不含 chunked prefill | [引擎设计](../design/kernel.md)、[API](../design/api.md)、[前端](../design/frontend.md) |
-| `F002` | 可配置、可解释和可校准的性能模型 | **部分实现** 四系数单卡计时、Dense/GQA 单卡与同构 TP 逐步 Roofline 估计；形状校准、MoE/EP 未实现 | [现行经验模型](../design/perf-model.md)、[剩余计划](perf-model.md)、[模型/硬件预置与 KV 容量子计划](model-hardware-kv-capacity.md) |
-| `F004` | 单实例 TP + EP | **Dense TP 已接入** 逐 rank 容量与逐步 Roofline/通信解析运行；MoE 专家放置及 EP/DeepEP 待实现；DPA 不在首期 | [三阶段计划](expert-parallelism.md)、[单卡容量](model-hardware-kv-capacity.md)、[解析计时](perf-model.md) |
+| `F002` | 可配置、可解释和可校准的性能模型 | **部分实现，模型已统一** 单卡、Dense TP 与平均负载 MoE/EP 共用逐步 Roofline；四系数和 `inference.timing` 已删除；形状校准与实测误差评估待完成 | [现行性能模型](../design/perf-model.md)、[剩余计划](perf-model.md)、[模型/硬件预置与 KV 容量子计划](model-hardware-kv-capacity.md) |
+| `F004` | 单实例 TP + EP | **Dense TP 与平均负载 MoE/EP 已接入** 逐 rank 容量、专家放置和通信估算；真实部署、热点尾延迟与校准待核验；DPA 不在首期 | [三阶段计划](expert-parallelism.md)、[单卡容量](model-hardware-kv-capacity.md)、[性能模型](perf-model.md) |
 | `KV3` | 多级 KV 缓存 | **已实现** 单实例 L1/L2/L3 分层准入、逐级迁移与 restore 计时；低层默认关闭 | [分层 KV](../design/kv-prefix-reuse.md)、[计时](../design/perf-model.md)、[指标](../design/metrics.md) |
 
 ```text
 F003 完整块 ID（已完成） ──▶ F001 调度/引擎（已完成） ──▶ F002 通用成本分解、解析与校准
                                            ├────────▶ KV3 分层缓存（已完成）
-                                           └────────▶ F004 单实例 TP + EP（Dense TP 已接入，EP 待实现）
+                                           └────────▶ F004 单实例 TP + EP（Dense TP 与平均负载 EP 已接入）
 ```
 
-M1 内核、M2 服务/OpenAPI、M3 页面及 F001 两种 P/D 模式已接通；F002 同时接通四系数计时与单 GPU Dense/GQA 未校准解析计时。服务器与前端未完成的各阶段交付分别见 [服务/API 计划](server-api.md) 和 [前端计划](frontend.md)。单 GPU、单 Engine 当前不含真实 KV tensor、跨实例持久化或 trace replay；实时单步、任务持久化和调度溯源 UI 也未实现。
+M1 内核、M2 服务/OpenAPI、M3 页面及 F001 两种 P/D 模式已接通；F002 已将原逐步 Roofline 算法统一为唯一性能模型，覆盖单卡、Dense TP 与平均负载 MoE/EP；旧 `inference.timing` 直接拒绝，不再保留四系数。服务器与前端未完成的各阶段交付分别见 [服务/API 计划](server-api.md) 和 [前端计划](frontend.md)。单 GPU、单 Engine 当前不含真实 KV tensor、跨实例持久化或 trace replay；实时单步、任务持久化和调度溯源 UI 也未实现。
 
 ## 其余调度扩展（未实现）
 

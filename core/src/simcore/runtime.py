@@ -36,5 +36,5 @@ class RuntimeConfig:
     engine: EngineConfig
     perf_model: PerfModelConfig
     links: TransferLinks
-    analytical: AnalyticalSpec | None = None
+    analytical: AnalyticalSpec
     resolution: ResolutionReport | None = None

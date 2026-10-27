@@ -5,7 +5,7 @@
 
 时间单位约定：
 - ``target_qps`` 单位为请求/秒；``session_rate`` 单位为会话/秒。
-- 其余一切时间量（仿真时钟、区间端点、性能模型系数与指标）单位均为 **毫秒 (ms)**。
+- 其余一切时间量（仿真时钟、区间端点、固定开销与指标）单位均为 **毫秒 (ms)**。
 """
 
 from collections.abc import Mapping
@@ -18,12 +18,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 __all__ = [
     "AbortedRequest",
     "AnalyticalSummary",
-    "AnalyticalTimingConfig",
     "Arrival",
     "AttentionGroup",
     "CapacityReport",
     "ClientWakeup",
-    "EmpiricalTimingConfig",
     "EngineConfig",
     "FixedLength",
     "HardwareSpec",
@@ -242,16 +240,7 @@ class EngineConfig(_Frozen):
 
 
 class PerfModelConfig(_Frozen):
-    """性能模型系数，单位 ms。
-
-    - prefill 耗时 = ``prefill_c1 * P + prefill_c2 * P**2``（P = prompt_tokens）
-    - decode 单步耗时 = ``decode_d1 + decode_d2 * batch_total_tokens``
-    """
-
-    prefill_c1: float = Field(ge=0)
-    prefill_c2: float = Field(default=0.0, ge=0)
-    decode_d1: float = Field(ge=0)
-    decode_d2: float = Field(ge=0)
+    """运行时 KV 访问成本参数；GPU 性能由模型与硬件规格推导。"""
     kv_bytes_per_token: int | None = Field(default=None, gt=0)
     l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -267,22 +256,6 @@ class SchedulerConfig(_Frozen):
     max_prefill_tokens: int = Field(default=16_384, ge=1)
     pd_mutually_exclusive: bool = True
     l3_prefetch_min_tokens: int = Field(default=256, ge=0)
-
-
-class EmpiricalTimingConfig(_Frozen):
-    """经验 GPU 计时的四系数，不包含 KV 链路参数。"""
-
-    mode: Literal["empirical"] = "empirical"
-    prefill_c1: float = Field(ge=0, allow_inf_nan=False)
-    prefill_c2: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    decode_d1: float = Field(ge=0, allow_inf_nan=False)
-    decode_d2: float = Field(ge=0, allow_inf_nan=False)
-
-
-class AnalyticalTimingConfig(_Frozen):
-    """复用物理推理规格的解析 GPU 计时。"""
-
-    mode: Literal["analytical"] = "analytical"
 
 
 AuxWeightDtype = Literal["bf16", "fp16", "fp32"]
@@ -449,7 +422,7 @@ class HardwareSpec(_Frozen):
         default=0.005,
         ge=0,
         allow_inf_nan=False,
-        description="解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
+        description="性能模型每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
     )
 
 
@@ -487,9 +460,6 @@ class InferenceConfig(_Frozen):
     model: ModelSpec
     hardware: HardwareSpec
     storage: StorageSpec
-    timing: Annotated[
-        EmpiricalTimingConfig | AnalyticalTimingConfig, Field(discriminator="mode")
-    ] = Field(default_factory=AnalyticalTimingConfig)
     tp_size: int = Field(default=1, ge=1)
     ep_size: int = Field(default=1, ge=1)
 

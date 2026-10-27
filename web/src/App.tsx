@@ -264,8 +264,8 @@ export default function App() {
                   </ul>
                 ) : null}
               </section>
-              {inference && resolution && <section className="simulation-info" aria-label="解析配置与成本">
-                <h3>自动解析 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · {(inference.timing?.mode ?? "analytical") === "analytical" ? "未经校准的 Roofline/平均负载估计" : "经验计时"}</h3>
+              {inference && resolution && <section className="simulation-info" aria-label="性能模型配置与成本">
+                <h3>性能模型 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · 未经校准的 Roofline/平均负载估计</h3>
                 <p>模型 {inference.model.name} · GPU {inference.hardware.name} ·
                   {result.meta.config.num_instances} 实例 × 每实例 {inference.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * inference.hardware.gpu_count} GPU ·
                   {inference.tp_size > 1 ? "整组权重" : "权重"} {(resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>

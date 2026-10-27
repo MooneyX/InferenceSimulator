@@ -1,16 +1,20 @@
 """runner 模块单测：端到端串联、元信息一致性、trace 接缝与可复现性。"""
 
 import random
+from itertools import pairwise
 from unittest.mock import patch
 
 import pytest
 
 import simcore
 from simcore import SimConfig, SimResult, simulate
+from simcore.analytical import StepCost, step_cost
 from simcore.capacity import prepare_runtime
 from simcore.metrics import compute_metrics
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
+    AnalyticalSummary,
     EngineConfig,
     FixedLength,
     LognormalLength,
@@ -38,9 +42,7 @@ def make_config(seed: int = 0, num_requests: int = 200, budget: int = 16_000) ->
             ),
         ),
         engine=EngineConfig(max_running_requests=16, max_total_tokens=budget, page_size=1),
-        perf_model=PerfModelConfig(
-            prefill_c1=0.05, prefill_c2=1e-5, decode_d1=8.0, decode_d2=0.002
-        ),
+        perf_model=PerfModelConfig(),
     )
 
 
@@ -61,7 +63,7 @@ def test_request_progress_is_throttled_and_matches_result(instances: int) -> Non
     assert snapshots[0][1].model_dump() == {
         "total": 8, "completed": 0, "aborted": 0, "skipped": 0,
     }
-    assert all(b[0] - a[0] >= 1 for a, b in zip(snapshots, snapshots[1:-1]))
+    assert all(b[0] - a[0] >= 1 for a, b in pairwise(snapshots[:-1]))
     counts = [item.completed + item.aborted + item.skipped for _, item in snapshots]
     assert counts == sorted(counts)
     assert all(item.total == 8 for _, item in snapshots)
@@ -87,7 +89,10 @@ def test_fast_simulation_reports_initial_and_final_progress() -> None:
 @pytest.fixture(scope="module")
 def result() -> SimResult:
     result = simulate(make_config())
-    assert result.analysis is None
+    assert result.analysis is not None
+    assert result.analysis.steps == result.meta.num_engine_steps
+    assert result.analysis.flops > 0 and result.analysis.hbm_bytes > 0
+    assert result.analysis.device_ms > 0
     assert result.resolution == prepare_runtime(make_config()).resolution
     return result
 
@@ -117,7 +122,7 @@ def test_open_loop_poisson_arrivals_reuse_completed_context() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=0.001, prefill_c2=0, decode_d1=0.001, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
     result = simulate(config)
     assert result.meta.num_completed == 5
@@ -151,9 +156,12 @@ def test_open_loop_completion_at_tick_is_ready() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=1, prefill_c2=0, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
-    with patch("simcore.client.random.Random.expovariate", side_effect=[7.0, 32.0]):
+    with (
+        patch("simcore.client.random.Random.expovariate", side_effect=[7.0, 32.0]),
+        patch("simcore.engine.step_cost", return_value=StepCost(32, 0, 0, 0, 0)),
+    ):
         result = simulate(config)
     assert [record.arrival for record in result.requests] == [7.0, 39.0]
     assert result.requests[0].finish == 39.0
@@ -176,8 +184,16 @@ def test_open_loop_creates_new_sessions_when_no_child_ready() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=4, max_total_tokens=1024, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=10, prefill_c2=0, decode_d1=10, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
+    config = config.model_copy(update={
+        "inference": config.inference.model_copy(update={
+            "hardware": config.inference.hardware.model_copy(update={
+                "effective_fp16_tflops": 1e-6,
+                "effective_hbm_gb_s": 1e-6,
+            }),
+        }),
+    })
     result = simulate(config)
     assert result.meta.num_completed + result.meta.num_aborted == 4
     arrivals = expected_open_loop_arrivals(42, 10, 4)
@@ -203,7 +219,7 @@ def test_open_loop_capacity_failure_still_consumes_tick() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
     result = simulate(config)
     assert result.meta.num_completed == 2
@@ -233,7 +249,7 @@ def test_open_loop_single_arrival_has_no_observed_qps() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=128, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
     result = simulate(config)
     assert result.requests[0].arrival == pytest.approx(expected_open_loop_arrivals(1, 10, 1)[0])
@@ -255,11 +271,12 @@ def test_open_loop_reports_arrival_rate_even_if_all_requests_abort() -> None:
             ),
         ),
         engine=EngineConfig(max_running_requests=2, max_total_tokens=64, page_size=16),
-        perf_model=PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
     result = simulate(config)
     arrivals = expected_open_loop_arrivals(1, 10, 2)
-    assert result.meta.num_completed == 0
+    assert result.meta.num_completed == result.meta.num_engine_steps == 0
+    assert result.analysis == AnalyticalSummary()
     assert [request.arrival for request in result.aborted_requests] == pytest.approx(arrivals)
     assert result.metrics.arrival_qps == pytest.approx(1000 / (arrivals[1] - arrivals[0]))
     assert result.metrics.throughput is None
@@ -338,7 +355,7 @@ class TestEndToEnd:
                 max_total_tokens=80,
                 page_size=2,
             ),
-            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
         result = simulate(config)
         m = result.metrics
@@ -372,7 +389,7 @@ class TestEndToEnd:
                 ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=80, page_size=2),
-            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
         synthetic = config.workload.synthetic
         assert synthetic is not None
@@ -405,7 +422,7 @@ class TestEndToEnd:
                 ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=192, page_size=64),
-            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
         result = simulate(cfg)
         assert (result.meta.num_requests, result.meta.num_aborted) == (2, 2)
@@ -433,9 +450,6 @@ class TestEndToEnd:
                 l3_capacity_tokens=8,
             ),
             perf_model=PerfModelConfig(
-                prefill_c1=1,
-                decode_d1=0,
-                decode_d2=0,
                 kv_bytes_per_token=16,
                 l2_to_l1_bandwidth_bytes_per_ms=64,
                 l3_to_l2_bandwidth_bytes_per_ms=32,
@@ -463,7 +477,7 @@ class TestEndToEnd:
                 ),
             ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=64, page_size=16),
-            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
         snapshots = []
         result = simulate(cfg, on_progress=snapshots.append)
@@ -475,6 +489,8 @@ class TestEndToEnd:
         assert snapshots[-1].model_dump() == {
             "total": 3, "completed": 0, "aborted": 1, "skipped": 2,
         }
+        assert result.meta.num_engine_steps == 0
+        assert result.analysis == AnalyticalSummary()
         assert result.metrics.arrival_qps is None
 
     def test_json_roundtrip(self, result: SimResult) -> None:
@@ -527,7 +543,7 @@ class TestSmallCases:
                 ),
             ),
             engine=EngineConfig(max_running_requests=2, max_total_tokens=100, page_size=2),
-            perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
+            perf_model=PerfModelConfig(),
         )
         result = simulate(cfg)
         synthetic = cfg.workload.synthetic
@@ -560,12 +576,24 @@ class TestSmallCases:
                 ),
             ),
             engine=EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1),
-            perf_model=PerfModelConfig(prefill_c1=1.0, decode_d1=10.0, decode_d2=0.0),
+            perf_model=PerfModelConfig(),
         )
         r = simulate(cfg)
         record = r.requests[0]
-        assert record.prefill_end - record.arrival == pytest.approx(5.0)
-        assert record.finish - record.prefill_end == pytest.approx(20.0)
-        assert r.metrics.ttft_mean == pytest.approx(5.0)
-        assert r.metrics.tpot_mean == pytest.approx(10.0)
+        inference = cfg.inference
+        prefill = step_cost(
+            StepWorkload("PREFILL", (PrefillWork(0, 0, 5, 5),), (), 0, 1),
+            inference.model, inference.hardware,
+        ).duration_ms
+        decode = sum(
+            step_cost(
+                StepWorkload("DECODE", (), (DecodeWork(0, context),), 0, 1),
+                inference.model, inference.hardware,
+            ).duration_ms
+            for context in (6, 7)
+        )
+        assert record.prefill_end - record.arrival == pytest.approx(prefill)
+        assert record.finish - record.prefill_end == pytest.approx(decode)
+        assert r.metrics.ttft_mean == pytest.approx(prefill)
+        assert r.metrics.tpot_mean == pytest.approx(decode / 2)
         assert r.meta.num_engine_steps == 3

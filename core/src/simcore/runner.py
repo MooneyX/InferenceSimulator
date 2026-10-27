@@ -145,16 +145,11 @@ def simulate(
         skipped_requests=skipped,
         warnings=[warning for run in runs for warning in run.warnings],
     )
-    analyses = [run.analysis for run in runs if run.analysis is not None]
-    analysis = (
-        AnalyticalSummary(
-            **{
-                name: sum(getattr(entry, name) for entry in analyses)
-                for name in AnalyticalSummary.model_fields
-            }
-        )
-        if analyses
-        else None
+    analysis = AnalyticalSummary(
+        **{
+            name: sum(getattr(run.analysis, name) for run in runs)
+            for name in AnalyticalSummary.model_fields
+        }
     )
     result.resolution = runtime.resolution
     result.analysis = analysis

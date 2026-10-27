@@ -5,6 +5,8 @@ test("runs 10 requests through the unified simulation endpoint", async ({ page }
   page.on("pageerror", (error) => browserErrors.push(error.message));
   await page.goto("/");
   await expect(page.getByRole("radio", { name: /自动解析|手动配置/ })).toHaveCount(0);
+  await expect(page.getByLabel("计时模式")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "性能模型", exact: true })).toContainText("未经实测校准");
   await page.getByLabel("请求数量").fill("10");
   const responsePromise = page.waitForResponse((response) =>
     response.url().endsWith("/api/simulate") && response.request().method() === "POST",
@@ -16,7 +18,7 @@ test("runs 10 requests through the unified simulation endpoint", async ({ page }
   expect(config.workload.synthetic.num_requests).toBe(10);
   expect(config.inference).not.toHaveProperty("mode");
   expect(config.shared_l3).not.toHaveProperty("mode");
-  expect(config.inference.timing).toEqual({ mode: "analytical" });
+  expect(config.inference).not.toHaveProperty("timing");
   expect(config).toHaveProperty("scheduler.max_running_requests");
   expect(config).not.toHaveProperty("engine");
   expect(config).not.toHaveProperty("perf_model");
@@ -28,7 +30,7 @@ test("runs 10 requests through the unified simulation endpoint", async ({ page }
   expect(result.resolution).not.toHaveProperty("config");
   expect(result.resolution).not.toHaveProperty("model");
   await expect(page.getByRole("heading", { name: "仿真指标" })).toBeVisible();
-  await expect(page.getByLabel("解析配置与成本")).toContainText("自动解析");
+  await expect(page.getByLabel("性能模型配置与成本")).toContainText("未经校准的 Roofline/平均负载估计");
   await expect(page.getByLabel("请求结果状态")).toContainText(`已完成 ${result.meta.num_completed}`);
   if (result.meta.num_completed > 0) {
     await expect(page.getByRole("img", {

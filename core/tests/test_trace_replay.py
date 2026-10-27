@@ -10,7 +10,6 @@ from simcore.analytical import step_cost
 from simcore.capacity import prepare_runtime, resolve_config
 from simcore.perf_model import PrefillWork, StepWorkload
 from simcore.schemas import (
-    AnalyticalTimingConfig,
     EngineConfig,
     HardwareSpec,
     InferenceConfig,
@@ -51,7 +50,7 @@ def config(
             max_output_tokens=max_output_tokens,
             page_size=64,
         ),
-        perf_model=PerfModelConfig(prefill_c1=0.01, decode_d1=0.01, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
 
 
@@ -299,10 +298,8 @@ def test_timed_root_ratio_counts_all_branches_without_changing_session_count() -
     assert result.metrics.root_request_ratio == 1.0
 
 
-@pytest.mark.parametrize("timing", ["empirical", "analytical"])
 @pytest.mark.parametrize("mode", ["open_loop", "closed_loop"])
 def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
-    timing: Literal["empirical", "analytical"],
     mode: Literal["open_loop", "closed_loop"],
 ) -> None:
     baseline = config(capacity=64, mode=mode)
@@ -333,9 +330,6 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                     l3_to_l2_gb_s=0.002,
                     l2_latency_ms=3,
                     l3_latency_ms=4,
-                ),
-                timing=(
-                    baseline.inference.timing if timing == "empirical" else AnalyticalTimingConfig()
                 ),
             ),
         }
@@ -374,28 +368,24 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
         assert second.arrival == pytest.approx(first.arrival + 1000)
     else:
         assert second.arrival == pytest.approx(first.finish + 20)
-    if timing == "empirical":
-        assert analysis is None
-        assert first.prefill_end - first.prefill_start == pytest.approx(129 * 0.01)
-    else:
-        assert analysis is not None
-        assert analysis.steps == result.meta.num_engine_steps == 2
-        assert analysis.flops > 0
-        expected = step_cost(
-            StepWorkload(
-                phase="PREFILL",
-                prefill=(PrefillWork(0, 0, 129, 129),),
-                decode=(),
-                allocated_pages=3,
-                batch_requests=1,
-            ),
-            original.inference.model,
-            original.inference.hardware,
-        )
-        assert first.prefill_end - first.prefill_start == pytest.approx(expected.duration_ms)
-        assert analysis.device_ms == pytest.approx(
-            sum(record.finish - record.prefill_start for record in result.requests)
-        )
+    assert analysis is not None
+    assert analysis.steps == result.meta.num_engine_steps == 2
+    assert analysis.flops > 0
+    expected = step_cost(
+        StepWorkload(
+            phase="PREFILL",
+            prefill=(PrefillWork(0, 0, 129, 129),),
+            decode=(),
+            allocated_pages=3,
+            batch_requests=1,
+        ),
+        original.inference.model,
+        original.inference.hardware,
+    )
+    assert first.prefill_end - first.prefill_start == pytest.approx(expected.duration_ms)
+    assert analysis.device_ms == pytest.approx(
+        sum(record.finish - record.prefill_start for record in result.requests)
+    )
 
     assert original.model_dump() == original_data
     assert resolution.model_dump() == resolution_data

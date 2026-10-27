@@ -57,7 +57,7 @@ describe("ModelHardwareConfig", () => {
     expect(screen.getByRole("status")).toHaveTextContent("全部专家参数 0.000 B");
     expect(resolveConfig).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ max_running_requests: 32 }),
-      inference: expect.objectContaining({ timing: { mode: "analytical" },
+      inference: expect.objectContaining({
         model: expect.objectContaining({ name: "Qwen/Qwen3-8B", num_layers: 36 }),
         hardware: expect.objectContaining({ gpu_count: 1 }) }),
     }));
@@ -502,7 +502,7 @@ describe("ModelHardwareConfig", () => {
     expect(screen.queryByLabelText("第 1 组选取 token 数")).not.toBeInTheDocument();
   });
 
-  it("shows TP rank preview and the analytical timing scope", async () => {
+  it("shows TP rank preview and the performance model scope", async () => {
     const preview = {
       ...resolution, runnable: true,
       capacity: { ...resolution.capacity, unassigned_parameters: 50,
@@ -536,7 +536,7 @@ describe("ModelHardwareConfig", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("全部驻留专家权重 2.000 GB"));
     expect(screen.getByRole("status")).toHaveTextContent("TP4 + EP4");
     expect(resolveConfig).toHaveBeenCalledWith(expect.objectContaining({ inference: expect.objectContaining({ tp_size: 4, ep_size: 4 }) }));
-    expect(screen.getByText(/未经校准的平均负载解析计时/)).toBeInTheDocument();
+    expect(screen.getByText(/MoE\/EP 性能模型采用未经校准的平均负载估计/)).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("填写互联带宽、TP 集合通信延迟与 EP 单次通信开销");
   });
 

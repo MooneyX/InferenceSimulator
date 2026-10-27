@@ -1,21 +1,15 @@
-"""F001 单步 P/D 工作量快照与四系数成本契约。"""
+"""F001 单步 P/D 工作量快照与分析成本契约。"""
 
 from dataclasses import FrozenInstanceError
 
 import pytest
 
-from simcore.perf_model import (
-    DecodeWork,
-    PrefillWork,
-    StepWorkload,
-    workload_time,
-)
-from simcore.schemas import PerfModelConfig
-
-PERF = PerfModelConfig(prefill_c1=2, prefill_c2=0.25, decode_d1=5, decode_d2=0.5)
+from simcore.analytical import step_cost
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from test_schemas import TOY_HARDWARE, TOY_MODEL
 
 
-def test_prefill_cost_sums_by_request_id_and_reused_context() -> None:
+def test_prefill_snapshot_preserves_request_id_and_reused_context() -> None:
     workload = StepWorkload(
         "PREFILL",
         (PrefillWork(0, 4, 2, 6), PrefillWork(2, 1, 3, 4)),
@@ -23,21 +17,29 @@ def test_prefill_cost_sums_by_request_id_and_reused_context() -> None:
         allocated_pages=3,
         batch_requests=2,
     )
-    expected = (2 * 2 + 0.25 * 2 * (2 * 4 + 2)) + (2 * 3 + 0.25 * 3 * (2 * 1 + 3))
-    assert workload_time(workload, PERF) == expected
+    assert workload.prefill == (PrefillWork(0, 4, 2, 6), PrefillWork(2, 1, 3, 4))
+    assert workload.decode == ()
+    assert (workload.allocated_pages, workload.batch_requests) == (3, 2)
     with pytest.raises(FrozenInstanceError):
         workload.phase = "DECODE"  # type: ignore[misc]
 
 
 def test_decode_counts_only_previously_running_contexts() -> None:
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 65), DecodeWork(3, 20)), 1, 2)
-    assert workload_time(workload, PERF) == 5 + 0.5 * 85
+    assert workload.prefill == ()
+    assert sum(item.context_after_decode for item in workload.decode) == 85
+    assert workload.batch_requests == 2
 
 
-def test_mixed_takes_max_of_two_costs_not_sum() -> None:
+def test_mixed_combines_device_work_and_reuses_weight_reads() -> None:
     mixed = StepWorkload("MIXED", (PrefillWork(1, 0, 8, 8),), (DecodeWork(0, 12),), 3, 2)
-    assert workload_time(mixed, PERF) == max(2 * 8 + 0.25 * 64, 5 + 0.5 * 12)
-    assert workload_time(mixed, PERF) != (2 * 8 + 0.25 * 64) + (5 + 0.5 * 12)
+    prefill = StepWorkload("PREFILL", mixed.prefill, (), 2, 1)
+    decode = StepWorkload("DECODE", (), mixed.decode, 1, 1)
+    combined = step_cost(mixed, TOY_MODEL, TOY_HARDWARE)
+    prefill_cost = step_cost(prefill, TOY_MODEL, TOY_HARDWARE)
+    decode_cost = step_cost(decode, TOY_MODEL, TOY_HARDWARE)
+    assert combined.flops == prefill_cost.flops + decode_cost.flops
+    assert combined.hbm_bytes < prefill_cost.hbm_bytes + decode_cost.hbm_bytes
 
 
 @pytest.mark.parametrize(
@@ -67,17 +69,13 @@ def test_invalid_workload_detail_rejected() -> None:
         StepWorkload("DECODE", (), (DecodeWork(0, 2),), -1, 1)
 
 
-def test_zero_coefficients_have_zero_duration_but_valid_workload() -> None:
-    zero = PerfModelConfig(prefill_c1=0, prefill_c2=0, decode_d1=0, decode_d2=0)
-    mixed = StepWorkload("MIXED", (PrefillWork(1, 0, 1, 1),), (DecodeWork(0, 20),), 2, 2)
-    assert workload_time(mixed, zero) == 0
-
-
 def test_restored_requests_do_not_add_device_work_or_generate_tokens() -> None:
     decode = (DecodeWork(2, 8),)
     workload = StepWorkload("DECODE", (), decode, 1, 1)
     with_restore = StepWorkload("DECODE", (), decode, 1, 2, restore_only=(1,))
-    assert workload_time(with_restore, PERF) == workload_time(workload, PERF)
+    assert step_cost(with_restore, TOY_MODEL, TOY_HARDWARE) == step_cost(
+        workload, TOY_MODEL, TOY_HARDWARE
+    )
     assert with_restore.decode == decode
     with pytest.raises(ValueError, match="阶段"):
         StepWorkload("DECODE", (), (), 0, 1, restore_only=(1,))

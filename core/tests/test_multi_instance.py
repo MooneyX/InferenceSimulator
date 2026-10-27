@@ -33,7 +33,7 @@ def config(
             ),
         ),
         engine=EngineConfig(max_running_requests=1, max_total_tokens=capacity, page_size=4),
-        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+        perf_model=PerfModelConfig(),
     )
 
 

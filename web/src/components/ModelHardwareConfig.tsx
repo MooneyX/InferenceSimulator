@@ -60,7 +60,6 @@ function Input({ label, value, onChange, optional = false, disabled = false }: {
 
 export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Props) {
   const { model, hardware, storage, tp_size: tpSize, ep_size: epSize } = config.inference;
-  const timing = config.inference.timing.mode;
   function updateInference(patch: Partial<FormSimConfig["inference"]>) {
     onInferenceChange({ ...config.inference, ...patch });
   }
@@ -137,7 +136,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
   return <>
     <section className="form-section" aria-labelledby="model-heading">
       <div className="section-heading"><div>
-        <p className="section-kicker">Analytical · Stage 1</p>
+        <p className="section-kicker">Performance model</p>
         <h2 id="model-heading">模型参数</h2>
       </div><p>选择预置模型，或切换到自定义并调整结构与精度</p></div>
       <div className="form-grid" style={{ marginBottom: 14 }}><div className="form-field"><label htmlFor="model-preset">模型选择</label>
@@ -364,7 +363,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         onChange={(value) => onStorageChange({ ...storage, [field]: value })} />)}
     </div>
     <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
-    <p>单算子开销默认 0.005 ms/建模计算阶段，仅用于解析计时；L2（本地 DRAM）→ L1 固定延迟默认 0.01 ms/页，L3（低延迟共享存储）→ L2 默认 0.1 ms/页，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 固定延迟默认 0.01 ms/页，L3（低延迟共享存储）→ L2 默认 0.1 ms/页，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、
@@ -381,12 +380,8 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>
-    {model.moe_layers ? <p>{timing === "analytical"
-      ? "MoE/EP 采用未经校准的平均负载解析计时：含 Prefill 用 normal，纯 Decode 用 low_latency；可先预览容量。"
-      : "MoE/EP 不支持四系数计时，请切换到解析计时。"}</p> :
-      tpSize > 1 && <p>{timing === "analytical"
-        ? "TP 解析计时已接入：每层两次等效同步，未按实测校准。"
-        : "TP>1 不支持四系数计时，请切换到解析计时。"}</p>}
+    {model.moe_layers ? <p>MoE/EP 性能模型采用未经校准的平均负载估计：含 Prefill 用 normal，纯 Decode 用 low_latency；可先预览容量。</p> :
+      tpSize > 1 && <p>TP 性能模型：每层两次等效同步，未按实测校准。</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
       <strong>服务端单实例解析：</strong>共 {config.num_instances} 个实例，总 GPU {config.num_instances * hardware.gpu_count} 张；KV {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes/token；
@@ -409,11 +404,11 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
           L1 {rank.l1_capacity_pages.toLocaleString()} 页。
         </p>)}
       </>}
-      {!preview.runnable && timing === "analytical" && tpSize > 1 &&
+      {!preview.runnable && tpSize > 1 &&
         (model.moe_layers
           ? " 若要运行 TP/EP>1，请填写互联带宽、TP 集合通信延迟与 EP 单次通信开销。"
           : " 多卡容量可预览；填写互联带宽和 TP 集合通信延迟后才能运行。")}
-      {preview.runnable && timing === "analytical" && " 时延为未经校准的平均负载/Roofline 估计。"}
+      {preview.runnable && " 性能模型时延为未经校准的平均负载/Roofline 估计。"}
     </div>}
   </section>
   </>;

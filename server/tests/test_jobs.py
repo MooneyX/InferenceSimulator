@@ -369,7 +369,6 @@ def test_scan_model_hardware_presets_archive_successes_and_failures(tmp_path: Pa
     monkeypatch.setenv("SIMULATOR_WORKERS", "1")
     with TestClient(create_app(cache_path=tmp_path / "results.sqlite3")) as client:
         config = make_payload(num_requests=1)
-        config["inference"]["timing"] = {"mode": "analytical"}
         axes = [
             {"key": "inference.hardware.memory_bytes_per_gpu", "values": [1, 192]},
             {"key": "inference.model", "values": ["Qwen/Qwen3-8B", "Qwen/Qwen3-235B-A22B"]},

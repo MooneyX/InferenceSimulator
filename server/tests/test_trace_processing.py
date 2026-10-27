@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import await_task, run_simulation
+from conftest import run_simulation
 from simserver import create_app
 from simserver.trace_processing import compile_plan, scan_trace
 
@@ -94,13 +94,6 @@ def config() -> dict:
                 "effective_hbm_gb_s": 1,
             },
             "storage": {},
-            "timing": {
-                "mode": "empirical",
-                "prefill_c1": 0.01,
-                "prefill_c2": 0,
-                "decode_d1": 0.01,
-                "decode_d2": 0,
-            },
         },
     }
 
@@ -242,7 +235,7 @@ def test_upload_preview_export_and_reupload_plan() -> None:
         assert invalid.status_code == 422
 
 
-def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
+def test_trace_plan_uses_parsed_capacity_and_performance_model() -> None:
     resolved = config()
     resolved["inference"] = {
         "page_size": 64,
@@ -266,7 +259,6 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
             "effective_hbm_gb_s": 1,
         },
         "storage": {},
-        "timing": {"mode": "analytical"},
     }
     with TestClient(create_app()) as client:
         plan = compile_plan_from_sample(client)
@@ -292,11 +284,6 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
         assert scaled.json()["metrics"]["arrival_qps"] == pytest.approx(4)
         assert scaled.json()["analysis"] is not None
         resolved["workload"].pop("target_qps")
-        empirical_timing = config()["inference"]["timing"]
-        resolved["inference"]["timing"] = empirical_timing
-        empirical = run_simulation(client, resolved)
-        assert empirical.status_code == 200, empirical.text
-        assert empirical.json()["analysis"] is None
         resolved["inference"]["hardware"].update(
             {
                 "gpu_count": 2,
@@ -305,14 +292,9 @@ def test_trace_plan_uses_parsed_capacity_and_timing() -> None:
             }
         )
         resolved["inference"]["tp_size"] = 2
-        resolved["inference"]["timing"] = {"mode": "analytical"}
         tp = run_simulation(client, resolved)
         assert tp.status_code == 200, tp.text
         assert tp.json()["analysis"]["communication_ms"] > 0
-        resolved["inference"]["timing"] = empirical_timing
-        refused = client.post("/api/simulate", json=resolved)
-        assert refused.status_code == 202
-        assert await_task(client, refused.json()["id"])["status"] == "failed"
 
 
 def compile_plan_from_sample(client: TestClient) -> str:

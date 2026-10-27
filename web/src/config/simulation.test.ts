@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { LengthDistribution, SimConfig } from "../api/types";
-import { createDefaultSimConfig, createDefaultEmpiricalTiming, resolveClosedLoopCounts, validateSimConfig } from "./simulation";
+import { createDefaultSimConfig, resolveClosedLoopCounts, validateSimConfig } from "./simulation";
 
 describe("resolveClosedLoopCounts", () => {
   it.each([
@@ -73,7 +73,7 @@ describe("createDefaultSimConfig", () => {
           effective_fp16_tflops: 2250, effective_fp8_tflops: 4500, kernel_overhead_ms: 0.005,
         }),
         storage: expect.objectContaining({ l2_latency_ms: 0.01, l3_latency_ms: 0.1 }),
-        tp_size: 1, ep_size: 1, timing: { mode: "analytical" },
+        tp_size: 1, ep_size: 1,
       },
     });
     expect(createDefaultSimConfig().workload.synthetic).not.toHaveProperty("session");
@@ -110,13 +110,11 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["routing_policy"]);
   });
 
-  it("uses model specifications without manual capacity or empirical coefficient placeholders", () => {
+  it("uses model specifications without manual capacity or timing configuration", () => {
     const config = createDefaultSimConfig();
     expect(config.inference).not.toHaveProperty("kv");
-    expect(config.inference.timing).toEqual({ mode: "analytical" });
+    expect(config.inference).not.toHaveProperty("timing");
     expect(validateSimConfig(config)).toEqual([]);
-    config.inference.timing = { ...createDefaultEmpiricalTiming(), prefill_c1: NaN };
-    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["inference.timing.prefill_c1"]);
   });
 
   it("validates trace replay settings even when the plan must be reuploaded", () => {
@@ -276,10 +274,6 @@ describe("validateSimConfig", () => {
     config.scheduler.l3_prefetch_min_tokens = -1;
     config.inference.page_size = 0;
     config.scheduler.pd_mutually_exclusive = null as unknown as boolean;
-    config.inference.timing = { ...createDefaultEmpiricalTiming(), prefill_c1: -0.1 };
-    config.inference.timing.prefill_c2 = Number.POSITIVE_INFINITY;
-    config.inference.timing.decode_d1 = -1;
-    config.inference.timing.decode_d2 = Number.NaN;
     config.shared_l3!.lookup_latency_ms = -1;
 
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual([
@@ -292,10 +286,6 @@ describe("validateSimConfig", () => {
       "inference.page_size",
       "inference.max_output_tokens",
       "scheduler.pd_mutually_exclusive",
-      "inference.timing.prefill_c1",
-      "inference.timing.prefill_c2",
-      "inference.timing.decode_d1",
-      "inference.timing.decode_d2",
       "shared_l3.lookup_latency_ms",
     ]);
   });

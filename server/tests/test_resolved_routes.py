@@ -1,4 +1,4 @@
-"""统一推理入口的物理容量预览与两种计时方式覆盖。"""
+"""统一性能模型的物理容量预览与仿真契约覆盖。"""
 
 from typing import Any
 
@@ -54,25 +54,15 @@ def payload() -> dict[str, Any]:
                 "l2_to_l1_gb_s": 0.001,
                 "l3_to_l2_gb_s": 0.002,
             },
-            "timing": {"mode": "analytical"},
         },
     }
 
 
-def inference_payload(timing_mode: str) -> dict[str, Any]:
+def inference_payload() -> dict[str, Any]:
     request = payload()
     request["shared_l3"] = None
     request["inference"]["page_size"] = 64
-    timing = {
-        "mode": "empirical",
-        "prefill_c1": 0.01,
-        "prefill_c2": 0,
-        "decode_d1": 0.01,
-        "decode_d2": 0,
-    }
     request["inference"]["storage"].update(l2_available_gb=0)
-    if timing_mode == "empirical":
-        request["inference"]["timing"] = timing
     return request
 
 
@@ -117,14 +107,10 @@ def attach_trace(
     }
 
 
-@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
-def test_timing_modes_use_one_run_contract(
-    timing_mode: str,
-    workload_mode: str,
-) -> None:
+def test_performance_model_uses_one_run_contract(workload_mode: str) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(timing_mode)
+        request = inference_payload()
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode)
         response = run_simulation(client, request)
@@ -133,7 +119,9 @@ def test_timing_modes_use_one_run_contract(
         assert result.meta.config == SimConfig.model_validate(request)
         assert result.meta.num_completed == (1 if workload_mode == "synthetic" else 2)
         assert result.resolution is not None
-        assert (result.analysis is not None) == (timing_mode == "analytical")
+        assert result.analysis is not None
+        assert result.analysis.steps == result.meta.num_engine_steps
+        assert "timing" not in response.json()["meta"]["config"]["inference"]
         preview = client.post("/api/resolve", json=request)
         assert preview.status_code == 200, preview.text
         assert result.resolution.model_dump(mode="json") == preview.json()
@@ -142,14 +130,10 @@ def test_timing_modes_use_one_run_contract(
         assert repeated.text == result.model_dump_json()
 
 
-@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "open_loop", "closed_loop"])
-def test_engine_output_limit_is_request_failure_in_every_mode(
-    timing_mode: str,
-    workload_mode: str,
-) -> None:
+def test_engine_output_limit_is_request_failure_in_every_mode(workload_mode: str) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(timing_mode)
+        request = inference_payload()
         request["inference"]["max_output_tokens"] = 1
         if workload_mode != "synthetic":
             attach_trace(client, request, workload_mode, output_len=2)
@@ -167,36 +151,22 @@ def test_engine_output_limit_is_request_failure_in_every_mode(
             assert result.requests[0].output_len == 1
 
 
-@pytest.mark.parametrize("timing_mode", ["empirical", "analytical"])
 @pytest.mark.parametrize("workload_mode", ["synthetic", "trace"])
-@pytest.mark.parametrize("failure", ["invalid_tp", "unsupported_timing"])
-def test_unified_run_reports_kernel_errors_for_every_mode(
-    timing_mode: str,
-    workload_mode: str,
-    failure: str,
-) -> None:
+def test_unified_run_reports_invalid_tp(workload_mode: str) -> None:
     with TestClient(create_app()) as client:
-        request = inference_payload(timing_mode)
+        request = inference_payload()
         if workload_mode == "trace":
             attach_trace(client, request)
         request["inference"]["hardware"]["gpu_count"] = 2
-        if failure == "unsupported_timing":
-            request["inference"]["tp_size"] = 2
-            request["inference"]["timing"] = {
-                "mode": "empirical",
-                "prefill_c1": 1,
-                "decode_d1": 1,
-                "decode_d2": 0,
-            }
         receipt = client.post("/api/simulate", json=request)
         assert receipt.status_code == 202
         job = await_task(client, receipt.json()["id"])
         assert job["status"] == "failed"
-        assert ("TP 数" if failure == "invalid_tp" else "四系数") in job["error"]
+        assert "TP 数" in job["error"]
 
 
 def test_trace_preview_does_not_require_uploaded_plan() -> None:
-    request = inference_payload("analytical")
+    request = inference_payload()
     request["workload"] = {"mode": "trace", "session_rate": 1, "trace": {}}
     preview = TestClient(create_app()).post("/api/resolve", json=request)
     assert preview.status_code == 200, preview.text
@@ -236,16 +206,6 @@ def test_preview_and_run_resolve_identically() -> None:
     assert data["analysis"]["steps"] == data["meta"]["num_engine_steps"]
     assert data["meta"]["num_completed"] == 1
     assert data["meta"]["wall_clock_ms"] >= 0
-    request["inference"]["timing"] = {
-        "mode": "empirical",
-        "prefill_c1": 1,
-        "prefill_c2": 0,
-        "decode_d1": 2,
-        "decode_d2": 1,
-    }
-    empirical = run_simulation(client, request).json()
-    assert empirical["analysis"] is None
-    assert empirical["meta"]["wall_clock_ms"] >= 0
 
 
 def test_custom_attention_groups_preview_and_run() -> None:
@@ -343,7 +303,7 @@ def test_hy4_bf16_tp8_ep8_preview_and_simulation() -> None:
     assert run_modified.json()["resolution"] == modified.json()
 
 
-def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> None:
+def test_tp_performance_model_run_matches_preview() -> None:
     client = TestClient(create_app())
     request = payload()
     request["inference"]["model"].update(
@@ -383,22 +343,9 @@ def test_tp_analytical_run_matches_preview_and_empirical_stays_unavailable() -> 
     assert data["meta"]["num_completed"] == 1
     assert data["analysis"]["communication_ms"] > 0
     assert data["analysis"]["collectives"] == 2 * 36 * data["analysis"]["steps"]
-    request["inference"]["timing"] = {
-        "mode": "empirical",
-        "prefill_c1": 1,
-        "prefill_c2": 0,
-        "decode_d1": 2,
-        "decode_d2": 1,
-    }
-    assert client.post("/api/resolve", json=request).json()["runnable"] is False
-    refused = client.post("/api/simulate", json=request)
-    assert refused.status_code == 202
-    job = await_task(client, refused.json()["id"])
-    assert job["status"] == "failed"
-    assert "四系数" in job["error"]
 
 
-def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
+def test_qwen_moe_ep_preview_requires_parameters_then_runs() -> None:
     client = TestClient(create_app())
     catalog = client.get("/api/presets").json()
     request = payload()
@@ -445,17 +392,6 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     assert data["analysis"]["ep_dispatch_ms"] > 0
     assert data["analysis"]["ep_combine_ms"] > 0
     assert data["analysis"]["ep_exchanges"] > 0
-    request["inference"]["timing"] = {
-        "mode": "empirical",
-        "prefill_c1": 1,
-        "prefill_c2": 0,
-        "decode_d1": 2,
-        "decode_d2": 1,
-    }
-    assert client.post("/api/resolve", json=request).json()["runnable"] is False
-    refused = client.post("/api/simulate", json=request)
-    assert refused.status_code == 202
-    assert await_task(client, refused.json()["id"])["status"] == "failed"
 
 
 @pytest.mark.parametrize(
@@ -511,7 +447,7 @@ def test_h20_preset_preview_and_simulation(parallelism: int) -> None:
             item for item in client.get("/api/presets").json()["hardware"]
             if item["name"] == "NVIDIA H20"
         )
-        request = inference_payload("analytical")
+        request = inference_payload()
         request["inference"]["hardware"] = {
             **{key: preset[key] for key in HARDWARE_PRESET_FIELDS},
             "gpu_count": parallelism,

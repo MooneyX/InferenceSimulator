@@ -69,7 +69,7 @@ describe("SimulationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
       workload: { mode: "trace", arrival_mode: "closed_loop", session_rate: 2, seed: 0, trace: { plan_id: "plan-1" } },
-      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
+      inference: createDefaultSimConfig().inference,
     }));
     expect(onSubmit).toHaveBeenCalledTimes(1);
     fireEvent.change(screen.getByLabelText("负载模式"), { target: { value: "synthetic" } });
@@ -232,7 +232,7 @@ describe("SimulationForm", () => {
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,
         synthetic: expect.objectContaining({ turn_increment_len: { dist: "poisson", mean: 256 } }) }),
-      inference: expect.objectContaining({ timing: { mode: "analytical" },
+      inference: expect.objectContaining({
         storage: expect.objectContaining({ l2_available_gb: 2048,
           l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50 }) }),
       shared_l3: { available_gb: 100_000, lookup_latency_ms: 0.1 },
@@ -287,7 +287,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(256);
     expect(screen.getByLabelText("每页 token 数")).toHaveValue(64);
     expect(screen.getByLabelText(/Prefill \/ Decode 分步执行/)).toBeChecked();
-    expect(screen.getByLabelText("计时模式")).toHaveValue("analytical");
+    expect(screen.queryByLabelText("计时模式")).not.toBeInTheDocument();
   });
 
   it("updates the engine output limit without submitting a synthetic request limit", () => {
@@ -431,7 +431,7 @@ describe("SimulationForm", () => {
         synthetic: expect.objectContaining({
           session: expect.objectContaining({ num_sessions: 20, think_time_ms: 10_000 }),
         }) }),
-      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
+      inference: createDefaultSimConfig().inference,
     }));
   });
 
@@ -665,8 +665,6 @@ describe("SimulationForm", () => {
     config.inference.storage.l2_latency_ms = 1;
     config.inference.storage.l3_latency_ms = 2;
     config.shared_l3!.lookup_latency_ms = 3;
-    config.inference.timing = { mode: "empirical", prefill_c1: 0.1, prefill_c2: 0.000_01,
-      decode_d1: 8, decode_d2: 0.002 };
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
 
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
@@ -688,8 +686,8 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(1);
     expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(2);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(3);
-    expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
-    expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.1);
+    expect(screen.queryByLabelText("计时模式")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmit).toHaveBeenCalledWith(config);
@@ -698,7 +696,6 @@ describe("SimulationForm", () => {
   it("exports and imports the complete automatic configuration from the top transfer controls", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
     fireEvent.change(screen.getByLabelText("单卡显存容量（GB）"), { target: { value: "300" } });
     fireEvent.change(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）"), { target: { value: "1.5" } });
@@ -710,13 +707,13 @@ describe("SimulationForm", () => {
     const exported = (screen.getByLabelText("参数 JSON") as HTMLInputElement).value;
     expect(JSON.parse(exported)).toMatchObject({
       workload: { synthetic: { num_requests: 20 } }, scheduler: { l3_prefetch_min_tokens: 1024 },
-      inference: { timing: { mode: "empirical" }, model: { hidden_size: 2048 },
+      inference: { model: { hidden_size: 2048 },
         hardware: { memory_bytes_per_gpu: 300_000_000_000 } },
       shared_l3: { available_gb: 1500, lookup_latency_ms: 2.5 },
     });
+    expect(JSON.parse(exported).inference).not.toHaveProperty("timing");
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "4096" } });
     fireEvent.change(screen.getByLabelText("单卡显存容量（GB）"), { target: { value: "288" } });
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.queryByRole("radio", { name: /自动解析|手动配置/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("隐藏维度")).toHaveValue(2048);
@@ -724,11 +721,11 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）")).toHaveValue(1.5);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(2.5);
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(1024);
-    expect(screen.getByLabelText("计时模式")).toHaveValue("empirical");
+    expect(screen.queryByLabelText("计时模式")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ l3_prefetch_min_tokens: 1024 }),
-      inference: expect.objectContaining({ timing: expect.objectContaining({ mode: "empirical" }),
+      inference: expect.objectContaining({
         model: expect.objectContaining({ hidden_size: 2048 }),
         hardware: expect.objectContaining({ memory_bytes_per_gpu: 300_000_000_000 }),
         storage: expect.objectContaining({ l2_available_gb: 2048 }) }),
@@ -746,7 +743,7 @@ describe("SimulationForm", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ synthetic: expect.objectContaining({ num_requests: 40 }) }),
       scheduler: expect.objectContaining({ max_running_requests: 8 }),
-      inference: expect.objectContaining({ page_size: 100, timing: { mode: "analytical" } }),
+      inference: expect.objectContaining({ page_size: 100 }),
     }));
     expect(onSubmit.mock.lastCall![0].inference).not.toHaveProperty("kv");
   });
@@ -763,37 +760,39 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L2 可用容量（GB，仅 KV）")).toHaveValue(512);
   });
 
-  it("shows empirical coefficients only when automatic timing uses them", () => {
-    const onSubmitAuto = vi.fn();
-    render(<SimulationForm onSubmit={onSubmitAuto} />);
-    expect(screen.queryByLabelText("Prefill C1")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    fireEvent.change(screen.getByLabelText("Prefill C1"), { target: { value: "0.2" } });
+  it("shows one uncalibrated performance model without timing controls or request fields", () => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    const performance = screen.getByRole("region", { name: "性能模型" });
+    expect(performance).toHaveTextContent("Roofline/平均负载估计");
+    expect(performance).toHaveTextContent("未经实测校准");
+    expect(screen.queryByLabelText("计时模式")).not.toBeInTheDocument();
+    for (const label of ["Prefill C1", "Prefill C2", "Decode D1", "Decode D2"]) {
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByText(/解析模型|解析计时|经验模型/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ timing: expect.objectContaining({ mode: "empirical", prefill_c1: 0.2 }) }),
-    }));
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
-    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenCalledTimes(2);
-    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
-    }));
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    expect(screen.getByLabelText("Prefill C1")).toHaveValue(0.2);
-    fireEvent.change(screen.getByLabelText("Prefill C1"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
-    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenLastCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ timing: { mode: "analytical" } }),
-    }));
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    expect(screen.getByLabelText("Prefill C1")).toHaveValue(null);
-    fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
-    expect(onSubmitAuto).toHaveBeenCalledTimes(3);
+    expect(onSubmit).toHaveBeenCalledWith(createDefaultSimConfig());
+    expect(onSubmit.mock.lastCall![0].inference).not.toHaveProperty("timing");
+    fireEvent.click(screen.getByRole("button", { name: "导出参数" }));
+    const exported = JSON.parse((screen.getByLabelText("参数 JSON") as HTMLInputElement).value);
+    expect(exported.inference).not.toHaveProperty("timing");
   });
 
-  it("round-trips EP topology and runs MoE analytical timing only", () => {
+  it.each(["analytical", "empirical"])("rejects removed %s timing imports without updating the draft", (mode) => {
+    const onSubmit = vi.fn();
+    render(<SimulationForm onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByLabelText("请求数量"), { target: { value: "30" } });
+    const config = createDefaultSimConfig();
+    const legacy = { ...config, inference: { ...config.inference, timing: { mode } } };
+    fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(legacy) } });
+    fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("不支持的参数：inference.timing");
+    expect(screen.getByLabelText("请求数量")).toHaveValue(30);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("round-trips EP topology and runs the MoE performance model", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
@@ -824,16 +823,15 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ tp_size: 4, ep_size: 4, timing: { mode: "analytical" } }),
+      inference: expect.objectContaining({ tp_size: 4, ep_size: 4 }),
     }));
     fireEvent.change(screen.getByLabelText("EP 数（MoE 须等于 TP）"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByLabelText("EP 数（MoE 须等于 TP）")).toHaveValue(4);
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
+    expect(onSubmitAuto.mock.lastCall![0].inference).not.toHaveProperty("timing");
   });
 
-  it("round-trips TP topology and runs analytical multi-GPU only", () => {
+  it("round-trips TP topology and runs the multi-GPU performance model", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
     fireEvent.change(screen.getByLabelText("TP 数（必须等于 GPU 卡数）"), {
@@ -860,12 +858,10 @@ describe("SimulationForm", () => {
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
-      inference: expect.objectContaining({ tp_size: 4, timing: { mode: "analytical" },
+      inference: expect.objectContaining({ tp_size: 4,
         hardware: expect.objectContaining({ gpu_count: 4 }) }),
     }));
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "empirical" } });
-    expect(screen.getByRole("button", { name: "运行仿真" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("计时模式"), { target: { value: "analytical" } });
+    expect(onSubmitAuto.mock.lastCall![0].inference).not.toHaveProperty("timing");
     expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
   });
 

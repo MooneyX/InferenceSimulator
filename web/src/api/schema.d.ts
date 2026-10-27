@@ -430,17 +430,6 @@ export interface components {
             ep_exchanges: number;
         };
         /**
-         * AnalyticalTimingConfig
-         * @description 复用物理推理规格的解析 GPU 计时。
-         */
-        AnalyticalTimingConfig: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            mode: "analytical";
-        };
-        /**
          * AttentionGroup
          * @description 相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。
          */
@@ -534,28 +523,6 @@ export interface components {
             l3_to_l2_tokens_per_ms?: number | null;
             /** Rank Reports */
             rank_reports?: components["schemas"]["RankCapacityReport"][];
-        };
-        /**
-         * EmpiricalTimingConfig
-         * @description 经验 GPU 计时的四系数，不包含 KV 链路参数。
-         */
-        EmpiricalTimingConfig: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            mode: "empirical";
-            /** Prefill C1 */
-            prefill_c1: number;
-            /**
-             * Prefill C2
-             * @default 0
-             */
-            prefill_c2: number;
-            /** Decode D1 */
-            decode_d1: number;
-            /** Decode D2 */
-            decode_d2: number;
         };
         /**
          * ErrorResponse
@@ -662,7 +629,7 @@ export interface components {
             ep_communication_latency_ms?: number | null;
             /**
              * Kernel Overhead Ms
-             * @description 解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线
+             * @description 性能模型每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线
              * @default 0.005
              */
             kernel_overhead_ms: number;
@@ -700,8 +667,6 @@ export interface components {
             model: components["schemas"]["ModelSpec"];
             hardware: components["schemas"]["HardwareSpec"];
             storage: components["schemas"]["StorageSpec"];
-            /** Timing */
-            timing?: components["schemas"]["EmpiricalTimingConfig"] | components["schemas"]["AnalyticalTimingConfig"];
             /**
              * Tp Size
              * @default 1

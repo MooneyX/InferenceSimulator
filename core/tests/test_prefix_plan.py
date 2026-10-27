@@ -225,7 +225,7 @@ def test_output_is_not_clamped_and_is_bound_to_request() -> None:
         resolved_config(
             workload=cfg,
             engine=runtime,
-            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
     )
     assert result.requests[0].output_len == 100
@@ -254,7 +254,7 @@ def test_full_parent_output_drives_child_context_even_beyond_kv_capacity() -> No
         resolved_config(
             workload=cfg,
             engine=runtime,
-            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
     )
     assert result.requests[0].output_len == 100
@@ -283,7 +283,7 @@ def test_engine_completes_at_actual_output_not_rounded_request_limit() -> None:
         resolved_config(
             workload=cfg,
             engine=runtime,
-            perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
     )
     assert result.requests[0].output_len == 3
@@ -311,7 +311,7 @@ def test_synthetic_output_over_engine_cap_aborts_without_truncation(mode: str, c
         resolved_config(
             workload=workload,
             engine=runtime,
-            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
     )
     assert result.meta.num_completed == 0
@@ -350,7 +350,7 @@ def test_synthetic_output_at_engine_cap_completes_uncut(cap: int) -> None:
         resolved_config(
             workload=workload,
             engine=runtime,
-            perf_model=PerfModelConfig(prefill_c1=0, decode_d1=0, decode_d2=0),
+            perf_model=PerfModelConfig(),
         )
     )
     assert result.meta.num_completed == 1 and result.requests[0].output_len == cap

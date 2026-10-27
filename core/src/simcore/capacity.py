@@ -12,7 +12,6 @@ from simcore.runtime import (
 from simcore.schemas import (
     AttentionGroup,
     CapacityReport,
-    EmpiricalTimingConfig,
     EngineConfig,
     ModelSpec,
     PerfModelConfig,
@@ -259,9 +258,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
 
     l2_pages, l3_pages = l2 // page_bytes, l3 // page_bytes
     runnable = (
-        (tp_size == 1 or request.timing.mode == "analytical")
-        and (not is_moe or request.timing.mode == "analytical")
-        and (
+        (
             tp_size == 1
             or (
                 hardware.effective_interconnect_gb_s is not None
@@ -272,11 +269,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
     )
     reason = None
     if not runnable:
-        reason = (
-            "TP/EP 或 MoE 仅支持解析计时；四系数无法表达逐卡计算与通信"
-            if request.timing.mode == "empirical"
-            else "多卡解析运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销"
-        )
+        reason = "多卡运行须提供互联带宽、TP 集合通信延迟及所需的 EP 单次通信开销"
     return ResolutionReport(
         max_total_tokens=l1_pages * page_size,
         l2_capacity_tokens=l2_pages * page_size,
@@ -316,8 +309,6 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     lookup_latency = shared.lookup_latency_ms if shared is not None else 0.0
     report = resolve_config(config)
     if not report.runnable:
-        if inference.timing.mode == "empirical":
-            raise NotImplementedError(report.reason)
         raise ValueError(report.reason)
     storage = inference.storage
     engine = EngineConfig(
@@ -331,13 +322,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
         l2_capacity_tokens=report.l2_capacity_tokens,
         l3_capacity_tokens=report.l3_capacity_tokens,
     )
-    coefficients = (
-        inference.timing.model_dump(exclude={"mode"})
-        if isinstance(inference.timing, EmpiricalTimingConfig)
-        else {"prefill_c1": 0.0, "prefill_c2": 0.0, "decode_d1": 0.0, "decode_d2": 0.0}
-    )
     perf = PerfModelConfig(
-        **coefficients,
         kv_bytes_per_token=report.capacity.kv_bytes_per_token,
         l2_to_l1_bandwidth_bytes_per_ms=(
             storage.l2_to_l1_gb_s * 1_000_000
@@ -364,9 +349,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
         if capacity.l3_to_l2_tokens_per_ms is not None
         else None
     )
-    analytical = (
-        AnalyticalSpec(inference.model, inference.hardware, inference.tp_size, inference.ep_size)
-        if inference.timing.mode == "analytical"
-        else None
+    analytical = AnalyticalSpec(
+        inference.model, inference.hardware, inference.tp_size, inference.ep_size
     )
     return RuntimeConfig(engine, perf, TransferLinks(l2, l3), analytical, report)

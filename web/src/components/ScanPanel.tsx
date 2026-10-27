@@ -80,18 +80,11 @@ function scanDimensions(config: SimConfig, entries: Pick<AxisDraft, "key" | "tex
         const hardware = parseHardwareLevels(JSON.stringify(values.map((name) => ({ name,
           parallelism: Number(axis.hardwareTp?.[name] ?? config.inference.tp_size),
         }))));
-        if (config.inference.timing?.mode === "empirical" && hardware.some((entry) => entry.parallelism !== 1)) {
-          throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
-        }
         return { key: item.key, values: hardware };
       }
       return { key: item.key, values };
     }
     const values = parseLevels(axis.text, item.kind);
-    if (item.key === "inference.parallelism" && config.inference.timing?.mode === "empirical"
-        && values.some((value) => value !== 1)) {
-      throw new Error("经验计时仅支持每实例 GPU / TP 数为 1");
-    }
     if (item.key.startsWith("workload.synthetic.") && item.key.endsWith("_len")) {
       const name = item.key.split(".")[2] as "prompt_len" | "turn_increment_len" | "output_len";
       if (config.workload.synthetic?.[name].dist === "fixed" &&

@@ -871,20 +871,6 @@
         "type": "object",
         "title": "AnalyticalSummary"
       },
-      "AnalyticalTimingConfig": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "analytical",
-            "title": "Mode",
-            "default": "analytical"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "AnalyticalTimingConfig",
-        "description": "复用物理推理规格的解析 GPU 计时。"
-      },
       "AttentionGroup": {
         "properties": {
           "kind": {
@@ -1221,46 +1207,6 @@
         ],
         "title": "CapacityReport"
       },
-      "EmpiricalTimingConfig": {
-        "properties": {
-          "mode": {
-            "type": "string",
-            "const": "empirical",
-            "title": "Mode",
-            "default": "empirical"
-          },
-          "prefill_c1": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Prefill C1"
-          },
-          "prefill_c2": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Prefill C2",
-            "default": 0.0
-          },
-          "decode_d1": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Decode D1"
-          },
-          "decode_d2": {
-            "type": "number",
-            "minimum": 0.0,
-            "title": "Decode D2"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "prefill_c1",
-          "decode_d1",
-          "decode_d2"
-        ],
-        "title": "EmpiricalTimingConfig",
-        "description": "经验 GPU 计时的四系数，不包含 KV 链路参数。"
-      },
       "ErrorResponse": {
         "properties": {
           "detail": {
@@ -1521,7 +1467,7 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Kernel Overhead Ms",
-            "description": "解析计时每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
+            "description": "性能模型每个建模计算阶段的固定开销（ms）；默认值未经实测校准，0 为理想基线",
             "default": 0.005
           }
         },
@@ -1585,24 +1531,6 @@
           },
           "storage": {
             "$ref": "#/components/schemas/StorageSpec"
-          },
-          "timing": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/EmpiricalTimingConfig"
-              },
-              {
-                "$ref": "#/components/schemas/AnalyticalTimingConfig"
-              }
-            ],
-            "title": "Timing",
-            "discriminator": {
-              "propertyName": "mode",
-              "mapping": {
-                "analytical": "#/components/schemas/AnalyticalTimingConfig",
-                "empirical": "#/components/schemas/EmpiricalTimingConfig"
-              }
-            }
           },
           "tp_size": {
             "type": "integer",

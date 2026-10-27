@@ -25,7 +25,6 @@ from simcore import (
     simulate,
 )
 from simcore.schemas import (
-    EmpiricalTimingConfig,
     HardwareSpec,
     InferenceConfig,
     ModelSpec,
@@ -71,7 +70,6 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
                 effective_hbm_gb_s=1,
             ),
             storage=StorageSpec(),
-            timing=EmpiricalTimingConfig(prefill_c1=0.05, decode_d1=2.0, decode_d2=0.002),
         ),
     )
 

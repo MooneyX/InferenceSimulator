@@ -1,10 +1,9 @@
 import { useRef, useState, type FormEvent } from "react";
 
-import type { EmpiricalTimingConfig, ScanRequest, SimConfig } from "../api/types";
+import type { ScanRequest, SimConfig } from "../api/types";
 import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
-  createDefaultEmpiricalTiming,
   initialSharedL3,
   resolveClosedLoopCounts,
   validateSimConfig,
@@ -98,20 +97,9 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
       session: { ...draftSynthetic.session, topology: "linear",
         think_time_ms: draftSynthetic.session?.think_time_ms ?? 0,
         num_sessions: closedLoopCounts.numSessions } } } } : draftConfig;
-  const [empiricalDraft, setEmpiricalDraft] = useState(createDefaultEmpiricalTiming);
   const { model, hardware, tp_size: tpSize, ep_size: epSize } = config.inference;
-  const timing = config.inference.timing.mode;
-  const empiricalTiming = config.inference.timing.mode === "empirical" ? config.inference.timing : null;
   function updateInference(patch: Partial<FormSimConfig["inference"]>) {
     setConfig((current) => ({ ...current, inference: { ...current.inference, ...patch } }));
-  }
-  function setTiming(value: FormSimConfig["inference"]["timing"]["mode"]) {
-    if (config.inference.timing.mode === "empirical") setEmpiricalDraft(config.inference.timing);
-    updateInference({ timing: value === "analytical" ? { mode: "analytical" } : empiricalDraft });
-  }
-  function updateTiming(patch: Partial<EmpiricalTimingConfig>) {
-    if (config.inference.timing.mode !== "empirical") return;
-    updateInference({ timing: { ...config.inference.timing, ...patch } });
   }
   const [showValidation, setShowValidation] = useState(false);
   const [paramsJson, setParamsJson] = useState("");
@@ -131,7 +119,6 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
   const needsTpCommunication = tpSize > 1;
   const needsEpCommunication = model.moe_layers > 0 && epSize > 1;
   const runUnavailable = (
-    (timing === "empirical" && (model.moe_layers > 0 || needsTpCommunication)) ||
     tpSize !== hardware.gpu_count ||
     (model.moe_layers > 0 ? epSize !== tpSize : epSize !== 1) ||
     (needsTpCommunication && (hardware.effective_interconnect_gb_s == null ||
@@ -201,10 +188,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
   }
 
   function handleScanBaseImport(imported: SimConfig): void {
-    const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
-    setConfig({ ...imported, inference,
+    setConfig({ ...imported,
       workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
-    if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
     setWorkloadMode(imported.workload.mode);
     if (imported.workload.mode === "synthetic") setDerivedField("turns");
     if (imported.workload.mode === "trace") {
@@ -220,10 +205,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
   function handleImport(): void {
     try {
       const imported = parseSimConfigJson(paramsJson.trim());
-      const inference = { ...imported.inference, timing: imported.inference.timing ?? { mode: "analytical" as const } };
-      setConfig({ ...imported, inference,
+      setConfig({ ...imported,
         workload: imported.workload.mode === "trace" ? config.workload : imported.workload });
-      if (inference.timing.mode === "empirical") setEmpiricalDraft(inference.timing);
       setWorkloadMode(imported.workload.mode);
       if (imported.workload.mode === "synthetic") setDerivedField("turns");
       if (imported.workload.mode === "trace" && imported.workload.trace) {
@@ -610,25 +593,9 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <p className="section-kicker">Performance model</p>
             <h2 id="performance-heading">性能模型</h2>
           </div>
-          <p>所有时间系数的单位均为毫秒</p>
+          <p>基于模型与硬件规格的 Roofline/平均负载估计</p>
         </div>
-        <div className="form-grid" style={{ marginBottom: 14 }}>
-          <div className="form-field"><label htmlFor="timing-mode">计时模式</label>
-            <select id="timing-mode" value={timing} onChange={(event) =>
-              setTiming(event.target.value as FormSimConfig["inference"]["timing"]["mode"])}>
-              <option value="analytical">逐步 Roofline 估计</option>
-              <option value="empirical">四系数经验模型</option>
-            </select></div>
-        </div>
-        {timing === "analytical" &&
-          <p>使用模型与硬件规格估算计时；KV 容量和链路参数由自动解析生成。</p>}
-        {empiricalTiming && <div className="form-grid">
-          {([ ["prefill_c1", "Prefill C1"], ["prefill_c2", "Prefill C2"],
-            ["decode_d1", "Decode D1"], ["decode_d2", "Decode D2"] ] as const).map(([field, label]) =>
-            <NumberField key={field} id={field.replaceAll("_", "-")} name={`inference.timing.${field}`}
-              label={label} value={empiricalTiming[field]}
-              error={errorByField.get(`inference.timing.${field}`)} onChange={(value) => updateTiming({ [field]: value })} />)}
-        </div>}
+        <p>性能模型根据计算量、显存访问和通信开销估算时延；KV 容量和链路参数由配置计算。结果未经实测校准，不代表真实部署性能。</p>
       </section>
       </fieldset>
 

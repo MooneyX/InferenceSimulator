@@ -5,13 +5,12 @@ from typing import Any, ClassVar, Literal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from simcore.runtime import RuntimeConfig, TransferLink, TransferLinks
+from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferLink, TransferLinks
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
     AttentionGroup,
     AuxWeightDtype,
-    EmpiricalTimingConfig,
     EngineConfig,
     FixedLength,
     HardwareSpec,
@@ -57,6 +56,7 @@ TOY_HARDWARE = HardwareSpec(
     effective_fp16_tflops=1,
     effective_hbm_gb_s=1,
 )
+TOY_PERFORMANCE = AnalyticalSpec(TOY_MODEL, TOY_HARDWARE, 1, 1)
 
 
 def resolved_config(
@@ -65,6 +65,7 @@ def resolved_config(
     engine: EngineConfig,
     perf_model: PerfModelConfig,
     num_instances: int = 1,
+    hardware: HardwareSpec = TOY_HARDWARE,
 ) -> SimConfig:
     """用模型解析得到的每页 KV 字节数和权重字节数还原测试所需容量。"""
     from simcore.capacity import resolve_config
@@ -75,12 +76,6 @@ def resolved_config(
         pd_mutually_exclusive=engine.pd_mutually_exclusive,
         l3_prefetch_min_tokens=engine.l3_prefetch_min_tokens,
     )
-    timing = EmpiricalTimingConfig(
-        prefill_c1=perf_model.prefill_c1,
-        prefill_c2=perf_model.prefill_c2,
-        decode_d1=perf_model.decode_d1,
-        decode_d2=perf_model.decode_d2,
-    )
     storage = StorageSpec()
     base = SimConfig(
         workload=workload,
@@ -90,9 +85,8 @@ def resolved_config(
             page_size=engine.page_size,
             max_output_tokens=engine.max_output_tokens,
             model=TOY_MODEL,
-            hardware=TOY_HARDWARE,
+            hardware=hardware,
             storage=storage,
-            timing=timing,
         ),
     )
     budget = resolve_config(base).capacity
@@ -119,7 +113,7 @@ def resolved_config(
         update={
             "inference": base.inference.model_copy(
                 update={
-                    "hardware": TOY_HARDWARE.model_copy(update={"memory_bytes_per_gpu": l1_bytes}),
+                    "hardware": hardware.model_copy(update={"memory_bytes_per_gpu": l1_bytes}),
                     "storage": physical_storage,
                 }
             ),
@@ -131,7 +125,11 @@ def resolved_config(
     )
 
 
-def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig:
+def runtime_config(
+    engine: EngineConfig,
+    perf: PerfModelConfig,
+    analytical: AnalyticalSpec = TOY_PERFORMANCE,
+) -> RuntimeConfig:
     """直接 Engine 单测保留显式运行参数，不经过公开 SimConfig。"""
     l2 = (
         TransferLink(
@@ -153,7 +151,9 @@ def runtime_config(engine: EngineConfig, perf: PerfModelConfig) -> RuntimeConfig
         and perf.l3_to_l2_bandwidth_bytes_per_ms
         else None
     )
-    return RuntimeConfig(engine=engine, perf_model=perf, links=TransferLinks(l2, l3))
+    return RuntimeConfig(
+        engine=engine, perf_model=perf, links=TransferLinks(l2, l3), analytical=analytical
+    )
 
 
 def metric_inputs() -> dict[str, Any]:
@@ -196,7 +196,7 @@ def make_config(**engine_overrides: object) -> SimConfig:
         engine=EngineConfig.model_validate(
             {"max_running_requests": 8, "max_total_tokens": 4096, **engine_overrides}
         ),
-        perf_model=PerfModelConfig(prefill_c1=0.5, decode_d1=10.0, decode_d2=0.001),
+        perf_model=PerfModelConfig(),
     )
 
 
@@ -782,18 +782,13 @@ class TestConfigValidation:
                 }
             )
 
-    def test_prefill_c2_defaults_to_zero(self) -> None:
+    def test_runtime_uses_model_hardware_and_explicit_zero_storage_latency(self) -> None:
         from simcore.capacity import prepare_runtime
 
         config = make_config()
         inference = config.inference
-        assert isinstance(inference.timing, EmpiricalTimingConfig)
-        assert (
-            inference.timing.prefill_c2
-            == inference.storage.l2_latency_ms
-            == inference.storage.l3_latency_ms
-            == 0.0
-        )
+        assert "timing" not in inference.model_dump()
+        assert inference.storage.l2_latency_ms == inference.storage.l3_latency_ms == 0.0
         assert config.shared_l3 is not None and config.shared_l3.lookup_latency_ms == 0.0
         runtime = prepare_runtime(config)
         assert runtime.perf_model.kv_bytes_per_token == 64
@@ -917,12 +912,13 @@ class TestConfigValidation:
         "field",
         ["prefill_c1", "prefill_c2", "decode_d1", "decode_d2"],
     )
-    @pytest.mark.parametrize("invalid", [-1.0, float("inf"), float("nan")])
-    def test_negative_coefficients_rejected(self, field: str, invalid: float) -> None:
+    def test_removed_coefficients_rejected(self, field: str) -> None:
         payload = make_config().model_dump()
-        payload["inference"]["timing"][field] = invalid
-        with pytest.raises(ValidationError):
+        payload["inference"][field] = 1.0
+        with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
+        with pytest.raises(ValidationError, match=field):
+            PerfModelConfig.model_validate({field: 1.0})
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -1008,10 +1004,8 @@ class TestConfigValidation:
             cfg.inference.page_size = 1
         with pytest.raises(ValidationError):
             cfg.inference.storage.l2_available_gb = 0.001
-        timing = cfg.inference.timing
-        assert isinstance(timing, EmpiricalTimingConfig)
         with pytest.raises(ValidationError):
-            timing.prefill_c1 = 1
+            cfg.inference.hardware.effective_fp16_tflops = 1
 
     @pytest.mark.parametrize("field", ["l1_available_gb", "runtime_reserve_bytes"])
     def test_removed_memory_inputs_are_rejected(self, field: str) -> None:
@@ -1046,41 +1040,40 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
-    def test_analytical_timing_requires_no_empirical_coefficients(self) -> None:
+    def test_performance_model_requires_only_physical_specs(self) -> None:
+        from simcore.capacity import prepare_runtime
+
         payload = make_config().model_dump()
         payload["shared_l3"] = None
         payload["inference"] = {
             "page_size": 4,
-            "model": {
-                "name": "toy",
-                "num_layers": 2,
-                "hidden_size": 16,
-                "num_attention_heads": 2,
-                "num_kv_heads": 1,
-                "head_dim": 8,
-                "ffn_intermediate_size": 32,
-                "vocab_size": 16,
-            },
-            "hardware": {
-                "name": "toy",
-                "memory_bytes_per_gpu": 2_000_000,
-                "effective_fp16_tflops": 1,
-                "effective_hbm_gb_s": 1,
-            },
+            "model": TOY_MODEL.model_dump(),
+            "hardware": TOY_HARDWARE.model_dump(),
             "storage": {},
-            "timing": {"mode": "analytical"},
         }
         config = SimConfig.model_validate(payload)
-        assert config.inference.timing.model_dump() == {"mode": "analytical"}
+        assert "timing" not in config.inference.model_dump()
         assert config.inference.tp_size == config.inference.ep_size == 1
+        assert prepare_runtime(config).analytical == AnalyticalSpec(TOY_MODEL, TOY_HARDWARE, 1, 1)
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
-        for field in ("kv", "prefill_c1"):
-            inference = payload["inference"] | {field: {} if field == "kv" else 1}
-            with pytest.raises(ValidationError, match=field):
-                SimConfig.model_validate(payload | {"inference": inference})
-        payload["inference"]["timing"]["prefill_c1"] = 1
-        with pytest.raises(ValidationError, match="prefill_c1"):
+
+    @pytest.mark.parametrize(
+        "timing",
+        [
+            {},
+            {"mode": "analytical"},
+            {"mode": "empirical", "prefill_c1": 0.05, "decode_d1": 8, "decode_d2": 0.002},
+        ],
+    )
+    def test_removed_timing_config_is_rejected(self, timing: dict[str, object]) -> None:
+        payload = make_config().model_dump()
+        payload["inference"]["timing"] = timing
+        with pytest.raises(ValidationError) as exc_info:
             SimConfig.model_validate(payload)
+        assert any(
+            error["type"] == "extra_forbidden" and error["loc"] == ("inference", "timing")
+            for error in exc_info.value.errors()
+        )
 
     def test_runtime_is_frozen_and_preserves_resolved_physical_components(self) -> None:
         from dataclasses import FrozenInstanceError
@@ -1099,11 +1092,11 @@ class TestConfigValidation:
         config = SimConfig.model_validate(payload)
         original = config.model_dump()
         runtime = prepare_runtime(config)
-        assert runtime.resolution == resolve_config(config) and runtime.analytical is None
+        assert runtime.resolution == resolve_config(config)
         assert runtime.engine.page_size == 64
-        timing = config.inference.timing
-        assert isinstance(timing, EmpiricalTimingConfig)
-        assert runtime.perf_model.prefill_c1 == timing.prefill_c1
+        assert runtime.analytical == AnalyticalSpec(
+            config.inference.model, config.inference.hardware, 1, 1
+        )
         assert runtime.perf_model.kv_bytes_per_token == 64
         assert runtime.links.l2_to_l1 is not None and runtime.links.l2_to_l1.transfer_ms == 32
         assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
@@ -1121,7 +1114,7 @@ class TestConfigValidation:
         assert "mode" not in payload["inference"]
         assert "mode" not in payload["shared_l3"]
         assert payload["workload"]["mode"] == "synthetic"
-        assert payload["inference"]["timing"]["mode"] == "empirical"
+        assert "timing" not in payload["inference"]
         assert SimConfig.model_validate(payload) == cfg
         assert SimConfig.model_validate_json(cfg.model_dump_json()) == cfg
 

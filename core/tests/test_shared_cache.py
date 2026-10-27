@@ -225,9 +225,6 @@ def settings(*, instances: int = 3, prompt: int = 4) -> SimConfig:
             l3_prefetch_min_tokens=0,
         ),
         perf_model=PerfModelConfig(
-            prefill_c1=1,
-            decode_d1=1,
-            decode_d2=0,
             kv_bytes_per_token=16,
             l2_to_l1_bandwidth_bytes_per_ms=64,
             l3_to_l2_bandwidth_bytes_per_ms=64,
@@ -270,9 +267,6 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
                 l3_prefetch_min_tokens=0,
             ),
             PerfModelConfig(
-                prefill_c1=1,
-                decode_d1=1,
-                decode_d2=0,
                 kv_bytes_per_token=16,
                 l2_to_l1_bandwidth_bytes_per_ms=64,
                 l3_to_l2_bandwidth_bytes_per_ms=64,
@@ -353,7 +347,7 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=16, l3_prefetch_min_tokens=0),
-        PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, kv_bytes_per_token=16,
+        PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
@@ -402,7 +396,7 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
-        PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, kv_bytes_per_token=16,
+        PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
@@ -439,7 +433,7 @@ def test_l2_load_overlaps_same_page_prefetch_after_another_instance_demotes(
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
-        PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0, kv_bytes_per_token=16,
+        PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64 if not prefetch_finishes_first else 16,
                         l3_to_l2_bandwidth_bytes_per_ms=32, l3_lookup_latency_ms=2),
     )
@@ -497,7 +491,7 @@ def test_simulation_reuses_another_instances_evicted_l1_only_when_shared(
         num_instances=2, workload=settings().workload,
         engine=EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4,
                             l2_capacity_tokens=8),
-        perf_model=PerfModelConfig(prefill_c1=1, decode_d1=1, decode_d2=0,
+        perf_model=PerfModelConfig(
                                    kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=64),
     ).model_copy(update={"shared_l2_enabled": enabled})
     result = simulate(config)

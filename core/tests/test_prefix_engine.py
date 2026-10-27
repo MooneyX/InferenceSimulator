@@ -16,7 +16,7 @@ from simcore.schemas import (
 from test_client import planned_client
 from test_schemas import runtime_config
 
-PERF = PerfModelConfig(prefill_c1=1, decode_d1=0, decode_d2=0)
+PERF = PerfModelConfig()
 
 
 def request(
@@ -33,20 +33,26 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
     engine = Engine(runtime_config(config, PERF))
     engine.submit(request(0, 2, maximum=2, output=2), 0)
-    assert engine.start_step(0, 0) == (2, ())
+    started = engine.start_step(0, 0)
+    assert started is not None and started[1] == ()
+    now = started[0]
     assert engine._prefix_cache.page(encode(0, 0)) is None
-    assert engine.finish_step(2) == ()
+    assert engine.finish_step(now) == ()
     assert engine._prefix_cache.page(encode(0, 1)) is None
-    assert engine.start_step(2, 1) == (0, (0,))
-    assert engine.finish_step(2) == (0,)
+    started = engine.start_step(now, 1)
+    assert started is not None and started[1] == (0,)
+    now += started[0]
+    assert engine.finish_step(now) == (0,)
     assert engine._prefix_cache.page(encode(0, 1)) is None
-    engine.complete(2, 0)
+    engine.complete(now, 0)
     assert engine._prefix_cache.page(encode(0, 1)) is None  # K=P+O-1=3
     child = request(1, 5, inherited=(encode(0, 0),))
-    engine.submit(child, 2)
-    assert engine.start_step(2, 2) == (3, (1,))
-    assert engine.finish_step(5) == (1,)
-    engine.complete(5, 1)
+    engine.submit(child, now)
+    started = engine.start_step(now, 2)
+    assert started is not None and started[1] == (1,)
+    now += started[0]
+    assert engine.finish_step(now) == (1,)
+    engine.complete(now, 1)
     assert engine.finalize().records[1].actual_hit_tokens == 2
 
 
@@ -56,18 +62,22 @@ def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> No
     identity = (encode(99, 0),)
     engine.submit(request(0, 3, inherited=identity), 0)
     engine.submit(request(1, 3, inherited=identity), 0)
-    assert engine.start_step(0, 0) == (6, (0, 1))
+    started = engine.start_step(0, 0)
+    assert started is not None and started[1] == (0, 1)
+    now = started[0]
     assert engine._prefix_cache.page(identity[0]) is None
-    assert engine.finish_step(6) == (0, 1)
+    assert engine.finish_step(now) == (0, 1)
     page = engine._prefix_cache.page(identity[0])
     assert page is not None and page.ref_count == 2
     assert engine._prefix_cache.peak_resident_pages == 4
-    engine.complete(6, 0)
-    engine.complete(6, 1)
-    engine.submit(request(2, 3, inherited=identity), 6)
-    assert engine.start_step(6, 1) == (1, (2,))
-    assert engine.finish_step(7) == (2,)
-    engine.complete(7, 2)
+    engine.complete(now, 0)
+    engine.complete(now, 1)
+    engine.submit(request(2, 3, inherited=identity), now)
+    started = engine.start_step(now, 1)
+    assert started is not None and started[1] == (2,)
+    now += started[0]
+    assert engine.finish_step(now) == (2,)
+    engine.complete(now, 2)
     assert [record.actual_hit_tokens for record in engine.finalize().records] == [0, 0, 2]
 
 
@@ -120,12 +130,12 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
 def test_distinct_roots_do_not_share_input_pages() -> None:
     config = EngineConfig(max_running_requests=2, max_total_tokens=32, page_size=2)
     engine = Engine(runtime_config(config, PERF))
-    engine.submit(request(0, 2), 0)
-    assert engine.start_step(0, 0) == (2, (0,))
-    assert engine.finish_step(2) == (0,)
-    engine.complete(2, 0)
-    engine.submit(request(1, 2), 2)
-    assert engine.start_step(2, 1) == (2, (1,))
-    assert engine.finish_step(4) == (1,)
-    engine.complete(4, 1)
+    now = 0.0
+    for key in range(2):
+        engine.submit(request(key, 2), now)
+        started = engine.start_step(now, key)
+        assert started is not None and started[1] == (key,)
+        now += started[0]
+        assert engine.finish_step(now) == (key,)
+        engine.complete(now, key)
     assert engine.finalize().records[1].matched_cache_tokens == 0

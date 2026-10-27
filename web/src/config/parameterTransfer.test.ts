@@ -54,18 +54,17 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), engine: {} }))).toThrow("不支持的参数：engine");
   });
 
-  it("imports empirical timing settings using schema defaults", () => {
+  it("imports performance settings using schema defaults", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1,
       workload: { session_rate: 1, synthetic: { num_requests: 3,
         prompt_len: { dist: "fixed", value: 64 }, turn_increment_len: { dist: "fixed", value: 16 },
         output_len: { dist: "fixed", value: 8 } } },
       scheduler: { max_running_requests: 2 },
-      inference: { model: initialModel, hardware: initialHardware, storage: initialStorage,
-        timing: { mode: "empirical", prefill_c1: 1, decode_d1: 2, decode_d2: 0.1 } },
+      inference: { model: initialModel, hardware: initialHardware, storage: initialStorage },
     }));
     expect(config.scheduler).toEqual({ max_running_requests: 2, max_prefill_tokens: 16_384, l3_prefetch_min_tokens: 256, pd_mutually_exclusive: true });
-    expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
-      timing: { mode: "empirical", prefill_c2: 0 } });
+    expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1 });
+    expect(config.inference).not.toHaveProperty("timing");
     expect(config.inference).not.toHaveProperty("kv");
     expect(config.workload).toMatchObject({ mode: "synthetic", arrival_mode: "closed_loop", seed: 0, session_rate: 1 });
     expect(config.inference).toHaveProperty("max_output_tokens", 65_536);
@@ -90,17 +89,27 @@ describe("parameter JSON transfer", () => {
         storage: {} },
     }));
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
-      timing: { mode: "analytical" }, model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
+      model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
       hardware: { gpu_count: 1, kernel_overhead_ms: 0.005 },
       storage: { l2_available_gb: 0, l2_latency_ms: 0.01, l3_latency_ms: 0.1 } });
     expect(config.workload).toMatchObject({ seed: 0, target_qps: null, trace: { plan_id: null } });
   });
 
-  it("keeps analytical timing free of empirical placeholders", () => {
+  it("round-trips performance settings without timing", () => {
     const config = createDefaultSimConfig();
-    expect(parseSimConfigJson(serializeSimConfig(config)).inference.timing).toEqual({ mode: "analytical" });
-    expect(() => parseSimConfigJson(JSON.stringify({ ...config, inference: { ...config.inference,
-      timing: { mode: "analytical", prefill_c1: 0.05 } } }))).toThrow("inference.timing.prefill_c1");
+    expect(parseSimConfigJson(serializeSimConfig(config)).inference).not.toHaveProperty("timing");
+  });
+
+  it.each([
+    { mode: "analytical" },
+    { mode: "empirical", prefill_c1: 0.05, prefill_c2: 0, decode_d1: 8, decode_d2: 0.002 },
+    {},
+    null,
+  ])("rejects removed inference.timing on import and export: %j", (timing) => {
+    const config = createDefaultSimConfig();
+    const legacy = { ...config, inference: { ...config.inference, timing } };
+    expect(() => parseSimConfigJson(JSON.stringify(legacy))).toThrow("不支持的参数：inference.timing");
+    expect(() => serializeSimConfig(legacy)).toThrow("不支持的参数：inference.timing");
   });
 
   it("round-trips the complete API config without result data", () => {
@@ -131,7 +140,7 @@ describe("parameter JSON transfer", () => {
           nope_dim: 192, value_dim: 256, index_heads: 32, index_dim: 128,
           topk: 2048, full_indexer_layers: 1, output_gate: true,
           qk_norm: false, norm_dtype: dtype, index_norm: "rms", index_norm_dtype: dtype, sink_dtype: dtype,
-        }] }, hardware: initialHardware, storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
+        }] }, hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1,
     };
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const disabled: InferenceConfig = { ...request, model: { ...request.model,
@@ -148,7 +157,7 @@ describe("parameter JSON transfer", () => {
       attention_layout: "grouped", attention_groups: [{ kind: "gqa", layers: initialModel.num_layers,
         num_attention_heads: 32, num_kv_heads: 8, head_dim: 128, output_gate: false,
         qk_norm: true, index_norm: "layer" }],
-    }, hardware: initialHardware, storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1 };
+    }, hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1 };
     const invalid = [
       [{ norms: null }, "model.norms"], [{ norms: [] }, "model.norms"],
       [{ norms: { kind: "unknown" } }, "model.norms.kind"],
@@ -299,7 +308,7 @@ describe("parameter JSON transfer", () => {
             topk: 2048, index_heads: 32, index_dim: 128, full_indexer_layers: 1 },
         ] },
       hardware: initialHardware, storage: initialStorage,
-      timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
+      tp_size: 1, ep_size: 1,
     };
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     expect(() => parseInferenceJson(JSON.stringify({ ...request, model: {
@@ -328,7 +337,7 @@ describe("parameter JSON transfer", () => {
           qk_norm: true, norm_dtype: null, index_norm: "layer", index_norm_dtype: "fp32", sink_dtype: "fp32",
         }] },
       hardware: { ...initialHardware, gpu_count: 8 },
-      storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 8, ep_size: 8,
+      storage: initialStorage, tp_size: 8, ep_size: 8,
     };
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const group = request.model.attention_groups![0];
@@ -388,7 +397,7 @@ describe("parameter JSON transfer", () => {
           ...(kind === "mla_dsa" ? { index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 } : {}),
           output_gate: true, qk_norm: true, index_norm: "layer",
         }] }, hardware: initialHardware, storage: initialStorage,
-      timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1,
+      tp_size: 1, ep_size: 1,
     };
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const disabled = { ...request, model: { ...request.model,
@@ -417,7 +426,7 @@ describe("parameter JSON transfer", () => {
     const base: InferenceConfig = { ...createDefaultSimConfig().inference,
       model: { ...initialModel, moe_layers: 1, num_experts: 8, experts_per_token: 2,
         expert_intermediate_size: 512, num_shared_experts: 1, shared_expert_intermediate_size: 1024 },
-      hardware: initialHardware, storage: initialStorage, timing: { mode: "analytical" as const }, tp_size: 1, ep_size: 1 };
+      hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1 };
     const invalid = [
       [{ ...base.model, num_shared_experts: -1 }, "model.num_shared_experts"],
       [{ ...base.model, num_shared_experts: 0.5 }, "model.num_shared_experts"],
@@ -478,7 +487,6 @@ describe("parameter JSON transfer", () => {
         memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1,
         ep_communication_latency_ms: null },
       storage: { ...initialStorage }, tp_size: 1, ep_size: 1,
-      timing: { mode: "analytical" as const },
     };
     expect(parseInferenceJson(serializeInference(base))).toEqual(base);
     expect(() => parseInferenceJson(JSON.stringify({ ...base,

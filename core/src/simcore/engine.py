@@ -7,10 +7,9 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
 
-from simcore.analytical import step_cost
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CachePool, L1Snapshot, TieredKVCache, TierSnapshot
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, step_cost
 from simcore.runtime import RuntimeConfig
 from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import (

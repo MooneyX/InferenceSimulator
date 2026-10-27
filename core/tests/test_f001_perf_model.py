@@ -4,8 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from simcore.analytical import step_cost
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, step_cost
 from test_schemas import TOY_HARDWARE, TOY_MODEL
 
 

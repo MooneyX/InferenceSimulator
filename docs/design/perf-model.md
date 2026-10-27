@@ -1,6 +1,6 @@
 # 性能模型与 KV 恢复计时
 
-所有仿真通过 `core/src/simcore/analytical.py` 的 `step_cost` 使用同一性能模型：根据模型结构、硬件有效性能和实际步工作量估算逐阶段计算、访存与通信时间。`perf_model.py` 保留不可变工作量描述，`PerfModelConfig` 仅保留 KV 字节数、链路速率和延迟；KV 上行传输由引擎独立异步计时。公开配置不再接受 `inference.timing`，不保留经验四系数或兼容转换。这里估算的是**仿真时间**，不是实测 GPU 时间或已标定的硬件性能。
+所有仿真通过 `core/src/simcore/perf_model.py` 的 `step_cost` 使用同一性能模型：根据模型结构、硬件有效性能和实际步工作量估算逐阶段计算、访存与通信时间。同一模块定义不可变工作量、`StepCost` 及全部成本计算函数；`PerfModelConfig` 仅保留 KV 字节数、链路速率和延迟，KV 上行传输由引擎独立异步计时。公开配置不再接受 `inference.timing`，不保留经验四系数或兼容转换。这里估算的是**仿真时间**，不是实测 GPU 时间或已标定的硬件性能。
 
 ## 单项工作量
 
@@ -10,7 +10,7 @@
 
 `Engine.start_step` 选批，内部 `_execute_step`（`selection` 必填）构造不可变 `StepWorkload`：GPU 阶段只有 `PREFILL`、`DECODE`、`MIXED`。Prefill/Decode 项按请求 ID 排序；还记录新申请页数、批内请求及 `restore_only` 请求 ID（混合步中只恢复准入、不新采样输出的请求），不携带恢复页来源或页大小。传输是独立异步任务，不构造纯 `RESTORE` GPU 步；两种 P/D 模式等待回载时均可推进已有 Decode，新恢复请求本步不参加 Decode。
 
-`analytical.step_cost` 汇总本步 Prefill/Decode 工作量，对每个计算阶段使用 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，再依次累加层、算子阶段与同步通信。融合步共享该批的权重读取；不是分别计算 P/D 后取最大值。KV 传输时长不附加到 GPU 步长。结果字段类型仍允许为空，但新运行（含零 GPU 步）始终提供 `analysis` 对象。
+`perf_model.step_cost` 汇总本步 Prefill/Decode 工作量，对每个计算阶段使用 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，再依次累加层、算子阶段与同步通信。融合步共享该批的权重读取；不是分别计算 P/D 后取最大值。KV 传输时长不附加到 GPU 步长。结果字段类型仍允许为空，但新运行（含零 GPU 步）始终提供 `analysis` 对象。
 
 ## 异步页恢复计时
 
@@ -29,7 +29,7 @@ restore_time_ms = Σ(已完成上行任务的 service_ms)
 
 ## 单 GPU 与同构 TP 解析计时
 
-`POST /api/simulate` 始终使用 `analytical.step_cost`。在 Dense 全注意力 GQA/MQA、BF16/FP16、单 GPU 条件下，以已解析的 `ModelSpec` 和 `HardwareSpec` 估算各阶段成本。投影、因果注意力、FFN 各阶段分别取 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，逐层顺序相加；融合步汇总本步 Prefill 和 Decode 的工作量、权重每层计一次。KV 恢复不产生 GPU 工作量或算子成本，按前述异步页传输事件独立推进，不附加到解析 GPU 步长。容量解析把物理链路带宽转换为 token/ms，每页每链路按固定延迟加页 token 数/速率计服务时长；`restore_bytes` 仍使用派生的 KV bytes/token 供指标展示。单个 `SimResult` 中的 `analysis` 汇总执行步数、计算量、HBM 访问与解析耗时；该单卡模型不包括 embedding/输出词表投影、形状校准或 TP/EP 通信，不得解释为真实设备测量值。全注意力 Dense BF16/FP16 的同构 TP>1 也沿用同一性能模型：Query 头与 FFN 按 rank 均分，KV 头不足 TP 数时在不同 rank 复制。每 rank 对 QKV、注意力、输出投影和 FFN 分别按本地 FLOPs/HBM 做 Roofline；同组工作均匀，取任意一张卡的阶段耗时。每层注意力输出与 FFN 输出各计一次等效 Ring AllReduce，不模拟内部通信事件或计算/通信重叠。对每次通信，令 `S=本步新计算 token 数×hidden_size×2 bytes`（Decode 每请求计 1 token），`N=tp_size`，`B=单 rank 有效互联 bytes/ms`，则 `t=collective_latency_ms+2×(N-1)/N×S/B`；这不是对 SGLang 实际 collective 调用的逐算子复刻。仅恢复准入不产生 TP collective，L2/L3 页传输在独立事件链路上推进，不追加到设备步长。解析结果的 `flops`、`hbm_bytes`、`compute_ms` 与 `memory_ms` 均是同构单 rank 口径；`analysis.device_ms` 含 TP 通信，`communication_ms` 为其中的同步时间，`communication_bytes` 为单 rank 总传输量，`collectives` 为次数；不将通信时间再次加到 `device_ms`。TP1 保持原单 GPU 成本公式；TP>1 须补齐有效互联带宽与通信固定延迟。
+`POST /api/simulate` 始终使用 `perf_model.step_cost`。在 Dense 全注意力 GQA/MQA、BF16/FP16、单 GPU 条件下，以已解析的 `ModelSpec` 和 `HardwareSpec` 估算各阶段成本。投影、因果注意力、FFN 各阶段分别取 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，逐层顺序相加；融合步汇总本步 Prefill 和 Decode 的工作量、权重每层计一次。KV 恢复不产生 GPU 工作量或算子成本，按前述异步页传输事件独立推进，不附加到解析 GPU 步长。容量解析把物理链路带宽转换为 token/ms，每页每链路按固定延迟加页 token 数/速率计服务时长；`restore_bytes` 仍使用派生的 KV bytes/token 供指标展示。单个 `SimResult` 中的 `analysis` 汇总执行步数、计算量、HBM 访问与解析耗时；该单卡模型不包括 embedding/输出词表投影、形状校准或 TP/EP 通信，不得解释为真实设备测量值。全注意力 Dense BF16/FP16 的同构 TP>1 也沿用同一性能模型：Query 头与 FFN 按 rank 均分，KV 头不足 TP 数时在不同 rank 复制。每 rank 对 QKV、注意力、输出投影和 FFN 分别按本地 FLOPs/HBM 做 Roofline；同组工作均匀，取任意一张卡的阶段耗时。每层注意力输出与 FFN 输出各计一次等效 Ring AllReduce，不模拟内部通信事件或计算/通信重叠。对每次通信，令 `S=本步新计算 token 数×hidden_size×2 bytes`（Decode 每请求计 1 token），`N=tp_size`，`B=单 rank 有效互联 bytes/ms`，则 `t=collective_latency_ms+2×(N-1)/N×S/B`；这不是对 SGLang 实际 collective 调用的逐算子复刻。仅恢复准入不产生 TP collective，L2/L3 页传输在独立事件链路上推进，不追加到设备步长。解析结果的 `flops`、`hbm_bytes`、`compute_ms` 与 `memory_ms` 均是同构单 rank 口径；`analysis.device_ms` 含 TP 通信，`communication_ms` 为其中的同步时间，`communication_bytes` 为单 rank 总传输量，`collectives` 为次数；不将通信时间再次加到 `device_ms`。TP1 保持原单 GPU 成本公式；TP>1 须补齐有效互联带宽与通信固定延迟。
 
 ## 按层数组合的注意力解析粗估
 

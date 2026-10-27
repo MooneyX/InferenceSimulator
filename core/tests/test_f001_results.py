@@ -6,10 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
-from simcore.analytical import StepCost
 from simcore.engine import Engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
+from simcore.perf_model import StepCost
 from simcore.schemas import (
     AbortedRequest,
     EngineConfig,

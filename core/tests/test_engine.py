@@ -4,10 +4,9 @@ from typing import Literal
 
 import pytest
 
-from simcore.analytical import StepCost, step_cost
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.perf_model import DecodeWork, PrefillWork, StepCost, StepWorkload, step_cost
 from simcore.router import Router
 from simcore.schemas import (
     Arrival,

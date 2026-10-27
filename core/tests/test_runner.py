@@ -8,10 +8,9 @@ import pytest
 
 import simcore
 from simcore import SimConfig, SimResult, simulate
-from simcore.analytical import StepCost, step_cost
 from simcore.capacity import prepare_runtime
 from simcore.metrics import compute_metrics
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.perf_model import DecodeWork, PrefillWork, StepCost, StepWorkload, step_cost
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     AnalyticalSummary,

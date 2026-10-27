@@ -6,12 +6,12 @@ from unittest.mock import Mock, patch
 import pytest
 
 from simcore import simulate
-from simcore.analytical import StepCost, step_cost
 from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CacheEntry
+from simcore.perf_model import StepCost, step_cost
 from simcore.prefix_hash import encode
 from simcore.router import Router
 from simcore.schemas import (

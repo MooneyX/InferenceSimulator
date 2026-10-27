@@ -19,11 +19,10 @@ schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
 prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
 workload     build_synthetic_closed_loop_plan 规划合成闭环长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
 client       Client：_prepare_workload 统一负载准备，on_wakeup 统一请求构造与投放（依赖 schemas、workload、prefix_hash）
-perf_model   不可变 StepWorkload 与 Prefill/Decode 工作量描述
-analytical   唯一性能模型：逐阶段 Roofline、TP/EP 通信纯函数（依赖 perf_model、schemas）
+perf_model   唯一性能模型：不可变工作量与 StepCost、逐阶段 Roofline 和 TP/EP 通信纯函数（依赖 schemas）
 kv_cache     CachePool：逐池页索引、容量、稳定 LRU；TieredKVCache：请求状态、连续匹配与跨池操作（依赖 schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
-engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model、analytical）
+engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、perf_model）
 events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
 router       默认逐请求最低 token 负载优先，或新会话轮询、按 session_id 绑定的缓存亲和；接收不可变负载元组（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
@@ -64,7 +63,8 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 | `TurnPlan` / `WorkloadPlan` | `schemas`（由 `workload` 构造） | `client` | 不可变 session 拓扑、输入/输出长度与理想继承块数；不预生成块 ID |
 | `ClientWakeup` | `schemas`（由 `client` 构造） | `coordinator` | 未来客户端发送事件，只含 session/turn 身份和发送时刻 |
 | `InferenceRequest` | `schemas`（由 `client` 构造） | `coordinator`、`engine`、`scheduler`、`kv_cache`、`router` | 发送时构造：输入长度、生成上限、真实输出目标 `output_len` 和继承完整页 ID；不携带新页 ID 列表。当前调度不能以真实输出目标作为依据 |
-| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model`、`analytical` | 不可变的 Prefill/Decode GPU 工作量、阶段、实际申请页数及 `restore_only` 请求 ID；不携带恢复页来源或页大小，传输另由事件计时 |
+| `StepWorkload` | `perf_model`（由 `engine` 构造） | `perf_model` | 不可变的 Prefill/Decode GPU 工作量、阶段、实际申请页数及 `restore_only` 请求 ID；不携带恢复页来源或页大小，传输另由事件计时 |
+| `StepCost` | `perf_model` | `engine` | 不可变的 GPU 步总时长、计算、显存访问及 TP/EP 通信分项 |
 | `AdmissionBatch` | `scheduler` | `engine` | FCFS 准入、恢复、失败及唯一提升页（值对象）；预算只在调度内部计算 |
 | `L1Snapshot` 与分层快照 | `kv_cache` | `engine`、`metrics` | 各层页容量、驻留及峰值的不可变汇总 |
 | `Event` / `EventKind` | `events` | `coordinator` | 全局事件队列载荷与同刻全序（值对象） |

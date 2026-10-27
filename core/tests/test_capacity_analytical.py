@@ -7,11 +7,10 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
-from simcore.analytical import step_cost
 from simcore.capacity import prepare_runtime, resolve_config
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload
+from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, step_cost
 from simcore.prefix_hash import encode
 from simcore.schemas import (
     AttentionGroup,

@@ -6,9 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import SimConfig, simulate
-from simcore.analytical import step_cost
 from simcore.capacity import prepare_runtime, resolve_config
-from simcore.perf_model import PrefillWork, StepWorkload
+from simcore.perf_model import PrefillWork, StepWorkload, step_cost
 from simcore.schemas import (
     EngineConfig,
     HardwareSpec,

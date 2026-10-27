@@ -312,23 +312,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
     }
   }
 
-  const total = axes.reduce((count, axis) => {
-    if (!selected(axis)) return count;
-    if (isPresetAxis(axis.key)) return count * BigInt(parsePresetNames(axis.text).length);
-    const text = axis.text.trim();
-    const range = text.match(/^(-?[\d.]+):(-?[\d.]+):(-?[\d.]+)$/);
-    if (range) {
-      const [start, end, step] = range.slice(1).map(Number);
-      const length = Math.floor((end - start) / step + 1e-9) + 1;
-      return count * BigInt(Number.isSafeInteger(length) && length > 0 ? length : 0);
-    }
-    return count * BigInt(text.split(/[,，\s]+/).filter(Boolean).length);
-  }, 1n);
-
   return <section className="scan-panel" aria-labelledby="scan-heading">
     <div className="section-heading"><div><p className="section-kicker">Sensitivity sweep</p>
-      <h2 id="scan-heading">参数组合扫描</h2></div>
-      <p>按需添加扫描参数；结果中最多选择四个可变参数，其余作为固定背景参数。</p></div>
+      <h2 id="scan-heading">参数组合扫描</h2></div></div>
     <div className="parameter-transfer scan-transfer" role="group" aria-label="扫描方案导入导出">
       <button type="button" className="transfer-button" onClick={exportScan} disabled={disabled || planBusy || !catalog.length}>
         导出扫描方案</button>
@@ -344,7 +330,6 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
         className={transferNote.error ? "transfer-note transfer-note-error" : "transfer-note"}
         role={transferNote.error ? "alert" : "status"}>{transferNote.message}</span>}
     </div>
-    <p className="scan-hint">扫描方案包含当前基础配置和扫描档位；导入会覆盖上方基础配置与当前扫描设置，Trace 回放计划需重新上传。</p>
     <div className="form-grid">
       <div className="form-field"><label htmlFor="scan-mode">负载模式</label>
         <select id="scan-mode" value={mode} onChange={(event) =>
@@ -435,15 +420,9 @@ export function ScanPanel({ base, onSubmit, onImportBase, closedLoopCountError, 
     <button type="button" className="secondary-button scan-add-axis"
       onClick={() => { setAxes((current) => [...current, { id: nextId.current++, key: "", text: "", search: "" }]);
         setFocused(null); }}>添加参数</button>
-    <p className="scan-hint">选定负载与到达模式后，适用的请求参数可在上方选择为扫描维度；未扫描的参数沿用当前基础配置，切换模式时缺失的投放速率使用默认值。Trace 开环扫描目标 QPS 时会缩放到达时间线。</p>
-    <p className="scan-hint">模型包含全部模型配置与注意力组合；硬件包含单卡显存、算力、带宽、通信和单算子开销，并绑定各自的 GPU / TP 数。
-      硬件与独立并行度扫描互斥；其余扫描参数仍覆盖预设，添加顺序不影响配置。不支持的组合单点失败，其余继续。</p>
     {presetError && <p className="field-error" role="alert">{presetError}</p>}
-    <p className="scan-hint">输入离散档位（逗号分隔）或数值范围（起点:终点:步长）；布尔档位使用 true,false。
-      固定长度使用整数，随机长度使用分布均值，保留原分布类型。</p>
     <div className="form-actions"><button type="button" className="run-button" onClick={run}
-      disabled={disabled || planBusy || (mode === "trace" && !planId) || !catalog.length}>提交后台扫描</button>
-      <span>组合数按所选维度档位的乘积计算；不设置扫描规模上限。{total > 0n ? ` 当前约 ${total.toString()} 点。` : ""}</span></div>
+      disabled={disabled || planBusy || (mode === "trace" && !planId) || !catalog.length}>提交后台扫描</button></div>
     {problem && <p className="field-error" role="alert">{problem}</p>}
   </section>;
 }

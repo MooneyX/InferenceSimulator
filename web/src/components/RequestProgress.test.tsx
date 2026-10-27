@@ -10,6 +10,7 @@ it("counts success, failure and skipped requests, rather than successes only", (
   expect(screen.getByText("成功 700 · 失败 10 · 跳过 10")).toBeInTheDocument();
   expect(screen.getByText("处理中…")).toBeInTheDocument();
   expect(screen.getByRole("progressbar")).toHaveAttribute("value", "720");
+  expect(screen.getByRole("progressbar").closest("[title]")).toBeNull();
 });
 
 it("keeps the task running during result summarization", () => {

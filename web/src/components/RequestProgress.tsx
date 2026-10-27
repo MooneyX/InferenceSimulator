@@ -16,8 +16,7 @@ export function RequestProgress({ progress, status }: {
   const format = (value: number) => value.toLocaleString("zh-CN");
   const label = `已处理 ${format(processed)} / ${format(progress.total)} 请求`;
 
-  return <div className={`request-progress request-progress-${status}`}
-    title="按成功、失败和跳过的请求数统计，不代表耗时进度；运行中每秒更新">
+  return <div className={`request-progress request-progress-${status}`}>
     <div className="request-progress-summary">
       <span>{label}</span><strong>{percent}%</strong>
     </div>

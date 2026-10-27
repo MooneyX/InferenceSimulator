@@ -57,6 +57,12 @@ describe("ScanPanel", () => {
     render(<ScanPanel base={createDefaultSimConfig()} onSubmit={onSubmit} onImportBase={vi.fn()} />);
     expect(screen.getByLabelText("负载模式")).toHaveValue("synthetic");
     await waitFor(() => expect(screen.getByRole("button", { name: "提交后台扫描" })).toBeEnabled());
+    for (const hint of [
+      /按需添加扫描参数/, /扫描方案包含当前基础配置/, /选定负载与到达模式后/,
+      /模型包含全部模型配置/, /输入离散档位/, /组合数按所选维度档位的乘积计算/,
+    ]) {
+      expect(screen.queryByText(hint)).not.toBeInTheDocument();
+    }
     fireEvent.focus(screen.getByLabelText("扫描参数 1"));
     fireEvent.change(screen.getByLabelText("扫描参数 1"), { target: { value: "请求" } });
     const options = screen.getByRole("listbox");
@@ -98,15 +104,21 @@ describe("ScanPanel", () => {
       fireEvent.change(screen.getByLabelText(`扫描档位 ${index + 1}`),
         { target: { value: index ? "2,4" : "10,20" } });
     }
-    expect(screen.getByText(/当前约 32 点/)).toBeInTheDocument();
+    expect(screen.queryByText(/当前约 \d+ 点/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
     expect(onSubmit.mock.lastCall?.[0].axes.map((axis: { key: string }) => axis.key)).toEqual([
       "workload.synthetic.num_requests", "workload.target_qps", "workload.synthetic.prompt_len",
       "workload.synthetic.turn_increment_len", "workload.synthetic.output_len",
     ]);
     fireEvent.click(screen.getByRole("button", { name: "删除扫描参数 3" }));
-    expect(screen.getByText(/当前约 16 点/)).toBeInTheDocument();
     expect(screen.getByLabelText("扫描参数 4")).toHaveValue("平均输出长度");
+    fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
+    expect(onSubmit.mock.lastCall?.[0].axes).toEqual([
+      { key: "workload.synthetic.num_requests", values: [10, 20] },
+      { key: "workload.target_qps", values: [2, 4] },
+      { key: "workload.synthetic.turn_increment_len", values: [2, 4] },
+      { key: "workload.synthetic.output_len", values: [2, 4] },
+    ]);
   });
 
   it("offers request parameters as scan axes instead of separate inputs for each mode", async () => {
@@ -266,7 +278,7 @@ it("selects preset checkboxes, overrides and round-trips names containing spaces
   fireEvent.click(hardware.getByRole("checkbox", { name: "Huawei Ascend 950PR" }));
   expect(screen.getByLabelText("Huawei Ascend 950PR 每实例 GPU / TP 数")).toHaveValue(16);
   fireEvent.change(screen.getByLabelText("扫描档位 3"), { target: { value: "160,192" } });
-  expect(screen.getByText(/当前约 8 点/)).toBeInTheDocument();
+  expect(screen.queryByText(/当前约 \d+ 点/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "提交后台扫描" }));
   const axes = [
     { key: "inference.model", values: presets.models.map((entry) => entry.name) },

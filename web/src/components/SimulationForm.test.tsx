@@ -226,6 +226,8 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(0.01);
     expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(0.1);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(0.1);
+    expect(screen.queryByText(/所有实例共享总容量/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/L3 查找默认/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "运行仿真" }));
     expect(onSubmitAuto).toHaveBeenCalledWith(expect.objectContaining({
       workload: expect.objectContaining({ arrival_mode: "open_loop", seed: 0,

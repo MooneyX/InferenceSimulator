@@ -479,7 +479,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
       <section className="form-section" aria-labelledby="shared-l3-heading">
         <div className="section-heading"><div>
           <p className="section-kicker">Shared cache</p><h2 id="shared-l3-heading">共享 L3</h2>
-        </div><p>所有实例共享总容量，不乘实例数量；0 表示关闭。带宽按每实例接入链路计算，不模拟存储端总吞吐竞争。</p></div>
+        </div></div>
         <div className="form-grid">
           <NumberField id="shared-l3-capacity" name="shared_l3.available_gb"
             label="共享 L3 总容量（TB，仅 KV，0 为关闭）"
@@ -493,7 +493,6 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
               ? { ...config.shared_l3, lookup_latency_ms: value }
               : { available_gb: 0, lookup_latency_ms: value } })} />
         </div>
-        <p>L3 查找默认 0.1 ms/次，未命中也计入；假设低延迟共享存储，未经实测校准，可按部署调整，设为 0 可对照理想基线。</p>
       </section>
 
       <section className="form-section" aria-labelledby="engine-heading">

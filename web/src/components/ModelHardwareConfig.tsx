@@ -368,10 +368,15 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、
-      {selectedHardware.peak_interconnect_gb_s.toLocaleString()} GB/s 单卡 NVLink 双向标称带宽。
-      <a href="https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html" target="_blank" rel="noreferrer">显存来源</a>、
-      <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>、
-      <a href="https://www.nvidia.com/en-us/data-center/hgx/" target="_blank" rel="noreferrer">互联来源</a>；
+      {selectedHardware.peak_interconnect_gb_s.toLocaleString()} GB/s 单卡 {selectedHardware.name.startsWith("NVIDIA ") ? "NVLink 双向" : "互联"}标称带宽。
+      {selectedHardware.name === "NVIDIA B300" && <>
+        <a href="https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html" target="_blank" rel="noreferrer">显存来源</a>、
+        <a href="https://inferencex.semianalysis.com/zh/chips/b300" target="_blank" rel="noreferrer">性能来源</a>、
+        <a href="https://www.nvidia.com/en-us/data-center/hgx/" target="_blank" rel="noreferrer">互联来源</a>；
+      </>}
+      {selectedHardware.name === "NVIDIA H20" && <>
+        <a href="http://www.lantek-hk.com/NVIDIA.html" target="_blank" rel="noreferrer">H20 规格来源</a>；
+      </>}
       {selectedHardware.performance_note}</p>}
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>

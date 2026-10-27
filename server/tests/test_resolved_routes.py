@@ -9,6 +9,7 @@ from conftest import await_task, run_simulation
 from simcore import SimConfig, SimResult
 from simcore.schemas import TracePlan, TraceTurn
 from simserver import create_app
+from simserver.presets import HARDWARE_PRESET_FIELDS
 
 
 def payload() -> dict[str, Any]:
@@ -464,6 +465,7 @@ def test_qwen_moe_ep_preview_requires_parameters_then_runs_analytical() -> None:
     ),
     [
         ("NVIDIA B300", 288_000_000_000, 2250, 4500, 8000, 1800),
+        ("NVIDIA H20", 96_000_000_000, 148, 296, 4000, 900),
         ("Huawei Ascend 950PR", 128_000_000_000, 500, 1000, 1600, 2000),
         ("Huawei Ascend 950DT", 144_000_000_000, 500, 1000, 4000, 2000),
     ],
@@ -500,6 +502,35 @@ def test_hardware_presets(
         }
     ]
     assert "未经实测校准" in hardware[0]["performance_note"]
+
+
+@pytest.mark.parametrize("parallelism", [1, 8])
+def test_h20_preset_preview_and_simulation(parallelism: int) -> None:
+    with TestClient(create_app()) as client:
+        preset = next(
+            item for item in client.get("/api/presets").json()["hardware"]
+            if item["name"] == "NVIDIA H20"
+        )
+        request = inference_payload("analytical")
+        request["inference"]["hardware"] = {
+            **{key: preset[key] for key in HARDWARE_PRESET_FIELDS},
+            "gpu_count": parallelism,
+        }
+        request["inference"]["tp_size"] = parallelism
+        request["inference"]["model"].update(
+            num_attention_heads=8, num_kv_heads=8, hidden_size=64,
+        )
+        preview = client.post("/api/resolve", json=request)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["runnable"] is True
+        assert len(preview.json()["capacity"]["rank_reports"]) == (parallelism if parallelism > 1 else 0)
+        response = run_simulation(client, request)
+        assert response.status_code == 200, response.text
+        result = SimResult.model_validate_json(response.content)
+        assert result.meta.config == SimConfig.model_validate(request)
+        assert result.meta.num_completed == 1
+        assert result.resolution is not None
+        assert result.resolution.model_dump(mode="json") == preview.json()
 
 
 @pytest.mark.parametrize("l2_available_gb", [0, 1])

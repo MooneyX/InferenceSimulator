@@ -247,6 +247,20 @@ HARDWARE = (
         "peak_hbm_gb_s": 8000,
         "peak_interconnect_gb_s": 1800,
     },
+    # H20 96 GB HBM3：http://www.lantek-hk.com/NVIDIA.html；4.0 TB/s 按十进制换算。
+    # 稠密算力及 NVLink 双向峰值沿用 refs/KVCacheModeling/src/core/presets.js。
+    {
+        **HARDWARE_TRIAL_DEFAULTS,
+        "name": "NVIDIA H20",
+        "effective_fp16_tflops": 148,
+        "effective_fp8_tflops": 296,
+        "gpu_count": 8,
+        "memory_bytes_per_gpu": 96_000_000_000,
+        "peak_fp16_tflops": 148,
+        "peak_fp8_tflops": 296,
+        "peak_hbm_gb_s": 4000,
+        "peak_interconnect_gb_s": 900,
+    },
     # 昇腾规格沿用 refs/KVCacheModeling/src/core/presets.js。
     # 路线图：https://www.huawei.com/cn/news/2025/9/hc-xu-keynote-speech
     # FP16/BF16 按 FP8 1000 TFLOPS 的一半估算，500 TFLOPS 非官方披露值。

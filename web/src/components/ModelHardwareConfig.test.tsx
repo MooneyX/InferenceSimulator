@@ -555,6 +555,8 @@ describe("ModelHardwareConfig", () => {
   it.each([
     { name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
       peak_fp16_tflops: 2250, peak_fp8_tflops: 4500, peak_hbm_gb_s: 8000, peak_interconnect_gb_s: 1800 },
+    { name: "NVIDIA H20", gpu_count: 8, memory_bytes_per_gpu: 96_000_000_000,
+      peak_fp16_tflops: 148, peak_fp8_tflops: 296, peak_hbm_gb_s: 4000, peak_interconnect_gb_s: 900 },
     { name: "Huawei Ascend 950PR", gpu_count: 8, memory_bytes_per_gpu: 128_000_000_000,
       peak_fp16_tflops: 500, peak_fp8_tflops: 1000, peak_hbm_gb_s: 1600, peak_interconnect_gb_s: 2000 },
     { name: "Huawei Ascend 950DT", gpu_count: 8, memory_bytes_per_gpu: 144_000_000_000,
@@ -586,6 +588,26 @@ describe("ModelHardwareConfig", () => {
     expect(screen.getByLabelText("单卡显存容量（GB）")).toHaveValue(preset.memory_bytes_per_gpu / 1e9);
     expect(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）")).toHaveValue(preset.peak_fp16_tflops);
     expect(screen.getByLabelText("有效 FP8 算力（TFLOPS，可选）")).toHaveValue(preset.peak_fp8_tflops);
+    const specs = screen.getByText(/单卡标称规格/);
+    expect(specs).toHaveTextContent(`${preset.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽`);
+    expect(specs).toHaveTextContent("未经实测校准");
+    if (preset.name === "NVIDIA H20") {
+      expect(specs).toHaveTextContent("900 GB/s 单卡 NVLink 双向标称带宽");
+      expect(screen.getByRole("link", { name: "H20 规格来源" }))
+        .toHaveAttribute("href", "http://www.lantek-hk.com/NVIDIA.html");
+    } else {
+      expect(screen.queryByRole("link", { name: "H20 规格来源" })).not.toBeInTheDocument();
+    }
+    if (preset.name === "NVIDIA B300") {
+      expect(screen.getByRole("link", { name: "显存来源" }))
+        .toHaveAttribute("href", "https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html");
+    } else {
+      expect(screen.queryByRole("link", { name: "显存来源" })).not.toBeInTheDocument();
+    }
+    if (preset.name.startsWith("Huawei ")) {
+      expect(specs).toHaveTextContent("2,000 GB/s 单卡 互联标称带宽");
+      expect(specs).not.toHaveTextContent("NVLink");
+    }
     fireEvent.change(screen.getByLabelText("有效 FP16/BF16 算力（TFLOPS）"), { target: { value: "123" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...inference,
       hardware: { ...inference.hardware, effective_fp16_tflops: 123 } });

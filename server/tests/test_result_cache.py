@@ -2,7 +2,9 @@
 
 import json
 import sqlite3
+import zlib
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
@@ -36,6 +38,8 @@ def test_lazy_creation_and_persistence(
     assert not path.exists()
     first = cache.run(config, None, lambda: result)
     assert first.status == "miss"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA journal_mode = DELETE")
     restarted = ResultCache(path, fingerprint="engine-1")
     compute = Mock(return_value=result)
     second = restarted.run(config, None, compute)
@@ -45,6 +49,156 @@ def test_lazy_creation_and_persistence(
     assert second.lookup_ms >= 0
     assert ResultCache(path, fingerprint="engine-2").run(config, None, compute).status == "miss"
     compute.assert_called_once()
+
+
+def test_wal_allows_writes_while_another_connection_reads(
+    tmp_path: Path, config: SimConfig, result: SimResult, caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.run(config, None, lambda: result)
+    updated = result.model_copy(
+        update={"meta": result.meta.model_copy(update={"wall_clock_ms": 123})}
+    )
+    with closing(sqlite3.connect(path)) as reader:
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        reader.execute("BEGIN")
+        reader.execute("SELECT result FROM results").fetchall()
+        assert cache.run(config, None, lambda: updated, force=True).status == "miss"
+    hit = cache.run(config, None, Mock())
+    assert SimResult.model_validate_json(hit.content) == updated
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("release_on_retry", [False, True])
+def test_locked_write_retries_without_losing_result(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture, release_on_retry: bool,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.clear()
+    monkeypatch.setattr("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01)
+    with closing(sqlite3.connect(path)) as blocker:
+        def compute() -> SimResult:
+            blocker.execute("BEGIN IMMEDIATE")
+            return result
+
+        retry = Mock(side_effect=lambda _: blocker.rollback() if release_on_retry else None)
+        monkeypatch.setattr("simserver.result_cache.sleep", retry)
+        completed = cache.run(config, None, compute)
+        assert completed.status == "miss"
+        assert SimResult.model_validate_json(completed.content) == result
+        assert retry.call_count == (1 if release_on_retry else 2)
+        assert ("write skipped after lock retries" in caplog.text) is not release_on_retry
+        blocker.rollback()
+    assert not cache._inflight
+    compute_again = Mock(return_value=result)
+    assert cache.run(config, None, compute_again).status == (
+        "hit" if release_on_retry else "miss"
+    )
+    assert compute_again.call_count == (0 if release_on_retry else 1)
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_locked_initialization_skips_cache_without_repopulating_after_clear(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture, force: bool,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    controller = ResultCache(path, fingerprint="engine")
+    controller.clear()
+    worker = ResultCache(path, fingerprint="engine")
+    monkeypatch.setattr("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01)
+    with closing(sqlite3.connect(path)) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+
+        def compute() -> SimResult:
+            blocker.rollback()
+            controller.clear()
+            return result
+
+        completed = worker.run(config, None, compute, force=force)
+    assert SimResult.model_validate_json(completed.content) == result
+    assert "lookup skipped after lock retries" in caplog.text
+    assert not worker._inflight
+    assert controller.run(config, None, lambda: result).status == "miss"
+    assert worker.run(config, None, Mock()).status == "hit"
+
+
+def test_locked_access_time_update_still_returns_cached_result(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.run(config, None, lambda: result)
+    monkeypatch.setattr("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01)
+    compute = Mock()
+    with closing(sqlite3.connect(path)) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        hit = cache.run(config, None, compute)
+    assert hit.status == "hit"
+    assert SimResult.model_validate_json(hit.content) == result
+    compute.assert_not_called()
+    assert "access time update skipped after lock retries" in caplog.text
+
+
+def test_cached_result_decompression_does_not_hold_write_lock(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.run(config, None, lambda: result)
+    decompress = zlib.decompress
+
+    def decompress_without_lock(data: bytes) -> bytes:
+        with closing(sqlite3.connect(path, timeout=0.01)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+        return decompress(data)
+
+    monkeypatch.setattr("simserver.result_cache.zlib.decompress", decompress_without_lock)
+    assert cache.run(config, None, Mock()).status == "hit"
+
+
+def test_clear_does_not_hide_lock_errors(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.run(config, None, lambda: result)
+    monkeypatch.setattr("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01)
+    with closing(sqlite3.connect(path)) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            cache.clear()
+    assert cache.run(config, None, Mock()).status == "hit"
+
+
+@pytest.mark.parametrize("stage", ["lookup", "write"])
+def test_non_lock_database_errors_are_not_hidden(
+    tmp_path: Path, config: SimConfig, result: SimResult, monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    cache = ResultCache(path, fingerprint="engine")
+    cache.clear()
+
+    def drop_results() -> SimResult:
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DROP TABLE results")
+        return result
+
+    if stage == "lookup":
+        drop_results()
+    compute = Mock(side_effect=drop_results)
+    retry = Mock()
+    monkeypatch.setattr("simserver.result_cache.sleep", retry)
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        cache.run(config, None, compute)
+    assert compute.call_count == (0 if stage == "lookup" else 1)
+    assert not cache._inflight
+    retry.assert_not_called()
 
 
 def test_default_values_and_object_order_share_key(tmp_path: Path) -> None:
@@ -128,12 +282,16 @@ def test_lru_and_oversized_result(tmp_path: Path, config: SimConfig, result: Sim
     assert compute.call_count == 2
 
 
+@pytest.mark.parametrize("locked_write", [False, True])
 def test_concurrent_requests_share_computation(
     tmp_path: Path,
     config: SimConfig,
     result: SimResult,
+    monkeypatch: pytest.MonkeyPatch,
+    locked_write: bool,
 ) -> None:
     cache = ResultCache(tmp_path / "cache.sqlite3", fingerprint="engine")
+    monkeypatch.setattr("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01)
     started, waiting, release = Event(), Event(), Event()
 
     def compute() -> SimResult:
@@ -150,20 +308,30 @@ def test_concurrent_requests_share_computation(
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(cache.run, config, None, compute)
         assert started.wait(5)
-        with patch("simserver.result_cache.Future.result", wait_for_result):
-            second = pool.submit(cache.run, config, None, compute, force=True)
-            assert waiting.wait(5)
-            release.set()
-        assert first.result().status == "miss"
-        shared = second.result()
-        assert shared.status == "shared"
-        assert SimResult.model_validate_json(shared.content) == result
+        with closing(sqlite3.connect(cache.path)) as blocker:
+            with patch("simserver.result_cache.Future.result", wait_for_result):
+                second = pool.submit(cache.run, config, None, compute, force=True)
+                assert waiting.wait(5)
+                if locked_write:
+                    blocker.execute("BEGIN IMMEDIATE")
+                release.set()
+            assert first.result().status == "miss"
+            shared = second.result()
+            assert shared.status == "shared"
+            assert SimResult.model_validate_json(shared.content) == result
 
 
-def test_exceptions_are_not_cached(tmp_path: Path, config: SimConfig, result: SimResult) -> None:
+@pytest.mark.parametrize("database_error", [False, True])
+def test_exceptions_are_not_cached(
+    tmp_path: Path, config: SimConfig, result: SimResult, database_error: bool,
+) -> None:
     cache = ResultCache(tmp_path / "cache.sqlite3", fingerprint="engine")
-    compute = Mock(side_effect=[ValueError("failed"), result])
-    with pytest.raises(ValueError, match="failed"):
+    error: Exception = ValueError("failed")
+    if database_error:
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    compute = Mock(side_effect=[error, result])
+    with pytest.raises(type(error)):
         cache.run(config, None, compute)
     assert cache.run(config, None, compute).status == "miss"
     assert compute.call_count == 2

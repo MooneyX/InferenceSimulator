@@ -2,6 +2,8 @@
 
 import sqlite3
 import time
+from contextlib import closing
+from multiprocessing.connection import Connection
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +13,26 @@ from fastapi.testclient import TestClient
 from simcore import SimConfig
 from simserver import create_app
 from simserver.job_store import JobStore
+from simserver.jobs import _worker
+from simserver.result_cache import ResultCache
 from test_routes import make_payload
+
+
+def _worker_with_cache_write_lock(connection: Connection, cache_path: str, cache_size: int) -> None:
+    original_write = ResultCache._write
+
+    def locked_write(
+        cache: ResultCache, key: str, inputs: str, result: str, generation: int,
+    ) -> None:
+        with closing(sqlite3.connect(cache.path)) as blocker:
+            blocker.execute("BEGIN IMMEDIATE")
+            original_write(cache, key, inputs, result, generation)
+
+    with (
+        patch.object(ResultCache, "_write", locked_write),
+        patch("simserver.result_cache.DATABASE_TIMEOUT_SECONDS", 0.01),
+    ):
+        _worker(connection, cache_path, cache_size)
 
 
 def wait_job(client: TestClient, key: str, timeout: float = 30) -> dict:
@@ -254,6 +275,34 @@ def test_scan_point_failures_and_duplicate_values_have_distinct_indices(
         assert client.get(f"/api/jobs/{key}/points/0/result").status_code == 200
         assert client.get(f"/api/jobs/{key}/points/1/result").status_code == 200
         assert client.get(f"/api/jobs/{key}/points/2/result").status_code == 409
+
+
+@pytest.mark.parametrize("lock_writes", [False, True])
+def test_parallel_scan_results_are_archived_despite_cache_write_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lock_writes: bool,
+) -> None:
+    monkeypatch.setenv("SIMULATOR_WORKERS", "2")
+    if lock_writes:
+        monkeypatch.setattr("simserver.jobs._worker", _worker_with_cache_write_lock)
+    path = tmp_path / "results.sqlite3"
+    with TestClient(create_app(cache_path=path)) as client:
+        key = client.post("/api/scans", json={"base": make_payload(num_requests=2),
+            "axes": [{"key": "num_instances", "values": [1, 2, 3, 4]}]}).json()["id"]
+        summary = wait_job(client, key)
+        assert (summary["status"], summary["completed"], summary["failed"]) == ("completed", 4, 0)
+        items = client.get(f"/api/jobs/{key}/tasks").json()["items"]
+        assert len(items) == 4
+        assert all(item["status"] == "completed" and item["result_available"] for item in items)
+        for index in range(4):
+            response = client.get(f"/api/jobs/{key}/points/{index}/result")
+            assert response.status_code == 200
+            assert response.json()["meta"]["config"]["num_instances"] == index + 1
+        with closing(sqlite3.connect(path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM results").fetchone()[0] == (
+                0 if lock_writes else 4
+            )
+    with TestClient(create_app(cache_path=path)) as restarted:
+        assert restarted.get(f"/api/jobs/{key}/points/3/result").status_code == 200
 
 
 def test_scan_fifo_points_and_cancel(tmp_path: Path, monkeypatch) -> None:

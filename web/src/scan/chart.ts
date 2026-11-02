@@ -150,7 +150,7 @@ export function buildChart(data: ScanData[], roles: Roles, metrics: string | str
   const hidden = keys.filter((key) => !Object.values(roles).includes(key));
   const seriesMap = new Map<string, { name: string; metric: string; tooltipValues: string[];
     color: number; shape: number; line: number; points: Map<string, number | null> }>();
-  for (const { job, point, copies } of entries) {
+  for (const { point, copies } of entries) {
     const x = valueOf(point, roles.x);
     if (x == null) continue;
     const color = valueOf(point, roles.color);
@@ -158,10 +158,10 @@ export function buildChart(data: ScanData[], roles: Roles, metrics: string | str
     const line = valueOf(point, roles.line);
     const hiddenValues = hidden.map((key) => [key, valueOf(point, key)]);
     for (const metric of selectedMetrics) {
-      const group = JSON.stringify([job.id, color, shape, line, hiddenValues, metric]);
+      const group = JSON.stringify([color, shape, line, hiddenValues, metric]);
       let item = seriesMap.get(group);
       if (!item) {
-        const name = [selectedMetrics.length > 1 && metric, `扫描 ${job.id.slice(0, 6)}`,
+        const name = [selectedMetrics.length > 1 && metric,
           roles.color && `${roles.color}=${label(color)}`,
           roles.shape && `${roles.shape}=${label(shape)}`,
           roles.line && `${roles.line}=${label(line)}`,

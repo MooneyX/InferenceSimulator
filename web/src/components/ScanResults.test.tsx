@@ -205,7 +205,8 @@ describe("ScanResults", () => {
     fireEvent.click(within(screen.getByRole("group", { name: "workload.seed" }))
       .getByRole("radio", { name: "8" }));
     expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument();
-    expect(setOption.mock.lastCall?.[0].series[0].name).toContain("scan-b");
+    expect(setOption.mock.lastCall?.[0].series[0].name)
+      .toBe("scheduler.max_prefill_tokens=20 · workload.seed=8");
   });
 
   it("compares two units on dual axes and splits three units into separate charts", async () => {

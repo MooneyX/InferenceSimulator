@@ -274,15 +274,15 @@
       }));
       const units = [...new Set(items.map(metric => report.units[metric]))];
       const groups = new Map();
-      entries.forEach(({ batch, point, copies }) => {
+      entries.forEach(({ point, copies }) => {
         const x = value(point, used.x);
         if (x == null) return;
         const color = value(point, used.color), shape = value(point, used.shape), line = value(point, used.line);
         const remainder = hidden.map(key => [key, value(point, key)]);
         items.forEach(metric => {
-          const groupKey = JSON.stringify([batch.job.id, color, shape, line, remainder, metric]);
+          const groupKey = JSON.stringify([color, shape, line, remainder, metric]);
           if (!groups.has(groupKey)) groups.set(groupKey, {
-            metric, name: [items.length > 1 && metric, '扫描 ' + batch.job.id.slice(0, 6),
+            metric, name: [items.length > 1 && metric,
               ...roles.slice(1).filter(role => used[role]).map(role =>
                 label(used[role]) + '=' + textOf(value(point, used[role]))),
               ...remainder.map(([key, v]) => label(key) + '=' + textOf(v))].filter(Boolean).join(' · '),

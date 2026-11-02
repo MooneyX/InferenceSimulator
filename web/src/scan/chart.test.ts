@@ -84,6 +84,26 @@ describe("scan projections", () => {
     expect(new Set(chart.series.map((series) => series.itemStyle.color)).size).toBe(2);
   });
 
+  it("joins points from scans that differ only in a base parameter into one line", () => {
+    const scans: ScanData[] = differentBases.map(({ job: scan, points }) => ({ job: scan,
+      points: points.map((entry) => ({ ...entry, config: { ...entry.config,
+        workload: { seed: 7 } } as ScanData["points"][number]["config"] })),
+    }));
+    const key = "scheduler.max_prefill_tokens";
+    const roles = { x: key, color: "num_instances", shape: "", line: "" };
+    const chart = buildChart(scans, roles, "throughput");
+    expect(chart.xValues).toEqual(["10", "20"]);
+    expect(chart.series.map((series) => series.data)).toEqual([[1, 1], [2, 2]]);
+    expect(chart.series.every((series) => !series.name.includes("扫描"))).toBe(true);
+    const { setOption } = openReport(scans);
+    fireEvent.change(document.getElementById("role-color")!, { target: { value: "" } });
+    fireEvent.change(document.getElementById("role-x")!, { target: { value: key } });
+    fireEvent.change(document.getElementById("role-color")!, { target: { value: "num_instances" } });
+    const option = setOption.mock.lastCall?.[0] as { series: { name: string; data: number[] }[] };
+    expect(option.series.map((series) => series.data)).toEqual([[1, 1], [2, 2]]);
+    expect(option.series.every((series) => !series.name.includes("扫描"))).toBe(true);
+  });
+
   it("uses available metrics from deduplicated scans without averaging", () => {
     const scans: ScanData[] = [
       { job, points: [{ ...point(1, 1, "shared"), metrics: { throughput: 2 } }] },

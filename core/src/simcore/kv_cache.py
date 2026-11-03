@@ -36,8 +36,8 @@ class CacheEntry:
 
 @dataclass(frozen=True, slots=True)
 class KVRequestState:
-    k: int
-    f: int
+    k: int  # 请求已有 KV 的总长度，包含私有 KV，单位为 token
+    f: int  # 请求公布的 KV 长度，可以被其他请求复用，单位为 token
 
 
 @dataclass(frozen=True, slots=True)

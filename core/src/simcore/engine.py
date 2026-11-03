@@ -3,6 +3,7 @@
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
+from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
@@ -369,30 +370,36 @@ class Engine:
         remaining = dict(running)
         withdrawn: list[tuple[int, int]] = []
         cache = self._prefix_cache
+        # 满页的请求本步需要新页。
+        needed = sum(cache.state(key).k % cache.page_size == 0 for key in remaining)
+        withdrawal_order: Iterator[int] | None = None
         while remaining:
-            # 满页的请求本步需要新页。
-            needed = sum(cache.state(key).k % cache.page_size == 0 for key in remaining)
             try:
-                cache.ensure_free(needed)
+                _ = cache.ensure_free(needed)  # 尝试腾出所需的所有空间
                 break
-            except CacheCapacityError:
-                # 下层被保护时无法降级，仍须继续回撤活动请求。
-                with suppress(CacheCapacityError):
-                    cache.ensure_free(cache.free_pages + cache.evictable_pages)
-                key = min(
-                    remaining,
-                    key=lambda candidate: (
-                        remaining[candidate].generated_tokens,
-                        -remaining[candidate].request.prompt_len,
-                        candidate,
-                    ),
-                )  # 进度少者先回撤；同进度优先释放长输入
+            except CacheCapacityError:  # 若失败
+                with suppress(CacheCapacityError):  # 容忍 CacheCapacityError，尝试腾出空间
+                    # 腾出所有可以驱逐的空间。
+                    _ = cache.ensure_free(cache.free_pages + cache.evictable_pages)
+                if withdrawal_order is None:
+                    withdrawal_order = iter(
+                        sorted(
+                            remaining,
+                            key=lambda candidate: (
+                                remaining[candidate].generated_tokens,  # 生成越少，越优先回撤
+                                -remaining[candidate].request.prompt_len,  # 同进度优先长输入
+                                candidate,
+                            ),
+                        )
+                    )
+                key = next(withdrawal_order)
                 generated = remaining[key].generated_tokens
                 if len(remaining) == 1:
                     self._abort(key, now_ms, "decode_kv_exhausted")  # 单请求也放不下则失败
                 else:
                     self._retry_counts[key] = self._retry_counts.get(key, 0) + 1
                     withdrawn.append((key, generated))
+                needed -= cache.state(key).k % cache.page_size == 0
                 cache.withdraw(key)
                 del self._running[key]
                 del remaining[key]

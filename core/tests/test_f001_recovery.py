@@ -3,6 +3,10 @@
 occupy 和直接 withdraw/requeue 用于故障状态注入，不代表正常端到端流程。
 """
 
+from unittest.mock import call, patch
+
+import pytest
+
 from simcore import simulate
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
@@ -10,7 +14,7 @@ from simcore.kv_cache import TieredKVCache
 from simcore.metrics import compute_metrics
 from simcore.prefix_hash import encode
 from simcore.router import Router
-from simcore.scheduler import AdmissionScheduler
+from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -161,6 +165,73 @@ def test_withdrawal_tie_breaks_by_smaller_request_id() -> None:
     assert engine.finish_step(now) == ()
     assert engine._running == {1: 2}
     assert engine._retry_counts[0] == 1
+
+
+@pytest.mark.parametrize("keys", [(), (0, 1)])
+def test_prepare_decode_skips_sorting_without_withdrawal(keys: tuple[int, ...]) -> None:
+    cfg = EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4)
+    engine = Engine(runtime_config(cfg, PERF))
+    cache = engine._prefix_cache
+    running: dict[int, RunningRequest] = {}
+    for key in keys:
+        item = request(key, prompt=4 + key)
+        cache.pin(item, ())
+        _ = cache.admit(key)
+        _ = cache.extend(key, item.prompt_len)
+        _ = cache.publish(key)
+        running[key] = RunningRequest(item, 1)
+    engine._running = dict.fromkeys(keys, 1)
+    snapshot = cache.snapshot()
+    with (
+        patch("simcore.engine.sorted", wraps=sorted, create=True) as sort,
+        patch.object(cache, "ensure_free", wraps=cache.ensure_free) as ensure_free,
+    ):
+        remaining, withdrawn = engine._prepare_decode(running, 0)
+    sort.assert_not_called()
+    assert ensure_free.call_args_list == ([call(1)] if keys else [])
+    assert remaining == running
+    assert withdrawn == ()
+    assert cache.snapshot() == snapshot
+    assert not engine._retry_counts
+    assert not engine._aborted
+
+
+def test_prepare_decode_sorts_once_and_updates_needed_across_multiple_withdrawals() -> None:
+    cfg = EngineConfig(max_running_requests=11, max_total_tokens=64, page_size=4)
+    engine = Engine(runtime_config(cfg, PERF))
+    cache = engine._prefix_cache
+    specs = [(16, 2, 3), (1, 7, 2), (3, 11, 2), (8, 3, 1), (2, 11, 2)]
+    specs.extend((key, 2, 3) for key in range(15, 9, -1))
+    running: dict[int, RunningRequest] = {}
+    for key, prompt, generated in specs:
+        item = request(key, prompt=prompt, maximum=5, output=5)
+        cache.pin(item, ())
+        _ = cache.admit(key)
+        _ = cache.extend(key, prompt + generated - 1)
+        _ = cache.publish(key)
+        engine._running[key] = generated
+        running[key] = RunningRequest(item, generated)
+    states_before = {key: cache.state(key) for key in running}
+    assert cache.free_pages == cache.evictable_pages == 0
+    with (
+        patch("simcore.engine.sorted", wraps=sorted, create=True) as sort,
+        patch.object(cache, "state", wraps=cache.state) as state,
+        patch.object(cache, "ensure_free", wraps=cache.ensure_free) as ensure_free,
+    ):
+        remaining, withdrawn = engine._prepare_decode(running, 0)
+    sort.assert_called_once()
+    assert withdrawn == ((8, 1), (2, 2), (3, 2), (1, 2))
+    assert ensure_free.call_args_list == [call(n) for n in (10, 0, 10, 1, 9, 4, 8, 7, 7)]
+    assert set(remaining) == set(range(10, 17))
+    assert engine._running == dict.fromkeys(remaining, 3)
+    assert engine._retry_counts == {8: 1, 2: 1, 3: 1, 1: 1}
+    assert not engine._aborted
+    assert cache.free_pages == 7
+    assert cache.evictable_pages == 2
+    for key in remaining:
+        assert state.call_args_list.count(call(key)) == 1
+        assert cache.state(key) == states_before[key]
+    assert len(running) == 11
 
 
 def test_fused_mode_fixes_decode_set_before_prefill_admission() -> None:

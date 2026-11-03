@@ -795,7 +795,8 @@ describe("SimulationForm", () => {
   it("round-trips EP topology and runs the MoE performance model", () => {
     const onSubmitAuto = vi.fn();
     render(<SimulationForm onSubmit={onSubmitAuto} />);
-    fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "1" } });
+    fireEvent.click(screen.getByText(/^层序（/));
+    fireEvent.change(screen.getByLabelText("第 1 段 FFN"), { target: { value: "moe" } });
     fireEvent.change(screen.getByLabelText("专家数"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("每 token 激活专家数"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("专家中间维度（MoE 必填）"), { target: { value: "512" } });

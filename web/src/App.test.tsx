@@ -286,6 +286,29 @@ describe("App", () => {
       .toHaveAttribute("download", "simulation-legacy.json");
   });
 
+  it.each(["single", "scan"] as const)("rejects obsolete model formats in archived %s results without crashing", async (kind) => {
+    vi.mocked(listJobs).mockResolvedValue([{ id: "legacy", kind, status: "completed",
+      total: 1, completed: 1, failed: 0, error: null, cache: null, lookup_ms: null,
+      axes: kind === "scan" ? [{ key: "num_instances", values: [1] }] : null,
+      version: 1, code_fingerprint: "engine-old", code_version_status: "stale", point_archive_version: 1 }]);
+    const archived = structuredClone(result);
+    Reflect.deleteProperty(archived.meta.config.inference.model, "layers");
+    Object.assign(archived.meta.config.inference.model, { num_layers: 2, moe_layers: 1 });
+    resolveSimulation(archived);
+    vi.mocked(getScanPointResult).mockResolvedValue(archived);
+    vi.mocked(getScanTasks).mockResolvedValue({ total: 1, items: [
+      { index: 0, values: { num_instances: 1 }, status: "completed", error: null, result_available: true },
+    ] });
+    render(<App />);
+    const tasks = await screen.findByLabelText("后台任务");
+    if (kind === "scan") fireEvent.click(within(tasks).getByRole("button", { name: "展开组合" }));
+    fireEvent.click(await within(tasks).findByRole("button", { name: "查看结果" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("结果使用已停用的模型配置格式");
+    expect(within(tasks).getByRole("link", { name: "查看原始 JSON" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "仿真指标" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "运行仿真" })).toBeEnabled();
+  });
+
   it("expands scan points and opens a completed point in the existing result panel", async () => {
     vi.mocked(listJobs).mockResolvedValue([{ id: "scan-a", kind: "scan", status: "completed",
       total: 2, completed: 1, failed: 1, error: "point failed", cache: null, lookup_ms: null,
@@ -484,7 +507,8 @@ describe("App", () => {
   it("shows TP and EP timing separately without adding communication to GPU time twice", async () => {
     const initial = createDefaultSimConfig().inference;
     const resolved = resolvedResult({ tp_size: 4, ep_size: 4,
-      model: { ...initial.model, name: "toy-moe", moe_layers: 2 },
+      model: { ...initial.model, name: "toy-moe",
+        layers: [{ count: 2, attention_group: 0, ffn: "moe", full_indexer: false }] },
       hardware: { ...initial.hardware, name: "B300", gpu_count: 4 } });
     resolved.resolution!.capacity = { ...resolved.resolution!.capacity,
       weights_resident_bytes: 1_000_000, kv_bytes_per_token: 128,

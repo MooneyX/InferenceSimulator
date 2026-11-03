@@ -27,6 +27,7 @@ from simcore import (
 from simcore.schemas import (
     HardwareSpec,
     InferenceConfig,
+    LayerSegment,
     ModelSpec,
     SchedulerConfig,
     StorageSpec,
@@ -55,7 +56,7 @@ def bench_config(requests: int, sessions: int, block_size: int) -> SimConfig:
             page_size=block_size,
             model=ModelSpec(
                 name="toy",
-                num_layers=2,
+                layers=[LayerSegment(count=2)],
                 hidden_size=16,
                 num_attention_heads=2,
                 num_kv_heads=1,

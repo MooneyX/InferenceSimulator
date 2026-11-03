@@ -277,7 +277,7 @@ describe("scan projections", () => {
       ...point(x, 1, `${model}-${gpu.name}-${x}`),
       values: { "inference.model": model, "inference.hardware": gpu, num_instances: x },
       config: { num_instances: x, workload: { seed: 7 }, inference: { tp_size: gpu.parallelism, ep_size: 1,
-        model: { name: model, hidden_size: 2048 * (m + 1), attention_groups: [{ layers: 32 * (m + 1) }],
+        model: { name: model, hidden_size: 2048 * (m + 1), layers: [{ count: 32 * (m + 1) }],
           ihc: m ? { mult: 4, dtype: "fp32" } : null },
         hardware: { name: gpu.name, gpu_count: gpu.parallelism, memory_bytes_per_gpu: h ? 128e9 : 288e9,
           effective_hbm_gb_s: h ? 500 : 1000, kernel_overhead_ms: h ? 0.01 : 0.005 },

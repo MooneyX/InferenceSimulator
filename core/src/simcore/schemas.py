@@ -286,10 +286,9 @@ class IHCSpec(_Frozen):
 
 
 class AttentionGroup(_Frozen):
-    """相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。"""
+    """一种注意力实现的结构参数；所在层由 ``ModelSpec.layers`` 层序引用。"""
 
     kind: Literal["gqa", "mla", "mla_dsa"]
-    layers: int = Field(ge=1)
     num_attention_heads: int = Field(ge=1)
     num_kv_heads: int | None = Field(default=None, ge=1)
     head_dim: int | None = Field(default=None, ge=1)
@@ -301,7 +300,6 @@ class AttentionGroup(_Frozen):
     index_heads: int | None = Field(default=None, ge=1)
     index_dim: int | None = Field(default=None, ge=1)
     topk: int | None = Field(default=None, ge=1)
-    full_indexer_layers: int | None = Field(default=None, ge=1)
     output_gate: bool = Field(
         default=False, description="MLA 输出门控投影，按头分片并与输出投影合并计时"
     )
@@ -315,7 +313,7 @@ class AttentionGroup(_Frozen):
     @model_validator(mode="after")
     def _check_layout(self) -> Self:
         mla = (self.q_rank, self.kv_rank, self.rope_dim, self.nope_dim, self.value_dim)
-        index = (self.index_heads, self.index_dim, self.topk, self.full_indexer_layers)
+        index = (self.index_heads, self.index_dim, self.topk)
         if self.kind == "gqa":
             if self.output_gate:
                 raise ValueError("输出门控当前仅支持 MLA 注意力组")
@@ -334,8 +332,8 @@ class AttentionGroup(_Frozen):
         ):
             raise ValueError("MLA 须配置 Q/KV 低秩、位置/非位置及 V 维度")
         if self.kind == "mla_dsa":
-            if any(v is None for v in index) or cast(int, self.full_indexer_layers) > self.layers:
-                raise ValueError("DSA 须配置索引头/维度、top-k 及有效的重算层数")
+            if any(v is None for v in index):
+                raise ValueError("DSA 须配置索引头/维度及 top-k")
             if cast(int, self.index_dim) % 128:
                 raise ValueError("DSA 的 FP8 index-K 维度须为 128 的整数倍")
         elif any(v is not None for v in index):
@@ -347,12 +345,26 @@ class AttentionGroup(_Frozen):
         return self
 
 
+class LayerSegment(_Frozen):
+    """层序中连续 ``count`` 层的结构：注意力组、FFN 类型及 DSA 索引器是否完整计算。"""
+
+    count: int = Field(ge=1)
+    attention_group: int = Field(
+        default=0, ge=0, description="引用的 attention_groups 下标；未配置注意力组时须为 0"
+    )
+    ffn: Literal["dense", "moe"] = "dense"
+    full_indexer: bool = Field(
+        default=False,
+        description="MLA+DSA 层完整计算索引器；否则复用前一完整层的索引结果",
+    )
+
+
 class ModelSpec(_Frozen):
-    """全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。"""
+    """全模型规格；``layers`` 按层号顺序给出各层结构，是层数与层类型的唯一来源。"""
 
     name: str = Field(min_length=1)
     revision: str | None = None
-    num_layers: int = Field(ge=1)
+    layers: list[LayerSegment] = Field(min_length=1)
     hidden_size: int = Field(ge=1)
     num_attention_heads: int = Field(ge=1)
     num_kv_heads: int = Field(ge=1)
@@ -362,7 +374,6 @@ class ModelSpec(_Frozen):
     tie_word_embeddings: bool = False
     weight_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
     kv_dtype: Literal["bf16", "fp16", "fp8"] = "bf16"
-    moe_layers: int = Field(default=0, ge=0)
     num_experts: int = Field(default=0, ge=0)
     experts_per_token: int = Field(default=0, ge=0)
     expert_intermediate_size: int | None = Field(default=None, gt=0)
@@ -376,12 +387,18 @@ class ModelSpec(_Frozen):
     router: RouterSpec = Field(default_factory=RouterSpec)
     ihc: IHCSpec | None = None
 
+    @property
+    def num_layers(self) -> int:  # 层序 → 模型总层数
+        return sum(segment.count for segment in self.layers)
+
+    @property
+    def moe_layers(self) -> int:  # 层序 → MoE 层数
+        return sum(segment.count for segment in self.layers if segment.ffn == "moe")
+
     @model_validator(mode="after")
-    def _check_heads(self) -> Self:  # 当前模型规格 → 校验注意力结构与 MoE 层数，返回自身
+    def _check_heads(self) -> Self:  # 当前模型规格 → 校验注意力结构、层序与 MoE 配置，返回自身
         if self.num_attention_heads % self.num_kv_heads:
             raise ValueError("注意力头数须是 KV 头数的整数倍")
-        if self.moe_layers > self.num_layers:
-            raise ValueError("MoE 层数不得超过总层数")
         if not self.moe_layers and self.router != RouterSpec():
             raise ValueError("Router 辅助配置需要 MoE 层")
         if self.num_shared_experts:
@@ -396,11 +413,23 @@ class ModelSpec(_Frozen):
             and self.attention_groups is not None
         ):
             raise ValueError("grouped 注意力布局必须提供注意力组，其他布局不能混用")
-        if self.attention_groups is not None and (
-            not self.attention_groups
-            or sum(group.layers for group in self.attention_groups) != self.num_layers
-        ):
-            raise ValueError("注意力组层数之和必须等于模型总层数")
+        groups = self.attention_groups
+        if groups is not None and not groups:
+            raise ValueError("注意力组合至少需要一个注意力组")
+        group_count = len(groups) if groups is not None else 1
+        if any(segment.attention_group >= group_count for segment in self.layers):
+            raise ValueError("层序引用了不存在的注意力组")
+        if len({segment.attention_group for segment in self.layers}) != group_count:
+            raise ValueError("每个注意力组须至少被一层引用")
+        seen: set[int] = set()
+        for segment in self.layers:
+            index = segment.attention_group
+            dsa = groups is not None and groups[index].kind == "mla_dsa"
+            if segment.full_indexer and not dsa:
+                raise ValueError("仅 MLA+DSA 注意力组的层可以完整计算索引器")
+            if dsa and index not in seen and not segment.full_indexer:
+                raise ValueError("MLA+DSA 注意力组的首层须完整计算索引器")
+            seen.add(index)
         return self
 
 
@@ -446,8 +475,8 @@ class StorageSpec(_Frozen):
         ge=0,
         allow_inf_nan=False,
         description=(
-            "每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；"
-            "默认值未经实测校准，另计传输耗时，0 为理想基线"
+            "每批（至多 128 页）KV 从低延迟共享存储（L3）读到本地 DRAM（L2）的固定延迟（ms）；"
+            "另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线"
         ),
     )
 

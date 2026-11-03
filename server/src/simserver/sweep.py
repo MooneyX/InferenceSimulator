@@ -165,7 +165,8 @@ def build_point(base: SimConfig, values: dict[str, Any], plan: TracePlan | None)
     if parallelism is not None:
         data["inference"]["hardware"]["gpu_count"] = parallelism
         data["inference"]["tp_size"] = parallelism
-        data["inference"]["ep_size"] = parallelism if data["inference"]["model"]["moe_layers"] else 1
+        moe = any(segment["ffn"] == "moe" for segment in data["inference"]["model"]["layers"])
+        data["inference"]["ep_size"] = parallelism if moe else 1
     for key, value in values.items():
         if key in PRESETS or key == "inference.parallelism":
             continue

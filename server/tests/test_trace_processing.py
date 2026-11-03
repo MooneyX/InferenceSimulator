@@ -79,7 +79,7 @@ def config() -> dict:
             "page_size": 64,
             "model": {
                 "name": "toy",
-                "num_layers": 2,
+                "layers": [{"count": 2}],
                 "hidden_size": 16,
                 "num_attention_heads": 2,
                 "num_kv_heads": 1,
@@ -243,7 +243,7 @@ def test_trace_plan_uses_parsed_capacity_and_performance_model() -> None:
         "ep_size": 1,
         "model": {
             "name": "toy",
-            "num_layers": 2,
+            "layers": [{"count": 2}],
             "hidden_size": 16,
             "num_attention_heads": 2,
             "num_kv_heads": 1,

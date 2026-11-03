@@ -360,7 +360,8 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
         engine.on_l3_lookup(i, 2)
         events.append(engine.drain_events()[0])
     assert l3.lookup(chunk).ref_count == (1 if shared_enabled else 2)
-    assert engines[1]._l3_link_free == (0 if shared_enabled else 3)
+    l3_source = engines[1]._l3_source
+    assert l3_source is not None and l3_source.free_ms == (0 if shared_enabled else 3)
     assert events[0][0] == events[1][0] == 3
     for engine, (time, _, ref) in zip(engines, events, strict=True):
         engine.on_transfer_done(ref, time)
@@ -419,6 +420,54 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     assert not l2.pending_pages and not l2.incoming_ready_ms
     assert l2.lookup("trace:0:90").ref_count == l3.lookup("trace:0:90").ref_count == 0
     assert all(not engine._transfers and not engine._prefetch_waiting for engine in engines)
+
+
+def test_shared_prefetch_coalesces_across_storage_batches_and_waits_for_all_sources() -> None:
+    from unittest.mock import patch
+
+    runtime = runtime_config(
+        EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=4,
+                     l2_capacity_tokens=520, l3_capacity_tokens=520, l3_prefetch_min_tokens=0),
+        PerfModelConfig(kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=64000,
+                        l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2,
+                        l3_latency_ms=1),
+    )
+    source = TracePlan(sessions=("shared",), block_size=4, requests=tuple(
+        TraceTurn(request_id=i, session_id=0, arrival_offset_ms=1000 if i == 3 else 0,
+                  prompt_len=count * 4 + 1, output_len=1, hash_ids=tuple(range(count)))
+        for i, count in enumerate((129, 128, 130, 130))
+    ))
+    workload = WorkloadConfig(mode="trace", arrival_mode="open_loop", session_rate=1,
+                              trace=TraceWorkloadConfig())
+    l2, l3 = CachePool("L2", 4, 130, 4), CachePool("L3", 5, 130, 4)
+    for index in range(130):
+        l3.insert(f"trace:0:{index}")
+    engines = tuple(Engine(runtime, shared_l2=l2, shared_l3=l3, instance_id=i)
+                    for i in range(2))
+    coordinator = Coordinator(engines, Client(workload, runtime.engine, trace_plan=source),
+                              Router(2, policy="least_load"))
+    first_source, second_source = (engine._l3_source for engine in engines)
+    assert first_source is not None and second_source is not None
+    with (
+        patch.object(engines[1], "on_transfer_done", wraps=engines[1].on_transfer_done) as done,
+        patch.object(type(first_source), "submit", autospec=True,
+                     side_effect=type(first_source).submit) as loads,
+    ):
+        runs = coordinator.run()
+    records = {record.id: record for run in runs for record in run.records}
+    arrival = records[0].arrival
+    # 相对到达：首批 128 页于 131 ms 到齐，尾批于 133 ms；另一个来源的新页于 4 ms。
+    assert records[1].prefill_start == pytest.approx(arrival + 131)
+    assert records[0].prefill_start == records[2].prefill_start == pytest.approx(arrival + 133)
+    assert done.call_args_list[0].args[1] == pytest.approx(arrival + 4)
+    assert [call.args[2] for call in loads.call_args_list
+            if call.args[0] is first_source] == [[128 * 64, 64]]
+    assert [call.args[2] for call in loads.call_args_list
+            if call.args[0] is second_source] == [[64]]
+    assert not l2.pending_pages and not l2.incoming_ready_ms
+    assert all(not engine._transfers and not engine._prefetch_waiting
+               and not engine._prefix_cache._transfers for engine in engines)
+    assert all(page.ref_count == 0 for pool in (l2, l3) for page in pool.entries.values())
 
 
 @pytest.mark.parametrize("owns_prefetch", [True, False])

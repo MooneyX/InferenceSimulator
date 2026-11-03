@@ -10,11 +10,12 @@ from typing import Literal
 
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CachePool, L1Snapshot, TieredKVCache, TierSnapshot
+from simcore.kv_source import STORAGE_BATCH_PAGES, KvSource
 from simcore.perf_model import (
     DecodeWork,
     PrefillWork,
     StepWorkload,
-    layer_pipeline_ms,
+    pipelined_finish_ms,
     step_cost,
 )
 from simcore.runtime import RuntimeConfig
@@ -66,7 +67,7 @@ class EngineRun:
 
 @dataclass(slots=True)
 class _TransferTask:
-    chunk_id: str
+    chunk_ids: tuple[str, ...]  # 同一批读取的 L3 页，按前缀顺序
     waiting_requests: set[int]
     service_ms: float
     owns_transfer: bool = True
@@ -80,7 +81,18 @@ class Engine:
         shared_l2: CachePool | None = None, instance_id: int = 0
     ) -> None:
         engine, perf = runtime.engine, runtime.perf_model
-        self._links = runtime.links
+        transfers = runtime.transfers
+        self._l2_source = (
+            KvSource(transfers.l2_to_l1, f"{transfers.seed}:{instance_id}:L2")
+            if transfers.l2_to_l1 is not None
+            else None
+        )
+        self._l3_source = (
+            KvSource(transfers.l3_to_l2, f"{transfers.seed}:{instance_id}:L3")
+            if transfers.l3_to_l2 is not None
+            else None
+        )
+        self._layer_page_bytes = transfers.layer_page_bytes
         self._analytical = runtime.analytical
         self._analysis = AnalyticalSummary()
         self._engine_config = engine
@@ -127,7 +139,6 @@ class Engine:
         self._transfers: dict[int, _TransferTask] = {}  # 在途 L3→L2 预取
         self._transfer_by_chunk: dict[str, int] = {}
         self._next_transfer_id = 0
-        self._l3_link_free = 0.0
 
     @property
     def has_work(self) -> bool:  # 等待队列或运行集 → 是否仍有可执行请求
@@ -160,35 +171,70 @@ class Engine:
         self._scheduled_events.clear()
         return events
 
-    def _start_transfer(
-        self, chunk_id: str, now_ms: float, request_id: int
-    ) -> int:  # L3 页 ID、时刻及请求 ID → 去重后的 L3→L2 预取任务 ID
-        existing = self._transfer_by_chunk.get(chunk_id)
-        if existing is not None:  # 同页已在本实例预取中
-            self._transfers[existing].waiting_requests.add(request_id)
-            return existing
-        target = self._prefix_cache.pools["L2"]
-        end = target.incoming_ready_ms.get(chunk_id)  # 共享 L2 中其他实例已发起的预取
-        owns_transfer = end is None
-        service_ms = 0.0
-        if end is None:
-            link = self._links.l3_to_l2
-            if link is None:
-                raise ValueError("传输链路须配置有效带宽和 KV 字节数")
-            self._prefix_cache.reserve_transfer(chunk_id, "L2", source="L3")
-            service_ms = link.latency_ms + link.transfer_ms
-            start = max(now_ms, self._l3_link_free)
-            end = start + service_ms
-            self._l3_link_free = end
-            target.incoming_ready_ms[chunk_id] = end
+    def _add_transfer(
+        self,
+        chunk_ids: tuple[str, ...],
+        request_id: int,
+        end_ms: float,
+        service_ms: float,
+        owns_transfer: bool,
+    ) -> int:  # 一批 L3 页、请求 ID、完成时刻、读取耗时与归属 → 预取任务 ID
         transfer_id = self._next_transfer_id
         self._next_transfer_id += 1
         self._transfers[transfer_id] = _TransferTask(
-            chunk_id, {request_id}, service_ms, owns_transfer
+            chunk_ids, {request_id}, service_ms, owns_transfer
         )
-        self._transfer_by_chunk[chunk_id] = transfer_id
-        self._scheduled_events.append((end, EventKind.L3_L2_DONE, transfer_id))
+        for chunk_id in chunk_ids:
+            self._transfer_by_chunk[chunk_id] = transfer_id
+        self._scheduled_events.append((end_ms, EventKind.L3_L2_DONE, transfer_id))
         return transfer_id
+
+    def _start_prefetch(
+        self, request_id: int, remote: list[str], now_ms: float
+    ) -> set[int]:  # 请求 ID、连续 L3 命中页与时刻 → 需等待的预取任务 ID
+        """已在途的页直接等待；其余页按前缀顺序每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源。
+
+        对应 SGLang ``HiCacheController._page_transfer`` 每批一次存储读取；本页预留失败或
+        未配置 L3 链路时停止，只预取此前的连续前缀。
+        """
+        target = self._prefix_cache.pools["L2"]
+        pending: set[int] = set()
+        external: dict[float, list[str]] = {}  # 共享 L2 中其他实例已发起的预取，按完成时刻归并
+        owned: list[str] = []
+        for chunk_id in remote:
+            existing = self._transfer_by_chunk.get(chunk_id)
+            if existing is not None:  # 同页已在本实例预取中
+                self._transfers[existing].waiting_requests.add(request_id)
+                pending.add(existing)
+                continue
+            end = target.incoming_ready_ms.get(chunk_id)
+            if end is not None:
+                external.setdefault(end, []).append(chunk_id)
+                continue
+            if self._l3_source is None or self._prefix_cache.pools["L3"].lookup(chunk_id) is None:
+                break
+            try:
+                _ = self._prefix_cache.reserve_transfer(chunk_id, "L2", source="L3")
+            except CacheCapacityError:
+                break
+            owned.append(chunk_id)
+        for end, chunk_ids in external.items():
+            pending.add(self._add_transfer(tuple(chunk_ids), request_id, end, 0.0, False))
+        if owned and self._l3_source is not None:
+            batches = [
+                tuple(owned[index : index + STORAGE_BATCH_PAGES])
+                for index in range(0, len(owned), STORAGE_BATCH_PAGES)
+            ]
+            start = max(now_ms, self._l3_source.free_ms)
+            ends = self._l3_source.submit(
+                now_ms, [len(batch) * self._page_bytes for batch in batches]
+            )
+            for batch, end in zip(batches, ends, strict=True):
+                for chunk_id in batch:
+                    target.incoming_ready_ms[chunk_id] = end
+                pending.add(self._add_transfer(batch, request_id, end, end - start, True))
+                start = end
+        return pending
 
     def submit(
         self, request: InferenceRequest, now_ms: float
@@ -240,7 +286,7 @@ class Engine:
 
     def _accept_prefill_probe(
         self, item: WaitingRequest, sources: tuple[tuple[str, str], ...], now_ms: float
-    ) -> bool:
+    ) -> bool: # 判断准入prefill计算时的本地匹配长度是否低于到达排队时的本地匹配长度, 若低于, 需要重新发起L3查询和预取, 并继续排队
         request = item.request
         request_id = request.request_id
         if request_id in self._last_local_match:
@@ -265,12 +311,7 @@ class Engine:
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
             self._prefix_scheduler.set_ready(request_id, True)
             return
-        pending: set[int] = set()
-        for chunk_id in remote:
-            try:
-                pending.add(self._start_transfer(chunk_id, now_ms, request_id))
-            except (CacheCapacityError, ValueError):
-                break
+        pending = self._start_prefetch(request_id, remote, now_ms)
         if pending:
             self._prefetch_waiting[request_id] = pending
         else:
@@ -280,15 +321,18 @@ class Engine:
         self, transfer_id: int, now_ms: float
     ) -> None:  # L3→L2 预取任务 ID 和时刻 → 结算预取并唤醒等待；无返回值
         task = self._transfers.pop(transfer_id)
-        del self._transfer_by_chunk[task.chunk_id]
+        for chunk_id in task.chunk_ids:
+            del self._transfer_by_chunk[chunk_id]
         if task.owns_transfer:
-            self._prefix_cache.complete_transfer(task.chunk_id, "L2")
-            del self._prefix_cache.pools["L2"].incoming_ready_ms[task.chunk_id]
-            self._restore_bytes += self._page_bytes
+            incoming = self._prefix_cache.pools["L2"].incoming_ready_ms
+            for chunk_id in task.chunk_ids:
+                self._prefix_cache.complete_transfer(chunk_id, "L2")
+                del incoming[chunk_id]
+            self._restore_bytes += len(task.chunk_ids) * self._page_bytes
             self._restore_time_ms += task.service_ms
             self._analysis.restore_ms += task.service_ms
         for request_id in task.waiting_requests:
-            self._prefetched_origins.setdefault(request_id, set()).add(task.chunk_id)
+            self._prefetched_origins.setdefault(request_id, set()).update(task.chunk_ids)
             remaining = self._prefetch_waiting.get(request_id)
             if remaining is not None:
                 remaining.discard(transfer_id)
@@ -311,17 +355,27 @@ class Engine:
             _ = cache.reserve_transfer(chunk_id, "L1", source="L2")
             _ = cache.complete_transfer(chunk_id, "L1")
 
-    def _pipelined_duration(self, pages: int, compute_ms: float) -> float:
-        """L2→L1 回载自步起点逐层发出并与逐层计算流水；返回步长并累计回载统计。"""
+    def _pipelined_duration(
+        self,
+        pages: int,
+        now_ms: float,
+        compute_ms: float,
+        layer_ms: tuple[tuple[int, float], ...],
+    ) -> float:  # 回载页数、步起点、计算总耗时与逐层耗时 → 流水后的步长
+        """L2→L1 回载自步起点按层序逐层提交 L2 来源，与逐层计算流水；累计回载统计。
+
+        对应 SGLang ``HiCacheController.start_loading`` 整批合并后逐层拷贝、注意力层
+        ``wait_until(layer_id)`` 只等本层到齐。
+        """
         if not pages:
             return compute_ms
-        link = self._links.l2_to_l1
-        if link is None:
+        source = self._l2_source
+        if source is None:
             raise ValueError("传输链路须配置有效带宽和 KV 字节数")
-        layers = self._analytical.model.num_layers
-        layer_load_ms = link.latency_ms + pages * link.transfer_ms / layers
-        duration = layer_pipeline_ms(compute_ms, layer_load_ms, layers)
-        load_ms = layers * layer_load_ms
+        start = max(now_ms, source.free_ms)
+        ready = source.submit(now_ms, [pages * size for size in self._layer_page_bytes])
+        duration = pipelined_finish_ms(now_ms, ready, layer_ms) - now_ms
+        load_ms = ready[-1] - start
         self._restore_bytes += pages * self._page_bytes
         self._restore_time_ms += load_ms
         self._analysis.restore_ms += load_ms
@@ -479,7 +533,10 @@ class Engine:
             for item in selection.restore_only:
                 cache.admit(item.request.request_id)
                 self._running[item.request.request_id] = item.generated_tokens
-            return self._pipelined_duration(len(selection.promote_ids), 0.0), ()
+            idle_layers = ((self._analytical.plan.num_layers, 0.0),)
+            return self._pipelined_duration(
+                len(selection.promote_ids), now_ms, 0.0, idle_layers
+            ), ()
         prefill = tuple(
             sorted(
                 (
@@ -524,12 +581,14 @@ class Engine:
         )
         cost = step_cost(
             workload,
-            self._analytical.model,
+            self._analytical.plan,
             self._analytical.hardware,
             self._analytical.tp_size,
             self._analytical.ep_size,
         )
-        duration = self._pipelined_duration(len(selection.promote_ids), cost.duration_ms)
+        duration = self._pipelined_duration(
+            len(selection.promote_ids), now_ms, cost.duration_ms, cost.layer_ms
+        )
         self._analysis.steps += 1
         self._analysis.flops += cost.flops
         self._analysis.hbm_bytes += cost.hbm_bytes

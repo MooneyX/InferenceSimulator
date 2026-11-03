@@ -163,11 +163,11 @@ function validateInference(value: unknown): InferenceConfig {
     page_size: 64, max_output_tokens: 65_536, tp_size: 1, ep_size: 1,
   });
   numericFields(root, "inference", ["page_size", "max_output_tokens"]);
-  const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
+  const model = { tie_word_embeddings: false, weight_dtype: "bf16", kv_dtype: "bf16",
     num_experts: 0, experts_per_token: 0, num_shared_experts: 0, attention_layout: "full_gqa",
-    ...configObject(root.model, "model", ["name", "num_layers", "hidden_size",
+    ...configObject(root.model, "model", ["name", "layers", "hidden_size",
     "num_attention_heads", "num_kv_heads", "head_dim", "ffn_intermediate_size", "vocab_size"],
-    ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype", "moe_layers",
+    ["revision", "tie_word_embeddings", "weight_dtype", "kv_dtype",
       "num_experts", "experts_per_token", "expert_intermediate_size", "num_shared_experts",
       "shared_expert_intermediate_size", "attention_layout", "attention_groups", "norms", "router", "ihc"]) } as Record<string, unknown>;
   const hardware = { gpu_count: 1, kernel_overhead_ms: initialHardware.kernel_overhead_ms,
@@ -185,6 +185,21 @@ function validateInference(value: unknown): InferenceConfig {
   for (const [part, record] of [["model", model], ["hardware", hardware]] as const) {
     if (typeof record.name !== "string" || !record.name.trim()) throw new Error(`${part}.name 不能为空`);
   }
+  if (!Array.isArray(model.layers) || model.layers.length === 0) {
+    throw new Error("model.layers 必须按层序包含至少一个层段");
+  }
+  const layers = model.layers.map((raw, index) => {
+    const path = `model.layers[${index}]`;
+    const segment = { attention_group: 0, ffn: "dense", full_indexer: false,
+      ...configObject(raw, path, ["count"], ["attention_group", "ffn", "full_indexer"]) };
+    configNumber(segment, path, "count", 1, true);
+    configNumber(segment, path, "attention_group", 0, true);
+    if (segment.ffn !== "dense" && segment.ffn !== "moe") throw new Error(`${path}.ffn 仅支持 dense/moe`);
+    configBoolean(segment, path, "full_indexer");
+    return segment as { count: number; attention_group: number; ffn: string; full_indexer: boolean };
+  });
+  model.layers = layers;
+  const moeLayers = layers.reduce((total, segment) => total + (segment.ffn === "moe" ? segment.count : 0), 0);
   if (model.revision !== undefined && model.revision !== null && typeof model.revision !== "string") {
     throw new Error("model.revision 必须是字符串或 null");
   }
@@ -211,7 +226,7 @@ function validateInference(value: unknown): InferenceConfig {
     configDtype(router, "model.router", "dtype");
     configBoolean(router, "model.router", "correction_bias");
     configDtype(router, "model.router", "correction_dtype", false);
-    if (Number(model.moe_layers ?? 0) === 0 && (router.dtype != null ||
+    if (moeLayers === 0 && (router.dtype != null ||
         (router.correction_bias ?? false) !== false || (router.correction_dtype ?? "fp32") !== "fp32")) {
       throw new Error("Router 辅助配置需要 MoE 层");
     }
@@ -221,23 +236,22 @@ function validateInference(value: unknown): InferenceConfig {
     configNumber(ihc, "model.ihc", "mult", 1, true);
     configDtype(ihc, "model.ihc", "dtype", false);
   }
-  for (const key of ["num_layers", "hidden_size", "num_attention_heads", "num_kv_heads",
+  for (const key of ["hidden_size", "num_attention_heads", "num_kv_heads",
     "head_dim", "ffn_intermediate_size", "vocab_size"] as const) configNumber(model, "model", key, 1, true);
-  for (const key of ["moe_layers", "num_experts", "experts_per_token", "num_shared_experts"] as const) {
+  for (const key of ["num_experts", "experts_per_token", "num_shared_experts"] as const) {
     configNumber(model, "model", key, 0, true);
   }
   configNumber(model, "model", "expert_intermediate_size", 1, true, true);
   configNumber(model, "model", "shared_expert_intermediate_size", 1, true, true);
   if (Number(model.num_shared_experts ?? 0) > 0) {
-    if (!Number(model.moe_layers ?? 0) || model.shared_expert_intermediate_size == null) {
+    if (!moeLayers || model.shared_expert_intermediate_size == null) {
       throw new Error("启用共享专家需要 MoE 层及 model.shared_expert_intermediate_size");
     }
   } else if (model.shared_expert_intermediate_size != null) {
     throw new Error("关闭共享专家时 model.shared_expert_intermediate_size 必须为 null");
   }
-  if (Number(model.num_attention_heads) % Number(model.num_kv_heads) ||
-      Number(model.moe_layers ?? 0) > Number(model.num_layers)) {
-    throw new Error("model 注意力头数或 MoE 层数不符合模型结构");
+  if (Number(model.num_attention_heads) % Number(model.num_kv_heads)) {
+    throw new Error("model 注意力头数须是 KV 头数的整数倍");
   }
   if (model.weight_dtype === "fp8" || model.kv_dtype === "fp8" || model.attention_layout === "other") {
     throw new Error("当前解析仅支持 BF16/FP16 全注意力或注意力组合");
@@ -248,16 +262,16 @@ function validateInference(value: unknown): InferenceConfig {
         model.attention_groups != null)) {
     throw new Error("grouped/hy4_preview 注意力布局必须提供注意力组，其他布局不能混用");
   }
+  const groupKinds: unknown[] = [];
   if (model.attention_groups !== undefined && model.attention_groups !== null) {
     if (!Array.isArray(model.attention_groups) || model.attention_groups.length === 0) {
       throw new Error("model.attention_groups 必须包含至少一个配置组");
     }
     const fields = ["num_kv_heads", "head_dim", "q_rank", "kv_rank", "rope_dim", "nope_dim",
-      "value_dim", "index_heads", "index_dim", "topk", "full_indexer_layers"];
-    let layers = 0;
+      "value_dim", "index_heads", "index_dim", "topk"];
     for (const [index, raw] of model.attention_groups.entries()) {
       const path = `model.attention_groups[${index}]`;
-      const group = configObject(raw, path, ["kind", "layers", "num_attention_heads"],
+      const group = configObject(raw, path, ["kind", "num_attention_heads"],
         [...fields, "output_gate", "qk_norm", "norm_dtype", "index_norm", "index_norm_dtype", "sink_dtype"]);
       configBoolean(group, path, "qk_norm");
       for (const field of ["norm_dtype", "index_norm_dtype", "sink_dtype"]) configDtype(group, path, field);
@@ -274,12 +288,11 @@ function validateInference(value: unknown): InferenceConfig {
       if (group.kind === "gqa" && group.output_gate === true) {
         throw new Error(`${path}.output_gate 仅支持 MLA/DSA`);
       }
-      for (const field of ["layers", "num_attention_heads"])
-        configNumber(group, path, field, 1, true);
+      configNumber(group, path, "num_attention_heads", 1, true);
       for (const field of fields) configNumber(group, path, field, 1, true, true);
       const present = (field: string) => group[field] != null;
       const mla = ["q_rank", "kv_rank", "rope_dim", "nope_dim", "value_dim"];
-      const dsa = ["index_heads", "index_dim", "topk", "full_indexer_layers"];
+      const dsa = ["index_heads", "index_dim", "topk"];
       if (group.kind === "gqa") {
         if (!present("num_kv_heads") || !present("head_dim") ||
             [...mla, ...dsa].some(present) || Number(group.num_attention_heads) % Number(group.num_kv_heads)) {
@@ -287,13 +300,28 @@ function validateInference(value: unknown): InferenceConfig {
         }
       } else if (present("num_kv_heads") || present("head_dim") || mla.some((field) => !present(field)) ||
         (group.kind === "mla_dsa" ? dsa.some((field) => !present(field)) ||
-          Number(group.full_indexer_layers) > Number(group.layers) || Number(group.index_dim) % 128 !== 0 :
+          Number(group.index_dim) % 128 !== 0 :
           dsa.some(present))) {
         throw new Error(`${path} 的 MLA/DSA 参数无效`);
       }
-      layers += Number(group.layers);
+      groupKinds.push(group.kind);
     }
-    if (layers !== Number(model.num_layers)) throw new Error("注意力组层数之和必须等于模型总层数");
+  }
+  const groupCount = Math.max(groupKinds.length, 1);
+  if (layers.some((segment) => segment.attention_group >= groupCount)) {
+    throw new Error("model.layers 引用了不存在的注意力组");
+  }
+  if (new Set(layers.map((segment) => segment.attention_group)).size !== groupCount) {
+    throw new Error("每个注意力组须至少被一层引用");
+  }
+  const seen = new Set<number>();
+  for (const segment of layers) {
+    const dsa = groupKinds[segment.attention_group] === "mla_dsa";
+    if (segment.full_indexer && !dsa) throw new Error("仅 MLA+DSA 注意力组的层可以完整计算索引器");
+    if (dsa && !seen.has(segment.attention_group) && !segment.full_indexer) {
+      throw new Error("MLA+DSA 注意力组的首层须完整计算索引器");
+    }
+    seen.add(segment.attention_group);
   }
   for (const key of ["gpu_count", "memory_bytes_per_gpu"] as const) {
     configNumber(hardware, "hardware", key, 1, true);
@@ -323,7 +351,7 @@ function validateInference(value: unknown): InferenceConfig {
   const tpSize = Number(root.tp_size ?? 1);
   const epSize = Number(root.ep_size ?? 1);
   if (Number(hardware.gpu_count ?? 1) !== tpSize) throw new Error("TP 数必须等于 GPU 卡数");
-  if (Number(model.moe_layers ?? 0) > 0) {
+  if (moeLayers > 0) {
     if (epSize !== tpSize) throw new Error("MoE 的 EP 数必须等于 TP 数");
     if (!model.vocab_size || !model.expert_intermediate_size ||
         !model.num_experts || !model.experts_per_token ||

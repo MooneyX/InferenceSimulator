@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 
 import type { ScanRequest, SimConfig } from "../api/types";
+import { moeLayerCount } from "../config/modelLayers";
 import { parseSimConfigJson, serializeSimConfig } from "../config/parameterTransfer";
 import {
   createDefaultSimConfig,
@@ -117,10 +118,10 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
     (showValidation ? validationErrors : []).map(({ field, message }) => [field, message]),
   );
   const needsTpCommunication = tpSize > 1;
-  const needsEpCommunication = model.moe_layers > 0 && epSize > 1;
+  const needsEpCommunication = moeLayerCount(model) > 0 && epSize > 1;
   const runUnavailable = (
     tpSize !== hardware.gpu_count ||
-    (model.moe_layers > 0 ? epSize !== tpSize : epSize !== 1) ||
+    (moeLayerCount(model) > 0 ? epSize !== tpSize : epSize !== 1) ||
     (needsTpCommunication && (hardware.effective_interconnect_gb_s == null ||
       hardware.collective_latency_ms == null)) ||
     (needsEpCommunication && hardware.ep_communication_latency_ms == null)

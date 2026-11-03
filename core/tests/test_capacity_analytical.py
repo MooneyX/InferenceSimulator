@@ -13,10 +13,12 @@ from simcore.events import EventKind
 from simcore.perf_model import (
     DecodeWork,
     PrefillWork,
+    StepCost,
     StepWorkload,
-    layer_pipeline_ms,
-    step_cost,
+    build_layer_plan,
+    pipelined_finish_ms,
 )
+from simcore.perf_model import step_cost as plan_step_cost
 from simcore.prefix_hash import encode
 from simcore.schemas import (
     AttentionGroup,
@@ -26,6 +28,7 @@ from simcore.schemas import (
     IHCSpec,
     InferenceConfig,
     InferenceRequest,
+    LayerSegment,
     ModelSpec,
     NormSpec,
     RouterSpec,
@@ -40,6 +43,32 @@ from simcore.schemas import (
 
 def inference_config(config: SimConfig) -> InferenceConfig:
     return config.inference
+
+
+def step_cost(
+    workload: StepWorkload,
+    model: ModelSpec,
+    hardware: HardwareSpec,
+    tp_size: int = 1,
+    ep_size: int = 1,
+) -> StepCost:
+    return plan_step_cost(workload, build_layer_plan(model), hardware, tp_size, ep_size)
+
+
+def hy4_layers() -> list[LayerSegment]:
+    """Hy4-preview config.json 层序：仅第 0 层 Dense；第 0、1 层后按 shared×3 + full 循环。"""
+    return [
+        LayerSegment(count=1, ffn="dense", full_indexer=True),
+        LayerSegment(count=1, ffn="moe", full_indexer=True),
+        *(
+            segment
+            for _ in range(19)
+            for segment in (
+                LayerSegment(count=3, ffn="moe"),
+                LayerSegment(count=1, ffn="moe", full_indexer=True),
+            )
+        ),
+    ]
 
 
 def update_inference(
@@ -72,7 +101,7 @@ def example_request() -> SimConfig:
             page_size=4,
             model=ModelSpec(
                 name="toy",
-                num_layers=2,
+                layers=[LayerSegment(count=2)],
                 hidden_size=16,
                 num_attention_heads=2,
                 num_kv_heads=1,
@@ -118,7 +147,6 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
     request = example_request()
     mla = AttentionGroup(
         kind="mla",
-        layers=1,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -128,7 +156,6 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
     )
     dsa = AttentionGroup(
         kind="mla_dsa",
-        layers=1,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -138,12 +165,15 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
         topk=4,
         index_heads=2,
         index_dim=128,
-        full_indexer_layers=1,
     )
     model = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
             "attention_groups": [mla, dsa],
+            "layers": [
+                LayerSegment(count=1),
+                LayerSegment(count=1, attention_group=1, full_indexer=True),
+            ],
         }
     )
     simple_storage = inference_config(request).storage.model_copy(
@@ -165,7 +195,7 @@ def test_attention_groups_distinguish_mla_from_mla_dsa() -> None:
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
     cost = step_cost(workload, model, inference_config(request).hardware)
     assert cost.flops > 0 and cost.duration_ms > 0
-    gqa = AttentionGroup(kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8)
+    gqa = AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8)
     grouped = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
@@ -185,7 +215,6 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
     request = example_request()
     group = AttentionGroup(
         kind="mla_dsa",
-        layers=2,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -195,19 +224,19 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
         topk=4,
         index_heads=2,
         index_dim=128,
-        full_indexer_layers=1,
     )
-    two_full = group.model_copy(update={"full_indexer_layers": 2})
     one = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
             "attention_groups": [group],
+            "layers": [LayerSegment(count=1, full_indexer=True), LayerSegment(count=1)],
         }
     )
     two = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
-            "attention_groups": [two_full],
+            "attention_groups": [group],
+            "layers": [LayerSegment(count=2, full_indexer=True)],
         }
     )
     short = StepWorkload("DECODE", (), (DecodeWork(1, 10),), 0, 1)
@@ -252,10 +281,9 @@ def test_dsa_recompute_layer_count_affects_selection_but_not_mla_attention() -> 
 def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -> None:
     request = example_request()
     groups = [
-        AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8),
+        AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8),
         AttentionGroup(
             kind="mla_dsa",
-            layers=1,
             num_attention_heads=2,
             q_rank=4,
             kv_rank=4,
@@ -265,13 +293,16 @@ def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -
             topk=4,
             index_heads=2,
             index_dim=128,
-            full_indexer_layers=1,
         ),
     ]
     model = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
             "attention_groups": groups,
+            "layers": [
+                LayerSegment(count=1),
+                LayerSegment(count=1, attention_group=1, full_indexer=True),
+            ],
         }
     )
     hardware = inference_config(request).hardware.model_copy(
@@ -299,9 +330,10 @@ def test_mixed_attention_groups_tp2_count_replication_and_tiered_index_cache() -
     # GQA 单 KV 头逐 rank 复制 32B；MLA 的 6 维每层复制 12B；索引 Key 132B。
     assert resolved.capacity.rank_reports[0].kv_bytes_per_token == 32 + 12 + 132
     assert resolved.capacity.kv_bytes_per_token == 2 * (32 + 12 + 132)
-    assert prepare_runtime(request).perf_model.kv_bytes_per_token == (
-        resolved.capacity.kv_bytes_per_token
-    )
+    runtime = prepare_runtime(request)
+    assert runtime.perf_model.kv_bytes_per_token == resolved.capacity.kv_bytes_per_token
+    # L2→L1 按层序逐层回载：GQA 层与 DSA 层每页字节不同（整组 2 rank × 每页 4 token）。
+    assert runtime.transfers.layer_page_bytes == (32 * 2 * 4, (12 + 132) * 2 * 4)
     assert resolved.capacity.rank_reports[0].sharded_weights_bytes > 0
     workload = StepWorkload("DECODE", (), (DecodeWork(1, 100),), 0, 1)
     assert step_cost(workload, model, hardware, 2).collectives == 4
@@ -312,14 +344,13 @@ def hy4_request() -> SimConfig:
     model = ModelSpec(
         name="tencent/Hy4-preview",
         revision="705d81ee51566a186d645b74c974d642ef2828fe",
-        num_layers=78,
+        layers=hy4_layers(),
         hidden_size=6144,
         num_attention_heads=64,
         num_kv_heads=8,
         head_dim=256,
         ffn_intermediate_size=18432,
         vocab_size=120832,
-        moe_layers=77,
         num_experts=256,
         experts_per_token=8,
         expert_intermediate_size=2048,
@@ -331,7 +362,6 @@ def hy4_request() -> SimConfig:
         attention_groups=[
             AttentionGroup(
                 kind="mla_dsa",
-                layers=78,
                 num_attention_heads=64,
                 q_rank=2048,
                 kv_rank=512,
@@ -341,7 +371,6 @@ def hy4_request() -> SimConfig:
                 index_heads=32,
                 index_dim=128,
                 topk=2048,
-                full_indexer_layers=21,
                 output_gate=True,
                 index_norm_dtype="fp32",
                 sink_dtype="fp32",
@@ -469,8 +498,8 @@ def test_hy4_kv_uses_group_budget_for_all_cache_tiers(
         assert resolved.l3_capacity_tokens == capacity.l3_capacity_pages * 4
     else:
         assert capacity.l2_capacity_pages == capacity.l3_capacity_pages == 0
-    groups = inference_config(request).model.attention_groups
-    assert groups is not None and groups[0].full_indexer_layers == 21
+    layers = inference_config(request).model.layers
+    assert sum(segment.count for segment in layers if segment.full_indexer) == 21
 
 
 def test_hy4_dsa_index_reuse_and_sparse_attention_workload() -> None:
@@ -623,7 +652,14 @@ def test_hy4_generic_cost_preserves_original_step_cost(
     decode = (DecodeWork(2, context),) if context is not None else ()
     workload = StepWorkload(phase, prefill, decode, 0, len(prefill) + len(decode))
     cost = step_cost(workload, inference_config(request).model, hardware, 8, 8)
-    assert asdict(cost) == pytest.approx(
+    assert sum(count * duration for count, duration in cost.layer_ms) == pytest.approx(duration)
+    # 层序：Dense+full、MoE+full，之后 MoE shared×3 与 MoE full 交替；同类层单层耗时相同。
+    assert [count for count, _ in cost.layer_ms] == [1, 1] + [3, 1] * 19
+    assert len({layer for _, layer in cost.layer_ms}) == 3
+    assert cost.layer_ms[1][1] == cost.layer_ms[3][1] > cost.layer_ms[2][1]
+    values = asdict(cost)
+    del values["layer_ms"]
+    assert values == pytest.approx(
         {
             "duration_ms": duration,
             "flops": flops,
@@ -706,21 +742,22 @@ def auxiliary_weight_request(tp_size: int) -> SimConfig:
     model = ModelSpec.model_validate(
         inference_config(request).model.model_dump()
         | {
-            "num_layers": 4,
+            "layers": [
+                LayerSegment(count=1),
+                LayerSegment(count=1, attention_group=1),
+                LayerSegment(count=1, attention_group=2, ffn="moe", full_indexer=True),
+                LayerSegment(count=1, attention_group=2, ffn="moe"),
+            ],
             "num_attention_heads": 4,
             "num_kv_heads": 2,
-            "moe_layers": 2,
             "num_experts": 4,
             "experts_per_token": 2,
             "expert_intermediate_size": 8,
             "attention_layout": "grouped",
             "attention_groups": [
-                AttentionGroup(
-                    kind="gqa", layers=1, num_attention_heads=4, num_kv_heads=2, head_dim=8
-                ),
+                AttentionGroup(kind="gqa", num_attention_heads=4, num_kv_heads=2, head_dim=8),
                 AttentionGroup(
                     kind="mla",
-                    layers=1,
                     num_attention_heads=4,
                     q_rank=4,
                     kv_rank=6,
@@ -730,7 +767,6 @@ def auxiliary_weight_request(tp_size: int) -> SimConfig:
                 ),
                 AttentionGroup(
                     kind="mla_dsa",
-                    layers=2,
                     num_attention_heads=4,
                     q_rank=4,
                     kv_rank=6,
@@ -740,7 +776,6 @@ def auxiliary_weight_request(tp_size: int) -> SimConfig:
                     index_heads=2,
                     index_dim=128,
                     topk=4,
-                    full_indexer_layers=1,
                 ),
             ],
         }
@@ -939,17 +974,14 @@ def test_index_norm_counts_only_full_indexer_layers(
     original_groups = inference_config(request).model.attention_groups
     assert original_groups is not None
     groups = list(original_groups)
-    groups[2] = groups[2].model_copy(
-        update={
-            "index_norm": "none",
-            "full_indexer_layers": full_layers,
-        }
-    )
+    groups[2] = groups[2].model_copy(update={"index_norm": "none"})
+    layers = list(inference_config(request).model.layers)
+    layers[3] = layers[3].model_copy(update={"full_indexer": full_layers == 2})
     request = update_inference(
         request,
         update={
             "model": inference_config(request).model.model_copy(
-                update={"attention_groups": groups}
+                update={"attention_groups": groups, "layers": layers}
             ),
         },
     )
@@ -1026,7 +1058,6 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
     request = example_request()
     group = AttentionGroup(
         kind=kind,
-        layers=2,
         num_attention_heads=4,
         q_rank=4,
         kv_rank=4,
@@ -1036,12 +1067,15 @@ def test_output_gate_uses_group_dimensions_and_sharded_capacity(
         index_heads=2 if kind == "mla_dsa" else None,
         index_dim=128 if kind == "mla_dsa" else None,
         topk=4 if kind == "mla_dsa" else None,
-        full_indexer_layers=1 if kind == "mla_dsa" else None,
     )
     model = inference_config(request).model.model_copy(
         update={
             "attention_layout": "grouped",
             "attention_groups": [group],
+            "layers": [
+                LayerSegment(count=1, full_indexer=kind == "mla_dsa"),
+                LayerSegment(count=1),
+            ],
         }
     )
     gated = model.model_copy(
@@ -1123,7 +1157,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
     request = example_request()
     model = inference_config(request).model.model_copy(
         update={
-            "moe_layers": 1,
+            "layers": [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
             "num_experts": 4,
             "experts_per_token": 2,
             "expert_intermediate_size": 16,
@@ -1134,9 +1168,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
             update={
                 "attention_layout": "grouped",
                 "attention_groups": [
-                    AttentionGroup(
-                        kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8
-                    ),
+                    AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8),
                 ],
             }
         )
@@ -1160,7 +1192,7 @@ def test_shared_experts_are_replicated_and_do_not_change_routing(
     assert cost.hbm_bytes - base.hbm_bytes == pytest.approx(2 * shared_params)
     assert cost.duration_ms - base.duration_ms == pytest.approx(0.03 + 2 * shared_params / 1e6)
     for name, value in asdict(base).items():
-        if name not in {"duration_ms", "flops", "hbm_bytes", "compute_ms", "memory_ms"}:
+        if name not in {"duration_ms", "flops", "hbm_bytes", "compute_ms", "memory_ms", "layer_ms"}:
             assert getattr(cost, name) == value
     storage = inference_config(request).storage.model_copy(
         update={
@@ -1219,7 +1251,6 @@ def test_dsa_charges_int32_candidate_reads_in_each_attention_layer() -> None:
     request = example_request()
     mla = AttentionGroup(
         kind="mla",
-        layers=2,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -1229,7 +1260,6 @@ def test_dsa_charges_int32_candidate_reads_in_each_attention_layer() -> None:
     )
     dsa = AttentionGroup(
         kind="mla_dsa",
-        layers=2,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -1239,12 +1269,16 @@ def test_dsa_charges_int32_candidate_reads_in_each_attention_layer() -> None:
         index_heads=2,
         index_dim=128,
         topk=10,
-        full_indexer_layers=1,
     )
     model = inference_config(request).model.model_copy(
         update={"attention_layout": "grouped", "attention_groups": [mla]}
     )
-    sparse = model.model_copy(update={"attention_groups": [dsa]})
+    sparse = model.model_copy(
+        update={
+            "attention_groups": [dsa],
+            "layers": [LayerSegment(count=1, full_indexer=True), LayerSegment(count=1)],
+        }
+    )
     workload = StepWorkload("MIXED", (PrefillWork(1, 1, 2, 3),), (DecodeWork(2, 4),), 0, 2)
     base = step_cost(workload, model, inference_config(request).hardware)
     cost = step_cost(workload, sparse, inference_config(request).hardware)
@@ -1337,7 +1371,7 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
     request = example_request()
     qwen = ModelSpec(
         name="Qwen/Qwen3-8B",
-        num_layers=36,
+        layers=[LayerSegment(count=36)],
         hidden_size=4096,
         num_attention_heads=32,
         num_kv_heads=8,
@@ -1393,7 +1427,7 @@ def test_reject_unsupported_topologies_and_missing_bandwidth() -> None:
             update_inference(
                 original,
                 update={
-                    "model": inference_config(original).model.model_copy(update={"moe_layers": 1})
+                    "model": inference_config(original).model.model_copy(update={"layers": [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")]})
                 },
             )
         )
@@ -1427,7 +1461,7 @@ def test_tp4_preview_uses_per_rank_l1_and_group_l2_l3_budgets() -> None:
     request = example_request()
     model = ModelSpec(
         name="Qwen3-8B",
-        num_layers=36,
+        layers=[LayerSegment(count=36)],
         hidden_size=4096,
         num_attention_heads=32,
         num_kv_heads=8,
@@ -1484,7 +1518,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
     request = example_request()
     model = ModelSpec(
         name="dense-kv4",
-        num_layers=94,
+        layers=[LayerSegment(count=94)],
         hidden_size=4096,
         num_attention_heads=64,
         num_kv_heads=4,
@@ -1527,7 +1561,7 @@ def test_tp8_replicates_four_kv_heads_but_rejects_moe_for_now() -> None:
             update_inference(
                 tp,
                 update={
-                    "model": model.model_copy(update={"moe_layers": 94}),
+                    "model": model.model_copy(update={"layers": [LayerSegment(count=94, ffn="moe")]}),
                 },
             )
         )
@@ -1597,8 +1631,7 @@ def test_moe_capacity_distributes_all_experts_and_replaces_dense_ffn() -> None:
     base = example_request()
     model = ModelSpec(
         name="toy-moe",
-        num_layers=2,
-        moe_layers=1,
+        layers=[LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -1662,7 +1695,7 @@ def test_moe_preview_rejects_inconsistent_layout(
     model = inference_config(base).model.model_copy(
         update={
             "vocab_size": 16,
-            "moe_layers": 1,
+            "layers": [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
             "num_experts": 4,
             "experts_per_token": 2,
             "expert_intermediate_size": 8,
@@ -1685,8 +1718,7 @@ def test_moe_preview_rejects_inconsistent_layout(
 def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
     model = ModelSpec(
         name="toy-moe",
-        num_layers=2,
-        moe_layers=1,
+        layers=[LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -1732,7 +1764,7 @@ def test_moe_step_replaces_ffn_and_separates_tp_ep_modes() -> None:
             cost.tp_communication_ms + cost.ep_dispatch_ms + cost.ep_combine_ms
         )
         assert cost.duration_ms >= cost.communication_ms
-    dense = model.model_copy(update={"moe_layers": 0})
+    dense = model.model_copy(update={"layers": [LayerSegment(count=2)]})
     assert step_cost(prefill, dense, hardware, tp_size=2).collectives == 4
     assert normal.flops != step_cost(prefill, dense, hardware, tp_size=2).flops
     slower_ep = step_cost(
@@ -1761,7 +1793,7 @@ def test_moe_run_uses_ep_cost() -> None:
     model = inference_config(base).model.model_copy(
         update={
             "vocab_size": 16,
-            "moe_layers": 1,
+            "layers": [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
             "num_experts": 4,
             "experts_per_token": 2,
             "expert_intermediate_size": 8,
@@ -1809,8 +1841,7 @@ def test_moe_run_uses_ep_cost() -> None:
 def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     model = ModelSpec(
         name="mixed-moe",
-        num_layers=2,
-        moe_layers=1,
+        layers=[LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -1893,7 +1924,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     request = example_request()
     model = inference_config(request).model.model_copy(
         update={
-            "moe_layers": 1,
+            "layers": [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")],
             "num_experts": 4,
             "experts_per_token": 2,
             "expert_intermediate_size": 8,
@@ -1939,14 +1970,19 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         ),
     )
     assert runtime.resolution == resolve_config(config)
-    assert runtime.links == prepare_runtime(config).links
+    assert runtime.transfers == prepare_runtime(config).transfers
     page_bytes = runtime.engine.page_size * resolved.capacity.kv_bytes_per_token
     l2_service = inference_config(request).storage.l2_latency_ms + page_bytes / 1000
     l3_service = inference_config(request).storage.l3_latency_ms + page_bytes / 2000
-    l2_link, l3_link = runtime.links.l2_to_l1, runtime.links.l3_to_l2
+    l2_link, l3_link = runtime.transfers.l2_to_l1, runtime.transfers.l3_to_l2
     assert l2_link is not None and l3_link is not None
-    assert l2_link.latency_ms + l2_link.transfer_ms == pytest.approx(l2_service)
-    assert l3_link.latency_ms + l3_link.transfer_ms == pytest.approx(l3_service)
+    assert sum(runtime.transfers.layer_page_bytes) == page_bytes
+    assert l2_link.latency_ms + page_bytes / l2_link.bytes_per_ms == pytest.approx(l2_service)
+    assert l3_link.latency_ms + page_bytes / l3_link.bytes_per_ms == pytest.approx(l3_service)
+    # 组件场景去掉 L3 波动，按固定延迟与带宽核对两跳计时。
+    runtime = replace(
+        runtime, transfers=replace(runtime.transfers, l3_to_l2=replace(l3_link, fluctuation=None))
+    )
     assert l2_service == pytest.approx(
         storage.l2_latency_ms
         + runtime.engine.page_size / cast(float, resolved.capacity.l2_to_l1_tokens_per_ms)
@@ -1968,7 +2004,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     chunk_id = encode(0, 0)
     page = cache.page(chunk_id)
     assert page is not None and page.tier == "L3"
-    transfer_id = engine._start_transfer(chunk_id, 10.0, 99)
+    (transfer_id,) = engine._start_prefetch(99, [chunk_id], 10.0)
     [(end, event_kind, event_id)] = engine.drain_events()
     assert (event_kind, event_id) == (EventKind.L3_L2_DONE, transfer_id)
     assert end - 10.0 == pytest.approx(l3_service)
@@ -1994,20 +2030,27 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     ("compute", "layer_load", "layers"),
     [(60, 1, 4), (4, 5, 4), (12, 3, 4), (0, 2, 3), (7, 0.5, 1)],
 )
-def test_layer_pipeline_closed_form_matches_per_layer_recursion(
+def test_layer_pipeline_uniform_layers_match_closed_form(
     compute: float, layer_load: float, layers: int
 ) -> None:
-    finish = 0.0
-    for index in range(1, layers + 1):
-        finish = max(finish, index * layer_load) + compute / layers
-    assert layer_pipeline_ms(compute, layer_load, layers) == pytest.approx(finish)
-    assert layer_pipeline_ms(compute, layer_load, layers) >= max(compute, layers * layer_load)
+    ready = [index * layer_load for index in range(1, layers + 1)]
+    finish = pipelined_finish_ms(0.0, ready, ((layers, compute / layers),))
+    closed = max(layer_load + compute, layers * layer_load + compute / layers)
+    assert finish == pytest.approx(closed)
+    assert finish >= max(compute, layers * layer_load)
+
+
+def test_layer_pipeline_follows_heterogeneous_layer_order() -> None:
+    # 首层回载重、末层计算重：逐层递推为 2，按均值平摊会低估为 1.5。
+    assert pipelined_finish_ms(0.0, [1.0, 1.0], ((1, 0.0), (1, 1.0))) == 2.0
+    # 段内按层顺序消费各层到齐时刻，起点之后才开始计算。
+    assert pipelined_finish_ms(10.0, [11.0, 12.0, 20.0], ((2, 0.5), (1, 2.0))) == 22.0
 
 
 def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
     model = ModelSpec(
         name="toy",
-        num_layers=1,
+        layers=[LayerSegment(count=1)],
         hidden_size=2,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -2038,7 +2081,7 @@ def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
 def test_tp2_roofline_counts_two_collectives_per_dense_layer() -> None:
     model = ModelSpec(
         name="toy",
-        num_layers=1,
+        layers=[LayerSegment(count=1)],
         hidden_size=2,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -2115,7 +2158,7 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
 def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
     model = ModelSpec(
         name="toy",
-        num_layers=2,
+        layers=[LayerSegment(count=2)],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -2148,7 +2191,7 @@ def test_tp_mixed_step_charges_collectives_once_per_layer() -> None:
 def test_prefill_kv_hbm_reads_scale_with_context_not_attention_pairs() -> None:
     model = ModelSpec(
         name="toy",
-        num_layers=1,
+        layers=[LayerSegment(count=1)],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,

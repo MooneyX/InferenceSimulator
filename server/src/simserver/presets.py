@@ -1,14 +1,30 @@
 """预置结构与标称规格；仿真用有效性能及驻留权重由使用者填写。"""
 
-from simcore.schemas import AttentionGroup, IHCSpec, ModelSpec, RouterSpec
+from simcore.schemas import AttentionGroup, IHCSpec, LayerSegment, ModelSpec, RouterSpec
+
+# Hy4-preview config.json：mlp_layer_types 仅第 0 层为 dense；indexer_types 第 0、1 层为
+# full，之后按 shared×3 + full 循环 19 次（共 21 个 full 层）。
+_HY4_LAYERS = [
+    LayerSegment(count=1, ffn="dense", full_indexer=True),
+    LayerSegment(count=1, ffn="moe", full_indexer=True),
+    *(
+        segment
+        for _ in range(19)
+        for segment in (
+            LayerSegment(count=3, ffn="moe"),
+            LayerSegment(count=1, ffn="moe", full_indexer=True),
+        )
+    ),
+]
 
 # Qwen 官方模型卡及 config.json：
 # https://huggingface.co/Qwen/Qwen3-8B
 # https://huggingface.co/Qwen/Qwen3-235B-A22B
+# 两者均未启用滑动窗口；235B 的 decoder_sparse_step=1、mlp_only_layers=[]，全部为 MoE 层。
 MODELS = (
     ModelSpec(
         name="Qwen/Qwen3-8B",
-        num_layers=36,
+        layers=[LayerSegment(count=36)],
         hidden_size=4096,
         num_attention_heads=32,
         num_kv_heads=8,
@@ -20,7 +36,6 @@ MODELS = (
         attention_groups=[
             AttentionGroup(
                 kind="gqa",
-                layers=36,
                 num_attention_heads=32,
                 num_kv_heads=8,
                 head_dim=128,
@@ -31,7 +46,7 @@ MODELS = (
     ),
     ModelSpec(
         name="Qwen/Qwen3-235B-A22B",
-        num_layers=94,
+        layers=[LayerSegment(count=94, ffn="moe")],
         hidden_size=4096,
         num_attention_heads=64,
         num_kv_heads=4,
@@ -42,12 +57,10 @@ MODELS = (
         tie_word_embeddings=False,
         num_experts=128,
         experts_per_token=8,
-        moe_layers=94,
         attention_layout="grouped",
         attention_groups=[
             AttentionGroup(
                 kind="gqa",
-                layers=94,
                 num_attention_heads=64,
                 num_kv_heads=4,
                 head_dim=128,
@@ -56,11 +69,11 @@ MODELS = (
             )
         ],
     ),
-    # BF16 主干；不计独立 MTP 草稿层。规格来自该 revision 的 config.json。
+    # BF16 主干；不计独立 MTP 草稿层。规格与层序来自该 revision 的 config.json。
     ModelSpec(
         name="tencent/Hy4-preview",
         revision="705d81ee51566a186d645b74c974d642ef2828fe",
-        num_layers=78,
+        layers=_HY4_LAYERS,
         hidden_size=6144,
         num_attention_heads=64,
         num_kv_heads=8,
@@ -71,7 +84,6 @@ MODELS = (
         tie_word_embeddings=False,
         num_experts=256,
         experts_per_token=8,
-        moe_layers=77,
         num_shared_experts=1,
         shared_expert_intermediate_size=2048,
         router=RouterSpec(dtype="fp32", correction_bias=True),
@@ -80,7 +92,6 @@ MODELS = (
         attention_groups=[
             AttentionGroup(
                 kind="mla_dsa",
-                layers=78,
                 num_attention_heads=64,
                 q_rank=2048,
                 kv_rank=512,
@@ -90,7 +101,6 @@ MODELS = (
                 index_heads=32,
                 index_dim=128,
                 topk=2048,
-                full_indexer_layers=21,
                 output_gate=True,
                 index_norm_dtype="fp32",
                 sink_dtype="fp32",
@@ -99,10 +109,15 @@ MODELS = (
     ),
     # https://huggingface.co/zai-org/GLM-5/blob/c183ef8/config.json
     # BF16 主干（含索引投影），路由修正向量为 FP32；不计独立 MTP 层。
+    # first_k_dense_replace=3、moe_layer_freq=1：前 3 层 Dense，其余 MoE（同 SGLang deepseek_v2
+    # 的 layer_id >= first_k_dense_replace 判定）；未逐层区分索引器，各层均完整计算。
     ModelSpec(
         name="zai-org/GLM-5",
         revision="c183ef8",
-        num_layers=78,
+        layers=[
+            LayerSegment(count=3, ffn="dense", full_indexer=True),
+            LayerSegment(count=75, ffn="moe", full_indexer=True),
+        ],
         hidden_size=6144,
         num_attention_heads=64,
         num_kv_heads=64,
@@ -113,7 +128,6 @@ MODELS = (
         tie_word_embeddings=False,
         num_experts=256,
         experts_per_token=8,
-        moe_layers=75,
         num_shared_experts=1,
         shared_expert_intermediate_size=2048,
         router=RouterSpec(correction_bias=True),
@@ -121,7 +135,6 @@ MODELS = (
         attention_groups=[
             AttentionGroup(
                 kind="mla_dsa",
-                layers=78,
                 num_attention_heads=64,
                 q_rank=2048,
                 kv_rank=512,
@@ -131,14 +144,14 @@ MODELS = (
                 index_heads=32,
                 index_dim=128,
                 topk=2048,
-                full_indexer_layers=78,
             )
         ],
     ),
     # https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct/blob/main/config.json
+    # decoder_sparse_step=1、mlp_only_layers=[]，未启用滑动窗口：全部为 MoE 层。
     ModelSpec(
         name="Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        num_layers=62,
+        layers=[LayerSegment(count=62, ffn="moe")],
         hidden_size=6144,
         num_attention_heads=96,
         num_kv_heads=8,
@@ -149,12 +162,10 @@ MODELS = (
         tie_word_embeddings=False,
         num_experts=160,
         experts_per_token=8,
-        moe_layers=62,
         attention_layout="grouped",
         attention_groups=[
             AttentionGroup(
                 kind="gqa",
-                layers=62,
                 num_attention_heads=96,
                 num_kv_heads=8,
                 head_dim=128,
@@ -166,7 +177,7 @@ MODELS = (
     # 结构核对：https://huggingface.co/second-state/Meta-Llama-3.1-70B-Instruct-GGUF/blob/main/config.json
     ModelSpec(
         name="meta-llama/Llama-3.1-70B-Instruct",
-        num_layers=80,
+        layers=[LayerSegment(count=80)],
         hidden_size=8192,
         num_attention_heads=64,
         num_kv_heads=8,
@@ -178,7 +189,6 @@ MODELS = (
         attention_groups=[
             AttentionGroup(
                 kind="gqa",
-                layers=80,
                 num_attention_heads=64,
                 num_kv_heads=8,
                 head_dim=128,
@@ -191,7 +201,7 @@ MODELS = (
     # https://huggingface.co/neuralmagic/Meta-Llama-3.1-405B-Instruct-quantized.w4a16/blob/main/config.json
     ModelSpec(
         name="meta-llama/Llama-3.1-405B-Instruct",
-        num_layers=126,
+        layers=[LayerSegment(count=126)],
         hidden_size=16384,
         num_attention_heads=128,
         num_kv_heads=8,
@@ -203,7 +213,6 @@ MODELS = (
         attention_groups=[
             AttentionGroup(
                 kind="gqa",
-                layers=126,
                 num_attention_heads=128,
                 num_kv_heads=8,
                 head_dim=128,

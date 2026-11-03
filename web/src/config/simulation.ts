@@ -87,16 +87,17 @@ export function createDefaultSimConfig(): FormSimConfig {
 }
 
 export const initialModel: InferenceConfig["model"] = {
-  name: "Qwen/Qwen3-8B", revision: null, num_layers: 36, hidden_size: 4096,
+  name: "Qwen/Qwen3-8B", revision: null,
+  layers: [{ count: 36, attention_group: 0, ffn: "dense", full_indexer: false }], hidden_size: 4096,
   num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
   ffn_intermediate_size: 12288, vocab_size: 151_936, tie_word_embeddings: false,
-  weight_dtype: "bf16", kv_dtype: "bf16", moe_layers: 0,
+  weight_dtype: "bf16", kv_dtype: "bf16",
   num_experts: 0, experts_per_token: 0, expert_intermediate_size: null,
   num_shared_experts: 0, shared_expert_intermediate_size: null,
   attention_layout: "grouped", attention_groups: [{
-    kind: "gqa", layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+    kind: "gqa", num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
     q_rank: null, kv_rank: null, rope_dim: null, nope_dim: null, value_dim: null,
-    index_heads: null, index_dim: null, topk: null, full_indexer_layers: null,
+    index_heads: null, index_dim: null, topk: null,
     output_gate: false, qk_norm: true, norm_dtype: null,
     index_norm: "layer", index_norm_dtype: null, sink_dtype: null,
   }],

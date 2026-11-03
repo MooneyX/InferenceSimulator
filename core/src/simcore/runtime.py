@@ -2,10 +2,11 @@
 
 from dataclasses import dataclass
 
+from simcore.kv_source import KvSourceSpec
+from simcore.perf_model import LayerPlan
 from simcore.schemas import (
     EngineConfig,
     HardwareSpec,
-    ModelSpec,
     PerfModelConfig,
     ResolutionReport,
 )
@@ -13,28 +14,26 @@ from simcore.schemas import (
 
 @dataclass(frozen=True, slots=True)
 class AnalyticalSpec:
-    model: ModelSpec
+    plan: LayerPlan
     hardware: HardwareSpec
     tp_size: int
     ep_size: int
 
 
 @dataclass(frozen=True, slots=True)
-class TransferLink:
-    transfer_ms: float
-    latency_ms: float
+class TransferSpec:
+    """KV 来源规格及按层序的每层每页字节数；各引擎据此建立带状态的来源。"""
 
-
-@dataclass(frozen=True, slots=True)
-class TransferLinks:
-    l2_to_l1: TransferLink | None = None
-    l3_to_l2: TransferLink | None = None
+    l2_to_l1: KvSourceSpec | None = None
+    l3_to_l2: KvSourceSpec | None = None
+    layer_page_bytes: tuple[float, ...] = ()  # 整组每页 KV 在各层的字节数，合计为每页字节数
+    seed: int = 0  # 来源波动种子，按实例与来源再派生
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     engine: EngineConfig
     perf_model: PerfModelConfig
-    links: TransferLinks
+    transfers: TransferSpec
     analytical: AnalyticalSpec
     resolution: ResolutionReport | None = None

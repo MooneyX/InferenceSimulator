@@ -32,7 +32,7 @@ def make_payload(seed: int = 0, num_requests: int = 100, budget: int = 16_000) -
             "page_size": 1,
             "model": {
                 "name": "toy",
-                "num_layers": 2,
+                "layers": [{"count": 2}],
                 "hidden_size": 16,
                 "num_attention_heads": 2,
                 "num_kv_heads": 1,

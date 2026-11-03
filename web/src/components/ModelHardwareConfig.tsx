@@ -4,6 +4,7 @@ import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { InferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
 import type { FormSimConfig } from "../config/simulation";
 import { hardwarePresetFields } from "../config/presets";
+import { layerCount, layerSegment, moeLayerCount, type LayerSegment } from "../config/modelLayers";
 export { initialModel, initialHardware, initialStorage } from "../config/simulation";
 
 export type Model = InferenceConfig["model"];
@@ -47,6 +48,18 @@ function DtypeInput({ label, value, onChange, disabled = false, nullable = true 
   </label></div>;
 }
 
+/** 按注意力组规整层序：组下标落在范围内，非 DSA 层不完整计算索引器，DSA 组首层必须完整计算。 */
+function normalizeLayers(layers: LayerSegment[], groups: AttentionGroup[] | null | undefined): LayerSegment[] {
+  const seen = new Set<number>();
+  return layers.map((segment) => {
+    const group = groups ? Math.min(segment.attention_group, groups.length - 1) : 0;
+    const dsa = groups?.[group]?.kind === "mla_dsa";
+    const first = !seen.has(group);
+    seen.add(group);
+    return { ...segment, attention_group: group, full_indexer: dsa && (first || segment.full_indexer) };
+  });
+}
+
 function Input({ label, value, onChange, optional = false, disabled = false }: {
   label: string; value: number | null | undefined;
   onChange: (value: number | null) => void; optional?: boolean; disabled?: boolean;
@@ -71,6 +84,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
   const [preview, setPreview] = useState<ResolutionReport | null>(null);
   const [previewKey, setPreviewKey] = useState("");
   const [error, setError] = useState("");
+  const [layersOpen, setLayersOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -86,12 +100,29 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
   const selectedHardware = catalog?.hardware.find((entry) => entry.name === hardware.name &&
     entry.memory_bytes_per_gpu === hardware.memory_bytes_per_gpu);
 
-  function updateGroups(groups: AttentionGroup[] | null) {
-    updateModel({ attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups });
+  function updateGroups(groups: AttentionGroup[] | null, layers: LayerSegment[] = model.layers) {
+    updateModel({ attention_layout: groups ? "grouped" : "full_gqa", attention_groups: groups,
+      layers: normalizeLayers(layers, groups) });
+  }
+
+  function updateLayers(layers: LayerSegment[]) {
+    updateModel({ layers: normalizeLayers(layers, model.attention_groups),
+      ...(moeLayerCount({ layers }) === 0
+        ? { num_shared_experts: 0, shared_expert_intermediate_size: null, router: defaultRouter } : {}) });
+  }
+
+  function updateSegment(index: number, patch: Partial<LayerSegment>) {
+    updateLayers(model.layers.map((segment, i) => i === index ? { ...segment, ...patch } : segment));
   }
 
   const norms = { ...defaultNorms, ...model.norms };
   const router = { ...defaultRouter, ...model.router };
+  const moeLayers = moeLayerCount(model);
+  const totalLayers = layerCount(model);
+  const layerStarts = model.layers.reduce<number[]>((starts, segment, index) => {
+    starts.push(index ? starts[index - 1] + model.layers[index - 1].count : 0);
+    return starts;
+  }, []);
 
   function updateModel(patch: Partial<Model>) {
     const custom = selectedModel || model.attention_layout === "hy4_preview";
@@ -105,8 +136,8 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
     updateGroups(model.attention_groups!.map((group, i) => i === index ? { ...group, ...patch } : group));
   }
 
-  function newGroup(kind: AttentionGroup["kind"], layers: number, previous?: AttentionGroup): AttentionGroup {
-    const common = { kind, layers, num_attention_heads: model.num_attention_heads,
+  function newGroup(kind: AttentionGroup["kind"], previous?: AttentionGroup): AttentionGroup {
+    const common = { kind, num_attention_heads: model.num_attention_heads,
       output_gate: kind === "gqa" ? false : previous?.output_gate ?? false,
       qk_norm: previous?.qk_norm ?? true, norm_dtype: previous?.norm_dtype ?? null,
       index_norm: kind === "mla_dsa" ? previous?.index_norm ?? "layer" : "layer",
@@ -114,8 +145,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       sink_dtype: previous?.sink_dtype ?? null } as AttentionGroup;
     if (kind === "gqa") return { ...common, num_kv_heads: model.num_kv_heads, head_dim: model.head_dim };
     const mla = { ...common, q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 };
-    return kind === "mla" ? mla : { ...mla, index_heads: 32, index_dim: 128,
-      topk: 2048, full_indexer_layers: 1 };
+    return kind === "mla" ? mla : { ...mla, index_heads: 32, index_dim: 128, topk: 2048 };
   }
 
   async function inspect() {
@@ -147,7 +177,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
               attention_layout: model.attention_groups ? "grouped" : "full_gqa" },
               ...(selected?.name === "tencent/Hy4-preview" ? {
                 tp_size: 8, ep_size: 8, hardware: { ...hardware, gpu_count: 8 },
-              } : selected ? { ep_size: selected.moe_layers ? tpSize : 1 } : {}),
+              } : selected ? { ep_size: moeLayerCount(selected) ? tpSize : 1 } : {}),
             });
           }}>{catalog?.models.map((entry) =>
             <option key={entry.name} value={entry.name}>{entry.name}</option>)}
@@ -155,24 +185,22 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       </div></div>
     {(selectedModel?.name === "tencent/Hy4-preview" || model.attention_layout === "hy4_preview") && <p>HY4-Preview 为可编辑参考预设：含输出门控与共享专家的 MLA + DSA 容量和时延粗估，不含 MTP。可直接调整模型结构、精度、辅助权重与注意力组合；修改后转为自定义模型并保留其他参数。归一化、路由、iHC 与 attention sink 使用统一通用权重账本。逐卡权重按 SGLang 模块放置估算，不等于实测显存。</p>}
     <div className="form-grid">{([
-      ["num_layers", "模型层数"], ["hidden_size", "隐藏维度"],
+      ["hidden_size", "隐藏维度"],
       ["num_attention_heads", "Query 头数"], ["num_kv_heads", "KV 头数"],
       ["head_dim", "每头维度"], ["ffn_intermediate_size", "FFN 中间维度"],
-      ["vocab_size", "词表大小（结构估算必填）"], ["moe_layers", "MoE 层数"],
+      ["vocab_size", "词表大小（结构估算必填）"],
       ["num_experts", "专家数"], ["experts_per_token", "每 token 激活专家数"],
       ["expert_intermediate_size", "专家中间维度（MoE 必填）"],
     ] as const).map(([field, label]) => <Input key={field} label={label}
       value={model[field]} optional={field === "expert_intermediate_size"}
       disabled={model.attention_groups != null && (["num_attention_heads", "num_kv_heads", "head_dim"] as string[]).includes(field)}
-      onChange={(value) => updateModel({ [field]: value,
-        ...(field === "moe_layers" && value === 0
-          ? { num_shared_experts: 0, shared_expert_intermediate_size: null, router: defaultRouter } : {}) })} />)}
+      onChange={(value) => updateModel({ [field]: value })} />)}
       <Input label="共享专家数（0 为关闭）" value={model.num_shared_experts ?? 0}
-        disabled={!model.moe_layers}
+        disabled={!moeLayers}
         onChange={(value) => updateModel({ num_shared_experts: value ?? NaN,
           ...(value === 0 ? { shared_expert_intermediate_size: null } : {}) })} />
       <Input label="共享专家中间维度（启用时必填）" value={model.shared_expert_intermediate_size}
-        optional disabled={!model.moe_layers || !model.num_shared_experts}
+        optional disabled={!moeLayers || !model.num_shared_experts}
         onChange={(value) => updateModel({ shared_expert_intermediate_size: value })} />
       <div className="form-field"><label>权重精度<select value={model.weight_dtype} onChange={(event) =>
         updateModel({ weight_dtype: event.target.value as Model["weight_dtype"] })}>
@@ -206,14 +234,14 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
           </label></div>
           <DtypeInput label="主干归一化精度" value={norms.dtype} disabled={norms.kind === "none"}
             onChange={(dtype) => updateModel({ norms: { ...norms, dtype } })} />
-          <DtypeInput label="路由权重精度" value={router.dtype} disabled={!model.moe_layers}
+          <DtypeInput label="路由权重精度" value={router.dtype} disabled={!moeLayers}
             onChange={(dtype) => updateModel({ router: { ...router, dtype } })} />
           <div className="form-field"><label>路由选位修正向量
-            <input type="checkbox" checked={router.correction_bias} disabled={!model.moe_layers}
+            <input type="checkbox" checked={router.correction_bias} disabled={!moeLayers}
               onChange={(event) => updateModel({ router: { ...router, correction_bias: event.currentTarget.checked } })} />
           </label></div>
           <DtypeInput label="路由选位修正向量精度" value={router.correction_dtype}
-            nullable={false} disabled={!model.moe_layers || !router.correction_bias}
+            nullable={false} disabled={!moeLayers || !router.correction_bias}
             onChange={(dtype) => updateModel({ router: { ...router, correction_dtype: dtype! } })} />
           <div className="form-field"><label>启用 iHC
             <input type="checkbox" checked={model.ihc != null}
@@ -255,7 +283,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
     </details>
     <div className="model-subsection">
     <div className="section-heading"><div><h3>注意力组合</h3></div>
-      <p>每组填写层数；同一组的 MLA 与 DSA 作用在同一批层。FFN/MoE 层数独立计算；组合内头数决定容量与注意力计算，上方头数仅保留在当前性能基线。</p></div>
+      <p>各组所在的层由下方层序引用；同一组的 MLA 与 DSA 作用在同一批层。启用组合时按各组参数计算容量与性能；未启用组合时使用上方 GQA 参数。</p></div>
       {model.attention_groups != null && <div className="form-grid"><div className="form-field">
         <label>模型名称<input type="text" value={model.name} onChange={(event) =>
           updateModel({ name: event.target.value })} /></label>
@@ -263,15 +291,18 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         value={model.revision ?? ""} onChange={(event) =>
           updateModel({ revision: event.target.value || null })} /></label></div></div>}
       {model.attention_groups == null ? <button type="button" className="transfer-button"
-        onClick={() => updateGroups([newGroup("gqa", model.num_layers)])}>启用注意力组合配置</button> : <>
-        <p>已配置 {model.attention_groups.reduce((total, group) => total + group.layers, 0)} / {model.num_layers} 层。
-          不按具体层号排列；不支持顺序敏感的跨层依赖。</p>
+        onClick={() => updateGroups([newGroup("gqa")])}>启用注意力组合配置</button> : <>
         {model.attention_groups.map((group, index) => <div key={index} className="model-group-card">
           <h4>第 {index + 1} 组注意力</h4>
           <div className="form-grid">
             <div className="form-field"><label>第 {index + 1} 组注意力方式
-              <select value={group.kind} onChange={(event) => updateGroups(model.attention_groups!.map((item, i) =>
-                i === index ? newGroup(event.target.value as AttentionGroup["kind"], item.layers, item) : item))}>
+              <select value={group.kind} onChange={(event) => {
+                const kind = event.target.value as AttentionGroup["kind"];
+                // 切换为 DSA 时本组各层默认完整计算索引器，可在层序中改为复用。
+                updateGroups(model.attention_groups!.map((item, i) => i === index ? newGroup(kind, item) : item),
+                  model.layers.map((segment) => segment.attention_group === index
+                    ? { ...segment, full_indexer: kind === "mla_dsa" } : segment));
+              }}>
                 <option value="gqa">全注意力 GQA/MQA</option>
                 <option value="mla">MLA</option>
                 <option value="mla_dsa">MLA + DSA</option>
@@ -281,8 +312,6 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
                 onChange={(event) => updateGroups(model.attention_groups!.map((item, i) =>
                   i === index ? { ...item, output_gate: event.target.checked } : item))} />
             </label></div>
-            <Input label={`第 ${index + 1} 组层数`} value={group.layers} onChange={(value) =>
-              updateGroups(model.attention_groups!.map((item, i) => i === index ? { ...item, layers: value ?? NaN } : item))} />
             <Input label={`第 ${index + 1} 组 Query 头数`} value={group.num_attention_heads} onChange={(value) =>
               updateGroups(model.attention_groups!.map((item, i) => i === index ? { ...item, num_attention_heads: value ?? NaN } : item))} />
             {(group.kind === "gqa" ? ([
@@ -293,24 +322,75 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
               ["value_dim", "V 维度"],
               ...(group.kind === "mla_dsa" ? ([
                 ["index_heads", "索引头数"], ["index_dim", "索引 Key 维度（128 倍数）"],
-                ["topk", "选取 token 数"], ["full_indexer_layers", "重算索引的层数"],
+                ["topk", "选取 token 数"],
               ] as const) : []),
             ] as const)).map(([field, label]) => <Input key={field} label={`第 ${index + 1} 组${label}`}
               value={group[field]} onChange={(value) => updateGroups(model.attention_groups!.map((item, i) =>
                 i === index ? { ...item, [field]: value ?? NaN } : item))} />)}
           </div>
           <button type="button" className="secondary-button secondary-button-small model-remove-button" onClick={() => updateGroups(
-            model.attention_groups!.length === 1 ? null : model.attention_groups!.filter((_, i) => i !== index)
+            model.attention_groups!.length === 1 ? null : model.attention_groups!.filter((_, i) => i !== index),
+            // 原属本组的层改用第 1 组，其后各组下标前移。
+            model.layers.map((segment) => ({ ...segment, attention_group: segment.attention_group === index ? 0
+              : segment.attention_group > index ? segment.attention_group - 1 : segment.attention_group })),
           )}>删除第 {index + 1} 组</button>
         </div>)}
         <button type="button" className="transfer-button" onClick={() => {
           const groups = model.attention_groups!;
-          const last = groups[groups.length - 1];
-          updateGroups([...groups.slice(0, -1), { ...last, layers: Math.max(1, last.layers - 1) }, newGroup("gqa", 1)]);
+          const last = model.layers[model.layers.length - 1];
+          // 从末尾层段拆出一层给新组；末段只有一层时追加一层。
+          const added = { ...last, count: 1, attention_group: groups.length, full_indexer: false };
+          updateGroups([...groups, newGroup("gqa")], last.count > 1
+            ? [...model.layers.slice(0, -1), { ...last, count: last.count - 1 }, added]
+            : [...model.layers, added]);
         }}>添加注意力组</button>
       </>}
       <p>自定义 MLA/DSA 按 BF16/FP16 压缩 KV、FP8 索引 Key（每 128 元素 4 字节 scale）和同构 TP 复制口径粗估；可选输出门控及共享专家按填写参数计入容量与时延。归一化、路由修正向量、iHC 与 attention sink 使用统一通用容量公式，只计容量、不增加性能耗时；其他运行时空间不自动推断。</p>
     </div>
+    <details className="model-subsection auxiliary-config" open={layersOpen}>
+      <summary onClick={(event) => { event.preventDefault(); setLayersOpen(!layersOpen); }}>
+        层序（共 {totalLayers} 层，MoE {moeLayers} 层，{model.layers.length} 段）</summary>
+      {layersOpen && <div className="auxiliary-config-body">
+      <p>按层号顺序填写连续层段；逐层计时与 L2 → L1 逐层回载流水按此顺序计算。DSA 层未勾选完整索引时复用前一完整层的索引结果，每个 DSA 组的首层须完整计算。</p>
+      <div className="layer-order-wrap">
+        <table className="layer-order-table">
+          <thead><tr><th>层段</th><th>层号</th><th>层数</th>
+            {model.attention_groups != null && <th>注意力组</th>}<th>FFN</th><th>完整索引</th><th /></tr></thead>
+          <tbody>{model.layers.map((segment, index) => {
+            const start = layerStarts[index];
+            const dsa = model.attention_groups?.[segment.attention_group]?.kind === "mla_dsa";
+            return <tr key={index}>
+              <td>{index + 1}</td>
+              <td>{segment.count > 1 ? `${start}–${start + segment.count - 1}` : start}</td>
+              <td><input type="number" step="1" aria-label={`第 ${index + 1} 段层数`}
+                value={Number.isNaN(segment.count) ? "" : segment.count}
+                onChange={(event) => updateSegment(index, { count: event.currentTarget.value === ""
+                  ? NaN : event.currentTarget.valueAsNumber })} /></td>
+              {model.attention_groups != null && <td><select aria-label={`第 ${index + 1} 段注意力组`}
+                value={segment.attention_group}
+                onChange={(event) => updateSegment(index, { attention_group: Number(event.currentTarget.value) })}>
+                {model.attention_groups.map((group, groupIndex) => <option key={groupIndex} value={groupIndex}>
+                  第 {groupIndex + 1} 组（{group.kind === "gqa" ? "GQA" : group.kind === "mla" ? "MLA" : "MLA + DSA"}）
+                </option>)}</select></td>}
+              <td><select aria-label={`第 ${index + 1} 段 FFN`} value={segment.ffn}
+                onChange={(event) => updateSegment(index, { ffn: event.currentTarget.value as LayerSegment["ffn"] })}>
+                <option value="dense">Dense</option><option value="moe">MoE</option></select></td>
+              <td><input type="checkbox" aria-label={`第 ${index + 1} 段完整计算索引器`}
+                checked={segment.full_indexer} disabled={!dsa}
+                onChange={(event) => updateSegment(index, { full_indexer: event.currentTarget.checked })} /></td>
+              <td><button type="button" className="secondary-button secondary-button-small"
+                aria-label={`删除第 ${index + 1} 段`} disabled={model.layers.length === 1}
+                onClick={() => updateLayers(model.layers.filter((_, i) => i !== index))}>删除</button></td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+      <button type="button" className="transfer-button" onClick={() => {
+        const last = model.layers[model.layers.length - 1];
+        updateLayers([...model.layers, layerSegment(1, { attention_group: last.attention_group, ffn: last.ffn })]);
+      }}>添加层段</button>
+      </div>}
+    </details>
     </section>
     <section className="form-section" aria-labelledby="hardware-heading">
       <div className="section-heading"><div>
@@ -330,7 +410,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       </div></div>
     <div className="form-grid">
       <Input label="TP 数（必须等于 GPU 卡数）" value={tpSize} onChange={(value) => {
-        updateInference({ tp_size: value ?? NaN, ...(model.moe_layers ? { ep_size: value ?? NaN } : {}) });
+        updateInference({ tp_size: value ?? NaN, ...(moeLayers ? { ep_size: value ?? NaN } : {}) });
       }} />
       <Input label="EP 数（MoE 须等于 TP）" value={epSize} onChange={(value) =>
         onEpSizeChange(value ?? NaN)} />
@@ -363,7 +443,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         onChange={(value) => onStorageChange({ ...storage, [field]: value })} />)}
     </div>
     <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
-    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 固定延迟默认 0.01 ms/页，L3（低延迟共享存储）→ L2 默认 0.1 ms/页，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）→ L2 每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。L3 读取另含 SSD 式成段降速与单次小幅抖动（占位参数，按负载随机种子复现）。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、
@@ -380,7 +460,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
     <div className="form-actions">
       <button type="button" className="transfer-button" disabled={disabled} onClick={() => void inspect()}>预览解析容量</button>
     </div>
-    {model.moe_layers ? <p>MoE/EP 性能模型采用未经校准的平均负载估计：含 Prefill 用 normal，纯 Decode 用 low_latency；可先预览容量。</p> :
+    {moeLayers ? <p>MoE/EP 性能模型采用未经校准的平均负载估计：含 Prefill 用 normal，纯 Decode 用 low_latency；可先预览容量。</p> :
       tpSize > 1 && <p>TP 性能模型：每层两次等效同步，未按实测校准。</p>}
     {error && <p role="alert" className="field-error">{error}</p>}
     {preview && previewKey === key && <div role="status" className="simulation-status">
@@ -394,18 +474,18 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       全场共享 L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页 / {preview.l3_capacity_tokens.toLocaleString()} token。
       {preview.reason && <p>{preview.reason}</p>}
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
-        <p>TP{tpSize}{model.moe_layers ? ` + EP${epSize}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
+        <p>TP{tpSize}{moeLayers ? ` + EP${epSize}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为
           {preview.capacity.kv_bytes_per_token.toLocaleString()} bytes；权重按分片与逐卡复制的结构分别计入。</p>
         {(preview.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
           GPU {rank.rank}：分片权重 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB；
           逐卡复制权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB；
-          {model.moe_layers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
+          {moeLayers ? <>全部驻留专家权重 {((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB；</> : null}
           KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token；
           L1 {rank.l1_capacity_pages.toLocaleString()} 页。
         </p>)}
       </>}
       {!preview.runnable && tpSize > 1 &&
-        (model.moe_layers
+        (moeLayers
           ? " 若要运行 TP/EP>1，请填写互联带宽、TP 集合通信延迟与 EP 单次通信开销。"
           : " 多卡容量可预览；填写互联带宽和 TP 集合通信延迟后才能运行。")}
       {preview.runnable && " 性能模型时延为未经校准的平均负载/Roofline 估计。"}

@@ -34,7 +34,7 @@ def payload() -> dict[str, Any]:
             "ep_size": 1,
             "model": {
                 "name": "toy",
-                "num_layers": 2,
+                "layers": [{"count": 2}],
                 "hidden_size": 16,
                 "num_attention_heads": 2,
                 "num_kv_heads": 1,
@@ -213,7 +213,6 @@ def test_custom_attention_groups_preview_and_run() -> None:
     request = payload()
     mla = {
         "kind": "mla",
-        "layers": 1,
         "num_attention_heads": 2,
         "q_rank": 4,
         "kv_rank": 4,
@@ -227,10 +226,13 @@ def test_custom_attention_groups_preview_and_run() -> None:
         "topk": 4,
         "index_heads": 2,
         "index_dim": 128,
-        "full_indexer_layers": 1,
     }
     request["inference"]["model"]["attention_layout"] = "grouped"
     request["inference"]["model"]["attention_groups"] = [mla, dsa]
+    request["inference"]["model"]["layers"] = [
+        {"count": 1},
+        {"count": 1, "attention_group": 1, "full_indexer": True},
+    ]
     request["inference"]["storage"].update({"l2_available_gb": 0})
     request["shared_l3"] = None
     preview = client.post("/api/resolve", json=request)
@@ -239,7 +241,7 @@ def test_custom_attention_groups_preview_and_run() -> None:
     run = run_simulation(client, request)
     assert run.status_code == 200, run.text
     assert run.json()["resolution"] == preview.json()
-    request["inference"]["model"]["attention_groups"][1]["layers"] = 2
+    request["inference"]["model"]["layers"][1]["attention_group"] = 2
     assert client.post("/api/resolve", json=request).status_code == 422
 
 
@@ -309,7 +311,7 @@ def test_tp_performance_model_run_matches_preview() -> None:
     request["inference"]["model"].update(
         {
             "name": "Qwen3-8B",
-            "num_layers": 36,
+            "layers": [{"count": 36}],
             "hidden_size": 4096,
             "num_attention_heads": 32,
             "num_kv_heads": 8,
@@ -497,12 +499,16 @@ def test_flagship_presets_preview_and_simulation(
     assert model["tie_word_embeddings"] is False
     assert model["ihc"] is None
     (group,) = model["attention_groups"]
-    assert group["layers"] == model["num_layers"]
+    assert {segment["attention_group"] for segment in model["layers"]} == {0}
     assert group["output_gate"] is False
     assert group["sink_dtype"] is None
     if name == "zai-org/GLM-5":
         assert group["kind"] == "mla_dsa"
-        assert group["full_indexer_layers"] == model["num_layers"] == 78
+        # first_k_dense_replace=3：前 3 层 Dense，其余 75 层 MoE，各层均完整计算索引器。
+        assert model["layers"] == [
+            {"count": 3, "attention_group": 0, "ffn": "dense", "full_indexer": True},
+            {"count": 75, "attention_group": 0, "ffn": "moe", "full_indexer": True},
+        ]
         assert (
             group["q_rank"],
             group["kv_rank"],
@@ -511,7 +517,6 @@ def test_flagship_presets_preview_and_simulation(
             group["value_dim"],
         ) == (2048, 512, 64, 192, 256)
         assert (group["index_heads"], group["index_dim"], group["topk"]) == (32, 128, 2048)
-        assert model["moe_layers"] == 75
         assert model["num_shared_experts"] == 1
         assert model["router"]["correction_bias"] is True
     else:
@@ -585,7 +590,7 @@ def test_presets_and_unsupported_modes() -> None:
         group = model["attention_groups"][0]
         assert (
             group["kind"],
-            group["layers"],
+            sum(segment["count"] for segment in model["layers"]),
             group["num_attention_heads"],
             group["num_kv_heads"],
             group["head_dim"],
@@ -614,7 +619,8 @@ def test_presets_and_unsupported_modes() -> None:
         )
         request["inference"]["storage"].update({"l2_available_gb": 0})
         request["shared_l3"] = None
-        request["inference"].update({"tp_size": 8, "ep_size": 8 if model["moe_layers"] else 1})
+        moe = any(segment["ffn"] == "moe" for segment in model["layers"])
+        request["inference"].update({"tp_size": 8, "ep_size": 8 if moe else 1})
         explicit = client.post("/api/resolve", json=request)
         assert explicit.status_code == 200, explicit.text
         legacy = dict(
@@ -655,7 +661,7 @@ def test_presets_and_unsupported_modes() -> None:
         assert rejected.status_code == 422
         assert rejected.json()["detail"][0]["loc"] == ["body", "inference", "model", field]
         del request["inference"]["model"][field]
-    request["inference"]["model"]["moe_layers"] = 2
+    request["inference"]["model"]["layers"] = [{"count": 2, "ffn": "moe"}]
     assert client.post("/api/resolve", json=request).status_code == 422
     submitted = client.post("/api/simulate", json=request)
     assert submitted.status_code == 202

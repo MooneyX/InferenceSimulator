@@ -124,7 +124,14 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   await page.goto("/");
   await page.getByLabel("模型选择").selectOption("tencent/Hy4-preview");
   await expect(page.getByLabel("第 1 组注意力方式")).toHaveValue("mla_dsa");
-  await expect(page.getByLabel("第 1 组层数")).toHaveValue("78");
+  const layerSummary = page.locator("summary").filter({ hasText: /^层序/ });
+  await expect(layerSummary).toContainText("共 78 层，MoE 77 层");
+  await layerSummary.click();
+  await expect(page.getByLabel("第 1 段 FFN")).toHaveValue("dense");
+  await expect(page.getByLabel("第 2 段 FFN")).toHaveValue("moe");
+  await expect(page.getByLabel("第 3 段完整计算索引器")).not.toBeChecked();
+  await page.getByLabel("第 3 段层数").fill("2");
+  await expect(layerSummary).toContainText("共 77 层，MoE 76 层");
   await expect(page.getByLabel("第 1 组Q 压缩维度")).toBeEnabled();
   await expect(page.getByLabel("第 1 组KV 压缩维度")).toBeEnabled();
   await expect(page.getByLabel("第 1 组选取 token 数")).toBeEnabled();
@@ -146,6 +153,12 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   expect(submittedConfig).not.toHaveProperty("config");
   const submitted = submittedConfig.inference.model;
   expect(submitted.hidden_size).toBe(4096);
+  expect(submitted).not.toHaveProperty("num_layers");
+  expect(submitted.layers.slice(0, 3)).toEqual([
+    { count: 1, attention_group: 0, ffn: "dense", full_indexer: true },
+    { count: 1, attention_group: 0, ffn: "moe", full_indexer: true },
+    { count: 2, attention_group: 0, ffn: "moe", full_indexer: false },
+  ]);
   expect(submitted.attention_groups[0].topk).toBe(1024);
   expect(submitted.attention_layout).toBe("grouped");
   expect(submitted.revision).toBeNull();
@@ -153,12 +166,14 @@ test("edits HY4 preset and exposes complete attention group parameters", async (
   expect(submitted.router).toEqual({ dtype: "fp32", correction_bias: true, correction_dtype: "fp32" });
   await expect(page.getByRole("status")).toContainText("服务端单实例解析");
   await page.getByRole("button", { name: "添加注意力组" }).click();
-  await expect(page.getByLabel("第 1 组层数")).toHaveValue("77");
+  await expect(layerSummary).toContainText("共 78 层，MoE 77 层");
   await expect(page.getByLabel("第 2 组注意力方式")).toHaveValue("gqa");
   await expect(page.getByLabel("第 2 组KV 头数")).toBeEnabled();
-  await page.getByLabel("第 1 组层数").fill("78");
+  const lastSegment = submitted.layers.length + 1;
+  await expect(page.getByLabel(`第 ${lastSegment} 段注意力组`)).toHaveValue("1");
   await page.getByRole("button", { name: "删除第 2 组" }).click();
   await expect(page.getByLabel("第 2 组注意力方式")).toHaveCount(0);
+  await expect(page.getByLabel(`第 ${lastSegment} 段注意力组`)).toHaveValue("0");
 });
 
 test("shows Qwen attention defaults with consistent auxiliary form styling", async ({ page }) => {
@@ -170,13 +185,18 @@ test("shows Qwen attention defaults with consistent auxiliary form styling", asy
   ]) {
     await page.getByLabel("模型选择").selectOption(preset.name);
     await expect(page.getByLabel("第 1 组注意力方式")).toHaveValue("gqa");
-    await expect(page.getByLabel("第 1 组层数")).toHaveValue(preset.layers);
+    const layers = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^层序/ }) });
+    if (await layers.getAttribute("open") === null) await layers.locator("summary").click();
+    await expect(page.getByLabel("第 1 段层数")).toHaveValue(preset.layers);
+    await expect(page.getByLabel("第 1 段 FFN")).toHaveValue(preset.layers === "36" ? "dense" : "moe");
     await expect(page.getByLabel("第 1 组 Query 头数")).toHaveValue(preset.heads);
     await expect(page.getByLabel("第 1 组KV 头数")).toHaveValue(preset.kv);
     await expect(page.getByLabel("第 1 组每头维度")).toHaveValue("128");
     await expect(page.getByLabel("第 1 组注意力输出门控")).not.toBeChecked();
   }
-  const auxiliary = page.locator("details.auxiliary-config");
+  const auxiliary = page.locator("details.auxiliary-config").filter({
+    has: page.locator("summary").filter({ hasText: /^辅助权重容量配置$/ }),
+  });
   await expect(auxiliary).not.toHaveAttribute("open", "");
   await auxiliary.locator("summary").click();
   await expect(auxiliary).toHaveAttribute("open", "");

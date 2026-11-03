@@ -10,7 +10,14 @@ import simcore
 from simcore import SimConfig, SimResult, simulate
 from simcore.capacity import prepare_runtime
 from simcore.metrics import compute_metrics
-from simcore.perf_model import DecodeWork, PrefillWork, StepCost, StepWorkload, step_cost
+from simcore.perf_model import (
+    DecodeWork,
+    PrefillWork,
+    StepCost,
+    StepWorkload,
+    build_layer_plan,
+    step_cost,
+)
 from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     AnalyticalSummary,
@@ -582,12 +589,12 @@ class TestSmallCases:
         inference = cfg.inference
         prefill = step_cost(
             StepWorkload("PREFILL", (PrefillWork(0, 0, 5, 5),), (), 0, 1),
-            inference.model, inference.hardware,
+            build_layer_plan(inference.model), inference.hardware,
         ).duration_ms
         decode = sum(
             step_cost(
                 StepWorkload("DECODE", (), (DecodeWork(0, context),), 0, 1),
-                inference.model, inference.hardware,
+                build_layer_plan(inference.model), inference.hardware,
             ).duration_ms
             for context in (6, 7)
         )

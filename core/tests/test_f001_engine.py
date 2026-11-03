@@ -9,7 +9,7 @@ from simcore import simulate
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.perf_model import StepCost, layer_pipeline_ms, step_cost
+from simcore.perf_model import StepCost, step_cost
 from simcore.prefix_hash import encode
 from simcore.router import Router
 from simcore.schemas import (
@@ -27,6 +27,11 @@ from test_client import planned_client
 from test_schemas import resolved_config, runtime_config
 
 PERF = PerfModelConfig()
+
+
+def uniform_pipeline(compute_ms: float, layer_load_ms: float, layers: int) -> float:
+    """同构层逐层回载与计算流水的闭式解：max(t + C, L·t + C/L)。"""
+    return max(layer_load_ms + compute_ms, layers * layer_load_ms + compute_ms / layers)
 
 
 def start_step_end(
@@ -211,7 +216,7 @@ def test_reused_prefill_cost_uses_reused_context_not_full_prompt() -> None:
     engine.submit(request(1, prompt=65, maximum=1, output=1, inherited=(encode(0, 0),)), now)
     expected = step_cost(
         StepWorkload("PREFILL", (PrefillWork(1, 64, 1, 65),), (), 0, 1),
-        runtime.analytical.model,
+        runtime.analytical.plan,
         runtime.analytical.hardware,
     )
     assert engine.start_step(now, 1) == (expected.duration_ms, (1,))
@@ -307,7 +312,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     assert engine.drain_events() == ()
     compute = engine._analysis.device_ms
     # 每层回载 3 + 1 页 × 2 ms / 2 层 = 4 ms，与两层计算流水。
-    assert now == pytest.approx(layer_pipeline_ms(compute, 4, 2))
+    assert now == pytest.approx(uniform_pipeline(compute, 4, 2))
     assert engine._analysis.restore_exposed_ms == pytest.approx(now - compute)
     assert engine.load_tokens == 12
     assert engine.finish_step(now) == (1, 2)
@@ -325,6 +330,98 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     ] == [(0, 4, 0), (0, 4, 0)]
     assert run.l2_snapshot is not None
     assert run.l2_snapshot.free_blocks + run.l2_snapshot.resident_blocks == 2
+
+
+def test_l2_load_submits_each_layer_bytes_in_layer_order() -> None:
+    from dataclasses import replace
+
+    config = EngineConfig(
+        max_running_requests=2, max_total_tokens=28, page_size=4, l2_capacity_tokens=8
+    )
+    perf = PerfModelConfig(kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4, l2_latency_ms=3)
+    runtime = runtime_config(config, perf)
+    # 每页 8 B 在两层不均分：首层 6 B、末层 2 B。
+    engine = Engine(replace(runtime, transfers=replace(runtime.transfers, layer_page_bytes=(6, 2))))
+    cache = engine._prefix_cache
+    for key, size in ((0, 4), (99, 28)):
+        seed = request(key, prompt=size)
+        cache.pin(seed, ())
+        cache.admit(key)
+        cache.extend(key, size)
+        cache.publish(key)
+        cache.finish(key)
+    shared = encode(0, 0)
+    assert cache.page(shared).tier == "L2"
+    engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
+    now = start_step_end(engine, 0, 0, (1,))
+    layer = engine._analysis.device_ms / 2
+    first_ready, last_ready = 3 + 6 / 4, 3 + 6 / 4 + 3 + 2 / 4
+    assert now == pytest.approx(max(first_ready + layer, last_ready) + layer)
+    assert engine._restore_time_ms == pytest.approx(last_ready)
+
+
+@pytest.mark.parametrize("reverse, expected_ms", [(False, 368), (True, 376)])
+def test_resolved_heterogeneous_layers_pipeline_compute_and_kv_in_order(
+    reverse: bool, expected_ms: float,
+) -> None:
+    from simcore.capacity import prepare_runtime
+    from simcore.schemas import (
+        AttentionGroup,
+        HardwareSpec,
+        InferenceConfig,
+        LayerSegment,
+        ModelSpec,
+        SchedulerConfig,
+        SimConfig,
+        StorageSpec,
+    )
+
+    order = (1, 0) if reverse else (0, 1)
+    config = SimConfig(
+        workload=WorkloadConfig(session_rate=1, synthetic=SyntheticWorkloadConfig(
+            num_requests=1, prompt_len=FixedLength(value=2),
+            turn_increment_len=FixedLength(value=1), output_len=FixedLength(value=1),
+        )),
+        scheduler=SchedulerConfig(max_running_requests=1),
+        num_instances=1,
+        inference=InferenceConfig(
+            page_size=1,
+            model=ModelSpec(
+                name="heterogeneous", hidden_size=2, num_attention_heads=2,
+                num_kv_heads=1, head_dim=1, ffn_intermediate_size=4, vocab_size=2,
+                attention_layout="grouped",
+                layers=[LayerSegment(count=1, attention_group=index) for index in order],
+                attention_groups=[
+                    AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=dim)
+                    for dim in (1, 2)
+                ],
+            ),
+            hardware=HardwareSpec(
+                name="hand-calculated", memory_bytes_per_gpu=10_000,
+                effective_fp16_tflops=1e-9, effective_hbm_gb_s=1e-6,
+                kernel_overhead_ms=0,
+            ),
+            storage=StorageSpec(l2_available_gb=120e-9, l2_to_l1_gb_s=0.05e-6, l2_latency_ms=0),
+        ),
+    )
+    runtime = prepare_runtime(config)
+    assert runtime.transfers.layer_page_bytes == ((8, 4) if reverse else (4, 8))
+    engine = Engine(runtime)
+    shared = encode(90, 0)
+    engine._prefix_cache.pools["L2"].insert(shared)
+    assert engine.submit(request(1, prompt=2, maximum=1, output=1, inherited=(shared,)), 7)
+    end = start_step_end(engine, 7, 0, (1,))
+    # A: 72 ms 权重阶段 + 16 ms 注意力；B: 96 + 32 ms；KV 分别需 80/160 ms。
+    assert end - 7 == pytest.approx(expected_ms)
+    assert engine.finish_step(end) == (1,)
+    engine.complete(end, 1)
+    result = engine.finalize()
+    assert result.analysis.device_ms == pytest.approx(216)
+    assert result.analysis.restore_exposed_ms == pytest.approx(expected_ms - 216)
+    assert result.restore_time_ms == pytest.approx(240)
+    assert result.restore_bytes == 12
+    assert result.records[0].l2_hit_tokens == 1
+    assert result.cache_snapshot.active_blocks == 0
 
 
 def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
@@ -356,7 +453,7 @@ def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
     assert all(cache.page(chunk_id).tier == "L1" for chunk_id in shared)
     assert cache.promotions == 2
     # 两页均分到两层：每层 3 + 2 页 × 2 ms / 2 层 = 5 ms。
-    assert now == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 5, 2))
+    assert now == pytest.approx(uniform_pipeline(engine._analysis.device_ms, 5, 2))
     assert engine.finish_step(now) == (1,)
     engine.complete(now, 1)
 
@@ -452,7 +549,7 @@ def test_restore_load_pipelines_with_fused_decode_without_decoding_restored_requ
     assert engine.drain_events() == ()
     compute = engine._analysis.device_ms - device_before
     # 计算远长于回载时，仅首层 4 ms 回载暴露在步长中。
-    assert now - prefill_end == pytest.approx(layer_pipeline_ms(compute, 4, 2))
+    assert now - prefill_end == pytest.approx(uniform_pipeline(compute, 4, 2))
     assert now - prefill_end == pytest.approx(compute + 4)
     assert engine._analysis.restore_exposed_ms == pytest.approx(4)
     assert engine._running[0] == 1 and engine._prefill_end[0] == prefill_end
@@ -463,7 +560,7 @@ def test_restore_load_pipelines_with_fused_decode_without_decoding_restored_requ
     engine.complete(now, 0)
     run = engine.finalize()
     assert run.records[0].replayed_prefill_tokens == 0
-    assert run.restore_time_ms == 8 and run.restore_bytes == 8
+    assert run.restore_time_ms == pytest.approx(8) and run.restore_bytes == 8
 
 
 def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> None:
@@ -508,7 +605,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     engine.on_transfer_done(transfer_id, now)
     now = start_step_end(engine, now, 0, (1,))
     assert engine.drain_events() == ()
-    assert now - 9 == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 4, 2))
+    assert now - 9 == pytest.approx(uniform_pipeline(engine._analysis.device_ms, 4, 2))
     assert engine.finish_step(now) == (1,)
     assert engine.num_steps == 1
     engine.complete(now, 1)
@@ -556,7 +653,7 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
     )
     now = start_step_end(engine, 0, 0, (1, 2))
     assert engine.drain_events() == ()
-    assert now == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 1, 2))
+    assert now == pytest.approx(uniform_pipeline(engine._analysis.device_ms, 1, 2))
     assert engine.finish_step(now) == (1, 2)
     published = cache.page(shared)
     assert published is not None and published.tier == "L1"

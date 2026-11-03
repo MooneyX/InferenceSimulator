@@ -346,11 +346,11 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         assert record.actual_hit_tokens == 0
         assert not engine.drain_events()
         return
-    assert len(prefetch) == 2
-    for index, (time, kind, transfer_id) in enumerate(prefetch):
-        assert kind is EventKind.L3_L2_DONE
-        engine.on_transfer_done(transfer_id, time)
-        assert engine._prefix_scheduler.ready_count == int(index == 1)
+    # 两页同属一个请求的连续前缀，合为一批存储读取，只有一个完成事件。
+    [(time, kind, transfer_id)] = prefetch
+    assert kind is EventKind.L3_L2_DONE
+    engine.on_transfer_done(transfer_id, time)
+    assert engine._prefix_scheduler.ready_count == 1
     started = engine.start_step(prefetch[-1][0], engine.num_steps)
     assert started is not None
     assert engine._prefix_scheduler.ready_count == 0
@@ -562,11 +562,11 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
         [(now, kind, key)] = engine.drain_events()
         assert kind is EventKind.L3_LOOKUP_DONE
         engine.on_l3_lookup(key, now)
-        prefetch = engine.drain_events()
-        assert [engine._transfers[event[2]].chunk_id for event in prefetch] == list(ids)
-        assert [event[0] for event in prefetch] == [7, 12, 17]
-        for now, _, key in prefetch:
-            engine.on_transfer_done(key, now)
+        # 连续前缀按上下文顺序合为一批读取：1 ms 固定延迟 + 3 页 × 4 ms。
+        [(now, _, key)] = engine.drain_events()
+        assert engine._transfers[key].chunk_ids == ids
+        assert now == 15
+        engine.on_transfer_done(key, now)
 
     # L2 命中页在选批时整批提升，回载不产生事件，按层计入本步步长。
     started = engine.start_step(now, 0)
@@ -579,10 +579,91 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
     engine.complete(end, 1)
     result = engine.finalize()
     assert result.restore_bytes == 24 * (2 if tier == "L3" else 1)
-    # L2→L1：2 层 × (3 + 3 页 × 2 ms / 2 层)；L3→L2：3 页 × (1 + 4) ms。
-    assert result.restore_time_ms == 12 + (15 if tier == "L3" else 0)
+    # L2→L1：2 层 × (3 + 3 页 × 2 ms / 2 层)；L3→L2：一批 1 + 3 页 × 4 ms。
+    assert result.restore_time_ms == 12 + (13 if tier == "L3" else 0)
     assert result.records[0].l3_hit_tokens == (12 if tier == "L3" else 0)
     assert result.cache_snapshot.active_blocks == 0
+
+
+def test_l3_prefetch_splits_storage_batches_and_waits_for_every_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.engine.STORAGE_BATCH_PAGES", 2)
+    config = EngineConfig(
+        max_running_requests=1,
+        max_total_tokens=32,
+        page_size=4,
+        l2_capacity_tokens=16,
+        l3_capacity_tokens=16,
+        l3_prefetch_min_tokens=0,
+    )
+    perf = PerfModelConfig(
+        kv_bytes_per_token=2,
+        l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_latency_ms=1,
+        l3_lookup_latency_ms=2,
+    )
+    engine = Engine(runtime_config(config, perf))
+    ids = tuple(encode(90, block) for block in range(3))
+    for chunk_id in ids:
+        engine._prefix_cache.pools["L3"].insert(chunk_id)
+    item = InferenceRequest(1, 0, None, 13, 1, 1, ids, 3)
+    assert engine.submit(item, 0)
+    [(now, _, key)] = engine.drain_events()
+    engine.on_l3_lookup(key, now)
+    # 每批一次固定延迟，按提交顺序串行：2 + 1 + 2 页 × 4 ms，再 + 1 + 1 页 × 4 ms。
+    first, second = engine.drain_events()
+    assert (first[0], second[0]) == (11, 16)
+    assert engine._transfers[first[2]].chunk_ids == ids[:2]
+    assert engine._transfers[second[2]].chunk_ids == ids[2:]
+    engine.on_transfer_done(first[2], first[0])
+    assert not engine.can_step
+    engine.on_transfer_done(second[2], second[0])
+    assert engine.can_step
+    assert engine._prefetched_origins[1] == set(ids)
+    assert engine._restore_time_ms == 9 + 5 and engine._restore_bytes == 24
+
+
+def test_l3_prefetch_stops_when_l2_reservation_evicts_a_later_source_page() -> None:
+    config = EngineConfig(
+        max_running_requests=1, max_total_tokens=16, page_size=4,
+        l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0,
+    )
+    perf = PerfModelConfig(
+        kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
+        l3_to_l2_bandwidth_bytes_per_ms=2,
+    )
+    engine = Engine(runtime_config(config, perf))
+    cache = engine._prefix_cache
+    ids = (encode(90, 0), encode(90, 1))
+    for chunk in ids:
+        cache.pools["L3"].insert(chunk)
+    for index in range(2):
+        cache.pools["L2"].insert(encode(99, index))
+    assert engine.submit(InferenceRequest(1, 0, None, 9, 1, 1, ids, 2), 0)
+    [(now, kind, key)] = engine.drain_events()
+    assert kind is EventKind.L3_LOOKUP_DONE
+    engine.on_l3_lookup(key, now)
+    [(now, kind, key)] = engine.drain_events()
+    assert kind is EventKind.L3_L2_DONE
+    assert engine._transfers[key].chunk_ids == ids[:1]
+    assert cache.pools["L3"].lookup(ids[1]) is None
+    engine.on_transfer_done(key, now)
+    assert not cache.pools["L2"].pending_pages
+    assert not cache.pools["L2"].incoming_ready_ms
+    assert not cache._transfers and not engine._transfers and not engine._prefetch_waiting
+    started = engine.start_step(now, 0)
+    assert started is not None
+    end = now + started[0]
+    assert engine.finish_step(end) == (1,)
+    engine.complete(end, 1)
+    result = engine.finalize()
+    assert result.records[0].actual_hit_tokens == result.records[0].l3_hit_tokens == 4
+    assert result.cache_snapshot.active_blocks == 0
+    assert all(
+        page.ref_count == 0 for pool in cache.pools.values() for page in pool.entries.values()
+    )
 
 
 def test_l2_hit_child_prefill_starts_on_arrival_with_pipelined_load() -> None:
@@ -712,12 +793,12 @@ def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:
     )
     from simcore.perf_model import PrefillWork, StepWorkload
     from test_engine import duration
-    from test_schemas import TOY_HARDWARE, TOY_MODEL
+    from test_schemas import TOY_HARDWARE, TOY_PERFORMANCE
 
     def reused_prefill(reused: int, new: int) -> float:
         return step_cost(
             StepWorkload("PREFILL", (PrefillWork(0, reused, new, reused + new),), (), 0, 1),
-            TOY_MODEL,
+            TOY_PERFORMANCE.plan,
             TOY_HARDWARE,
         ).duration_ms
 

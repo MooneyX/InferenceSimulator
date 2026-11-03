@@ -24,7 +24,7 @@ from simcore.schemas import (
 from simcore.workload import build_synthetic_closed_loop_plan, request_output_limit
 from test_client import planned_client
 from test_f001_engine import start_step_end
-from test_schemas import TOY_HARDWARE, TOY_MODEL, runtime_config
+from test_schemas import TOY_HARDWARE, TOY_PERFORMANCE, runtime_config
 
 DEFAULT_PERF = PerfModelConfig()
 
@@ -40,7 +40,7 @@ def duration(*, prefill: tuple[int, ...] = (), decode: tuple[int, ...] = ()) -> 
         0,
         len(prefill) + len(decode),
     )
-    return step_cost(workload, TOY_MODEL, TOY_HARDWARE).duration_ms
+    return step_cost(workload, TOY_PERFORMANCE.plan, TOY_HARDWARE).duration_ms
 
 
 def req(request_id: int, t: float, prompt_len: int, output_len: int) -> Arrival:

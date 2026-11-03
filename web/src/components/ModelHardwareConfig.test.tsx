@@ -3,9 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { ResolutionReport } from "../api/types";
+import { layerSegment, moeLayerCount } from "../config/modelLayers";
 import { createDefaultSimConfig, initialHardware, initialModel, initialStorage,
   type FormSimConfig } from "../config/simulation";
 import { ModelHardwareConfig } from "./ModelHardwareConfig";
+
+// Hy4-preview 层序：仅第 0 层 Dense；第 0、1 层完整计算索引器，之后按 shared×3 + full 循环。
+const hy4Layers = [layerSegment(1, { full_indexer: true }), layerSegment(1, { ffn: "moe", full_indexer: true }),
+  ...Array.from({ length: 19 }, () => [layerSegment(3, { ffn: "moe" }),
+    layerSegment(1, { ffn: "moe", full_indexer: true })]).flat()];
 
 function formConfig(patch: Partial<FormSimConfig["inference"]> = {}): FormSimConfig {
   const config = createDefaultSimConfig();
@@ -28,17 +34,17 @@ const resolution = {
 } as ResolutionReport;
 
 const hy4 = { ...initialModel, name: "tencent/Hy4-preview", revision: "705d81ee51566a186d645b74c974d642ef2828fe",
-  num_layers: 78, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
+  layers: hy4Layers, hidden_size: 6144, num_attention_heads: 64, num_kv_heads: 8,
   head_dim: 256, ffn_intermediate_size: 18432, vocab_size: 120832,
-  moe_layers: 77, num_experts: 256, experts_per_token: 8,
+  num_experts: 256, experts_per_token: 8,
   expert_intermediate_size: 2048, num_shared_experts: 1, shared_expert_intermediate_size: 2048,
   attention_layout: "grouped" as const,
   norms: { kind: "rms" as const, block_per_layer: 2, final_norm: true, dtype: null },
   router: { dtype: "fp32" as const, correction_bias: true, correction_dtype: "fp32" as const },
   ihc: { mult: 4, dtype: "fp32" as const },
-  attention_groups: [{ kind: "mla_dsa" as const, layers: 78, num_attention_heads: 64,
+  attention_groups: [{ kind: "mla_dsa" as const, num_attention_heads: 64,
     q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-    index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
+    index_heads: 32, index_dim: 128, topk: 2048, output_gate: true,
     qk_norm: true, norm_dtype: null, index_norm: "layer" as const,
     index_norm_dtype: "fp32" as const, sink_dtype: "fp32" as const }] };
 
@@ -58,7 +64,7 @@ describe("ModelHardwareConfig", () => {
     expect(resolveConfig).toHaveBeenCalledWith(expect.objectContaining({
       scheduler: expect.objectContaining({ max_running_requests: 32 }),
       inference: expect.objectContaining({
-        model: expect.objectContaining({ name: "Qwen/Qwen3-8B", num_layers: 36 }),
+        model: expect.objectContaining({ name: "Qwen/Qwen3-8B", layers: [layerSegment(36)] }),
         hardware: expect.objectContaining({ gpu_count: 1 }) }),
     }));
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
@@ -87,7 +93,11 @@ describe("ModelHardwareConfig", () => {
     render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue("Qwen/Qwen3-8B"));
     expect(screen.getByLabelText("第 1 组注意力方式")).toHaveValue("gqa");
-    expect(screen.getByLabelText("第 1 组层数")).toHaveValue(36);
+    expect(screen.queryByLabelText("第 1 段层数")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("层序（共 36 层，MoE 0 层，1 段）"));
+    expect(screen.getByLabelText("第 1 段层数")).toHaveValue(36);
+    expect(screen.getByLabelText("第 1 段 FFN")).toHaveValue("dense");
+    expect(screen.getByLabelText("第 1 段完整计算索引器")).toBeDisabled();
     expect(screen.getByLabelText("第 1 组 Query 头数")).toHaveValue(32);
     expect(screen.getByLabelText("第 1 组KV 头数")).toHaveValue(8);
     expect(screen.getByLabelText("第 1 组每头维度")).toHaveValue(128);
@@ -136,18 +146,23 @@ describe("ModelHardwareConfig", () => {
     await waitFor(() => expect(screen.getByLabelText("模型选择")).toHaveValue(hy4.name));
     expect(screen.getByText(/HY4-Preview 为可编辑参考预设/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "复制为自定义模型" })).not.toBeInTheDocument();
-    for (const label of ["模型层数", "隐藏维度", "权重精度", "KV 精度", "输入输出词嵌入共享",
+    const layerOrder = () => fireEvent.click(screen.getByText(/^层序（/));
+    layerOrder();
+    expect(screen.getByText("层序（共 78 层，MoE 77 层，40 段）")).toBeInTheDocument();
+    expect(screen.getByLabelText("第 40 段层数")).toHaveValue(1);
+    for (const label of ["隐藏维度", "权重精度", "KV 精度", "输入输出词嵌入共享",
       "共享专家数（0 为关闭）", "共享专家中间维度（启用时必填）",
       "主干归一化类型", "每层主干归一化数量", "最终主干归一化", "主干归一化精度",
       "路由权重精度", "路由选位修正向量", "路由选位修正向量精度", "启用 iHC", "iHC 信息通路数（mult）", "iHC 精度",
       "第 1 组 Q/K 归一化", "第 1 组 Q/K 归一化精度", "第 1 组索引归一化类型",
       "第 1 组索引归一化精度", "第 1 组启用 attention sink", "第 1 组 attention sink 精度",
-      "第 1 组注意力方式", "第 1 组注意力输出门控", "第 1 组层数", "第 1 组 Query 头数",
+      "第 1 组注意力方式", "第 1 组注意力输出门控", "第 1 组 Query 头数",
       "第 1 组Q 压缩维度", "第 1 组KV 压缩维度", "第 1 组位置 Key 维度", "第 1 组非位置 Q/K 维度",
       "第 1 组V 维度", "第 1 组索引头数", "第 1 组索引 Key 维度（128 倍数）",
-      "第 1 组选取 token 数", "第 1 组重算索引的层数"]) {
+      "第 1 组选取 token 数", "第 1 段层数", "第 1 段注意力组", "第 1 段 FFN", "第 3 段完整计算索引器"]) {
       expect(screen.getByLabelText(label)).toBeEnabled();
     }
+    layerOrder();
     for (const label of ["Query 头数", "KV 头数", "每头维度"]) {
       expect(screen.getByLabelText(label)).toBeDisabled();
     }
@@ -160,7 +175,7 @@ describe("ModelHardwareConfig", () => {
       ["共享专家数（0 为关闭）", "2"], ["共享专家中间维度（启用时必填）", "1024"],
       ["主干归一化精度", "fp32"], ["路由权重精度", "bf16"], ["iHC 信息通路数（mult）", "2"],
       ["第 1 组索引归一化精度", "bf16"], ["第 1 组选取 token 数", "1024"],
-      ["第 1 组索引 Key 维度（128 倍数）", "256"], ["第 1 组重算索引的层数", "20"]]) {
+      ["第 1 组索引 Key 维度（128 倍数）", "256"]]) {
       fireEvent.change(screen.getByLabelText(label), { target: { value } });
       refresh();
     }
@@ -168,23 +183,31 @@ describe("ModelHardwareConfig", () => {
     refresh();
     fireEvent.click(screen.getByLabelText("第 1 组注意力输出门控"));
     refresh();
+    layerOrder();
+    fireEvent.click(screen.getByLabelText("第 3 段完整计算索引器"));
+    refresh();
     const edited = onInferenceChange.mock.lastCall![0].model;
+    const editedLayers = hy4Layers.map((segment, index) => index === 2 ? { ...segment, full_indexer: true } : segment);
     expect(edited).toEqual({ ...hy4, name: "自定义模型", revision: null, hidden_size: 8192,
       weight_dtype: "fp16", kv_dtype: "fp16", tie_word_embeddings: true,
       num_shared_experts: 2, shared_expert_intermediate_size: 1024,
       norms: { ...hy4.norms, dtype: "fp32" }, router: { ...hy4.router, dtype: "bf16" },
       ihc: { ...hy4.ihc, mult: 2 }, attention_groups: [{ ...hy4.attention_groups[0],
-        index_norm_dtype: "bf16", topk: 1024, index_dim: 256, full_indexer_layers: 20, output_gate: false }],
+        index_norm_dtype: "bf16", topk: 1024, index_dim: 256, output_gate: false }],
+      layers: editedLayers,
     });
     fireEvent.click(screen.getByRole("button", { name: "添加注意力组" }));
     const added = onInferenceChange.mock.lastCall![0].model;
     expect(added.attention_groups).toEqual([
-      { ...edited.attention_groups[0], layers: 77 }, expect.objectContaining({ kind: "gqa", layers: 1 }),
+      edited.attention_groups[0], expect.objectContaining({ kind: "gqa" }),
     ]);
+    // 末段只有一层，新组追加一层；新层沿用末段 FFN。
+    expect(added.layers).toEqual([...editedLayers, layerSegment(1, { attention_group: 1, ffn: "moe" })]);
     refresh();
     fireEvent.click(screen.getByRole("button", { name: "删除第 2 组" }));
     refresh();
-    fireEvent.change(screen.getByLabelText("第 1 组层数"), { target: { value: "78" } });
+    expect(onInferenceChange.mock.lastCall![0].model.layers.at(-1)).toEqual(layerSegment(1, { ffn: "moe" }));
+    fireEvent.click(screen.getByRole("button", { name: `删除第 ${hy4Layers.length + 1} 段` }));
     refresh();
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference, model: edited });
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
@@ -238,22 +261,23 @@ describe("ModelHardwareConfig", () => {
 
   it.each([
     { ...hy4, name: "zai-org/GLM-5", revision: "c183ef8", num_kv_heads: 64, head_dim: 64,
-      ffn_intermediate_size: 12288, vocab_size: 154880, moe_layers: 75, ihc: null,
+      ffn_intermediate_size: 12288, vocab_size: 154880, ihc: null,
+      layers: [layerSegment(3, { full_indexer: true }), layerSegment(75, { ffn: "moe", full_indexer: true })],
       router: { ...hy4.router, dtype: null },
-      attention_groups: [{ ...hy4.attention_groups[0], full_indexer_layers: 78,
+      attention_groups: [{ ...hy4.attention_groups[0],
         output_gate: false, index_norm_dtype: null, sink_dtype: null }] },
     { ...initialModel, name: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-      num_layers: 62, hidden_size: 6144, num_attention_heads: 96,
+      layers: [layerSegment(62, { ffn: "moe" })], hidden_size: 6144, num_attention_heads: 96,
       ffn_intermediate_size: 8192, expert_intermediate_size: 2560,
-      num_experts: 160, experts_per_token: 8, moe_layers: 62,
-      attention_groups: [{ ...initialModel.attention_groups![0], layers: 62, num_attention_heads: 96 }] },
+      num_experts: 160, experts_per_token: 8,
+      attention_groups: [{ ...initialModel.attention_groups![0], num_attention_heads: 96 }] },
     ...[
-      { name: "meta-llama/Llama-3.1-70B-Instruct", num_layers: 80, hidden_size: 8192,
+      { name: "meta-llama/Llama-3.1-70B-Instruct", layers: [layerSegment(80)], hidden_size: 8192,
         num_attention_heads: 64, ffn_intermediate_size: 28672 },
-      { name: "meta-llama/Llama-3.1-405B-Instruct", num_layers: 126, hidden_size: 16384,
+      { name: "meta-llama/Llama-3.1-405B-Instruct", layers: [layerSegment(126)], hidden_size: 16384,
         num_attention_heads: 128, ffn_intermediate_size: 53248 },
     ].map((spec) => ({ ...initialModel, ...spec, vocab_size: 128256,
-      attention_groups: [{ ...initialModel.attention_groups![0], layers: spec.num_layers,
+      attention_groups: [{ ...initialModel.attention_groups![0],
         num_attention_heads: spec.num_attention_heads, qk_norm: false }] })),
   ])("selects and previews $name without changing hardware or storage", async (model) => {
     vi.mocked(getPresets).mockResolvedValue({ models: [initialModel, model], hardware: [] });
@@ -264,7 +288,7 @@ describe("ModelHardwareConfig", () => {
     const { rerender } = render(<ModelHardwareConfig {...props} />);
     await waitFor(() => expect(screen.getByRole("option", { name: model.name })).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: model.name } });
-    const inference = { ...config.inference, model, ep_size: model.moe_layers ? 8 : 1 };
+    const inference = { ...config.inference, model, ep_size: moeLayerCount(model) ? 8 : 1 };
     expect(onInferenceChange).toHaveBeenCalledTimes(1);
     expect(onInferenceChange).toHaveBeenCalledWith(inference);
     rerender(<ModelHardwareConfig {...props} config={{ ...config, inference }} />);
@@ -299,8 +323,8 @@ describe("ModelHardwareConfig", () => {
 
   it.each(["mla", "mla_dsa"] as const)("edits %s output gates and resets them when switching to GQA", (kind) => {
     const model = { ...initialModel, name: "自定义模型", attention_layout: "grouped" as const,
-      attention_groups: [{ ...hy4.attention_groups[0], kind, layers: initialModel.num_layers,
-        full_indexer_layers: kind === "mla_dsa" ? 1 : undefined,
+      layers: [layerSegment(36, { full_indexer: kind === "mla_dsa" })],
+      attention_groups: [{ ...hy4.attention_groups[0], kind,
         index_heads: kind === "mla_dsa" ? 32 : undefined,
         index_dim: kind === "mla_dsa" ? 128 : undefined,
         topk: kind === "mla_dsa" ? 2048 : undefined,
@@ -317,8 +341,10 @@ describe("ModelHardwareConfig", () => {
     fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), {
       target: { value: kind === "mla" ? "mla_dsa" : "mla" },
     });
+    // 切换为 DSA 时本组各层默认完整计算索引器；切离 DSA 时清除。
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
-      model: expect.objectContaining({ attention_groups: [expect.objectContaining({ output_gate: true })] }) });
+      model: expect.objectContaining({ attention_groups: [expect.objectContaining({ output_gate: true })],
+        layers: [layerSegment(36, { full_indexer: kind === "mla" })] }) });
     rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     fireEvent.change(screen.getByLabelText("第 1 组注意力方式"), { target: { value: "gqa" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...props.config.inference,
@@ -437,7 +463,7 @@ describe("ModelHardwareConfig", () => {
     expect(screen.getByLabelText("路由权重精度")).toBeDisabled();
     expect(screen.getByLabelText("路由选位修正向量")).toBeDisabled();
     expect(screen.getByLabelText("路由选位修正向量精度")).toBeDisabled();
-    const moe = { ...initialModel, moe_layers: 1, num_experts: 8,
+    const moe = { ...initialModel, layers: [layerSegment(35), layerSegment(1, { ffn: "moe" })], num_experts: 8,
       experts_per_token: 2, expert_intermediate_size: 512, router: hy4.router };
     rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: { ...props.config.inference, model: moe } }} />);
     expect(screen.getByLabelText("路由权重精度")).toBeEnabled();
@@ -464,9 +490,11 @@ describe("ModelHardwareConfig", () => {
     rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("共享专家中间维度（启用时必填）")).toBeDisabled();
     rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: shared }} />);
-    fireEvent.change(screen.getByLabelText("MoE 层数"), { target: { value: "0" } });
+    fireEvent.click(screen.getByText(/^层序（/));
+    fireEvent.change(screen.getByLabelText("第 2 段 FFN"), { target: { value: "dense" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...shared,
-      model: { ...shared.model, moe_layers: 0, num_shared_experts: 0, shared_expert_intermediate_size: null,
+      model: { ...shared.model, layers: [layerSegment(35), layerSegment(1)],
+        num_shared_experts: 0, shared_expert_intermediate_size: null,
         router: { dtype: null, correction_bias: false, correction_dtype: "fp32" } } });
     rerender(<ModelHardwareConfig {...props} config={{ ...props.config, inference: onInferenceChange.mock.lastCall![0] }} />);
     expect(screen.getByLabelText("路由权重精度")).toBeDisabled();
@@ -475,20 +503,24 @@ describe("ModelHardwareConfig", () => {
   });
 
   it("edits independent MLA and MLA+DSA attention groups without requiring layer indices", async () => {
-    const model = { ...initialModel, name: "自定义模型", num_layers: 2,
+    const model = { ...initialModel, name: "自定义模型",
+      layers: [layerSegment(1), layerSegment(1, { attention_group: 1, full_indexer: true })],
       attention_layout: "grouped" as const, attention_groups: [
-        { kind: "mla" as const, layers: 1, num_attention_heads: 32, output_gate: false,
+        { kind: "mla" as const, num_attention_heads: 32, output_gate: false,
           qk_norm: true, index_norm: "layer" as const,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
-        { kind: "mla_dsa" as const, layers: 1, num_attention_heads: 32, output_gate: false,
+        { kind: "mla_dsa" as const, num_attention_heads: 32, output_gate: false,
           qk_norm: true, index_norm: "layer" as const,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-          index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 },
+          index_heads: 32, index_dim: 128, topk: 2048 },
       ] };
     const onInferenceChange = vi.fn();
     const config = formConfig({ model });
     const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={onInferenceChange} disabled={false} />);
-    expect(screen.getByText(/已配置 2 \/ 2 层/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("层序（共 2 层，MoE 0 层，2 段）"));
+    expect(screen.getByLabelText("第 2 段注意力组")).toHaveValue("1");
+    expect(screen.getByLabelText("第 1 段完整计算索引器")).toBeDisabled();
+    expect(screen.getByLabelText("第 2 段完整计算索引器")).toBeChecked();
     fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "another-mla-model" } });
     expect(onInferenceChange).toHaveBeenCalledWith({ ...config.inference,
       model: { ...model, name: "another-mla-model" } });
@@ -520,7 +552,7 @@ describe("ModelHardwareConfig", () => {
   });
 
   it("shows MoE expert placement in a non-runnable EP capacity preview", async () => {
-    const model = { ...initialModel, moe_layers: 36, num_experts: 8,
+    const model = { ...initialModel, layers: [layerSegment(36, { ffn: "moe" })], num_experts: 8,
       experts_per_token: 2, expert_intermediate_size: 512 };
     vi.mocked(resolveConfig).mockResolvedValue({
       ...resolution, runnable: false,
@@ -619,10 +651,10 @@ describe("ModelHardwareConfig", () => {
   it("separates model and hardware cards and converts GB inputs to API units", async () => {
     vi.mocked(getPresets).mockResolvedValue({
       models: [initialModel, { ...initialModel, name: "Qwen/Qwen3-235B-A22B",
-        num_layers: 94, num_attention_heads: 64, num_kv_heads: 4,
-        moe_layers: 94, num_experts: 128, experts_per_token: 8, expert_intermediate_size: 1536,
+        layers: [layerSegment(94, { ffn: "moe" })], num_attention_heads: 64, num_kv_heads: 4,
+        num_experts: 128, experts_per_token: 8, expert_intermediate_size: 1536,
         attention_groups: [{ ...initialModel.attention_groups![0],
-          layers: 94, num_attention_heads: 64, num_kv_heads: 4 }] }],
+          num_attention_heads: 64, num_kv_heads: 4 }] }],
       hardware: [{ ...initialHardware, effective_fp8_tflops: 4500, effective_interconnect_gb_s: 600,
         collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02,
         performance_note: "未经实测校准", name: "NVIDIA B300", gpu_count: 8, memory_bytes_per_gpu: 288_000_000_000,
@@ -662,7 +694,7 @@ describe("ModelHardwareConfig", () => {
       ]);
     fireEvent.change(screen.getByLabelText("模型选择"), { target: { value: "Qwen/Qwen3-235B-A22B" } });
     expect(onInferenceChange).toHaveBeenLastCalledWith({ ...config.inference,
-      model: expect.objectContaining({ name: "Qwen/Qwen3-235B-A22B", moe_layers: 94 }),
+      model: expect.objectContaining({ name: "Qwen/Qwen3-235B-A22B", layers: [layerSegment(94, { ffn: "moe" })] }),
       ep_size: config.inference.tp_size });
     refresh();
     fireEvent.change(screen.getByLabelText("隐藏维度"), { target: { value: "2048" } });
@@ -677,7 +709,8 @@ describe("ModelHardwareConfig", () => {
     expect(screen.queryByLabelText(/预留/)).not.toBeInTheDocument();
     expect(config.inference.storage).not.toHaveProperty("l1_available_gb");
     expect(config.inference.storage).not.toHaveProperty("runtime_reserve_bytes");
-    expect(config.inference.model).toEqual(expect.objectContaining({ moe_layers: 94, hidden_size: 2048 }));
+    expect(config.inference.model).toEqual(expect.objectContaining({
+      layers: [layerSegment(94, { ffn: "moe" })], hidden_size: 2048 }));
     expect(config.shared_l3).toEqual(createDefaultSimConfig().shared_l3);
     fireEvent.click(screen.getByRole("button", { name: "预览解析容量" }));
     await waitFor(() => expect(resolveConfig).toHaveBeenCalledWith(config));

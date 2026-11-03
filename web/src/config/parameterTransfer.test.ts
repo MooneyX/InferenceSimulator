@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { InferenceConfig } from "../api/types";
+import { layerSegment } from "./modelLayers";
 import { initialHardware, initialModel, initialStorage, createDefaultSimConfig } from "./simulation";
 import { parseSimConfigJson, serializeSimConfig } from "./parameterTransfer";
+
+// Hy4-preview 层序：仅第 0 层 Dense；第 0、1 层完整计算索引器，之后按 shared×3 + full 循环。
+const hy4Layers = [layerSegment(1, { full_indexer: true }), layerSegment(1, { ffn: "moe", full_indexer: true }),
+  ...Array.from({ length: 19 }, () => [layerSegment(3, { ffn: "moe" }),
+    layerSegment(1, { ffn: "moe", full_indexer: true })]).flat()];
 
 function parseInferenceJson(json: string): InferenceConfig {
   const config = parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), shared_l3: null, inference: JSON.parse(json) }));
@@ -54,6 +60,20 @@ describe("parameter JSON transfer", () => {
     expect(() => parseSimConfigJson(JSON.stringify({ ...createDefaultSimConfig(), engine: {} }))).toThrow("不支持的参数：engine");
   });
 
+  it.each(["num_layers", "moe_layers"])("rejects obsolete model field %s", (field) => {
+    const config = createDefaultSimConfig();
+    Object.assign(config.inference.model, { [field]: 2 });
+    expect(() => parseSimConfigJson(JSON.stringify(config))).toThrow(`不支持的参数：model.${field}`);
+  });
+
+  it.each(["layers", "full_indexer_layers"])("rejects obsolete attention group field %s", (field) => {
+    const config = createDefaultSimConfig();
+    config.inference.model.attention_groups = [{ kind: "gqa", num_attention_heads: 32,
+      num_kv_heads: 8, head_dim: 128, output_gate: false, qk_norm: false, index_norm: "rms" }];
+    Object.assign(config.inference.model.attention_groups[0], { [field]: 36 });
+    expect(() => parseSimConfigJson(JSON.stringify(config))).toThrow(field);
+  });
+
   it("imports performance settings using schema defaults", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1,
       workload: { session_rate: 1, synthetic: { num_requests: 3,
@@ -83,13 +103,13 @@ describe("parameter JSON transfer", () => {
   it("imports inference defaults and a trace with nullable QPS without a reusable plan", () => {
     const config = parseSimConfigJson(JSON.stringify({ num_instances: 1, scheduler: { max_running_requests: 2 },
       workload: { mode: "trace", arrival_mode: "open_loop", session_rate: 1, target_qps: null, trace: {} },
-      inference: { model: { name: "toy", num_layers: 1, hidden_size: 16,
+      inference: { model: { name: "toy", layers: [{ count: 1 }], hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
         hardware: { name: "GPU", memory_bytes_per_gpu: 1_000_000, effective_fp16_tflops: 1, effective_hbm_gb_s: 1 },
         storage: {} },
     }));
     expect(config.inference).toMatchObject({ page_size: 64, tp_size: 1, ep_size: 1,
-      model: { weight_dtype: "bf16", moe_layers: 0, attention_layout: "full_gqa" },
+      model: { weight_dtype: "bf16", layers: [layerSegment(1)], attention_layout: "full_gqa" },
       hardware: { gpu_count: 1, kernel_overhead_ms: 0.005 },
       storage: { l2_available_gb: 0, l2_latency_ms: 0.01, l3_latency_ms: 0.1 } });
     expect(config.workload).toMatchObject({ seed: 0, target_qps: null, trace: { plan_id: null } });
@@ -130,15 +150,15 @@ describe("parameter JSON transfer", () => {
 
   it.each(["bf16", "fp16", "fp32"] as const)("round-trips complete auxiliary weight settings in %s", (dtype) => {
     const request: InferenceConfig = {
-      ...createDefaultSimConfig().inference, model: { ...initialModel, name: "custom", num_layers: 2,
-        moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
+      ...createDefaultSimConfig().inference, model: { ...initialModel, name: "custom",
+        layers: [layerSegment(1, { ffn: "moe", full_indexer: true }), layerSegment(1, { ffn: "moe" })], num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
         norms: { kind: "layer", block_per_layer: 3, final_norm: false, dtype },
         router: { dtype, correction_bias: true, correction_dtype: dtype },
         ihc: { mult: 2, dtype },
-        attention_layout: "grouped", attention_groups: [{ kind: "mla_dsa", layers: 2,
+        attention_layout: "grouped", attention_groups: [{ kind: "mla_dsa",
           num_attention_heads: 32, q_rank: 2048, kv_rank: 512, rope_dim: 64,
           nope_dim: 192, value_dim: 256, index_heads: 32, index_dim: 128,
-          topk: 2048, full_indexer_layers: 1, output_gate: true,
+          topk: 2048, output_gate: true,
           qk_norm: false, norm_dtype: dtype, index_norm: "rms", index_norm_dtype: dtype, sink_dtype: dtype,
         }] }, hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1,
     };
@@ -154,7 +174,7 @@ describe("parameter JSON transfer", () => {
 
   it("rejects invalid auxiliary settings on import and export", () => {
     const base: InferenceConfig = { ...createDefaultSimConfig().inference, model: { ...initialModel,
-      attention_layout: "grouped", attention_groups: [{ kind: "gqa", layers: initialModel.num_layers,
+      attention_layout: "grouped", attention_groups: [{ kind: "gqa",
         num_attention_heads: 32, num_kv_heads: 8, head_dim: 128, output_gate: false,
         qk_norm: true, index_norm: "layer" }],
     }, hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1 };
@@ -297,24 +317,32 @@ describe("parameter JSON transfer", () => {
 
   it("round-trips mixed MLA and MLA+DSA groups and rejects invalid coverage", () => {
     const request: InferenceConfig = {
-      ...createDefaultSimConfig().inference, model: { ...initialModel, num_layers: 2,
+      ...createDefaultSimConfig().inference, model: { ...initialModel,
+        layers: [layerSegment(1), layerSegment(1, { attention_group: 1, full_indexer: true })],
         attention_layout: "grouped", attention_groups: [
-          { kind: "mla", layers: 1, num_attention_heads: 32, output_gate: false,
+          { kind: "mla", num_attention_heads: 32, output_gate: false,
             qk_norm: true, index_norm: "layer",
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256 },
-          { kind: "mla_dsa", layers: 1, num_attention_heads: 32, output_gate: true,
+          { kind: "mla_dsa", num_attention_heads: 32, output_gate: true,
             qk_norm: true, index_norm: "layer",
             q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-            topk: 2048, index_heads: 32, index_dim: 128, full_indexer_layers: 1 },
+            topk: 2048, index_heads: 32, index_dim: 128 },
         ] },
       hardware: initialHardware, storage: initialStorage,
       tp_size: 1, ep_size: 1,
     };
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
-    expect(() => parseInferenceJson(JSON.stringify({ ...request, model: {
-      ...request.model, attention_groups: [{ ...request.model.attention_groups![0], layers: 2 },
-        request.model.attention_groups![1]],
-    } }))).toThrow("注意力组层数之和");
+    for (const [layers, message] of [
+      [[layerSegment(1), layerSegment(1, { attention_group: 2, full_indexer: true })], "不存在的注意力组"],
+      [[layerSegment(2)], "至少被一层引用"],
+      [[layerSegment(1), layerSegment(1, { attention_group: 1 })], "首层须完整计算索引器"],
+      [[layerSegment(1, { full_indexer: true }), layerSegment(1, { attention_group: 1, full_indexer: true })],
+        "仅 MLA+DSA 注意力组的层"],
+    ] as const) {
+      const invalid = { ...request, model: { ...request.model, layers } };
+      expect(() => parseInferenceJson(JSON.stringify(invalid))).toThrow(message);
+      expect(() => serializeInference(invalid as unknown as InferenceConfig)).toThrow(message);
+    }
   });
 
   it.each(["grouped", "hy4_preview"] as const)("round-trips editable HY4 parameters with %s layout and rejects only invalid structures", (attention_layout) => {
@@ -322,18 +350,18 @@ describe("parameter JSON transfer", () => {
       ...createDefaultSimConfig().inference,
       model: { ...initialModel, name: "tencent/Hy4-preview",
         revision: "705d81ee51566a186d645b74c974d642ef2828fe",
-        num_layers: 78, hidden_size: 6144, num_attention_heads: 64,
+        layers: hy4Layers, hidden_size: 6144, num_attention_heads: 64,
         num_kv_heads: 8, head_dim: 256, ffn_intermediate_size: 18432,
-        vocab_size: 120832, moe_layers: 77, num_experts: 256,
+        vocab_size: 120832, num_experts: 256,
         experts_per_token: 8, expert_intermediate_size: 2048,
         num_shared_experts: 1, shared_expert_intermediate_size: 2048,
         norms: { kind: "rms", block_per_layer: 2, final_norm: true, dtype: null },
         router: { dtype: "fp32", correction_bias: true, correction_dtype: "fp32" },
         ihc: { mult: 4, dtype: "fp32" },
         attention_layout, attention_groups: [{
-          kind: "mla_dsa", layers: 78, num_attention_heads: 64,
+          kind: "mla_dsa", num_attention_heads: 64,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-          index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 21, output_gate: true,
+          index_heads: 32, index_dim: 128, topk: 2048, output_gate: true,
           qk_norm: true, norm_dtype: null, index_norm: "layer", index_norm_dtype: "fp32", sink_dtype: "fp32",
         }] },
       hardware: { ...initialHardware, gpu_count: 8 },
@@ -342,16 +370,17 @@ describe("parameter JSON transfer", () => {
     expect(parseInferenceJson(serializeInference(request))).toEqual(request);
     const group = request.model.attention_groups![0];
     const changed: InferenceConfig = { ...request, model: { ...request.model,
-      name: "edited-hy4", revision: "another-revision", num_layers: 80, hidden_size: 8192,
+      name: "edited-hy4", revision: "another-revision", hidden_size: 8192,
+      layers: [...hy4Layers, layerSegment(1, { ffn: "moe" }), layerSegment(1, { attention_group: 1, ffn: "moe" })],
       weight_dtype: "fp16", kv_dtype: "fp16", tie_word_embeddings: true,
       num_shared_experts: 2, shared_expert_intermediate_size: 1024,
       norms: { kind: "layer", block_per_layer: 3, final_norm: false, dtype: "bf16" },
       router: { dtype: "bf16", correction_bias: false, correction_dtype: "fp16" },
-      ihc: { mult: 2, dtype: "bf16" }, attention_groups: [{ ...group, layers: 79,
+      ihc: { mult: 2, dtype: "bf16" }, attention_groups: [{ ...group,
         num_attention_heads: 32, q_rank: 1024, kv_rank: 256, rope_dim: 128, nope_dim: 128, value_dim: 128,
-        index_heads: 16, index_dim: 256, topk: 1024, full_indexer_layers: 20, output_gate: false,
+        index_heads: 16, index_dim: 256, topk: 1024, output_gate: false,
         qk_norm: false, norm_dtype: "fp32", index_norm: "rms", index_norm_dtype: "bf16", sink_dtype: null },
-        { kind: "gqa", layers: 1, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+        { kind: "gqa", num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
           output_gate: false, qk_norm: true, index_norm: "layer" }],
     } };
     expect(parseInferenceJson(serializeInference(changed))).toEqual(changed);
@@ -372,11 +401,13 @@ describe("parameter JSON transfer", () => {
     for (const [patch, message] of [
       [{ attention_groups: undefined }, "必须提供注意力组"], [{ attention_groups: null }, "必须提供注意力组"],
       [{ attention_groups: [] }, "必须包含至少一个"],
-      [{ attention_groups: [{ ...group, layers: 79 }] }, "注意力组层数之和"],
+      [{ layers: [] }, "model.layers"],
+      [{ layers: [...hy4Layers, layerSegment(1, { attention_group: 1 })] }, "不存在的注意力组"],
       [{ attention_groups: [{ ...group, index_dim: 192 }] }, "MLA/DSA 参数无效"],
-      [{ attention_groups: [{ ...group, full_indexer_layers: 79 }] }, "MLA/DSA 参数无效"],
+      [{ layers: [layerSegment(78, { ffn: "moe" })] }, "首层须完整计算索引器"],
       [{ attention_groups: [{ ...group, num_attention_heads: 0 }] }, "num_attention_heads"],
-      [{ moe_layers: 79 }, "MoE 层数不符合模型结构"],
+      [{ layers: [{ count: 0 }] }, "model.layers[0].count"],
+      [{ layers: [{ count: 78, ffn: "sparse" }] }, "model.layers[0].ffn"],
       [{ experts_per_token: 257 }, "MoE 需要"],
       [{ shared_expert_intermediate_size: null }, "启用共享专家需要"],
       [{ weight_dtype: "fp8" }, "BF16/FP16"],
@@ -389,12 +420,13 @@ describe("parameter JSON transfer", () => {
 
   it.each(["mla", "mla_dsa"] as const)("round-trips %s output gates with shared experts", (kind) => {
     const request: InferenceConfig = {
-      ...createDefaultSimConfig().inference, model: { ...initialModel, num_layers: 2,
-        moe_layers: 2, num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
+      ...createDefaultSimConfig().inference, model: { ...initialModel,
+        layers: [layerSegment(2, { ffn: "moe", full_indexer: kind === "mla_dsa" })],
+        num_experts: 8, experts_per_token: 2, expert_intermediate_size: 512,
         num_shared_experts: 2, shared_expert_intermediate_size: 1024,
-        attention_layout: "grouped", attention_groups: [{ kind, layers: 2, num_attention_heads: 32,
+        attention_layout: "grouped", attention_groups: [{ kind, num_attention_heads: 32,
           q_rank: 2048, kv_rank: 512, rope_dim: 64, nope_dim: 192, value_dim: 256,
-          ...(kind === "mla_dsa" ? { index_heads: 32, index_dim: 128, topk: 2048, full_indexer_layers: 1 } : {}),
+          ...(kind === "mla_dsa" ? { index_heads: 32, index_dim: 128, topk: 2048 } : {}),
           output_gate: true, qk_norm: true, index_norm: "layer",
         }] }, hardware: initialHardware, storage: initialStorage,
       tp_size: 1, ep_size: 1,
@@ -410,8 +442,8 @@ describe("parameter JSON transfer", () => {
         attention_groups: [{ ...request.model.attention_groups![0], output_gate }],
       } }))).toThrow("output_gate 必须是布尔值");
     }
-    const gqa = { ...request, model: { ...request.model, attention_groups: [{
-      kind: "gqa" as const, layers: 2, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
+    const gqa = { ...request, model: { ...request.model, layers: [layerSegment(2, { ffn: "moe" })], attention_groups: [{
+      kind: "gqa" as const, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128,
       output_gate: true, qk_norm: true, index_norm: "layer" as const,
     }] } };
     expect(() => parseInferenceJson(JSON.stringify(gqa))).toThrow("output_gate 仅支持 MLA/DSA");
@@ -424,7 +456,8 @@ describe("parameter JSON transfer", () => {
 
   it("rejects invalid shared expert dimensions and missing MoE layers on import and export", () => {
     const base: InferenceConfig = { ...createDefaultSimConfig().inference,
-      model: { ...initialModel, moe_layers: 1, num_experts: 8, experts_per_token: 2,
+      model: { ...initialModel, layers: [layerSegment(35), layerSegment(1, { ffn: "moe" })],
+        num_experts: 8, experts_per_token: 2,
         expert_intermediate_size: 512, num_shared_experts: 1, shared_expert_intermediate_size: 1024 },
       hardware: initialHardware, storage: initialStorage, tp_size: 1, ep_size: 1 };
     const invalid = [
@@ -436,7 +469,7 @@ describe("parameter JSON transfer", () => {
       [{ ...base.model, shared_expert_intermediate_size: "1024" }, "model.shared_expert_intermediate_size"],
       [{ ...base.model, shared_expert_intermediate_size: null }, "启用共享专家需要"],
       [{ ...base.model, shared_expert_intermediate_size: undefined }, "启用共享专家需要"],
-      [{ ...base.model, moe_layers: 0 }, "启用共享专家需要"],
+      [{ ...base.model, layers: [layerSegment(36)] }, "启用共享专家需要"],
       [{ ...base.model, num_shared_experts: 0 }, "关闭共享专家时"],
     ] as const;
     for (const [model, message] of invalid) {
@@ -453,7 +486,7 @@ describe("parameter JSON transfer", () => {
 
   it("keeps explicit TP/EP parallelism and rejects invalid EP widths", () => {
     const request = {
-      ...createDefaultSimConfig().inference, model: { name: "toy", num_layers: 1,
+      ...createDefaultSimConfig().inference, model: { name: "toy", layers: [{ count: 1 }],
         hidden_size: 16, num_attention_heads: 2, num_kv_heads: 1,
         head_dim: 8, ffn_intermediate_size: 32, vocab_size: 16 },
       hardware: { name: "GPU", gpu_count: 1, memory_bytes_per_gpu: 1000000,
@@ -479,7 +512,7 @@ describe("parameter JSON transfer", () => {
   it("rejects malformed model specs and non-finite configuration drafts", () => {
     const base: InferenceConfig = {
       ...createDefaultSimConfig().inference,
-      model: { ...initialModel, name: "toy", num_layers: 2, hidden_size: 16,
+      model: { ...initialModel, name: "toy", layers: [layerSegment(2)], hidden_size: 16,
         num_attention_heads: 2, num_kv_heads: 1, head_dim: 8,
         ffn_intermediate_size: 32, vocab_size: 16,
         attention_layout: "full_gqa", attention_groups: null },
@@ -493,14 +526,15 @@ describe("parameter JSON transfer", () => {
       model: { ...base.model, total_parameters: 10_000 },
     }))).toThrow("不支持的参数：model.total_parameters");
     const invalid = [
-      [{ ...base, model: { ...base.model, moe_layers: -1 } }, "model.moe_layers"],
+      [{ ...base, model: { ...base.model, layers: [{ count: 2, attention_group: -1 }] } }, "model.layers[0].attention_group"],
+      [{ ...base, model: { ...base.model, layers: [{ count: 2, extra: 1 }] } }, "不支持的参数：model.layers[0].extra"],
       [{ ...base, hardware: { ...base.hardware, extra: 2 } }, "不支持的参数：hardware.extra"],
       [{ ...base, hardware: { ...base.hardware, ep_communication_latency_ms: -1 } }, "hardware.ep_communication_latency_ms"],
       [{ ...base, hardware: { ...base.hardware, memory_bytes_per_gpu: -1 } }, "hardware.memory_bytes_per_gpu"],
       [{ ...base, storage: { ...base.storage, l3_lookup_latency_ms: -1 } }, "storage.l3_lookup_latency_ms"],
       [{ ...base, ep_size: 2 }, "Dense 模型"],
       [{ ...base, model: { ...base.model, weight_dtype: "fp8" } }, "BF16/FP16"],
-      [{ ...base, model: { ...base.model, moe_layers: 1 } }, "MoE 需要"],
+      [{ ...base, model: { ...base.model, layers: [layerSegment(2, { ffn: "moe" })] } }, "MoE 需要"],
       [{ ...base, unexpected: true }, "不支持的参数：inference.unexpected"],
     ] as const;
     for (const [request, message] of invalid) {

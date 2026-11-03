@@ -5,7 +5,9 @@ from typing import Any, ClassVar, Literal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferLink, TransferLinks
+from simcore.kv_source import L3_FLUCTUATION, KvSourceSpec
+from simcore.perf_model import build_layer_plan
+from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferSpec
 from simcore.schemas import (
     AbortedRequest,
     Arrival,
@@ -17,6 +19,7 @@ from simcore.schemas import (
     IHCSpec,
     InferenceConfig,
     InstanceResult,
+    LayerSegment,
     LengthDist,
     LognormalLength,
     Metrics,
@@ -42,7 +45,7 @@ LENGTH_DIST = TypeAdapter[LengthDist](LengthDist)
 
 TOY_MODEL = ModelSpec(
     name="toy",
-    num_layers=2,
+    layers=[LayerSegment(count=2)],
     hidden_size=16,
     num_attention_heads=2,
     num_kv_heads=1,
@@ -56,7 +59,7 @@ TOY_HARDWARE = HardwareSpec(
     effective_fp16_tflops=1,
     effective_hbm_gb_s=1,
 )
-TOY_PERFORMANCE = AnalyticalSpec(TOY_MODEL, TOY_HARDWARE, 1, 1)
+TOY_PERFORMANCE = AnalyticalSpec(build_layer_plan(TOY_MODEL), TOY_HARDWARE, 1, 1)
 
 
 def resolved_config(
@@ -130,29 +133,26 @@ def runtime_config(
     perf: PerfModelConfig,
     analytical: AnalyticalSpec = TOY_PERFORMANCE,
 ) -> RuntimeConfig:
-    """直接 Engine 单测保留显式运行参数，不经过公开 SimConfig。"""
+    """直接 Engine 单测保留显式运行参数，不经过公开 SimConfig；来源均不带波动。"""
     l2 = (
-        TransferLink(
-            engine.page_size * perf.kv_bytes_per_token / perf.l2_to_l1_bandwidth_bytes_per_ms,
-            perf.l2_latency_ms,
-        )
+        KvSourceSpec(perf.l2_to_l1_bandwidth_bytes_per_ms, perf.l2_latency_ms)
         if engine.l2_capacity_tokens
         and perf.kv_bytes_per_token
         and perf.l2_to_l1_bandwidth_bytes_per_ms
         else None
     )
     l3 = (
-        TransferLink(
-            engine.page_size * perf.kv_bytes_per_token / perf.l3_to_l2_bandwidth_bytes_per_ms,
-            perf.l3_latency_ms,
-        )
+        KvSourceSpec(perf.l3_to_l2_bandwidth_bytes_per_ms, perf.l3_latency_ms)
         if engine.l3_capacity_tokens
         and perf.kv_bytes_per_token
         and perf.l3_to_l2_bandwidth_bytes_per_ms
         else None
     )
+    layers = analytical.plan.num_layers
+    page_bytes = engine.page_size * (perf.kv_bytes_per_token or 0)
+    transfers = TransferSpec(l2, l3, tuple(page_bytes / layers for _ in range(layers)))
     return RuntimeConfig(
-        engine=engine, perf_model=perf, links=TransferLinks(l2, l3), analytical=analytical
+        engine=engine, perf_model=perf, transfers=transfers, analytical=analytical
     )
 
 
@@ -203,7 +203,6 @@ def make_config(**engine_overrides: object) -> SimConfig:
 def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() -> None:
     base = dict(
         name="mixed",
-        num_layers=2,
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -211,13 +210,24 @@ def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() 
         ffn_intermediate_size=32,
         vocab_size=16,
     )
-    gqa = AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
-    with pytest.raises(ValidationError, match="注意力组层数之和"):
-        ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa])
+    gqa = AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8)
+    two_groups = [LayerSegment(count=1), LayerSegment(count=1, attention_group=1)]
+    with pytest.raises(ValidationError, match="至少被一层引用"):
+        ModelSpec(
+            **base, layers=[LayerSegment(count=2)], attention_layout="grouped",
+            attention_groups=[gqa, gqa],
+        )
+    with pytest.raises(ValidationError, match="不存在的注意力组"):
+        ModelSpec(**base, layers=two_groups, attention_layout="grouped", attention_groups=[gqa])
+    with pytest.raises(ValidationError, match="不存在的注意力组"):
+        ModelSpec(**base, layers=two_groups)
+    with pytest.raises(ValidationError, match="仅 MLA\\+DSA 注意力组的层"):
+        ModelSpec(**base, layers=[LayerSegment(count=2, full_indexer=True)])
+    with pytest.raises(ValidationError, match="layers"):
+        ModelSpec(**base, layers=[])
     with pytest.raises(ValidationError, match="DSA 须配置"):
         AttentionGroup(
             kind="mla_dsa",
-            layers=1,
             num_attention_heads=2,
             q_rank=4,
             kv_rank=4,
@@ -225,17 +235,26 @@ def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() 
             nope_dim=6,
             value_dim=8,
         )
-    with pytest.raises(ValidationError, match="GQA 只配置"):
-        AttentionGroup(
-            kind="gqa", layers=2, num_attention_heads=2, num_kv_heads=1, head_dim=8, kv_rank=4
+    dsa = AttentionGroup(
+        kind="mla_dsa", num_attention_heads=2, q_rank=4, kv_rank=4, rope_dim=2, nope_dim=6,
+        value_dim=8, index_heads=2, index_dim=128, topk=4,
+    )
+    with pytest.raises(ValidationError, match="首层须完整计算索引器"):
+        ModelSpec(
+            **base, layers=[LayerSegment(count=1), LayerSegment(count=1, full_indexer=True)],
+            attention_layout="grouped", attention_groups=[dsa],
         )
-    model = ModelSpec(**base, attention_layout="grouped", attention_groups=[gqa, gqa])
+    with pytest.raises(ValidationError, match="GQA 只配置"):
+        AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8, kv_rank=4)
+    model = ModelSpec(
+        **base, layers=two_groups, attention_layout="grouped", attention_groups=[gqa, gqa]
+    )
     assert model.attention_groups == [gqa, gqa]
+    assert model.num_layers == 2 and model.moe_layers == 0
     assert not gqa.output_gate
     with pytest.raises(ValidationError, match="输出门控当前仅支持 MLA"):
         AttentionGroup(
             kind="gqa",
-            layers=1,
             num_attention_heads=2,
             num_kv_heads=1,
             head_dim=8,
@@ -246,7 +265,6 @@ def test_attention_group_validation_rejects_incomplete_and_misaligned_layouts() 
 def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> None:
     base = dict(
         name="shared",
-        num_layers=2,
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -254,20 +272,22 @@ def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> No
         ffn_intermediate_size=32,
         vocab_size=16,
     )
-    model = ModelSpec(**base)
+    dense = [LayerSegment(count=2)]
+    moe = [LayerSegment(count=1), LayerSegment(count=1, ffn="moe")]
+    model = ModelSpec(**base, layers=dense)
     assert model.num_shared_experts == 0
     assert model.shared_expert_intermediate_size is None
     with pytest.raises(ValidationError, match="共享专家需要 MoE 层"):
-        ModelSpec(**base, num_shared_experts=1, shared_expert_intermediate_size=8)
+        ModelSpec(**base, layers=dense, num_shared_experts=1, shared_expert_intermediate_size=8)
     with pytest.raises(ValidationError, match="共享专家需要 MoE 层"):
-        ModelSpec(**base, moe_layers=1, num_shared_experts=1)
+        ModelSpec(**base, layers=moe, num_shared_experts=1)
     with pytest.raises(ValidationError, match="未启用共享专家"):
-        ModelSpec(**base, moe_layers=1, shared_expert_intermediate_size=8)
+        ModelSpec(**base, layers=moe, shared_expert_intermediate_size=8)
     with pytest.raises(ValidationError):
-        ModelSpec(**base, moe_layers=1, num_shared_experts=1, shared_expert_intermediate_size=0)
+        ModelSpec(**base, layers=moe, num_shared_experts=1, shared_expert_intermediate_size=0)
     shared = ModelSpec(
         **base,
-        moe_layers=1,
+        layers=moe,
         num_experts=4,
         experts_per_token=2,
         expert_intermediate_size=16,
@@ -280,7 +300,7 @@ def test_shared_expert_configuration_requires_moe_and_explicit_dimension() -> No
 def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
     model = ModelSpec(
         name="auxiliary",
-        num_layers=2,
+        layers=[LayerSegment(count=2)],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -302,7 +322,6 @@ def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
     assert model.ihc is None
     group = AttentionGroup(
         kind="mla_dsa",
-        layers=2,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -312,13 +331,15 @@ def test_auxiliary_weight_defaults_and_explicit_roundtrip() -> None:
         index_heads=2,
         index_dim=128,
         topk=4,
-        full_indexer_layers=1,
     )
     assert group.qk_norm and group.norm_dtype is None
     assert group.index_norm == "layer" and group.index_norm_dtype is None
     assert group.sink_dtype is None
     payload = model.model_dump() | {
-        "moe_layers": 1,
+        "layers": [
+            {"count": 1, "ffn": "dense", "full_indexer": True},
+            {"count": 1, "ffn": "moe"},
+        ],
         "num_experts": 4,
         "experts_per_token": 2,
         "expert_intermediate_size": 8,
@@ -378,7 +399,6 @@ def test_auxiliary_dtype_accepts_supported_precision_and_nullable_inheritance(
     assert RouterSpec(dtype=dtype).dtype == dtype
     group = AttentionGroup(
         kind="mla_dsa",
-        layers=1,
         num_attention_heads=2,
         q_rank=4,
         kv_rank=4,
@@ -388,7 +408,6 @@ def test_auxiliary_dtype_accepts_supported_precision_and_nullable_inheritance(
         index_heads=2,
         index_dim=128,
         topk=4,
-        full_indexer_layers=1,
         norm_dtype=dtype,
         index_norm_dtype=dtype,
         sink_dtype=dtype,
@@ -417,7 +436,6 @@ def test_attention_auxiliary_spec_rejects_invalid_precision_or_norm(
         AttentionGroup.model_validate(
             {
                 "kind": "mla_dsa",
-                "layers": 1,
                 "num_attention_heads": 2,
                 "q_rank": 4,
                 "kv_rank": 4,
@@ -427,7 +445,6 @@ def test_attention_auxiliary_spec_rejects_invalid_precision_or_norm(
                 "index_heads": 2,
                 "index_dim": 128,
                 "topk": 4,
-                "full_indexer_layers": 1,
                 field: invalid,
             }
         )
@@ -447,11 +464,10 @@ def test_index_norm_overrides_require_dsa(
     update: dict[str, object],
 ) -> None:
     group = (
-        AttentionGroup(kind="gqa", layers=1, num_attention_heads=2, num_kv_heads=1, head_dim=8)
+        AttentionGroup(kind="gqa", num_attention_heads=2, num_kv_heads=1, head_dim=8)
         if kind == "gqa"
         else AttentionGroup(
             kind="mla",
-            layers=1,
             num_attention_heads=2,
             q_rank=4,
             kv_rank=4,
@@ -476,7 +492,7 @@ def test_index_norm_overrides_require_dsa(
 def test_non_default_router_requires_moe(router: dict[str, object]) -> None:
     payload = dict(
         name="router",
-        num_layers=1,
+        layers=[{"count": 1}],
         hidden_size=16,
         num_attention_heads=2,
         num_kv_heads=1,
@@ -487,7 +503,8 @@ def test_non_default_router_requires_moe(router: dict[str, object]) -> None:
     assert ModelSpec.model_validate(payload | {"router": {}}).router == RouterSpec()
     with pytest.raises(ValidationError, match="Router 辅助配置需要 MoE 层"):
         ModelSpec.model_validate(payload | {"router": router})
-    assert ModelSpec.model_validate(payload | {"moe_layers": 1, "router": router}).router == (
+    moe = {"layers": [{"count": 1, "ffn": "moe"}], "router": router}
+    assert ModelSpec.model_validate(payload | moe).router == (
         RouterSpec.model_validate(router)
     )
     for field in ("norms", "router"):
@@ -792,7 +809,7 @@ class TestConfigValidation:
         assert config.shared_l3 is not None and config.shared_l3.lookup_latency_ms == 0.0
         runtime = prepare_runtime(config)
         assert runtime.perf_model.kv_bytes_per_token == 64
-        assert runtime.links.l2_to_l1 is None and runtime.links.l3_to_l2 is None
+        assert runtime.transfers.l2_to_l1 is None and runtime.transfers.l3_to_l2 is None
 
     @pytest.mark.parametrize("explicit_zero", [False, True])
     def test_fixed_latency_defaults_and_explicit_zero(self, explicit_zero: bool) -> None:
@@ -826,9 +843,10 @@ class TestConfigValidation:
             config.shared_l3.lookup_latency_ms,
         ) == expected
         runtime = prepare_runtime(config)
-        assert runtime.links.l2_to_l1 is not None and runtime.links.l3_to_l2 is not None
-        assert runtime.links.l2_to_l1.latency_ms == expected[1]
-        assert runtime.links.l3_to_l2.latency_ms == expected[2]
+        transfers = runtime.transfers
+        assert transfers.l2_to_l1 is not None and transfers.l3_to_l2 is not None
+        assert transfers.l2_to_l1.latency_ms == expected[1]
+        assert transfers.l3_to_l2.latency_ms == expected[2]
         assert runtime.perf_model.l3_lookup_latency_ms == expected[3]
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
 
@@ -896,8 +914,10 @@ class TestConfigValidation:
         runtime = prepare_runtime(config)
         assert runtime.engine.l2_capacity_tokens == 64
         assert runtime.engine.l3_capacity_tokens == 128
-        assert runtime.links.l2_to_l1 is not None and runtime.links.l2_to_l1.transfer_ms == 32
-        assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
+        transfers = runtime.transfers
+        assert transfers.l2_to_l1 is not None and transfers.l2_to_l1.bytes_per_ms == 128
+        assert transfers.l3_to_l2 is not None and transfers.l3_to_l2.bytes_per_ms == 64
+        assert transfers.layer_page_bytes == (2048, 2048)
         payload["shared_l3"]["available_gb"] = 0
         payload["inference"]["storage"].update(
             l2_available_gb=0,
@@ -906,7 +926,7 @@ class TestConfigValidation:
         )
         disabled = prepare_runtime(SimConfig.model_validate(payload))
         assert disabled.engine.l2_capacity_tokens == disabled.engine.l3_capacity_tokens == 0
-        assert disabled.links.l2_to_l1 is None and disabled.links.l3_to_l2 is None
+        assert disabled.transfers.l2_to_l1 is None and disabled.transfers.l3_to_l2 is None
 
     @pytest.mark.parametrize(
         "field",
@@ -1054,7 +1074,7 @@ class TestConfigValidation:
         config = SimConfig.model_validate(payload)
         assert "timing" not in config.inference.model_dump()
         assert config.inference.tp_size == config.inference.ep_size == 1
-        assert prepare_runtime(config).analytical == AnalyticalSpec(TOY_MODEL, TOY_HARDWARE, 1, 1)
+        assert prepare_runtime(config).analytical == TOY_PERFORMANCE
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
 
     @pytest.mark.parametrize(
@@ -1095,17 +1115,18 @@ class TestConfigValidation:
         assert runtime.resolution == resolve_config(config)
         assert runtime.engine.page_size == 64
         assert runtime.analytical == AnalyticalSpec(
-            config.inference.model, config.inference.hardware, 1, 1
+            build_layer_plan(config.inference.model), config.inference.hardware, 1, 1
         )
         assert runtime.perf_model.kv_bytes_per_token == 64
-        assert runtime.links.l2_to_l1 is not None and runtime.links.l2_to_l1.transfer_ms == 32
-        assert runtime.links.l3_to_l2 is not None and runtime.links.l3_to_l2.transfer_ms == 64
-        assert runtime.links.l2_to_l1.latency_ms == 0.5
-        assert runtime.links.l3_to_l2.latency_ms == 1.5
+        transfers = runtime.transfers
+        # L2（DRAM）确定性计时；L3 带 SSD 式占位波动；种子取负载种子。
+        assert transfers.l2_to_l1 == KvSourceSpec(128, 0.5)
+        assert transfers.l3_to_l2 == KvSourceSpec(64, 1.5, L3_FLUCTUATION)
+        assert transfers.seed == config.workload.seed
         with pytest.raises(FrozenInstanceError):
             runtime.engine = runtime.engine  # type: ignore[misc]
         with pytest.raises(FrozenInstanceError):
-            runtime.links.l2_to_l1.transfer_ms = 0  # type: ignore[misc]
+            transfers.l2_to_l1.bytes_per_ms = 0  # type: ignore[misc]
         assert config.model_dump() == original
 
     def test_roundtrip_is_lossless(self) -> None:

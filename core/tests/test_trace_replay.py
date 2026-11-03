@@ -7,11 +7,12 @@ from pydantic import ValidationError
 
 from simcore import SimConfig, simulate
 from simcore.capacity import prepare_runtime, resolve_config
-from simcore.perf_model import PrefillWork, StepWorkload, step_cost
+from simcore.perf_model import PrefillWork, StepWorkload, build_layer_plan, step_cost
 from simcore.schemas import (
     EngineConfig,
     HardwareSpec,
     InferenceConfig,
+    LayerSegment,
     ModelSpec,
     PerfModelConfig,
     SharedL3Config,
@@ -309,7 +310,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                 page_size=64,
                 model=ModelSpec(
                     name="toy",
-                    num_layers=2,
+                    layers=[LayerSegment(count=2)],
                     hidden_size=16,
                     num_attention_heads=2,
                     num_kv_heads=1,
@@ -378,7 +379,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
             allocated_pages=3,
             batch_requests=1,
         ),
-        original.inference.model,
+        build_layer_plan(original.inference.model),
         original.inference.hardware,
     )
     assert first.prefill_end - first.prefill_start == pytest.approx(expected.duration_ms)

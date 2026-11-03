@@ -1,14 +1,11 @@
-"""从全注意力规格解析单卡或 TP/EP 组的固定大小 KV 页容量。"""
+"""从模型层序与注意力规格解析单卡或 TP/EP 组的固定大小 KV 页容量。"""
 
 from decimal import ROUND_FLOOR, Decimal
 from typing import cast
 
-from simcore.runtime import (
-    AnalyticalSpec,
-    RuntimeConfig,
-    TransferLink,
-    TransferLinks,
-)
+from simcore.kv_source import L3_FLUCTUATION, KvSourceSpec
+from simcore.perf_model import LayerPlan, build_layer_plan
+from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferSpec
 from simcore.schemas import (
     AttentionGroup,
     CapacityReport,
@@ -37,13 +34,16 @@ def _norm_parameters(kind: str, width: int) -> int:
 
 def _group_attention_budget(
     group: AttentionGroup,
+    layers: int,
+    full_layers: int,
     hidden_size: int,
     tp_size: int,
     hierarchical: bool,
     weight_dtype: str = "bf16",
 ) -> tuple[int, int, int, int]:
-    """返回每 rank KV、分片/复制权重字节及全组逻辑参数数。"""
-    heads, layers = group.num_attention_heads, group.layers
+    """返回 ``layers`` 层（其中 ``full_layers`` 层完整计算 DSA 索引器）的每 rank 每 token KV、
+    分片/复制权重字节及逻辑参数数。"""
+    heads = group.num_attention_heads
     if heads % tp_size:
         raise ValueError("注意力组的 Query 头数须能按 TP 均分")
     local_heads = heads // tp_size
@@ -83,7 +83,7 @@ def _group_attention_budget(
         replicated_bytes = a_params * weight_bytes + norm_params * norm_bytes
         kv_bytes = layers * (kv_rank + rope) * 2
         if group.kind == "mla_dsa":
-            full = cast(int, group.full_indexer_layers)
+            full = full_layers
             index_dim, index_heads = cast(int, group.index_dim), cast(int, group.index_heads)
             index_params = full * (
                 index_heads * index_dim * q_rank + hidden_size * (index_dim + index_heads)
@@ -102,7 +102,36 @@ def _group_attention_budget(
     return kv_bytes, sharded_bytes, replicated_bytes, logical + norm_params
 
 
-def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, int, int]:
+def _group_layers(plan: LayerPlan) -> list[tuple[int, int]]:  # 层序结构 → 每组（层数, 完整索引层数）
+    totals = [[0, 0] for _ in plan.groups]
+    for kind, count in zip(plan.kinds, plan.kind_counts, strict=True):
+        totals[kind.group][0] += count
+        totals[kind.group][1] += count if kind.full_indexer else 0
+    return [(layers, full) for layers, full in totals]
+
+
+def _layer_kv_bytes(
+    plan: LayerPlan, tp_size: int, hierarchical: bool
+) -> tuple[int, ...]:  # 层序结构、TP 与是否启用分层缓存 → 按层序的每 rank 每 token KV 字节
+    per_kind = [
+        _group_attention_budget(
+            plan.groups[kind.group],
+            1,
+            int(kind.full_indexer),
+            plan.model.hidden_size,
+            tp_size,
+            hierarchical,
+        )[0]
+        for kind in plan.kinds
+    ]
+    return tuple(
+        per_kind[position] for count, position in plan.segments for _ in range(count)
+    )
+
+
+def _weight_budget(
+    model: ModelSpec, plan: LayerPlan, tp_size: int
+) -> tuple[int, int, int, int, int, int]:
     """按组件与存储精度直接累加权重，TP/EP 采用当前同构放置口径。"""
     h, layers, moe = model.hidden_size, model.num_layers, model.moe_layers
     dense_layers = layers - moe
@@ -117,17 +146,9 @@ def _weight_budget(model: ModelSpec, tp_size: int) -> tuple[int, int, int, int, 
             raise ValueError("MoE 需要专家中间维度以放置全部驻留专家权重")
         if model.num_experts % tp_size:
             raise ValueError("MoE 专家数必须能被 TP=EP 数整除")
-    groups = model.attention_groups or [
-        AttentionGroup(
-            kind="gqa",
-            layers=layers,
-            num_attention_heads=model.num_attention_heads,
-            num_kv_heads=model.num_kv_heads,
-            head_dim=model.head_dim,
-        )
-    ]
     budgets = [
-        _group_attention_budget(group, h, tp_size, False, model.weight_dtype) for group in groups
+        _group_attention_budget(group, group_layers, full, h, tp_size, False, model.weight_dtype)
+        for group, (group_layers, full) in zip(plan.groups, _group_layers(plan), strict=True)
     ]
     weight_bytes = _dtype_bytes(model.weight_dtype)
     dense_params = dense_layers * 3 * h * model.ffn_intermediate_size
@@ -204,18 +225,9 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
         raise ValueError("Dense 模型不应配置 EP 或 MoE 专家字段")
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
-    if model.attention_groups is not None:
-        kv_bytes = sum(
-            _group_attention_budget(group, model.hidden_size, tp_size, storage.l2_available_gb > 0)[
-                0
-            ]
-            for group in model.attention_groups
-        )
-    else:
-        local_kv_heads = max(1, model.num_kv_heads // tp_size)
-        kv_bytes = (
-            2 * model.num_layers * local_kv_heads * model.head_dim * 2
-        )  # 单 rank 每 token 的 K/V BF16 字节
+    plan = build_layer_plan(model)
+    # 单 rank 每 token 的 KV 字节；启用 L2 时 DSA 各层均保存 index-K 供分层缓存回载。
+    kv_bytes = sum(_layer_kv_bytes(plan, tp_size, storage.l2_available_gb > 0))
     group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = hardware.memory_bytes_per_gpu
@@ -224,7 +236,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
     l3 = _bytes_from_gb(shared.available_gb) if shared is not None else 0
     rank_reports: list[RankCapacityReport] = []
     sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
-        _weight_budget(model, tp_size)
+        _weight_budget(model, plan, tp_size)
     )
     local_page_bytes = kv_bytes * page_size
     l1_kv = l1 - sharded - replicated - expert
@@ -338,18 +350,27 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
         l3_latency_ms=storage.l3_latency_ms,
         l3_lookup_latency_ms=lookup_latency,
     )
-    capacity = report.capacity
-    l2 = (
-        TransferLink(inference.page_size / capacity.l2_to_l1_tokens_per_ms, storage.l2_latency_ms)
-        if capacity.l2_to_l1_tokens_per_ms is not None
-        else None
+    plan = build_layer_plan(inference.model)
+    transfers = TransferSpec(
+        # L2（本地 DRAM）→ L1 按层串行读取，不建模波动。
+        l2_to_l1=(
+            KvSourceSpec(perf.l2_to_l1_bandwidth_bytes_per_ms, storage.l2_latency_ms)
+            if perf.l2_to_l1_bandwidth_bytes_per_ms is not None
+            else None
+        ),
+        # L3 → L2 按批读取，带 SSD 式成段降速与单次抖动（占位参数，未经实测校准）。
+        l3_to_l2=(
+            KvSourceSpec(
+                perf.l3_to_l2_bandwidth_bytes_per_ms, storage.l3_latency_ms, L3_FLUCTUATION
+            )
+            if perf.l3_to_l2_bandwidth_bytes_per_ms is not None
+            else None
+        ),
+        layer_page_bytes=tuple(
+            size * inference.tp_size * inference.page_size
+            for size in _layer_kv_bytes(plan, inference.tp_size, storage.l2_available_gb > 0)
+        ),
+        seed=config.workload.seed,
     )
-    l3 = (
-        TransferLink(inference.page_size / capacity.l3_to_l2_tokens_per_ms, storage.l3_latency_ms)
-        if capacity.l3_to_l2_tokens_per_ms is not None
-        else None
-    )
-    analytical = AnalyticalSpec(
-        inference.model, inference.hardware, inference.tp_size, inference.ep_size
-    )
-    return RuntimeConfig(engine, perf, TransferLinks(l2, l3), analytical, report)
+    analytical = AnalyticalSpec(plan, inference.hardware, inference.tp_size, inference.ep_size)
+    return RuntimeConfig(engine, perf, transfers, analytical, report)

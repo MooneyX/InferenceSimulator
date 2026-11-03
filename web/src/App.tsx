@@ -3,6 +3,7 @@ import { lazy, Suspense, useState } from "react";
 import { clearSimulationCache, SimulationApiError, type SimulationCacheInfo } from "./api/client";
 import type { ScanRequest, SimConfig, SimResult } from "./api/types";
 import { useJobs } from "./useJobs";
+import { moeLayerCount } from "./config/modelLayers";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { ParameterExport } from "./components/ParameterExport";
 import { RequestProgress } from "./components/RequestProgress";
@@ -69,13 +70,20 @@ export default function App() {
       : navigation[0].id,
   );
   const tasks = useJobs((response, source) => {
+    setLoadingResult(false);
+    setSelectedInstanceId(null);
+    setIsRunning(false);
+    if (!Array.isArray(response.result.meta.config.inference?.model.layers)) {
+      setResult(null);
+      setCacheInfo(null);
+      setResultSource(null);
+      setError({ message: "结果使用已停用的模型配置格式，请查看原始 JSON 或使用当前层序配置重新运行。", details: [] });
+      return;
+    }
     setResult(response.result);
     setCacheInfo(response.cache);
     setResultSource(source);
     setError(null);
-    setLoadingResult(false);
-    setSelectedInstanceId(null);
-    setIsRunning(false);
   }, (cause) => {
     setLoadingResult(false);
     setError(presentError(cause));
@@ -265,7 +273,7 @@ export default function App() {
                 ) : null}
               </section>
               {inference && resolution && <section className="simulation-info" aria-label="性能模型配置与成本">
-                <h3>性能模型 · TP{inference.tp_size}{inference.model.moe_layers ? ` + EP${inference.ep_size}` : ""} · 未经校准的 Roofline/平均负载估计</h3>
+                <h3>性能模型 · TP{inference.tp_size}{moeLayerCount(inference.model) ? ` + EP${inference.ep_size}` : ""} · 未经校准的 Roofline/平均负载估计</h3>
                 <p>模型 {inference.model.name} · GPU {inference.hardware.name} ·
                   {result.meta.config.num_instances} 实例 × 每实例 {inference.hardware.gpu_count} GPU = 总计 {result.meta.config.num_instances * inference.hardware.gpu_count} GPU ·
                   {inference.tp_size > 1 ? "整组权重" : "权重"} {(resolution.capacity.weights_resident_bytes / 1e9).toFixed(2)} GB</p>
@@ -278,7 +286,7 @@ export default function App() {
                     {(resolution.capacity.rank_reports ?? []).map((rank) => <p key={rank.rank}>
                       GPU {rank.rank}：TP 分片 {(rank.sharded_weights_bytes / 1e9).toFixed(3)} GB ·
                       复制权重 {(rank.replicated_weights_bytes / 1e9).toFixed(3)} GB ·
-                      {inference.model.moe_layers ? `专家驻留 ${((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB ·` : ""}
+                      {moeLayerCount(inference.model) ? `专家驻留 ${((rank.expert_weights_bytes ?? 0) / 1e9).toFixed(3)} GB ·` : ""}
                       KV {rank.kv_bytes_per_token.toLocaleString()} bytes/token ·
                       L1 {rank.l1_capacity_pages.toLocaleString()} 页
                     </p>)}
@@ -293,13 +301,13 @@ export default function App() {
                     （已含于 GPU 计时） · {analysis.collectives} 次 ·
                     单 rank 流量 {((analysis.tp_communication_bytes ?? analysis.communication_bytes) / 1e9).toFixed(3)} GB
                   </>}
-                  {inference.model.moe_layers > 0 && <>
+                  {moeLayerCount(inference.model) > 0 && <>
                     {" · "}EP dispatch {(analysis.ep_dispatch_ms ?? 0).toFixed(2)} ms / combine {(analysis.ep_combine_ms ?? 0).toFixed(2)} ms
                     （已含于 GPU 计时） · {analysis.ep_exchanges ?? 0} 次 ·
                     单 rank 逻辑流量 {(((analysis.ep_dispatch_bytes ?? 0) + (analysis.ep_combine_bytes ?? 0)) / 1e9).toFixed(3)} GB
                   </>}
                 </p>}
-                {inference.model.moe_layers > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
+                {moeLayerCount(inference.model) > 0 && <p>平均负载假设：均匀选专家、无复制或重叠；normal 按不同目标 rank 去重，low_latency 按专家选择计逻辑传输量（含逻辑元数据）。使用假设带宽，未经校准，非 DeepEP 实际链路流量。</p>}
               </section>}
               <section className="simulation-info instance-filter" aria-label="实例结果筛选">
                 <label htmlFor="instance-filter">查看范围：</label>

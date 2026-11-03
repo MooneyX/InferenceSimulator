@@ -393,7 +393,8 @@ def test_scan_model_hardware_presets_archive_successes_and_failures(tmp_path: Pa
                 assert inference["hardware"]["memory_bytes_per_gpu"] == 192_000_000_000
                 parallelism = point["values"]["inference.hardware"]["parallelism"]
                 assert inference["tp_size"] == inference["hardware"]["gpu_count"] == parallelism
-                assert inference["ep_size"] == (parallelism if inference["model"]["moe_layers"] else 1)
+                moe = any(segment["ffn"] == "moe" for segment in inference["model"]["layers"])
+                assert inference["ep_size"] == (parallelism if moe else 1)
             else:
                 assert point["error"]
         parameters = {item["key"]: item for item in client.get("/api/scans/parameters").json()}

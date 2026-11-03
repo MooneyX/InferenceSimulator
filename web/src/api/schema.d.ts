@@ -437,7 +437,7 @@ export interface components {
         };
         /**
          * AttentionGroup
-         * @description 相同注意力实现的层数；层序不参与当前固定页与聚合性能估算。
+         * @description 一种注意力实现的结构参数；所在层由 ``ModelSpec.layers`` 层序引用。
          */
         AttentionGroup: {
             /**
@@ -445,8 +445,6 @@ export interface components {
              * @enum {string}
              */
             kind: "gqa" | "mla" | "mla_dsa";
-            /** Layers */
-            layers: number;
             /** Num Attention Heads */
             num_attention_heads: number;
             /** Num Kv Heads */
@@ -469,8 +467,6 @@ export interface components {
             index_dim?: number | null;
             /** Topk */
             topk?: number | null;
-            /** Full Indexer Layers */
-            full_indexer_layers?: number | null;
             /**
              * Output Gate
              * @description MLA 输出门控投影，按头分片并与输出投影合并计时
@@ -750,6 +746,32 @@ export interface components {
              */
             point_archive_version: number;
             request_progress?: components["schemas"]["RequestProgress"] | null;
+        };
+        /**
+         * LayerSegment
+         * @description 层序中连续 ``count`` 层的结构：注意力组、FFN 类型及 DSA 索引器是否完整计算。
+         */
+        LayerSegment: {
+            /** Count */
+            count: number;
+            /**
+             * Attention Group
+             * @description 引用的 attention_groups 下标；未配置注意力组时须为 0
+             * @default 0
+             */
+            attention_group: number;
+            /**
+             * Ffn
+             * @default dense
+             * @enum {string}
+             */
+            ffn: "dense" | "moe";
+            /**
+             * Full Indexer
+             * @description MLA+DSA 层完整计算索引器；否则复用前一完整层的索引结果
+             * @default false
+             */
+            full_indexer: boolean;
         };
         /**
          * LognormalLength
@@ -1050,15 +1072,15 @@ export interface components {
         };
         /**
          * ModelSpec
-         * @description 全模型规格；可选注意力组合组独立于 FFN/MoE 的层数。
+         * @description 全模型规格；``layers`` 按层号顺序给出各层结构，是层数与层类型的唯一来源。
          */
         ModelSpec: {
             /** Name */
             name: string;
             /** Revision */
             revision?: string | null;
-            /** Num Layers */
-            num_layers: number;
+            /** Layers */
+            layers: components["schemas"]["LayerSegment"][];
             /** Hidden Size */
             hidden_size: number;
             /** Num Attention Heads */
@@ -1088,11 +1110,6 @@ export interface components {
              * @enum {string}
              */
             kv_dtype: "bf16" | "fp16" | "fp8";
-            /**
-             * Moe Layers
-             * @default 0
-             */
-            moe_layers: number;
             /**
              * Num Experts
              * @default 0
@@ -1653,7 +1670,7 @@ export interface components {
             l2_latency_ms: number;
             /**
              * L3 Latency Ms
-             * @description 每页 KV 从低延迟共享存储（L3）搬到本地 DRAM（L2）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线
+             * @description 每批（至多 128 页）KV 从低延迟共享存储（L3）读到本地 DRAM（L2）的固定延迟（ms）；另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线
              * @default 0.1
              */
             l3_latency_ms: number;

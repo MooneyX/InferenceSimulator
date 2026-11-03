@@ -9,7 +9,7 @@ from simcore import simulate
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.perf_model import StepCost, step_cost
+from simcore.perf_model import StepCost, layer_pipeline_ms, step_cost
 from simcore.prefix_hash import encode
 from simcore.router import Router
 from simcore.schemas import (
@@ -303,16 +303,12 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     for key in (1, 2):
         engine.submit(request(key, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     assert engine.load_tokens == 10
-    assert engine.start_step(0, 0) is None
-    assert engine.load_tokens == 14
-    assert engine.num_steps == 0
-    events = engine.drain_events()
-    assert len(events) == 1
-    now, kind, transfer_id = events[0]
-    assert (now, kind) == (5, EventKind.L2_L1_DONE)
-    engine.on_transfer_done(kind, transfer_id, now)
-    assert engine.load_tokens == 14
-    now = start_step_end(engine, now, 0, (1, 2))
+    now = start_step_end(engine, 0, 0, (1, 2))
+    assert engine.drain_events() == ()
+    compute = engine._analysis.device_ms
+    # 每层回载 3 + 1 页 × 2 ms / 2 层 = 4 ms，与两层计算流水。
+    assert now == pytest.approx(layer_pipeline_ms(compute, 4, 2))
+    assert engine._analysis.restore_exposed_ms == pytest.approx(now - compute)
     assert engine.load_tokens == 12
     assert engine.finish_step(now) == (1, 2)
     assert engine.num_steps == 1
@@ -322,7 +318,8 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     engine.complete(now, 1)
     engine.complete(now, 2)
     run = engine.finalize()
-    assert run.promotions == 1 and run.restore_bytes == 8 and run.restore_time_ms == 5
+    assert run.promotions == 1 and run.restore_bytes == 8 and run.restore_time_ms == 8
+    assert run.analysis.restore_ms == 8
     assert [
         (record.l1_hit_tokens, record.l2_hit_tokens, record.l3_hit_tokens) for record in run.records
     ] == [(0, 4, 0), (0, 4, 0)]
@@ -352,17 +349,14 @@ def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
     assert all(cache.page(chunk_id).tier == "L2" for chunk_id in shared)
     evictions_before = cache.evictions
     engine.submit(request(1, prompt=9, maximum=1, output=1, inherited=shared), 0)
-    assert engine.start_step(0, 0) is None
-    events = engine.drain_events()
-    assert len(events) == 2
+    now = start_step_end(engine, 0, 0, (1,))
+    assert engine.drain_events() == ()
     assert cache.evictions == evictions_before + 3
-    assert cache.free_pages == 1
-    assert cache.pools["L1"].reserved == 2
-    assert all(cache.page(chunk_id).tier == "L2" for chunk_id in shared)
-    for now, kind, transfer_id in events:
-        engine.on_transfer_done(kind, transfer_id, now)
-    now = start_step_end(engine, events[-1][0], 0, (1,))
+    assert cache.pools["L1"].reserved == 0
+    assert all(cache.page(chunk_id).tier == "L1" for chunk_id in shared)
     assert cache.promotions == 2
+    # 两页均分到两层：每层 3 + 2 页 × 2 ms / 2 层 = 5 ms。
+    assert now == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 5, 2))
     assert engine.finish_step(now) == (1,)
     engine.complete(now, 1)
 
@@ -396,14 +390,10 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
     cache.finish(99)
     demoted_page = cache.page(encode(0, 0))
     assert demoted_page is not None and demoted_page.tier == "L2"
-    assert engine.start_step(prefill_end, 1) is None
-    events = engine.drain_events()
-    assert len(events) == 1
-    now, kind, transfer_id = events[0]
-    assert now == pytest.approx(prefill_end + 5)
-    assert kind is EventKind.L2_L1_DONE
-    engine.on_transfer_done(kind, transfer_id, now)
-    assert engine.start_step(now, 1) == (0, ())
+    # 无计算的纯回载步：两层各 4 ms 串行传输。
+    assert engine.start_step(prefill_end, 1) == (pytest.approx(8), ())
+    assert engine.drain_events() == ()
+    now = prefill_end + 8
     assert engine.finish_step(now) == ()
     assert engine.num_steps == 1
     assert engine._running[0] == 1 and engine._prefill_end[0] == prefill_end
@@ -414,10 +404,11 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
     run = engine.finalize()
     assert run.records[0].finish == now
     assert run.records[0].replayed_prefill_tokens == 0
-    assert run.restore_time_ms == 5 and run.restore_bytes == 8
+    assert run.restore_time_ms == 8 and run.restore_bytes == 8
+    assert run.analysis.restore_exposed_ms == 8
 
 
-def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> None:
+def test_restore_load_pipelines_with_fused_decode_without_decoding_restored_request() -> None:
     config = EngineConfig(
         max_running_requests=2,
         max_total_tokens=28,
@@ -456,32 +447,23 @@ def test_fused_decode_overlaps_transfer_without_decoding_restored_request() -> N
     cache.finish(99)
     demoted_page = cache.page(encode(0, 0))
     assert demoted_page is not None and demoted_page.tier == "L2"
-    assert engine.start_step(prefill_end, 1) is None
-    events = engine.drain_events()
-    assert len(events) == 1
-    transfer_end, kind, transfer_id = events[0]
-    assert transfer_end == pytest.approx(prefill_end + 5)
-    assert kind is EventKind.L2_L1_DONE
-    assert engine.load_tokens == 12
+    device_before = engine._analysis.device_ms
     now = start_step_end(engine, prefill_end, 1, (1,))
-    assert prefill_end < transfer_end < now
-    assert engine.load_tokens == 16
-    assert 0 not in engine._running
-    engine.on_transfer_done(kind, transfer_id, transfer_end)
-    assert engine.load_tokens == 16
-    assert engine.finish_step(now) == (1,)
-    assert 0 not in engine._running
-    assert engine._pending_selection is not None
-    engine.complete(now, 1)
-    assert engine.start_step(now, 2) == (0, ())
-    assert engine.finish_step(now) == ()
+    assert engine.drain_events() == ()
+    compute = engine._analysis.device_ms - device_before
+    # 计算远长于回载时，仅首层 4 ms 回载暴露在步长中。
+    assert now - prefill_end == pytest.approx(layer_pipeline_ms(compute, 4, 2))
+    assert now - prefill_end == pytest.approx(compute + 4)
+    assert engine._analysis.restore_exposed_ms == pytest.approx(4)
     assert engine._running[0] == 1 and engine._prefill_end[0] == prefill_end
+    assert engine.finish_step(now) == (1,)
+    engine.complete(now, 1)
     now = start_step_end(engine, now, 2, (0,))
     assert engine.finish_step(now) == (0,)
     engine.complete(now, 0)
     run = engine.finalize()
     assert run.records[0].replayed_prefill_tokens == 0
-    assert run.restore_time_ms == 5 and run.restore_bytes == 8
+    assert run.restore_time_ms == 8 and run.restore_bytes == 8
 
 
 def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> None:
@@ -523,20 +505,16 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     now, kind, transfer_id = events[0]
     assert (now, kind) == (9, EventKind.L3_L2_DONE)
     assert not engine.can_step
-    engine.on_transfer_done(kind, transfer_id, now)
-    assert engine.start_step(now, 0) is None
-    events = engine.drain_events()
-    assert len(events) == 1
-    now, kind, transfer_id = events[0]
-    assert (now, kind) == (14, EventKind.L2_L1_DONE)
-    engine.on_transfer_done(kind, transfer_id, now)
+    engine.on_transfer_done(transfer_id, now)
     now = start_step_end(engine, now, 0, (1,))
+    assert engine.drain_events() == ()
+    assert now - 9 == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 4, 2))
     assert engine.finish_step(now) == (1,)
     assert engine.num_steps == 1
     engine.complete(now, 1)
     run = engine.finalize()
     assert run.records[0].l3_hit_tokens == 4
-    assert run.restore_bytes == 16 and run.restore_time_ms == 14
+    assert run.restore_bytes == 16 and run.restore_time_ms == 9 + 8
     assert run.promotions == 2
     assert run.l3_snapshot is not None
     assert run.l3_snapshot.free_blocks + run.l3_snapshot.resident_blocks == 2
@@ -576,13 +554,9 @@ def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> N
         ),
         0,
     )
-    assert engine.start_step(0, 0) is None
-    events = engine.drain_events()
-    assert len(events) == 1
-    now, kind, transfer_id = events[0]
-    assert (now, kind) == (2, EventKind.L2_L1_DONE)
-    engine.on_transfer_done(kind, transfer_id, now)
-    now = start_step_end(engine, now, 0, (1, 2))
+    now = start_step_end(engine, 0, 0, (1, 2))
+    assert engine.drain_events() == ()
+    assert now == pytest.approx(layer_pipeline_ms(engine._analysis.device_ms, 1, 2))
     assert engine.finish_step(now) == (1, 2)
     published = cache.page(shared)
     assert published is not None and published.tier == "L1"

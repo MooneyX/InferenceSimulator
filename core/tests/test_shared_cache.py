@@ -281,7 +281,7 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
     engine.on_l3_lookup(0, 2)
     events = engine.drain_events()
     assert len(events) == 1 and events[0][1] is EventKind.L3_L2_DONE
-    engine.on_transfer_done(events[0][1], events[0][2], events[0][0])
+    engine.on_transfer_done(events[0][2], events[0][0])
     assert engine._prefix_cache.pools["L2"].lookup(chunk) is not None
     assert shared.lookup(chunk) is not None
     assert engine._restore_bytes == 64
@@ -360,10 +360,10 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
         engine.on_l3_lookup(i, 2)
         events.append(engine.drain_events()[0])
     assert l3.lookup(chunk).ref_count == (1 if shared_enabled else 2)
-    assert engines[1]._link_free["L2"] == (0 if shared_enabled else 3)
+    assert engines[1]._l3_link_free == (0 if shared_enabled else 3)
     assert events[0][0] == events[1][0] == 3
-    for engine, (time, kind, ref) in zip(engines, events, strict=True):
-        engine.on_transfer_done(kind, ref, time)
+    for engine, (time, _, ref) in zip(engines, events, strict=True):
+        engine.on_transfer_done(ref, time)
     assert sum(engine._restore_bytes for engine in engines) == (64 if shared_enabled else 128)
     assert sum(engine._restore_time_ms for engine in engines) == (1 if shared_enabled else 2)
     assert l3.lookup(chunk).ref_count == 0
@@ -372,9 +372,8 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
         assert engine._prefetched_origins[i] == {chunk}
         assert not engine._prefix_cache.pools["L2"].incoming_ready_ms
         assert not engine._prefix_cache.pools["L2"].pending_pages
-        assert engine.start_step(3, 0) is None
-        time, kind, ref = engine.drain_events()[0]
-        engine.on_transfer_done(kind, ref, time)
+        assert engine.start_step(3, 0) is not None
+        assert engine.drain_events() == ()
         assert engine._restore_bytes == (128 if i == 0 or not shared_enabled else 64)
     assert l2.lookup(chunk) is not None if shared_enabled else l2.resident == 0
 
@@ -419,13 +418,12 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     assert sum(run.restore_time_ms for run in runs) == 3
     assert not l2.pending_pages and not l2.incoming_ready_ms
     assert l2.lookup("trace:0:90").ref_count == l3.lookup("trace:0:90").ref_count == 0
-    assert all(not engine._pending_loads and not engine._prefetch_waiting for engine in engines)
+    assert all(not engine._transfers and not engine._prefetch_waiting for engine in engines)
 
 
 @pytest.mark.parametrize("owns_prefetch", [True, False])
-@pytest.mark.parametrize("prefetch_finishes_first", [True, False])
-def test_l2_load_overlaps_same_page_prefetch_after_another_instance_demotes(
-    owns_prefetch: bool, prefetch_finishes_first: bool
+def test_l2_promotion_overlaps_same_page_prefetch_after_another_instance_demotes(
+    owns_prefetch: bool,
 ) -> None:
     l2, l3 = CachePool("L2", 4, 2, 4), CachePool("L3", 5, 2, 4)
     chunk = encode(90, 0)
@@ -434,7 +432,7 @@ def test_l2_load_overlaps_same_page_prefetch_after_another_instance_demotes(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
         PerfModelConfig( kv_bytes_per_token=16,
-                        l2_to_l1_bandwidth_bytes_per_ms=64 if not prefetch_finishes_first else 16,
+                        l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_to_l2_bandwidth_bytes_per_ms=32, l3_lookup_latency_ms=2),
     )
     owner, follower = (Engine(runtime, shared_l2=l2, shared_l3=l3, instance_id=i)
@@ -455,14 +453,12 @@ def test_l2_load_overlaps_same_page_prefetch_after_another_instance_demotes(
     assert l2.lookup(chunk) is not None
     engine.submit(request(2, (chunk,)), 2)
     assert engine.drain_events() == ()
-    assert engine.start_step(2, 0) is None
-    (load_event,) = engine.drain_events()
-    assert load_event[1] is EventKind.L2_L1_DONE
-    events = [*prefetch_events, (engine, load_event)]
-    for target, (time, kind, ref) in sorted(events, key=lambda item: item[1][0]):
-        target.on_transfer_done(kind, ref, time)
+    started = engine.start_step(2, 0)
+    assert started is not None and started[1] == (2,)
+    assert engine.drain_events() == ()
     assert engine._prefix_cache.pools["L1"].lookup(chunk) is not None
-    assert not engine._pending_loads
+    for target, (time, _, ref) in prefetch_events:
+        target.on_transfer_done(ref, time)
     assert not engine._transfer_by_chunk
     assert not engine._prefix_cache._transfers
     assert not l2.pending_pages and not l2.incoming_ready_ms

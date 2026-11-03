@@ -457,7 +457,7 @@ describe("App", () => {
       hardware: { ...createDefaultSimConfig().inference.hardware, gpu_count: 4 } });
     resolved.analysis = {
       steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
-      memory_ms: 0.2, device_ms: 5, restore_ms: 0,
+      memory_ms: 0.2, device_ms: 5, restore_ms: 0, restore_exposed_ms: 0,
       communication_ms: 1.25, communication_bytes: 500_000_000, collectives: 144,
       tp_communication_ms: 1.25, tp_communication_bytes: 500_000_000,
       ep_dispatch_ms: 0, ep_combine_ms: 0,
@@ -493,7 +493,7 @@ describe("App", () => {
         kv_bytes_per_token: 32, l1_kv_budget_bytes: 300_000, l1_capacity_pages: 25 }] };
     resolved.analysis = {
       steps: 2, flops: 1000, hbm_bytes: 2000, compute_ms: 0.1,
-      memory_ms: 0.2, device_ms: 5, restore_ms: 1,
+      memory_ms: 0.2, device_ms: 5, restore_ms: 1, restore_exposed_ms: 0.25,
       communication_ms: 2, communication_bytes: 4000, collectives: 4,
       tp_communication_ms: 1, tp_communication_bytes: 2000,
       ep_dispatch_ms: 0.4, ep_combine_ms: 0.6,
@@ -510,6 +510,7 @@ describe("App", () => {
     expect(summary).toHaveTextContent("TP 同步 1.00 ms");
     expect(summary).toHaveTextContent("EP dispatch 0.40 ms / combine 0.60 ms");
     expect(summary).toHaveTextContent("GPU 计时 5.00 ms");
+    expect(summary).toHaveTextContent("KV 传输 1.00 ms（L2→L1 回载暴露 0.25 ms）");
     expect(summary).toHaveTextContent("逻辑流量");
   });
 

@@ -16,7 +16,7 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻先发布与请求结算，再传输和客户端发送，最后步进。"""
+        """同刻先发布与请求结算，再预取和客户端发送，最后步进。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         send = f.client_send(5.0, 1)
@@ -24,13 +24,11 @@ class TestOrdering:
         end = f.step_done(5.0, 0)
         lookup = f.l3_lookup_done(5.0, 1)
         l3_l2 = f.l3_l2_done(5.0, 3)
-        l2_l1 = f.l2_l1_done(5.0, 4)
-        assert sorted([step, send, done, end, lookup, l3_l2, l2_l1]) == [
+        assert sorted([step, send, done, end, lookup, l3_l2]) == [
             end,
             done,
             lookup,
             l3_l2,
-            l2_l1,
             send,
             step,
         ]
@@ -89,7 +87,6 @@ class TestOrdering:
             EventKind.REQUEST_DONE,
             EventKind.L3_LOOKUP_DONE,
             EventKind.L3_L2_DONE,
-            EventKind.L2_L1_DONE,
             EventKind.CLIENT_SEND,
             EventKind.ENGINE_STEP,
         ]
@@ -112,10 +109,10 @@ class TestEventFactory:
         assert EventFactory().client_send(0.0, 0).seq == EventFactory().client_send(0.0, 0).seq == 0
 
     def test_event_uses_native_tuple_comparison(self) -> None:
-        event = EventFactory().l2_l1_done(1.0, 7)
+        event = EventFactory().l3_l2_done(1.0, 7)
         assert isinstance(event, tuple)
         assert tuple(event) == (event.time, event.kind, event.ref, event.seq)
-        assert event.kind is EventKind.L2_L1_DONE
+        assert event.kind is EventKind.L3_L2_DONE
         assert Event.__lt__ is tuple.__lt__
         assert not hasattr(event, "__dict__")
 

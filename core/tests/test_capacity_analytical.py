@@ -10,7 +10,13 @@ from simcore import simulate
 from simcore.capacity import prepare_runtime, resolve_config
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.perf_model import DecodeWork, PrefillWork, StepWorkload, step_cost
+from simcore.perf_model import (
+    DecodeWork,
+    PrefillWork,
+    StepWorkload,
+    layer_pipeline_ms,
+    step_cost,
+)
 from simcore.prefix_hash import encode
 from simcore.schemas import (
     AttentionGroup,
@@ -1796,7 +1802,7 @@ def test_moe_run_uses_ep_cost() -> None:
         summary.tp_communication_ms + summary.ep_dispatch_ms + summary.ep_combine_ms
     )
     assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
-        summary.device_ms + summary.restore_ms
+        summary.device_ms + summary.restore_exposed_ms
     )
 
 
@@ -1937,7 +1943,6 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     page_bytes = runtime.engine.page_size * resolved.capacity.kv_bytes_per_token
     l2_service = inference_config(request).storage.l2_latency_ms + page_bytes / 1000
     l3_service = inference_config(request).storage.l3_latency_ms + page_bytes / 2000
-    expected_ms = 2 * l2_service + l3_service
     l2_link, l3_link = runtime.links.l2_to_l1, runtime.links.l3_to_l2
     assert l2_link is not None and l3_link is not None
     assert l2_link.latency_ms + l2_link.transfer_ms == pytest.approx(l2_service)
@@ -1960,39 +1965,43 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         cache.publish(key)
         cache.finish(key)
     cache.ensure_free(2)
-    now = 10.0
-    elapsed = 0.0
-    for chunk_id, source, destination, kind, service in (
-        (encode(1, 0), "L2", "L1", EventKind.L2_L1_DONE, l2_service),
-        (encode(0, 0), "L3", "L2", EventKind.L3_L2_DONE, l3_service),
-        (encode(0, 0), "L2", "L1", EventKind.L2_L1_DONE, l2_service),
-    ):
-        page = cache.page(chunk_id)
-        assert page is not None and page.tier == source
-        transfer_id = engine._start_transfer(chunk_id, destination, now, 99, source=source)
-        [(end, event_kind, event_id)] = engine.drain_events()
-        assert (event_kind, event_id) == (kind, transfer_id)
-        assert end - now == pytest.approx(service)
-        page = cache.page(chunk_id)
-        assert page is not None and page.tier == source
-        assert engine._restore_time_ms == pytest.approx(elapsed)
-        engine.on_transfer_done(kind, transfer_id, end)
-        page = cache.page(chunk_id)
-        assert page is not None and page.tier == destination
-        elapsed += service
-        now = end
+    chunk_id = encode(0, 0)
+    page = cache.page(chunk_id)
+    assert page is not None and page.tier == "L3"
+    transfer_id = engine._start_transfer(chunk_id, 10.0, 99)
+    [(end, event_kind, event_id)] = engine.drain_events()
+    assert (event_kind, event_id) == (EventKind.L3_L2_DONE, transfer_id)
+    assert end - 10.0 == pytest.approx(l3_service)
+    page = cache.page(chunk_id)
+    assert page is not None and page.tier == "L3"
+    engine.on_transfer_done(transfer_id, end)
+    page = cache.page(chunk_id)
+    assert page is not None and page.tier == "L2"
     run = engine.finalize()
-    assert run.restore_time_ms == pytest.approx(expected_ms)
-    assert now == pytest.approx(10 + expected_ms)
-    assert run.restore_bytes == 3 * page_bytes
+    assert run.restore_time_ms == pytest.approx(l3_service)
+    assert run.restore_bytes == page_bytes
     assert run.analysis is not None
-    assert run.analysis.restore_ms == pytest.approx(expected_ms)
+    assert run.analysis.restore_ms == pytest.approx(l3_service)
     assert all(
         value == 0 for name, value in run.analysis.model_dump().items() if name != "restore_ms"
     )
     assert run.num_engine_steps == 0
     assert not engine._transfers and not cache._transfers
     assert config.model_dump() == original_data
+
+
+@pytest.mark.parametrize(
+    ("compute", "layer_load", "layers"),
+    [(60, 1, 4), (4, 5, 4), (12, 3, 4), (0, 2, 3), (7, 0.5, 1)],
+)
+def test_layer_pipeline_closed_form_matches_per_layer_recursion(
+    compute: float, layer_load: float, layers: int
+) -> None:
+    finish = 0.0
+    for index in range(1, layers + 1):
+        finish = max(finish, index * layer_load) + compute / layers
+    assert layer_pipeline_ms(compute, layer_load, layers) == pytest.approx(finish)
+    assert layer_pipeline_ms(compute, layer_load, layers) >= max(compute, layers * layer_load)
 
 
 def test_single_layer_roofline_takes_stage_max_then_sums_dependencies() -> None:
@@ -2099,7 +2108,7 @@ def test_tp2_runner_uses_communication_cost_and_preserves_request_results() -> N
     assert analysis.collectives == 2 * model.num_layers * analysis.steps
     assert analysis.communication_ms > 0
     assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
-        analysis.device_ms + analysis.restore_ms
+        analysis.device_ms + analysis.restore_exposed_ms
     )
 
 
@@ -2180,5 +2189,5 @@ def test_clock_uses_workload_and_preserves_config() -> None:
     assert summary.steps == result.meta.num_engine_steps
     assert summary.device_ms > 0
     assert result.requests[0].finish - result.requests[0].prefill_start == pytest.approx(
-        summary.device_ms + summary.restore_ms
+        summary.device_ms + summary.restore_exposed_ms
     )

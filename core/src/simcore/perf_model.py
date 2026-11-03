@@ -5,7 +5,14 @@ from typing import Literal
 
 from simcore.schemas import HardwareSpec, ModelSpec
 
-__all__ = ["DecodeWork", "PrefillWork", "StepCost", "StepWorkload", "step_cost"]
+__all__ = [
+    "DecodeWork",
+    "PrefillWork",
+    "StepCost",
+    "StepWorkload",
+    "layer_pipeline_ms",
+    "step_cost",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +85,18 @@ class StepCost:
     ep_dispatch_bytes: float = 0.0
     ep_combine_bytes: float = 0.0
     ep_exchanges: int = 0
+
+
+def layer_pipeline_ms(compute_ms: float, layer_load_ms: float, num_layers: int) -> float:
+    """逐层 KV 回载与逐层计算流水后的步长（ms）。
+
+    回载自步起点按层依次发出，每层耗时 ``layer_load_ms``；第 i 层计算须等第 i-1 层
+    算完且第 i 层 KV 到齐。各层计算取均值 c = compute_ms / L，递推
+    F_i = max(F_{i-1}, i·t) + c 的闭式解为 max(t + L·c, L·t + c)。
+    """
+    return max(
+        layer_load_ms + compute_ms, num_layers * layer_load_ms + compute_ms / num_layers
+    )
 
 
 def step_cost(

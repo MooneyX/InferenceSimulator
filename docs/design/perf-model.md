@@ -1,6 +1,6 @@
 # 性能模型与 KV 恢复计时
 
-所有仿真通过 `core/src/simcore/perf_model.py` 的 `step_cost` 使用同一性能模型：根据模型结构、硬件有效性能和实际步工作量估算逐阶段计算、访存与通信时间。同一模块定义不可变工作量、`StepCost` 及全部成本计算函数；`PerfModelConfig` 仅保留 KV 字节数、链路速率和延迟，KV 上行传输由引擎独立异步计时。公开配置不再接受 `inference.timing`，不保留经验四系数或兼容转换。这里估算的是**仿真时间**，不是实测 GPU 时间或已标定的硬件性能。
+所有仿真通过 `core/src/simcore/perf_model.py` 的 `step_cost` 使用同一性能模型：根据模型结构、硬件有效性能和实际步工作量估算逐阶段计算、访存与通信时间。同一模块定义不可变工作量、`StepCost` 及全部成本计算函数；`PerfModelConfig` 仅保留 KV 字节数、链路速率和延迟；L3→L2 预取由引擎独立异步计时，L2→L1 回载与本步计算逐层流水并计入步长。公开配置不再接受 `inference.timing`，不保留经验四系数或兼容转换。这里估算的是**仿真时间**，不是实测 GPU 时间或已标定的硬件性能。
 
 ## 单项工作量
 
@@ -8,28 +8,44 @@
 
 ## 当前单步工作量与时长
 
-`Engine.start_step` 选批，内部 `_execute_step`（`selection` 必填）构造不可变 `StepWorkload`：GPU 阶段只有 `PREFILL`、`DECODE`、`MIXED`。Prefill/Decode 项按请求 ID 排序；还记录新申请页数、批内请求及 `restore_only` 请求 ID（混合步中只恢复准入、不新采样输出的请求），不携带恢复页来源或页大小。传输是独立异步任务，不构造纯 `RESTORE` GPU 步；两种 P/D 模式等待回载时均可推进已有 Decode，新恢复请求本步不参加 Decode。
+`Engine.start_step` 选批，内部 `_execute_step`（`selection` 必填）构造不可变 `StepWorkload`：GPU 阶段只有 `PREFILL`、`DECODE`、`MIXED`。Prefill/Decode 项按请求 ID 排序；还记录新申请页数、批内请求及 `restore_only` 请求 ID（混合步中只恢复准入、不新采样输出的请求），不携带恢复页来源或页大小。不构造纯 `RESTORE` GPU 步；新恢复请求本步不参加 Decode。
 
-`perf_model.step_cost` 汇总本步 Prefill/Decode 工作量，对每个计算阶段使用 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，再依次累加层、算子阶段与同步通信。融合步共享该批的权重读取；不是分别计算 P/D 后取最大值。KV 传输时长不附加到 GPU 步长。结果字段类型仍允许为空，但新运行（含零 GPU 步）始终提供 `analysis` 对象。
+`perf_model.step_cost` 汇总本步 Prefill/Decode 工作量，对每个计算阶段使用 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，再依次累加层、算子阶段与同步通信。融合步共享该批的权重读取；不是分别计算 P/D 后取最大值。本批有 L2→L1 回载时，按下文逐层流水把 `step_cost` 的计算时长换算为步长。结果字段类型仍允许为空，但新运行（含零 GPU 步）始终提供 `analysis` 对象。
 
-## 异步页恢复计时
+## L3→L2 异步预取计时
 
-启用 L3 的正常路径先进行 L3 查询；连续 L3 命中段的 token 数严格大于 `l3_prefetch_min_tokens` 时发起 L3→L2 预取，选批通过预算后再经 L2→L1 回载，完成后才执行准入；未预取的 L3 页不直接供 GPU 复用。每个实例的每条链路按页串行，两条链路和 GPU 可独立推进。令 `S=page_size*kv_bytes_per_token` 字节，每个页传输任务分别计算：
+启用 L3 的正常路径先进行 L3 查询；连续 L3 命中段的 token 数严格大于 `l3_prefetch_min_tokens` 时发起 L3→L2 预取，全部完成后请求才就绪；未预取的 L3 页不直接供 GPU 复用。每个实例的 L3→L2 链路按页串行，与 GPU 独立推进。令 `S=page_size*kv_bytes_per_token` 字节，每个页传输任务分别计算：
 
 ```text
 L3→L2 service_ms = l3_latency_ms + S/l3_to_l2_bandwidth_bytes_per_ms
-L2→L1 service_ms = l2_latency_ms + S/l2_to_l1_bandwidth_bytes_per_ms
 transfer_start = max(任务发起时刻, 同链路上一任务完成时刻)
 transfer_end = transfer_start + service_ms
-restore_bytes = Σ(已完成上行任务的 S)
-restore_time_ms = Σ(已完成上行任务的 service_ms)
 ```
 
-固定延迟是**每页每条链路一次**，不是每 GPU 步一次；L3 页先实际迁入 L2，再回载 L1，两段完成各计一页上行量。只有本地连续前缀不足且仍有可缓存输入页时才查询 L3，由顶层 `shared_l3.lookup_latency_ms` 推进一次查询事件，链路排队和 lookup 不计入 `restore_time_ms`；逐级驱逐/降级仍同步，不计写回传输耗时。恢复总耗时是任务服务量，不等于 makespan 增量，也不能直接加到 GPU 步长或全场设备时间上。低层关闭时新增成本全为零，原有两种 P/D 计时保持不变。此模型不代表真实设备并行或已校准耗时。
+固定延迟是**每页一次**。只有本地连续前缀不足且仍有可缓存输入页时才查询 L3，由顶层 `shared_l3.lookup_latency_ms` 推进一次查询事件，链路排队和 lookup 不计入 `restore_time_ms`；逐级驱逐/降级仍同步，不计写回传输耗时。
+
+## L2→L1 逐层流水回载
+
+参照 SGLang HiCache：调度器选批时即为 L2 命中页分配 L1 目标页，请求立即进入本步，不在调度层等待回载；回载在独立拷贝流上逐层发出，前向第 i 层注意力只等第 i 层 KV 到齐。仿真在选批后对本批唯一提升页依次 `reserve_transfer` + `complete_transfer`，同步完成页迁移，不产生传输事件；回载耗时只通过步长体现。令 `p` 为本批唯一提升页数、`L=num_layers`、`T=page_size*kv_bytes_per_token/l2_to_l1_bandwidth_bytes_per_ms`（每页整组传输时长），`compute_ms` 为 `step_cost` 的计算时长：
+
+```text
+t = l2_latency_ms + p*T/L          # 每层回载：每层一次固定延迟，字节按层均分
+c = compute_ms / L                 # 单层计算取均值（含同批 Decode）
+F_0 = 0; F_i = max(F_{i-1}, i*t) + c
+step_ms = F_L = max(t + L*c, L*t + c)
+restore_time_ms += L*t
+restore_exposed_ms += step_ms - compute_ms
+```
+
+回载自步起点开始（保守口径，不模拟 overlap scheduler 提前一步发起）；本步结束前回载必已完成，同实例下一步无需再排队。计算较长时只暴露首层回载 `t`，回载较长时步长约为全部回载加末层计算。回载慢会拉长整步，同批 Decode 一并变慢。只有恢复准入、没有计算的步 `c=0`，步长为 `L*t`，不计入 GPU 步数。
+
+简化：各层计算与 KV 字节均按层均分，MoE 的 Dense/MoE 层与异构注意力组不区分层序；`l2_to_l1_gb_s` 视为整实例有效带宽；不模拟多批在途、`load_back_threshold` 回退重算或 IO 后端差异；Chunked Prefill 未实现。
+
+`restore_bytes` 累计已完成的 L3→L2 页与 L2→L1 提升页字节；`restore_time_ms` 与 `analysis.restore_ms` 为两条链路的服务时长之和，不等于 makespan 增量。`analysis.device_ms` 只计 `step_cost` 计算时长，步长中被回载拉长的部分单列为 `analysis.restore_exposed_ms`，两者之和为 GPU 步长总和。低层关闭时新增成本全为零。此模型不代表真实设备并行或已校准耗时。
 
 ## 单 GPU 与同构 TP 解析计时
 
-`POST /api/simulate` 始终使用 `perf_model.step_cost`。在 Dense 全注意力 GQA/MQA、BF16/FP16、单 GPU 条件下，以已解析的 `ModelSpec` 和 `HardwareSpec` 估算各阶段成本。投影、因果注意力、FFN 各阶段分别取 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，逐层顺序相加；融合步汇总本步 Prefill 和 Decode 的工作量、权重每层计一次。KV 恢复不产生 GPU 工作量或算子成本，按前述异步页传输事件独立推进，不附加到解析 GPU 步长。容量解析把物理链路带宽转换为 token/ms，每页每链路按固定延迟加页 token 数/速率计服务时长；`restore_bytes` 仍使用派生的 KV bytes/token 供指标展示。单个 `SimResult` 中的 `analysis` 汇总执行步数、计算量、HBM 访问与解析耗时；该单卡模型不包括 embedding/输出词表投影、形状校准或 TP/EP 通信，不得解释为真实设备测量值。全注意力 Dense BF16/FP16 的同构 TP>1 也沿用同一性能模型：Query 头与 FFN 按 rank 均分，KV 头不足 TP 数时在不同 rank 复制。每 rank 对 QKV、注意力、输出投影和 FFN 分别按本地 FLOPs/HBM 做 Roofline；同组工作均匀，取任意一张卡的阶段耗时。每层注意力输出与 FFN 输出各计一次等效 Ring AllReduce，不模拟内部通信事件或计算/通信重叠。对每次通信，令 `S=本步新计算 token 数×hidden_size×2 bytes`（Decode 每请求计 1 token），`N=tp_size`，`B=单 rank 有效互联 bytes/ms`，则 `t=collective_latency_ms+2×(N-1)/N×S/B`；这不是对 SGLang 实际 collective 调用的逐算子复刻。仅恢复准入不产生 TP collective，L2/L3 页传输在独立事件链路上推进，不追加到设备步长。解析结果的 `flops`、`hbm_bytes`、`compute_ms` 与 `memory_ms` 均是同构单 rank 口径；`analysis.device_ms` 含 TP 通信，`communication_ms` 为其中的同步时间，`communication_bytes` 为单 rank 总传输量，`collectives` 为次数；不将通信时间再次加到 `device_ms`。TP1 保持原单 GPU 成本公式；TP>1 须补齐有效互联带宽与通信固定延迟。
+`POST /api/simulate` 始终使用 `perf_model.step_cost`。在 Dense 全注意力 GQA/MQA、BF16/FP16、单 GPU 条件下，以已解析的 `ModelSpec` 和 `HardwareSpec` 估算各阶段成本。投影、因果注意力、FFN 各阶段分别取 `kernel_overhead_ms + max(FLOPs/effective_FLOPS, HBM_bytes/effective_HBM_BW)`，逐层顺序相加；融合步汇总本步 Prefill 和 Decode 的工作量、权重每层计一次。KV 恢复不产生 GPU 工作量或算子成本；L3→L2 预取独立推进，L2→L1 回载按前述逐层流水换算步长。容量解析把物理链路带宽转换为 token/ms；`restore_bytes` 仍使用派生的 KV bytes/token 供指标展示。单个 `SimResult` 中的 `analysis` 汇总执行步数、计算量、HBM 访问与解析耗时；该单卡模型不包括 embedding/输出词表投影、形状校准或 TP/EP 通信，不得解释为真实设备测量值。全注意力 Dense BF16/FP16 的同构 TP>1 也沿用同一性能模型：Query 头与 FFN 按 rank 均分，KV 头不足 TP 数时在不同 rank 复制。每 rank 对 QKV、注意力、输出投影和 FFN 分别按本地 FLOPs/HBM 做 Roofline；同组工作均匀，取任意一张卡的阶段耗时。每层注意力输出与 FFN 输出各计一次等效 Ring AllReduce，不模拟内部通信事件或计算/通信重叠。对每次通信，令 `S=本步新计算 token 数×hidden_size×2 bytes`（Decode 每请求计 1 token），`N=tp_size`，`B=单 rank 有效互联 bytes/ms`，则 `t=collective_latency_ms+2×(N-1)/N×S/B`；这不是对 SGLang 实际 collective 调用的逐算子复刻。仅恢复准入不产生 TP collective；L2→L1 回载按逐层流水调整步长，不计入 `device_ms`。解析结果的 `flops`、`hbm_bytes`、`compute_ms` 与 `memory_ms` 均是同构单 rank 口径；`analysis.device_ms` 含 TP 通信，`communication_ms` 为其中的同步时间，`communication_bytes` 为单 rank 总传输量，`collectives` 为次数；不将通信时间再次加到 `device_ms`。TP1 保持原单 GPU 成本公式；TP>1 须补齐有效互联带宽与通信固定延迟。
 
 ## 按层数组合的注意力解析粗估
 
@@ -43,8 +59,8 @@ HY4 预设以官方检查点 revision `705d81ee51566a186d645b74c974d642ef2828fe`
 
 ## 平均负载 MoE/EP 解析计时（未经校准）
 
-`TP=EP=GPU 数` 且 BF16/FP16 时，用本步新 Prefill token 数加 Decode 请求数作为同一批 MoE 输入；每层保留注意力输出的 TP 同步，Dense 层继续计 FFN 及第二次 TP 同步，MoE 层则改计 gate、均匀放置的本地专家计算、dispatch、combine，**不重复计 Dense FFN 与第二次 TP 同步**。专家计算每 rank 的平均任务数为 `tokens * experts_per_token / ep_size`，权重 HBM 按本 rank 全部驻留专家保守计入；不存在逐 token 路由或热点专家的尾延迟预测。`MIXED` 一次合并批次收费，只恢复准入的请求不计专家计算/通信；KV 恢复由异步页传输独立计时，不产生纯恢复 GPU 步。
+`TP=EP=GPU 数` 且 BF16/FP16 时，用本步新 Prefill token 数加 Decode 请求数作为同一批 MoE 输入；每层保留注意力输出的 TP 同步，Dense 层继续计 FFN 及第二次 TP 同步，MoE 层则改计 gate、均匀放置的本地专家计算、dispatch、combine，**不重复计 Dense FFN 与第二次 TP 同步**。专家计算每 rank 的平均任务数为 `tokens * experts_per_token / ep_size`，权重 HBM 按本 rank 全部驻留专家保守计入；不存在逐 token 路由或热点专家的尾延迟预测。`MIXED` 一次合并批次收费，只恢复准入的请求不计专家计算/通信；KV 恢复不产生纯恢复 GPU 步，L2→L1 回载按逐层流水调整步长。
 
 设 `E=num_experts`、`R=ep_size`、`K=experts_per_token`、`H=hidden_size`、`T=本步 token 数`，均匀无放回路由下某目标 rank 至少被选一次的概率为 `p=1-∏_{i=0}^{K-1}(E-E/R-i)/(E-i)`。每 rank 的平均远端专家选择数为 `M=T*K*(R-1)/R²`；`normal` 每 rank 平均远端向量数为 `T*(R-1)/R*p`，`low_latency` 按 `M` 个选择计。激活字节宽度与本版计算精度一致（BF16/FP16：2 bytes/元素）；dispatch 与 combine 每次远端选择分别额外计 8 bytes 逻辑元数据（ID/索引 4 bytes、权重 4 bytes）。这是未校准的**逻辑流量**，不等同于 DeepEP 的实际链路流量或内核布局。
 
-含 Prefill 的步采用 `normal`，纯 Decode 采用 `low_latency`；两模式共用单 rank `effective_interconnect_gb_s` 和 `ep_communication_latency_ms`，dispatch/combine 各按 `固定开销 + 每 rank 逻辑字节/有效带宽` 计一次、各 MoE 层顺序加入步关键路径。不做通信与计算重叠、专家复制或 EPLB。TP 的 `collective_latency_ms` 独立计费；分析结果的 `communication_ms` 为 TP+EP 时间之和，`ep_dispatch_ms`、`ep_combine_ms`、`tp_communication_ms` 是其中分项，`collectives` 仅计 TP，`ep_exchanges` 单列。`device_ms` 已包含全部 TP/EP 通信，不得再把通信分项加到时长上；`restore_ms` 单列已完成 KV 传输任务的服务时长之和，不附加到 GPU 步长，也不代表 makespan 增量。页面试算使用单 rank 有效互联 600 GB/s、TP 集合通信固定延迟 0.01 ms/次、EP dispatch/combine 固定开销 0.02 ms/次，均未经校准，可手动修改；1800 GB/s 仅为 B300 的单卡双向标称值，不直接代入有效带宽。精度与进一步校准见 [F002 计划](../plans/perf-model.md) 和 [F004 计划](../plans/expert-parallelism.md)。
+含 Prefill 的步采用 `normal`，纯 Decode 采用 `low_latency`；两模式共用单 rank `effective_interconnect_gb_s` 和 `ep_communication_latency_ms`，dispatch/combine 各按 `固定开销 + 每 rank 逻辑字节/有效带宽` 计一次、各 MoE 层顺序加入步关键路径。不做通信与计算重叠、专家复制或 EPLB。TP 的 `collective_latency_ms` 独立计费；分析结果的 `communication_ms` 为 TP+EP 时间之和，`ep_dispatch_ms`、`ep_combine_ms`、`tp_communication_ms` 是其中分项，`collectives` 仅计 TP，`ep_exchanges` 单列。`device_ms` 已包含全部 TP/EP 通信，不得再把通信分项加到时长上；`restore_ms` 单列 KV 传输服务时长之和，不代表 makespan 增量；回载拉长步长的部分见 `restore_exposed_ms`。页面试算使用单 rank 有效互联 600 GB/s、TP 集合通信固定延迟 0.01 ms/次、EP dispatch/combine 固定开销 0.02 ms/次，均未经校准，可手动修改；1800 GB/s 仅为 B300 的单卡双向标称值，不直接代入有效带宽。精度与进一步校准见 [F002 计划](../plans/perf-model.md) 和 [F004 计划](../plans/expert-parallelism.md)。

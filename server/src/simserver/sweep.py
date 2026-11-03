@@ -60,7 +60,7 @@ PARAMETERS: dict[str, Parameter] = {
     "inference.storage.l2_available_gb": Parameter("L2 可用容量 (GB)"),
     "inference.storage.l2_to_l1_gb_s": Parameter("L2 → L1 带宽 (GB/s)"),
     "inference.storage.l3_to_l2_gb_s": Parameter("L3 → L2 带宽 (GB/s)"),
-    "inference.storage.l2_latency_ms": Parameter("L2 固定延迟 (ms)"),
+    "inference.storage.l2_latency_ms": Parameter("L2 每层固定延迟 (ms)"),
     "inference.storage.l3_latency_ms": Parameter("L3 固定延迟 (ms)"),
     "shared_l3.available_gb": Parameter("共享 L3 总容量 (TB)"),
     "shared_l3.lookup_latency_ms": Parameter("L3 查找延迟 (ms)"),

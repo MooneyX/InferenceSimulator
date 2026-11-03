@@ -379,6 +379,12 @@ export interface components {
              */
             restore_ms: number;
             /**
+             * Restore Exposed Ms
+             * @description L2→L1 逐层回载未被计算掩盖、拉长 GPU 步长的时间（ms）
+             * @default 0
+             */
+            restore_exposed_ms: number;
+            /**
              * Communication Ms
              * @default 0
              */
@@ -1641,7 +1647,7 @@ export interface components {
             l3_to_l2_gb_s?: number | null;
             /**
              * L2 Latency Ms
-             * @description 每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；默认值未经实测校准，另计传输耗时，0 为理想基线
+             * @description 每步 L2→L1 回载中每层 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；回载与计算逐层流水，默认值未经实测校准，另计传输耗时，0 为理想基线
              * @default 0.01
              */
             l2_latency_ms: number;

@@ -70,19 +70,15 @@ class Coordinator:
 
     def _drain_engine_events(
         self, instance_id: int
-    ) -> None:  # 副本 ID → 将局部页传输/查询事件映射进全局堆；无返回值
+    ) -> None:  # 副本 ID → 将局部预取/查询事件映射进全局堆；无返回值
         for time, kind, local_ref in self.engines[instance_id].drain_events():
             if kind is EventKind.L3_LOOKUP_DONE:
                 event = self._factory.l3_lookup_done(time, local_ref)
-            elif kind in (EventKind.L3_L2_DONE, EventKind.L2_L1_DONE):
+            elif kind is EventKind.L3_L2_DONE:
                 transfer_id = self._next_transfer_id
                 self._next_transfer_id += 1
                 self._transfer_owners[transfer_id] = (instance_id, local_ref)
-                event = (
-                    self._factory.l3_l2_done(time, transfer_id)
-                    if kind is EventKind.L3_L2_DONE
-                    else self._factory.l2_l1_done(time, transfer_id)
-                )
+                event = self._factory.l3_l2_done(time, transfer_id)
             else:
                 raise ValueError(f"未知的引擎事件类型: {kind}")
             heapq.heappush(self._heap, event)
@@ -141,9 +137,9 @@ class Coordinator:
                 self.engines[instance_id].on_l3_lookup(event.ref, now_ms)
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
-            elif event.kind in (EventKind.L3_L2_DONE, EventKind.L2_L1_DONE):
+            elif event.kind is EventKind.L3_L2_DONE:
                 instance_id, local_ref = self._transfer_owners.pop(event.ref)
-                self.engines[instance_id].on_transfer_done(event.kind, local_ref, now_ms)
+                self.engines[instance_id].on_transfer_done(local_ref, now_ms)
                 self._drain_engine_events(instance_id)
                 self._schedule_step(instance_id, now_ms)
             elif event.kind is EventKind.CLIENT_SEND:

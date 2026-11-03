@@ -246,7 +246,8 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     assert records[0].finish == records[1].arrival == records[2].arrival == send_ms
     assert records[1].l3_hit_tokens == 4
     assert records[2].l3_hit_tokens == (0 if l2_pages == 1 else 4)
-    assert records[1].prefill_start == send_ms + lookup_ms + 14
+    # L3→L2 预取 9 ms 后即可选批；L2→L1 回载在 Prefill 步内逐层流水。
+    assert records[1].prefill_start == send_ms + lookup_ms + 9
     assert run.restore_bytes == (16 if l2_pages == 1 else 32)
     assert not run.aborted_requests and not run.skipped_requests
     assert not engine._transfers and not engine._prefetch_waiting
@@ -348,19 +349,14 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     assert len(prefetch) == 2
     for index, (time, kind, transfer_id) in enumerate(prefetch):
         assert kind is EventKind.L3_L2_DONE
-        engine.on_transfer_done(kind, transfer_id, time)
+        engine.on_transfer_done(transfer_id, time)
         assert engine._prefix_scheduler.ready_count == int(index == 1)
-    assert engine.start_step(prefetch[-1][0], engine.num_steps) is None
-    assert engine._prefix_scheduler.ready_count == 0
-    loads = sorted(engine.drain_events())
-    assert len(loads) == 2
-    for time, kind, transfer_id in loads:
-        assert kind is EventKind.L2_L1_DONE
-        engine.on_transfer_done(kind, transfer_id, time)
-    started = engine.start_step(loads[-1][0], engine.num_steps)
+    started = engine.start_step(prefetch[-1][0], engine.num_steps)
     assert started is not None
+    assert engine._prefix_scheduler.ready_count == 0
+    assert engine.drain_events() == ()
     duration, _ = started
-    end = loads[-1][0] + duration
+    end = prefetch[-1][0] + duration
     assert engine.finish_step(end) == (1,)
     engine.complete(end, 1)
     child_record = next(item for item in engine.finalize().records if item.id == 1)
@@ -450,29 +446,20 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
     prefetch = sorted(engine.drain_events())
     assert len(prefetch) == 2
     assert engine._transfers[prefetch[0][2]].waiting_requests == {0, 1, 2}
-    time, kind, key = prefetch[0]
-    engine.on_transfer_done(kind, key, time)
+    time, _, key = prefetch[0]
+    engine.on_transfer_done(key, time)
     assert scheduler.ready_count == 2 and engine.can_step
     assert set(engine._prefetch_waiting) == {1}
-    engine.on_transfer_done(kind, key, time)
-    assert scheduler.ready_count == 2
-    time, kind, key = prefetch[1]
-    engine.on_transfer_done(kind, key, time)
+    time, _, key = prefetch[1]
+    engine.on_transfer_done(key, time)
     assert scheduler.ready_count == 3 and not engine._prefetch_waiting
-    assert engine.start_step(time, 0) is None
-    assert scheduler.ready_count == 0
-    loads = sorted(engine.drain_events())
-    assert len(loads) == 2
-    assert engine.submit(InferenceRequest(3, 3, None, 1, 1, 1, (), 0), time)
-    assert scheduler.ready_count == 1 and not engine.can_step
-    for index, (time, kind, key) in enumerate(loads):
-        engine.on_transfer_done(kind, key, time)
-        assert scheduler.ready_count == 1
-        assert engine.can_step == (index == 1)
     started = engine.start_step(time, 0)
-    assert started is not None and scheduler.ready_count == 1
+    assert started is not None and scheduler.ready_count == 0
+    assert engine.drain_events() == ()
     time += started[0]
     assert engine.finish_step(time) == (0, 1, 2)
+    assert engine.submit(InferenceRequest(3, 3, None, 1, 1, 1, (), 0), time)
+    assert scheduler.ready_count == 1 and engine.can_step
     for key in (0, 1, 2):
         engine.complete(time, key)
     assert engine.start_step(time, engine.num_steps) is not None
@@ -480,7 +467,7 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
 
 
 @pytest.mark.parametrize("restoring", [False, True])
-@pytest.mark.parametrize("blocked", [None, "lookup", "prefetch", "load"])
+@pytest.mark.parametrize("blocked", [None, "lookup", "prefetch"])
 def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str | None) -> None:
     config = EngineConfig(
         max_running_requests=2,
@@ -504,18 +491,10 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
     elif blocked == "prefetch":
         engine._prefetch_waiting[1] = {0}
         engine._prefix_scheduler.set_ready(1, False)
-    elif blocked == "load":
-        engine._pending_loads.add(inherited[0])
     with (
         patch.object(cache, "probe", wraps=cache.probe) as probes,
         patch.object(cache, "pin", wraps=cache.pin) as pins,
     ):
-        if blocked == "load":
-            assert engine._prefix_scheduler.ready_count == 1
-            assert not engine.can_step and engine.start_step(0, 0) is None
-            probes.assert_not_called()
-            pins.assert_not_called()
-            return
         selection = engine._prefix_scheduler.select_prefill(
             {},
             accept_probe=lambda item, sources: engine._accept_prefill_probe(item, sources, 0),
@@ -536,7 +515,9 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
 
 @pytest.mark.parametrize("tier", ["L2", "L3"])
 @pytest.mark.parametrize("trace", [False, True])
-def test_transfer_completions_preserve_context_order(tier: str, trace: bool) -> None:
+def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
+    tier: str, trace: bool
+) -> None:
     config = EngineConfig(
         max_running_requests=1,
         max_total_tokens=32,
@@ -584,35 +565,27 @@ def test_transfer_completions_preserve_context_order(tier: str, trace: bool) -> 
         prefetch = engine.drain_events()
         assert [engine._transfers[event[2]].chunk_id for event in prefetch] == list(ids)
         assert [event[0] for event in prefetch] == [7, 12, 17]
-        for now, kind, key in prefetch:
-            engine.on_transfer_done(kind, key, now)
+        for now, _, key in prefetch:
+            engine.on_transfer_done(key, now)
 
-    assert engine.start_step(now, 0) is None
-    loads = engine.drain_events()
-    assert [engine._transfers[event[2]].chunk_id for event in loads] == list(ids)
-    assert [event[0] for event in loads] == [now + 5, now + 10, now + 15]
-    # 中间页按上下文顺序可见，整批回载完成前不能开始 Prefill。
-    for index, (finished_at, kind, key) in enumerate(loads):
-        assert kind is EventKind.L2_L1_DONE
-        engine.on_transfer_done(kind, key, finished_at)
-        assert all(cache.pools["L1"].lookup(chunk) is not None for chunk in ids[: index + 1])
-        assert all(cache.pools["L1"].lookup(chunk) is None for chunk in ids[index + 1 :])
-        assert not cache.evictable_pages
-        if index < len(ids) - 1:
-            assert engine.start_step(finished_at, 0) is None
-    started = engine.start_step(loads[-1][0], 0)
+    # L2 命中页在选批时整批提升，回载不产生事件，按层计入本步步长。
+    started = engine.start_step(now, 0)
     assert started is not None
-    end = loads[-1][0] + started[0]
+    assert engine.drain_events() == ()
+    assert all(cache.pools["L1"].lookup(chunk) is not None for chunk in ids)
+    assert not cache.evictable_pages
+    end = now + started[0]
     assert engine.finish_step(end) == (1,)
     engine.complete(end, 1)
     result = engine.finalize()
     assert result.restore_bytes == 24 * (2 if tier == "L3" else 1)
-    assert result.restore_time_ms == 15 * (2 if tier == "L3" else 1)
+    # L2→L1：2 层 × (3 + 3 页 × 2 ms / 2 层)；L3→L2：3 页 × (1 + 4) ms。
+    assert result.restore_time_ms == 12 + (15 if tier == "L3" else 0)
     assert result.records[0].l3_hit_tokens == (12 if tier == "L3" else 0)
     assert result.cache_snapshot.active_blocks == 0
 
 
-def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
+def test_l2_hit_child_prefill_starts_on_arrival_with_pipelined_load() -> None:
     config = EngineConfig(
         max_running_requests=2,
         max_total_tokens=20,
@@ -639,9 +612,12 @@ def test_l2_hit_waits_for_transfer_before_child_prefill() -> None:
     child = next(item for item in run.records if item.id == 1)
     parent = next(item for item in run.records if item.id == 0)
     assert child.arrival == parent.finish + 45
-    assert child.prefill_start == pytest.approx(child.arrival + 5)
+    assert child.prefill_start == pytest.approx(child.arrival)
     assert (child.actual_hit_tokens, child.l2_hit_tokens) == (4, 4)
-    assert run.restore_time_ms == pytest.approx(5)
+    # 2 层 × (3 + 1 页 × 2 ms / 2 层)；首层回载至少暴露 4 ms。
+    assert run.restore_time_ms == pytest.approx(8)
+    assert run.analysis.restore_exposed_ms >= 4
+    assert child.prefill_end - child.prefill_start >= 8
     assert run.num_engine_steps == 4
 
 
@@ -685,12 +661,13 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
     child = next(item for item in run.records if item.id == 1)
     parent = next(item for item in run.records if item.id == 0)
     assert child.arrival == parent.finish + 70
-    assert child.prefill_start == pytest.approx(child.arrival + (3 if prefetch_fails else 17))
+    # 查询 3 ms + L3→L2 预取 9 ms 后选批；L2→L1 回载 8 ms 计入 Prefill 步内。
+    assert child.prefill_start == pytest.approx(child.arrival + (3 if prefetch_fails else 12))
     assert (child.actual_hit_tokens, child.l3_hit_tokens) == ((0, 0) if prefetch_fails else (4, 4))
-    assert run.restore_time_ms == pytest.approx(0 if prefetch_fails else 14)
+    assert run.restore_time_ms == pytest.approx(0 if prefetch_fails else 17)
 
 
-def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
+def test_full_l2_restore_is_one_load_only_step() -> None:
     config = EngineConfig(
         max_running_requests=2, max_total_tokens=16, page_size=4, l2_capacity_tokens=8
     )
@@ -717,15 +694,12 @@ def test_full_l2_restore_does_not_charge_a_second_transfer_step() -> None:
     cached = cache.page(encode(0, 0))
     assert cached is not None and cached.tier == "L2"
     engine._prefix_scheduler.requeue(item, 1, generated_tokens=1)
-    assert engine.start_step(1, 0) is None
-    [(end, kind, transfer_id)] = engine.drain_events()
-    assert kind is EventKind.L2_L1_DONE
-    engine.on_transfer_done(kind, transfer_id, end)
-    assert engine.start_step(end, 0) == (0.0, ())
-    assert engine.finish_step(end) == ()
+    assert engine.start_step(1, 0) == (pytest.approx(8), ())
+    assert engine.drain_events() == ()
+    assert engine.finish_step(9) == ()
     assert engine._running == {0: 1}
     assert engine.num_steps == 0
-    assert engine._restore_time_ms == pytest.approx(5)
+    assert engine._restore_time_ms == pytest.approx(8)
 
 
 def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:

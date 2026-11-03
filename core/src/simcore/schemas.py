@@ -437,8 +437,8 @@ class StorageSpec(_Frozen):
         ge=0,
         allow_inf_nan=False,
         description=(
-            "每页 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；"
-            "默认值未经实测校准，另计传输耗时，0 为理想基线"
+            "每步 L2→L1 回载中每层 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；"
+            "回载与计算逐层流水，默认值未经实测校准，另计传输耗时，0 为理想基线"
         ),
     )
     l3_latency_ms: float = Field(
@@ -555,6 +555,9 @@ class AnalyticalSummary(_Record):
     memory_ms: float = 0.0
     device_ms: float = 0.0
     restore_ms: float = 0.0
+    restore_exposed_ms: float = Field(
+        default=0.0, description="L2→L1 逐层回载未被计算掩盖、拉长 GPU 步长的时间（ms）"
+    )
     communication_ms: float = 0.0
     communication_bytes: float = 0.0
     collectives: int = 0

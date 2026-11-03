@@ -355,7 +355,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         ["l2_available_gb", "L2 可用容量（GB，仅 KV）"],
         ["l2_to_l1_gb_s", "L2 → L1 带宽（GB/s）"],
         ["l3_to_l2_gb_s", "L3 → L2 带宽（GB/s）"],
-        ["l2_latency_ms", "L2 固定延迟（ms）"],
+        ["l2_latency_ms", "L2 每层固定延迟（ms）"],
         ["l3_latency_ms", "L3 固定延迟（ms）"],
       ] as const).map(([field, label]) => <Input key={field} label={label}
         value={storage[field]}

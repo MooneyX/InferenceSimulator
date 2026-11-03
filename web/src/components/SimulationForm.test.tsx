@@ -223,7 +223,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(256);
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(50);
     expect(screen.getByLabelText("单算子固定开销（ms）")).toHaveValue(0.005);
-    expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(0.01);
+    expect(screen.getByLabelText("L2 每层固定延迟（ms）")).toHaveValue(0.01);
     expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(0.1);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(0.1);
     expect(screen.queryByText(/所有实例共享总容量/)).not.toBeInTheDocument();
@@ -250,7 +250,7 @@ describe("SimulationForm", () => {
     fireEvent.change(screen.getByLabelText("参数 JSON"), { target: { value: JSON.stringify(config) } });
     fireEvent.click(screen.getByRole("button", { name: "导入参数" }));
     expect(screen.getByLabelText("单算子固定开销（ms）")).toHaveValue(0);
-    expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(0);
+    expect(screen.getByLabelText("L2 每层固定延迟（ms）")).toHaveValue(0);
     expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(0);
     fireEvent.change(screen.getByLabelText("共享 L3 总容量（TB，仅 KV，0 为关闭）"), { target: { value: "40" } });
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(latency ?? 0.1);
@@ -683,7 +683,7 @@ describe("SimulationForm", () => {
     expect(screen.getByLabelText("L3 异步预取最小长度（token，0 为不设阈值）")).toHaveValue(512);
     expect(screen.getByLabelText("L2 → L1 带宽（GB/s）")).toHaveValue(1024);
     expect(screen.getByLabelText("L3 → L2 带宽（GB/s）")).toHaveValue(512);
-    expect(screen.getByLabelText("L2 固定延迟（ms）")).toHaveValue(1);
+    expect(screen.getByLabelText("L2 每层固定延迟（ms）")).toHaveValue(1);
     expect(screen.getByLabelText("L3 固定延迟（ms）")).toHaveValue(2);
     expect(screen.getByLabelText("L3 查找延迟（ms）")).toHaveValue(3);
     expect(screen.queryByLabelText("计时模式")).not.toBeInTheDocument();

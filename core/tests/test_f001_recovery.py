@@ -186,11 +186,12 @@ def test_prepare_decode_skips_sorting_without_withdrawal(keys: tuple[int, ...]) 
         patch("simcore.engine.sorted", wraps=sorted, create=True) as sort,
         patch.object(cache, "ensure_free", wraps=cache.ensure_free) as ensure_free,
     ):
-        remaining, withdrawn = engine._prepare_decode(running, 0)
+        remaining, withdrawn, new_pages = engine._prepare_decode(running, 0)
     sort.assert_not_called()
     assert ensure_free.call_args_list == ([call(1)] if keys else [])
     assert remaining == running
     assert withdrawn == ()
+    assert new_pages == (1 if keys else 0)
     assert cache.snapshot() == snapshot
     assert not engine._retry_counts
     assert not engine._aborted
@@ -218,10 +219,11 @@ def test_prepare_decode_sorts_once_and_updates_needed_across_multiple_withdrawal
         patch.object(cache, "state", wraps=cache.state) as state,
         patch.object(cache, "ensure_free", wraps=cache.ensure_free) as ensure_free,
     ):
-        remaining, withdrawn = engine._prepare_decode(running, 0)
+        remaining, withdrawn, new_pages = engine._prepare_decode(running, 0)
     sort.assert_called_once()
     assert withdrawn == ((8, 1), (2, 2), (3, 2), (1, 2))
     assert ensure_free.call_args_list == [call(n) for n in (10, 0, 10, 1, 9, 4, 8, 7, 7)]
+    assert new_pages == 7
     assert set(remaining) == set(range(10, 17))
     assert engine._running == dict.fromkeys(remaining, 3)
     assert engine._retry_counts == {8: 1, 2: 1, 3: 1, 1: 1}

@@ -418,8 +418,8 @@ class Engine:
     def _prepare_decode(
         self, running: dict[int, RunningRequest], now_ms: float
     ) -> tuple[
-        dict[int, RunningRequest], tuple[tuple[int, int], ...]
-    ]:  # 运行请求与时刻 → 可解码请求及回撤的 ID/进度
+        dict[int, RunningRequest], tuple[tuple[int, int], ...], int
+    ]:  # 运行请求与时刻 → 可解码请求、回撤的 ID/进度及剩余请求本步新页数
         """先驱逐，再按 g、负输入长、ID 回撤；单请求仍无法进展则终止。"""
         remaining = dict(running)
         withdrawn: list[tuple[int, int]] = []
@@ -457,7 +457,7 @@ class Engine:
                 cache.withdraw(key)
                 del self._running[key]
                 del remaining[key]
-        return remaining, tuple(withdrawn)
+        return remaining, tuple(withdrawn), needed
 
     def start_step(
         self, now_ms: float, step_index: int
@@ -512,16 +512,17 @@ class Engine:
             for key, generated in self._running.items()
         }
         withdrawn: tuple[tuple[int, int], ...] = ()
+        decode_new_pages = 0
         if self._engine_config.pd_mutually_exclusive:
             if not selection.admitted and not selection.restore_only and running:
-                running, withdrawn = self._prepare_decode(running, now_ms)
+                running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms)
                 if withdrawn:
                     self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = (
                 () if selection.admitted or selection.restore_only else tuple(sorted(running))
             )
         else:
-            running, withdrawn = self._prepare_decode(running, now_ms)
+            running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms)
             if withdrawn:
                 self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
@@ -566,7 +567,6 @@ class Engine:
         phase: Literal["PREFILL", "DECODE", "MIXED"] = (
             "MIXED" if prefill and decode else "PREFILL" if prefill else "DECODE"
         )
-        decode_new_pages = sum(cache.state(key).k % cache.page_size == 0 for key in decode_ids)
         allocated_pages = decode_new_pages + sum(
             candidate.required_pages for candidate in selection.admitted
         )

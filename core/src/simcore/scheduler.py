@@ -195,7 +195,11 @@ class AdmissionScheduler:
                     pending_item = None
                     continue
                 target = item.target_tokens
-                sources = cache.probe(request, target, restoring=item.restoring, include_l3=False)
+                sources = cache.probe(
+                    request, target, restoring=item.restoring, include_l3=cache.direct_l3
+                )
+                if cache.direct_l3:
+                    sources = self._direct_sources(sources)
                 if accept_probe is not None and not accept_probe(item, sources):
                     self.set_ready(request.request_id, False)
                     skipped.append(item)
@@ -303,6 +307,21 @@ class AdmissionScheduler:
             tuple(sorted(restore_only, key=lambda item: item.request.request_id)),
             tuple(promotions),
         )
+
+    def _direct_sources(
+        self, sources: tuple[tuple[str, str], ...]
+    ) -> tuple[tuple[str, str], ...]:  # 两层结构的连续命中 → 截掉不值得读取的 L3 部分后的命中
+        """L3 命中不超过 ``l3_prefetch_min_tokens`` 时不读 L3，自首个 L3 页起重算。"""
+        first = -1
+        count = 0
+        for index, (_, tier) in enumerate(sources):
+            if tier == "L3":
+                count += 1
+                if first < 0:
+                    first = index
+        if count and count * self._cache.page_size <= self._engine.l3_prefetch_min_tokens:
+            return sources[:first]
+        return sources
 
     def advance_ratio(
         self,

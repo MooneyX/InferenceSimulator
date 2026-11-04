@@ -227,7 +227,7 @@ def settings(*, instances: int = 3, prompt: int = 4) -> SimConfig:
         perf_model=PerfModelConfig(
             kv_bytes_per_token=16,
             l2_to_l1_bandwidth_bytes_per_ms=64,
-            l3_to_l2_bandwidth_bytes_per_ms=64,
+            l3_read_bandwidth_bytes_per_ms=64,
             l3_lookup_latency_ms=2,
         ),
     )
@@ -269,7 +269,7 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
             PerfModelConfig(
                 kv_bytes_per_token=16,
                 l2_to_l1_bandwidth_bytes_per_ms=64,
-                l3_to_l2_bandwidth_bytes_per_ms=64,
+                l3_read_bandwidth_bytes_per_ms=64,
                 l3_lookup_latency_ms=config.shared_l3.lookup_latency_ms,
             ),
         ),
@@ -349,7 +349,7 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
                      l2_capacity_tokens=8, l3_capacity_tokens=16, l3_prefetch_min_tokens=0),
         PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
-                        l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
+                        l3_read_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
     engines = tuple(Engine(runtime, shared_l2=l2 if shared_enabled else None,
                            shared_l3=l3, instance_id=i) for i in range(2))
@@ -398,7 +398,7 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
         PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
-                        l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
+                        l3_read_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
     source = TracePlan(sessions=("shared",), block_size=4, requests=tuple(
         TraceTurn(request_id=i, session_id=0, arrival_offset_ms=0,
@@ -429,7 +429,7 @@ def test_shared_prefetch_coalesces_across_storage_batches_and_waits_for_all_sour
         EngineConfig(max_running_requests=2, max_total_tokens=1024, page_size=4,
                      l2_capacity_tokens=520, l3_capacity_tokens=520, l3_prefetch_min_tokens=0),
         PerfModelConfig(kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=64000,
-                        l3_to_l2_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2,
+                        l3_read_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2,
                         l3_latency_ms=1),
     )
     source = TracePlan(sessions=("shared",), block_size=4, requests=tuple(
@@ -482,7 +482,7 @@ def test_l2_promotion_overlaps_same_page_prefetch_after_another_instance_demotes
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
         PerfModelConfig( kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
-                        l3_to_l2_bandwidth_bytes_per_ms=32, l3_lookup_latency_ms=2),
+                        l3_read_bandwidth_bytes_per_ms=32, l3_lookup_latency_ms=2),
     )
     owner, follower = (Engine(runtime, shared_l2=l2, shared_l3=l3, instance_id=i)
                        for i in range(2))

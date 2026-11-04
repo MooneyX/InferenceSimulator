@@ -201,6 +201,13 @@ def _weight_budget(
     )
 
 
+def _hierarchical(config: SimConfig) -> bool:  # 存储配置 → 是否启用 L2 或 L3 分层缓存
+    shared = config.shared_l3
+    return config.inference.storage.l2_available_gb > 0 or (
+        shared is not None and shared.available_gb > 0
+    )
+
+
 def resolve_config(config: SimConfig) -> ResolutionReport:
     """预览物理推理配置；报告与原输入、运行状态相互独立。"""
     request = config.inference
@@ -226,14 +233,15 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
     if model.weight_dtype == "fp8" or model.kv_dtype == "fp8":
         raise ValueError("首版仅支持 BF16/FP16 权重与 KV；FP8 需要专门的量化布局")
     plan = build_layer_plan(model)
-    # 单 rank 每 token 的 KV 字节；启用 L2 时 DSA 各层均保存 index-K 供分层缓存回载。
-    kv_bytes = sum(_layer_kv_bytes(plan, tp_size, storage.l2_available_gb > 0))
+    shared = config.shared_l3
+    l3_gb = shared.available_gb if shared is not None else 0.0
+    # 单 rank 每 token 的 KV 字节；启用 L2 或 L3 时 DSA 各层均保存 index-K 供分层缓存回载。
+    kv_bytes = sum(_layer_kv_bytes(plan, tp_size, _hierarchical(config)))
     group_kv_bytes = kv_bytes * tp_size  # 整个 TP 组每 token 的 KV 字节
     page_bytes = group_kv_bytes * page_size  # 下层按整组页分配容量
     l1 = hardware.memory_bytes_per_gpu
     l2 = _bytes_from_gb(storage.l2_available_gb)
-    shared = config.shared_l3
-    l3 = _bytes_from_gb(shared.available_gb) if shared is not None else 0
+    l3 = _bytes_from_gb(l3_gb)
     rank_reports: list[RankCapacityReport] = []
     sharded, replicated, expert, total_parameters, active_parameters, expert_parameters = (
         _weight_budget(model, plan, tp_size)
@@ -257,16 +265,14 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
             for rank in range(tp_size)
         ]
     weights = (sharded + replicated + expert) * tp_size
-    if l3 and not l2:
-        raise ValueError("启用 L3 时必须先启用 L2")
     if (l2 and l2 < page_bytes) or (l3 and l3 < page_bytes):
         raise ValueError("启用的 L2/L3 容量必须至少容纳一个 KV 页")
     if l2 and storage.l2_to_l1_gb_s is None:
         raise ValueError("启用 L2 时必须配置 L2 → L1 带宽")
-    if l3 and storage.l3_to_l2_gb_s is None:
-        raise ValueError("启用 L3 时必须配置 L3 → L2 带宽")
+    if l3 and storage.l3_read_gb_s is None:
+        raise ValueError("启用 L3 时必须配置 L3 读取带宽")
     l2_bw = storage.l2_to_l1_gb_s if l2 else None
-    l3_bw = storage.l3_to_l2_gb_s if l3 else None
+    l3_bw = storage.l3_read_gb_s if l3 else None
 
     l2_pages, l3_pages = l2 // page_bytes, l3 // page_bytes
     runnable = (
@@ -305,7 +311,7 @@ def resolve_config(config: SimConfig) -> ResolutionReport:
             l2_to_l1_tokens_per_ms=(
                 l2_bw * 1_000_000 / group_kv_bytes if l2_bw is not None else None
             ),
-            l3_to_l2_tokens_per_ms=(
+            l3_read_tokens_per_ms=(
                 l3_bw * 1_000_000 / group_kv_bytes if l3_bw is not None else None
             ),
             rank_reports=rank_reports,
@@ -341,9 +347,9 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             if engine.l2_capacity_tokens and storage.l2_to_l1_gb_s is not None
             else None
         ),
-        l3_to_l2_bandwidth_bytes_per_ms=(
-            storage.l3_to_l2_gb_s * 1_000_000
-            if engine.l3_capacity_tokens and storage.l3_to_l2_gb_s is not None
+        l3_read_bandwidth_bytes_per_ms=(
+            storage.l3_read_gb_s * 1_000_000
+            if engine.l3_capacity_tokens and storage.l3_read_gb_s is not None
             else None
         ),
         l2_latency_ms=storage.l2_latency_ms,
@@ -358,17 +364,18 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             if perf.l2_to_l1_bandwidth_bytes_per_ms is not None
             else None
         ),
-        # L3 → L2 按批读取，带 SSD 式成段降速与单次抖动（占位参数，未经实测校准）。
-        l3_to_l2=(
+        # L3 读取（三层结构到 L2、两层结构到 L1）按批进行，带 SSD 式成段降速与单次抖动
+        # （占位参数，未经实测校准）。
+        l3_read=(
             KvSourceSpec(
-                perf.l3_to_l2_bandwidth_bytes_per_ms, storage.l3_latency_ms, L3_FLUCTUATION
+                perf.l3_read_bandwidth_bytes_per_ms, storage.l3_latency_ms, L3_FLUCTUATION
             )
-            if perf.l3_to_l2_bandwidth_bytes_per_ms is not None
+            if perf.l3_read_bandwidth_bytes_per_ms is not None
             else None
         ),
         layer_page_bytes=tuple(
             size * inference.tp_size * inference.page_size
-            for size in _layer_kv_bytes(plan, inference.tp_size, storage.l2_available_gb > 0)
+            for size in _layer_kv_bytes(plan, inference.tp_size, _hierarchical(config))
         ),
         seed=config.workload.seed,
     )

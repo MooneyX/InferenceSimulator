@@ -112,7 +112,7 @@ class TestSuccess:
         payload["inference"]["storage"].update(
             l2_available_gb=4 * 64 / 1_000_000_000,
             l2_to_l1_gb_s=64 / 1_000_000,
-            l3_to_l2_gb_s=32 / 1_000_000,
+            l3_read_gb_s=32 / 1_000_000,
         )
         response = run_simulation(client, payload)
         assert response.status_code == 200
@@ -130,6 +130,24 @@ class TestSuccess:
         assert "mode" not in response.json()["meta"]["config"]["shared_l3"]
         assert (result.metrics.l2_capacity_blocks, result.metrics.l3_capacity_blocks) == (1, 2)
         assert (result.metrics.l2_free_blocks, result.metrics.l3_free_blocks) == (1, 2)
+
+    def test_l3_without_l2_runs_as_two_tier(self, client: TestClient) -> None:
+        payload = make_payload(num_requests=1)
+        payload["inference"]["page_size"] = 4
+        payload["shared_l3"] = {"available_gb": 8 * 64 / 1_000_000_000}
+        payload["inference"]["storage"].update(
+            l2_available_gb=0, l2_to_l1_gb_s=None, l3_read_gb_s=32 / 1_000_000
+        )
+        response = run_simulation(client, payload)
+        assert response.status_code == 200
+        result = SimResult.model_validate_json(response.content)
+        assert result.meta.num_completed == 1
+        assert result.resolution is not None
+        assert (result.resolution.l2_capacity_tokens, result.resolution.l3_capacity_tokens) == (
+            0,
+            8,
+        )
+        assert result.resolution.capacity.l3_read_tokens_per_ms is not None
 
     @pytest.mark.parametrize("policy", ["cache_affinity", "least_load", None])
     def test_two_instances_have_independent_capacity_and_request_owners(
@@ -366,15 +384,15 @@ class TestErrors:
         [
             ({"l2_available_gb": 0.00000001}, None, "至少容纳一个 KV 页"),
             (
-                {"l2_available_gb": 0, "l2_to_l1_gb_s": None},
+                {"l2_available_gb": 0, "l2_to_l1_gb_s": None, "l3_read_gb_s": None},
                 {"available_gb": 0.000000128},
-                "启用 L3 时必须先启用 L2",
+                "L3 读取带宽",
             ),
             ({"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": None}, None, "L2 → L1 带宽"),
             (
-                {"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1},
+                {"l2_available_gb": 0.000000128, "l2_to_l1_gb_s": 1, "l3_read_gb_s": None},
                 {"available_gb": 0.000000128},
-                "L3 → L2 带宽",
+                "L3 读取带宽",
             ),
         ],
     )

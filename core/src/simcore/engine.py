@@ -88,8 +88,8 @@ class Engine:
             else None
         )
         self._l3_source = (
-            KvSource(transfers.l3_to_l2, f"{transfers.seed}:{instance_id}:L3")
-            if transfers.l3_to_l2 is not None
+            KvSource(transfers.l3_read, f"{transfers.seed}:{instance_id}:L3")
+            if transfers.l3_read is not None
             else None
         )
         self._layer_page_bytes = transfers.layer_page_bytes
@@ -139,6 +139,10 @@ class Engine:
         self._transfers: dict[int, _TransferTask] = {}  # 在途 L3→L2 预取
         self._transfer_by_chunk: dict[str, int] = {}
         self._next_transfer_id = 0
+        # 两层结构：到达查找命中的 L3 页保护至准入或中止；准入读取的页保护至该批读完。
+        self._direct_l3 = self._prefix_cache.direct_l3
+        self._lookup_locks: dict[int, tuple[str, ...]] = {}
+        self._direct_reads: dict[int, tuple[str, ...]] = {}
 
     @property
     def has_work(self) -> bool:  # 等待队列或运行集 → 是否仍有可执行请求
@@ -272,7 +276,8 @@ class Engine:
         )
         if self._engine_config.l3_capacity_tokens:
             local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
-            self._last_local_match[key] = len(local)
+            if not self._direct_l3:
+                self._last_local_match[key] = len(local)
             if len(local) < (request.prompt_len - 1) // self._prefix_cache.page_size:
                 self._schedule_l3_lookup(key, now_ms)
         return True
@@ -301,14 +306,28 @@ class Engine:
 
     def on_l3_lookup(
         self, request_id: int, now_ms: float
-    ) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取；无返回值
+    ) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取或保护；无返回值
+        """三层结构按命中预取到 L2；两层结构不搬数据，只保护命中页至准入时直接读入 L1。
+
+        两层结构对应 SGLang LMCache 接入（``LMCacheUnifiedRadixCache.prefetch_from_storage`` 只发起
+        查找，``check_prefetch_progress`` 记录命中并保留存储侧锁，``init_load_back`` 准入时
+        分配 GPU 页并读入）。
+        """
         self._lookup_waiting.remove(request_id)
         request = self._requests[request_id]
         local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
-        self._last_local_match[request_id] = len(local)
+        if not self._direct_l3:
+            self._last_local_match[request_id] = len(local)
         sources = self._prefix_cache.probe(request, request.prompt_len, start_index=len(local))
         remote = [chunk_id for chunk_id, tier in sources if tier == "L3"]
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
+            self._prefix_scheduler.set_ready(request_id, True)
+            return
+        if self._direct_l3:
+            l3 = self._prefix_cache.pools["L3"]
+            for chunk_id in remote:
+                l3.add_ref(chunk_id)
+            self._lookup_locks[request_id] = tuple(remote)
             self._prefix_scheduler.set_ready(request_id, True)
             return
         pending = self._start_prefetch(request_id, remote, now_ms)
@@ -316,6 +335,18 @@ class Engine:
             self._prefetch_waiting[request_id] = pending
         else:
             self._prefix_scheduler.set_ready(request_id, True)
+
+    def _release_lookup_lock(self, request_id: int) -> None:  # 请求 ID → 释放到达查找的 L3 保护
+        chunk_ids = self._lookup_locks.pop(request_id, None)
+        if chunk_ids is not None:
+            l3 = self._prefix_cache.pools["L3"]
+            for chunk_id in chunk_ids:
+                l3.drop_ref(chunk_id)
+
+    def on_direct_read_done(self, read_id: int) -> None:  # 两层结构读取批次 ID → 释放源页保护
+        l3 = self._prefix_cache.pools["L3"]
+        for chunk_id in self._direct_reads.pop(read_id):
+            l3.drop_ref(chunk_id)
 
     def on_transfer_done(
         self, transfer_id: int, now_ms: float
@@ -348,12 +379,60 @@ class Engine:
         return self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
 
     def _promote(self, chunk_ids: tuple[str, ...], new_pages: int) -> None:
-        """选批后立即把 L2 命中页提升到 L1；传输耗时由本步流水计入步长。"""
+        """选批后立即把低层命中页提升到 L1；传输耗时由本步步长计入。
+
+        三层结构的来源为 L2；两层结构的来源为 L3，源页保护至所在批次读完。
+        """
         cache = self._prefix_cache
         _ = cache.ensure_free(len(chunk_ids) + new_pages)
+        source = "L3" if self._direct_l3 else "L2"
+        l3 = cache.pools["L3"]
         for chunk_id in chunk_ids:
-            _ = cache.reserve_transfer(chunk_id, "L1", source="L2")
+            _ = cache.reserve_transfer(chunk_id, "L1", source=source)
             _ = cache.complete_transfer(chunk_id, "L1")
+            if self._direct_l3:
+                l3.add_ref(chunk_id)
+
+    def _load_duration(
+        self,
+        chunk_ids: tuple[str, ...],
+        now_ms: float,
+        compute_ms: float,
+        layer_ms: tuple[tuple[int, float], ...],
+    ) -> float:  # 本步提升页、步起点、计算总耗时与逐层耗时 → 含回载的步长
+        if self._direct_l3 and chunk_ids:
+            return self._direct_read_duration(chunk_ids, now_ms, compute_ms)
+        return self._pipelined_duration(len(chunk_ids), now_ms, compute_ms, layer_ms)
+
+    def _direct_read_duration(
+        self, chunk_ids: tuple[str, ...], now_ms: float, compute_ms: float
+    ) -> float:  # 本步 L3 命中页、步起点与计算总耗时 → 等读完再计算的步长
+        """两层结构自步起点每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源，本步计算等全部读完。
+
+        每批包含全部层，首层计算也须等末批到齐，故不与计算逐层流水；对应 SGLang LMCache
+        接入 ``prepare_load_on_stream`` 让前向计算流等待读取完成。各批读完时释放源页保护。
+        """
+        source = self._l3_source
+        if source is None:
+            raise ValueError("传输链路须配置有效带宽和 KV 字节数")
+        start = max(now_ms, source.free_ms)
+        batches = [
+            chunk_ids[index : index + STORAGE_BATCH_PAGES]
+            for index in range(0, len(chunk_ids), STORAGE_BATCH_PAGES)
+        ]
+        ends = source.submit(now_ms, [len(batch) * self._page_bytes for batch in batches])
+        for batch, end in zip(batches, ends, strict=True):
+            read_id = self._next_transfer_id
+            self._next_transfer_id += 1
+            self._direct_reads[read_id] = batch
+            self._scheduled_events.append((end, EventKind.L3_L1_DONE, read_id))
+        wait = ends[-1] - now_ms
+        load_ms = ends[-1] - start
+        self._restore_bytes += len(chunk_ids) * self._page_bytes
+        self._restore_time_ms += load_ms
+        self._analysis.restore_ms += load_ms
+        self._analysis.restore_exposed_ms += wait
+        return wait + compute_ms
 
     def _pipelined_duration(
         self,
@@ -469,7 +548,9 @@ class Engine:
         }
         selection = self._prefix_scheduler.select_prefill(
             running,
-            accept_probe=lambda item, sources: self._accept_prefill_probe(item, sources, now_ms),
+            accept_probe=None
+            if self._direct_l3
+            else lambda item, sources: self._accept_prefill_probe(item, sources, now_ms),
         )
         if (
             not self._running
@@ -485,6 +566,11 @@ class Engine:
                 selection.promote_ids,
                 sum(candidate.required_pages for candidate in selection.admitted),
             )
+        if self._lookup_locks:  # 准入页已由请求引用或读取保护接管；中止请求不再需要
+            for candidate in selection.admitted:
+                self._release_lookup_lock(candidate.waiting.request.request_id)
+            for item in selection.aborted:
+                self._release_lookup_lock(item.request.request_id)
         return self._execute_step(now_ms, step_index, selection)
 
     def finish_step(
@@ -535,8 +621,8 @@ class Engine:
                 cache.admit(item.request.request_id)
                 self._running[item.request.request_id] = item.generated_tokens
             idle_layers = ((self._analytical.plan.num_layers, 0.0),)
-            return self._pipelined_duration(
-                len(selection.promote_ids), now_ms, 0.0, idle_layers
+            return self._load_duration(
+                selection.promote_ids, now_ms, 0.0, idle_layers
             ), ()
         prefill = tuple(
             sorted(
@@ -586,8 +672,8 @@ class Engine:
             self._analytical.tp_size,
             self._analytical.ep_size,
         )
-        duration = self._pipelined_duration(
-            len(selection.promote_ids), now_ms, cost.duration_ms, cost.layer_ms
+        duration = self._load_duration(
+            selection.promote_ids, now_ms, cost.duration_ms, cost.layer_ms
         )
         self._analysis.steps += 1
         self._analysis.flops += cost.flops

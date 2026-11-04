@@ -380,7 +380,7 @@ export interface components {
             restore_ms: number;
             /**
              * Restore Exposed Ms
-             * @description L2→L1 逐层回载未被计算掩盖、拉长 GPU 步长的时间（ms）
+             * @description 回载到 L1 未被计算掩盖、拉长 GPU 步长的时间（ms）：三层结构为 L2→L1 逐层流水的暴露部分，两层结构为本步等待 L3→L1 读取完成的时间
              * @default 0
              */
             restore_exposed_ms: number;
@@ -521,8 +521,8 @@ export interface components {
             l3_capacity_pages: number;
             /** L2 To L1 Tokens Per Ms */
             l2_to_l1_tokens_per_ms?: number | null;
-            /** L3 To L2 Tokens Per Ms */
-            l3_to_l2_tokens_per_ms?: number | null;
+            /** L3 Read Tokens Per Ms */
+            l3_read_tokens_per_ms?: number | null;
             /** Rank Reports */
             rank_reports?: components["schemas"]["RankCapacityReport"][];
         };
@@ -1651,6 +1651,8 @@ export interface components {
         /**
          * StorageSpec
          * @description 单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。
+         *
+         *     L2 为 0 且启用共享 L3 时为两层结构，L3 读取链路直接把 KV 读入 GPU（L1）。
          */
         StorageSpec: {
             /**
@@ -1660,8 +1662,11 @@ export interface components {
             l2_available_gb: number;
             /** L2 To L1 Gb S */
             l2_to_l1_gb_s?: number | null;
-            /** L3 To L2 Gb S */
-            l3_to_l2_gb_s?: number | null;
+            /**
+             * L3 Read Gb S
+             * @description 每实例 L3 读取带宽（GB/s）：三层结构读到 L2，两层结构直接读到 L1
+             */
+            l3_read_gb_s?: number | null;
             /**
              * L2 Latency Ms
              * @description 每步 L2→L1 回载中每层 KV 从本地 DRAM（L2）搬到 GPU（L1）的固定延迟（ms）；回载与计算逐层流水，默认值未经实测校准，另计传输耗时，0 为理想基线
@@ -1670,7 +1675,7 @@ export interface components {
             l2_latency_ms: number;
             /**
              * L3 Latency Ms
-             * @description 每批（至多 128 页）KV 从低延迟共享存储（L3）读到本地 DRAM（L2）的固定延迟（ms）；另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线
+             * @description 每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，两层结构直接读到 L1；另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线
              * @default 0.1
              */
             l3_latency_ms: number;

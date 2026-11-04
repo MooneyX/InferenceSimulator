@@ -112,7 +112,7 @@ export const initialHardware: InferenceConfig["hardware"] = {
 };
 export const initialStorage: InferenceConfig["storage"] = {
   l2_available_gb: 2048,
-  l2_to_l1_gb_s: 256, l3_to_l2_gb_s: 50,
+  l2_to_l1_gb_s: 256, l3_read_gb_s: 50,
   l2_latency_ms: 0.01, l3_latency_ms: 0.1,
 };
 export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {
@@ -280,9 +280,8 @@ export function validateSimConfig(config: SimConfig): ConfigValidationError[] {
   if (shared != null) {
     validateFiniteNumber(errors, "shared_l3.lookup_latency_ms", shared.lookup_latency_ms ?? 0, 0);
     validateFiniteNumber(errors, "shared_l3.available_gb", shared.available_gb ?? 0, 0);
-    if ((shared.available_gb ?? 0) > 0 &&
-        (!(inference.storage.l2_available_gb! > 0) || !(inference.storage.l3_to_l2_gb_s! > 0))) {
-      errors.push({ field: "shared_l3.available_gb", message: "启用共享 L3 须有 L2 和正的 L3 → L2 带宽" });
+    if ((shared.available_gb ?? 0) > 0 && !(inference.storage.l3_read_gb_s! > 0)) {
+      errors.push({ field: "shared_l3.available_gb", message: "启用共享 L3 须有正的 L3 读取带宽" });
     }
   }
   return errors;

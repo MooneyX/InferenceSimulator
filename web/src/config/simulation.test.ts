@@ -215,21 +215,21 @@ describe("validateSimConfig", () => {
     expect(validateSimConfig(config)).toEqual([]);
   });
 
-  it("requires L2 and its transfer link before enabling shared physical L3", () => {
+  it("requires an L3 read link and allows two-tier L1+L3 without L2", () => {
     const config = createDefaultSimConfig();
     config.inference.storage.l2_available_gb = 0;
-    expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["shared_l3.available_gb"]);
+    expect(validateSimConfig(config)).toEqual([]);
     config.inference.storage.l2_available_gb = 2048;
-    config.inference.storage.l3_to_l2_gb_s = 0;
+    config.inference.storage.l3_read_gb_s = 0;
     expect(validateSimConfig(config).map(({ field }) => field)).toEqual(["shared_l3.available_gb"]);
-    config.inference.storage.l3_to_l2_gb_s = 50;
+    config.inference.storage.l3_read_gb_s = 50;
     expect(validateSimConfig(config)).toEqual([]);
   });
 
   it("accepts disabled L3 and validates physical shared capacity and latency", () => {
     const config = createDefaultSimConfig();
     config.inference.storage.l2_available_gb = 0;
-    config.inference.storage.l3_to_l2_gb_s = 0;
+    config.inference.storage.l3_read_gb_s = 0;
     config.shared_l3!.available_gb = 0;
     config.scheduler.l3_prefetch_min_tokens = 0;
     expect(validateSimConfig(config)).toEqual([]);

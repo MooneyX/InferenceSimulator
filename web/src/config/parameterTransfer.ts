@@ -178,7 +178,7 @@ function validateInference(value: unknown): InferenceConfig {
   const storage = { l2_available_gb: 0, l2_latency_ms: initialStorage.l2_latency_ms,
     l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", [],
     ["l2_available_gb", "l2_to_l1_gb_s",
-      "l3_to_l2_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
+      "l3_read_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
   root.model = model;
   root.hardware = hardware;
   root.storage = storage;
@@ -339,7 +339,7 @@ function validateInference(value: unknown): InferenceConfig {
   for (const key of ["l2_available_gb", "l2_latency_ms", "l3_latency_ms"] as const) {
     configNumber(storage, "storage", key, 0);
   }
-  for (const key of ["l2_to_l1_gb_s", "l3_to_l2_gb_s"] as const) {
+  for (const key of ["l2_to_l1_gb_s", "l3_read_gb_s"] as const) {
     configNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
   }
 

@@ -144,7 +144,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3,
         l3_latency_ms=5,
         l3_lookup_latency_ms=lookup_ms,
@@ -271,7 +271,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l3_lookup_latency_ms=2,
     )
     engine = Engine(runtime_config(config, perf))
@@ -427,7 +427,7 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l3_lookup_latency_ms=2,
     )
     engine = Engine(runtime_config(config, perf))
@@ -529,7 +529,7 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3,
         l3_latency_ms=1,
         l3_lookup_latency_ms=2,
@@ -600,7 +600,7 @@ def test_l3_prefetch_splits_storage_batches_and_waits_for_every_batch(
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l3_latency_ms=1,
         l3_lookup_latency_ms=2,
     )
@@ -632,7 +632,7 @@ def test_l3_prefetch_stops_when_l2_reservation_evicts_a_later_source_page() -> N
     )
     perf = PerfModelConfig(
         kv_bytes_per_token=2, l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
     )
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
@@ -715,7 +715,7 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3,
         l3_latency_ms=5,
         l3_lookup_latency_ms=3,

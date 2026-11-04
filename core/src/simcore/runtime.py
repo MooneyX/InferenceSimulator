@@ -25,7 +25,7 @@ class TransferSpec:
     """KV 来源规格及按层序的每层每页字节数；各引擎据此建立带状态的来源。"""
 
     l2_to_l1: KvSourceSpec | None = None
-    l3_to_l2: KvSourceSpec | None = None
+    l3_read: KvSourceSpec | None = None  # 三层结构读到 L2，两层结构直接读到 L1
     layer_page_bytes: tuple[float, ...] = ()  # 整组每页 KV 在各层的字节数，合计为每页字节数
     seed: int = 0  # 来源波动种子，按实例与来源再派生
 

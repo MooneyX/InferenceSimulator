@@ -575,7 +575,7 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3,
         l3_latency_ms=5,
     )
@@ -687,7 +687,7 @@ def test_zero_lower_tiers_match_defaults_results_field_by_field(exclusive: bool)
     extra_perf = PerfModelConfig(
         kv_bytes_per_token=2,
         l2_to_l1_bandwidth_bytes_per_ms=4,
-        l3_to_l2_bandwidth_bytes_per_ms=2,
+        l3_read_bandwidth_bytes_per_ms=2,
         l2_latency_ms=3,
         l3_latency_ms=5,
     )

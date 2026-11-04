@@ -260,8 +260,8 @@ class TieredKVCache:
         )
         if l2.level != "L2" or l2.page_size != page_size:
             raise ValueError("共享 L2 的层级和页大小必须与实例一致")
-        if l3.capacity and not l2.capacity:
-            raise ValueError("L3 启用时须启用 L2")
+        # L2 关闭而 L3 启用时为两层结构：L1 淘汰直接写入 L3，L3 命中页直接读入 L1。
+        self.direct_l3 = bool(l3.capacity) and not l2.capacity
         self._shared_tiers: set[str] = {"L2", "L3"} if shared_l2 is not None else {"L3"}
         self.page_size = page_size
         self.capacity_pages = max_total_tokens // page_size
@@ -269,6 +269,14 @@ class TieredKVCache:
             "L1": CachePool("L1", pool_id_base, self.capacity_pages, page_size),
             "L2": l2,
             "L3": l3,
+        }
+        # 淘汰页下沉到最近的已启用低层；两层结构中 L1 直接写入 L3。
+        self._lower_tier: dict[str, str | None] = {
+            tier: next(
+                (lower for lower in _TIER_ORDER[index + 1 :] if self.pools[lower].capacity),
+                None,
+            )
+            for index, tier in enumerate(_TIER_ORDER)
         }
         self._requests: dict[int, InferenceRequest] = {}
         self._states: dict[int, KVRequestState] = {}
@@ -473,8 +481,7 @@ class TieredKVCache:
         if victim is None:
             return False
 
-        lower = {"L1": "L2", "L2": "L3", "L3": None}[tier]
-        destination = lower if lower is not None and self.pools[lower].capacity else None
+        destination = self._lower_tier[tier]
         if destination is not None:
             target = self.pools[destination]
             duplicate = target.lookup(victim.chunk_id) is not None or (

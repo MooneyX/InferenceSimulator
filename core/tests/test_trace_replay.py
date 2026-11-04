@@ -327,7 +327,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
                 storage=StorageSpec(
                     l2_available_gb=0.000008192,
                     l2_to_l1_gb_s=0.001,
-                    l3_to_l2_gb_s=0.002,
+                    l3_read_gb_s=0.002,
                     l2_latency_ms=3,
                     l3_latency_ms=4,
                 ),
@@ -361,7 +361,7 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
     assert runtime.engine.l3_capacity_tokens == resolution.l3_capacity_tokens == 64
     assert runtime.perf_model.kv_bytes_per_token == 64
     assert runtime.perf_model.l2_to_l1_bandwidth_bytes_per_ms == 1000
-    assert runtime.perf_model.l3_to_l2_bandwidth_bytes_per_ms == 2000
+    assert runtime.perf_model.l3_read_bandwidth_bytes_per_ms == 2000
 
     first, second = result.requests
     if mode == "open_loop":

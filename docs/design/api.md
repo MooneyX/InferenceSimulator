@@ -30,7 +30,7 @@ workload:
 scheduler:
   max_running_requests: int    # 必填，正整数
   max_prefill_tokens: int      # 默认 16384
-  l3_prefetch_min_tokens: int  # 默认 256；L3 连续命中 token 数须严格超过此值
+  l3_prefetch_min_tokens: int  # 默认 256；L3 连续命中 token 数须严格超过此值才读取（三层预取到 L2，两层准入时读入 L1）
   pd_mutually_exclusive: bool  # 默认 true；false 启用同一步融合
 inference:
   page_size: int               # 默认 64
@@ -53,7 +53,7 @@ mean: float     # 仅 poisson / lognormal：分布均值
 sigma: float    # 仅 lognormal：形状参数，越大尾越长
 ```
 
-合成开环在 `workload` 公共层只传 `target_qps=q`（期望请求/秒），不传 `session_rate`，全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。运行时 `max_total_tokens` 从单卡显存容量扣除每卡模型权重后向下取整页推导，至少保留一页；不能直接填写 token 容量。合成采样输出与 Trace 原始输出视为已发生结果，不按 KV 容量或输出上限截短。每请求可见 `max_new_tokens=min(next_power_of_two(max(1,output_len)), inference.max_output_tokens)`，真实输出目标随内部 `InferenceRequest.output_len` 传递，但当前调度仍只用生成上限与进度估算；超过引擎上限时返回请求级 `output_exceeds_engine_limit`。公共投放字段只位于 `workload`，旧合成子层 `arrival_mode`、`seed`、`session_rate`、`arrival_rate`、`max_new_tokens` 及 Trace 子层 `mode`、`seed`、`session_rate`、`target_qps` 均按未知字段返回 422。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型、硬件与存储都属于唯一的 `inference` 输入。低层预算为零时保持原有 L1 行为；启用 L2 要求 L2→L1 带宽，启用 L3 还要求有 L2 及 L3→L2 带宽。运行规格从模型推导 KV 字节/token，预算须至少容纳一个完整页；非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
+合成开环在 `workload` 公共层只传 `target_qps=q`（期望请求/秒），不传 `session_rate`，全部 N 次投放各采样均值 `1000/q` ms 的指数间隔（含首请求）。闭环只传 `session_rate`（期望新会话/秒），根请求以该频率泊松到达；子轮由实际完成时刻和 `think_time_ms` 决定，最终请求 QPS 在结果中实测；未指定 `num_sessions` 时等于 `num_requests`。运行时 `max_total_tokens` 从单卡显存容量扣除每卡模型权重后向下取整页推导，至少保留一页；不能直接填写 token 容量。合成采样输出与 Trace 原始输出视为已发生结果，不按 KV 容量或输出上限截短。每请求可见 `max_new_tokens=min(next_power_of_two(max(1,output_len)), inference.max_output_tokens)`，真实输出目标随内部 `InferenceRequest.output_len` 传递，但当前调度仍只用生成上限与进度估算；超过引擎上限时返回请求级 `output_exceeds_engine_limit`。公共投放字段只位于 `workload`，旧合成子层 `arrival_mode`、`seed`、`session_rate`、`arrival_rate`、`max_new_tokens` 及 Trace 子层 `mode`、`seed`、`session_rate`、`target_qps` 均按未知字段返回 422。采样、到达及继承见 [workload.md](workload.md)。跨 session 公共前缀不支持，同 session 父子轮仍可继承完整页；`session.content_seed` 和 `allow_cross_session_shared_prefix` 不在 schema 中，显式提交 `true`/`false` 等未知字段均返回 422，`meta.config` 不回显。`SimConfig` 不提供独立 `prefix_cache` 或未实现的校准模式；模型、硬件与存储都属于唯一的 `inference` 输入。低层预算为零时保持原有 L1 行为；启用 L2 要求 L2→L1 带宽，启用 L3 要求 L3 读取带宽 `l3_read_gb_s`；L2 为 0 而启用 L3 时为两层结构（L1+L3），见 [kv-prefix-reuse.md](kv-prefix-reuse.md)。运行规格从模型推导 KV 字节/token，预算须至少容纳一个完整页；非法请求返回 422。传输只按页大小和链路计时，不接入真实硬件。
 
 ## API
 

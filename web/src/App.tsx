@@ -295,7 +295,7 @@ export default function App() {
                   {inference.tp_size > 1 ? "单 rank FLOPs" : "FLOPs"} {analysis.flops.toExponential(3)} ·
                   {inference.tp_size > 1 ? "单 rank HBM" : "HBM"} {(analysis.hbm_bytes / 1e9).toFixed(3)} GB ·
                   GPU 计时 {analysis.device_ms.toFixed(2)} ms ·
-                  KV 传输 {analysis.restore_ms.toFixed(2)} ms（L2→L1 回载暴露 {analysis.restore_exposed_ms.toFixed(2)} ms）
+                  KV 传输 {analysis.restore_ms.toFixed(2)} ms（回载到 L1 暴露 {analysis.restore_exposed_ms.toFixed(2)} ms）
                   {inference.tp_size > 1 && <>
                     {" · "}TP 同步 {(analysis.tp_communication_ms ?? analysis.communication_ms).toFixed(2)} ms
                     （已含于 GPU 计时） · {analysis.collectives} 次 ·

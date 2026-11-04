@@ -434,16 +434,17 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       {([
         ["l2_available_gb", "L2 可用容量（GB，仅 KV）"],
         ["l2_to_l1_gb_s", "L2 → L1 带宽（GB/s）"],
-        ["l3_to_l2_gb_s", "L3 → L2 带宽（GB/s）"],
+        ["l3_read_gb_s", "L3 读取带宽（GB/s）"],
         ["l2_latency_ms", "L2 每层固定延迟（ms）"],
         ["l3_latency_ms", "L3 固定延迟（ms）"],
       ] as const).map(([field, label]) => <Input key={field} label={label}
         value={storage[field]}
-        optional={field === "l2_to_l1_gb_s" || field === "l3_to_l2_gb_s"}
+        optional={field === "l2_to_l1_gb_s" || field === "l3_read_gb_s"}
         onChange={(value) => onStorageChange({ ...storage, [field]: value })} />)}
     </div>
     <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
-    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）→ L2 每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。L3 读取另含 SSD 式成段降速与单次小幅抖动（占位参数，按负载随机种子复现）。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。L3 读取另含 SSD 式成段降速与单次小幅抖动（占位参数，按负载随机种子复现）。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>L2 容量为 0 且启用共享 L3 时为两层结构（L1+L3）：L1 淘汰直接写入 L3，L3 命中在准入时直接读入 L1，本步计算等读取完成；SGLang HiCache 默认三层，两层对应其 LMCache 接入方式。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、
@@ -472,6 +473,7 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
       L1 {preview.capacity.l1_capacity_pages.toLocaleString()} 页 / {preview.max_total_tokens.toLocaleString()} token；
       L2 {preview.capacity.l2_capacity_pages.toLocaleString()} 页 / {preview.l2_capacity_tokens.toLocaleString()} token；
       全场共享 L3 {preview.capacity.l3_capacity_pages.toLocaleString()} 页 / {preview.l3_capacity_tokens.toLocaleString()} token。
+      {preview.l2_capacity_tokens === 0 && preview.l3_capacity_tokens > 0 && "当前为两层结构（L1+L3）。"}
       {preview.reason && <p>{preview.reason}</p>}
       {(preview.capacity.rank_reports ?? []).length > 0 && <>
         <p>TP{tpSize}{moeLayers ? ` + EP${epSize}` : ""} 逐卡账单：每个逻辑 token 的整组 KV 物理成本为

@@ -16,7 +16,7 @@ class TestOrdering:
         assert earlier_step < later_done
 
     def test_same_time_kind_priority(self) -> None:
-        """同刻先发布与请求结算，再预取和客户端发送，最后步进。"""
+        """同刻先释放两层读取保护，再发布与请求结算，再预取和客户端发送，最后步进。"""
         f = EventFactory()
         step = f.engine_step(5.0, 0)
         send = f.client_send(5.0, 1)
@@ -24,7 +24,9 @@ class TestOrdering:
         end = f.step_done(5.0, 0)
         lookup = f.l3_lookup_done(5.0, 1)
         l3_l2 = f.l3_l2_done(5.0, 3)
-        assert sorted([step, send, done, end, lookup, l3_l2]) == [
+        l3_l1 = f.l3_l1_done(5.0, 4)
+        assert sorted([step, send, done, end, lookup, l3_l2, l3_l1]) == [
+            l3_l1,
             end,
             done,
             lookup,
@@ -83,6 +85,7 @@ class TestOrdering:
 
     def test_kind_priority_values(self) -> None:
         assert list(EventKind) == [
+            EventKind.L3_L1_DONE,
             EventKind.STEP_DONE,
             EventKind.REQUEST_DONE,
             EventKind.L3_LOOKUP_DONE,

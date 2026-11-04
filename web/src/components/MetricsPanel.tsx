@@ -123,7 +123,7 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
         <MetricCard label="L3 命中" value={metrics.l3_hit_tokens} unit="token" description="首次准入时来源为 L3 的输入 token，不重复计入 L1/L2" />
         <MetricCard label="提升到 L1" value={metrics.promotions} unit="次" description="实际提升的唯一 KV 页数" />
         <MetricCard label="逐级降级" value={metrics.demotions} unit="次" description="实际逐级下移的 KV 页次数" />
-        <MetricCard label="Restore 传输量" value={metrics.restore_bytes} unit="字节" description="L2→L1 与 L3→L2 上行链路传输字节数之和" />
+        <MetricCard label="Restore 传输量" value={metrics.restore_bytes} unit="字节" description="L2→L1 与 L3 读取（三层到 L2、两层直接到 L1）链路传输字节数之和" />
         <MetricCard label="Restore 耗时" value={metrics.restore_time_ms} unit="ms" description="恢复 KV 页的传输及固定延迟累计耗时" />
         <MetricCard label="L1 容量" value={metrics.l1_capacity_blocks} unit="页" description="max_total_tokens / page_size，实际 KV 页池容量" />
         <MetricCard label="L1 驻留" value={metrics.l1_resident_blocks} unit="页" description="仿真结束时 L1 的 KV 页占用" />

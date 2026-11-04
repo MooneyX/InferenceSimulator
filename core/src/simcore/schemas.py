@@ -209,7 +209,10 @@ class WorkloadConfig(_Frozen):
 
 
 class EngineConfig(_Frozen):
-    """实例运行规格；L2 为每实例贡献容量，L3 为全场共享容量。"""
+    """实例运行规格；L2 为每实例贡献容量，L3 为全场共享容量。
+
+    L2 关闭而 L3 启用时为两层结构（L1+L3）：L3 命中页在准入时直接读入 L1。
+    """
 
     max_running_requests: int = Field(ge=1, description="同时驻留的运行请求数上限")
     max_total_tokens: int = Field(ge=1, description="KV 池的实际 token 容量")
@@ -219,7 +222,12 @@ class EngineConfig(_Frozen):
     l2_capacity_tokens: int = Field(default=0, ge=0, description="L2 KV 的 token 容量；0 表示关闭")
     l3_capacity_tokens: int = Field(default=0, ge=0, description="L3 KV 的 token 容量；0 表示关闭")
     l3_prefetch_min_tokens: int = Field(
-        default=256, ge=0, description="触发 L3 异步预取的最小可复用 token 数"
+        default=256,
+        ge=0,
+        description=(
+            "L3 命中超过该 token 数才读取：三层结构触发 L3→L2 异步预取，"
+            "两层结构在准入时读入 L1；否则这部分重算"
+        ),
     )
     pd_mutually_exclusive: bool = Field(default=True, description="Prefill 与 Decode 分步执行")
 
@@ -230,8 +238,6 @@ class EngineConfig(_Frozen):
         for tier in ("l2", "l3"):
             if getattr(self, f"{tier}_capacity_tokens") % self.page_size:
                 raise ValueError(f"{tier}_capacity_tokens 必须是 page_size 的整数倍")
-        if self.l3_capacity_tokens and not self.l2_capacity_tokens:
-            raise ValueError("l3_capacity_tokens > 0 要求 l2_capacity_tokens > 0")
         return self
 
     @property
@@ -243,7 +249,7 @@ class PerfModelConfig(_Frozen):
     """运行时 KV 访问成本参数；GPU 性能由模型与硬件规格推导。"""
     kv_bytes_per_token: int | None = Field(default=None, gt=0)
     l2_to_l1_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    l3_to_l2_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l3_read_bandwidth_bytes_per_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     l2_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l3_lookup_latency_ms: float = Field(default=0.0, ge=0, allow_inf_nan=False)
@@ -456,11 +462,19 @@ class HardwareSpec(_Frozen):
 
 
 class StorageSpec(_Frozen):
-    """单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。"""
+    """单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。
+
+    L2 为 0 且启用共享 L3 时为两层结构，L3 读取链路直接把 KV 读入 GPU（L1）。
+    """
 
     l2_available_gb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     l2_to_l1_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    l3_to_l2_gb_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    l3_read_gb_s: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="每实例 L3 读取带宽（GB/s）：三层结构读到 L2，两层结构直接读到 L1",
+    )
     l2_latency_ms: float = Field(
         default=0.01,
         ge=0,
@@ -475,8 +489,9 @@ class StorageSpec(_Frozen):
         ge=0,
         allow_inf_nan=False,
         description=(
-            "每批（至多 128 页）KV 从低延迟共享存储（L3）读到本地 DRAM（L2）的固定延迟（ms）；"
-            "另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线"
+            "每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，"
+            "两层结构直接读到 L1；另计传输耗时及 SSD 式成段降速与单次抖动，"
+            "默认值未经实测校准，0 为理想基线"
         ),
     )
 
@@ -561,7 +576,7 @@ class CapacityReport(_Record):
     l2_capacity_pages: int
     l3_capacity_pages: int
     l2_to_l1_tokens_per_ms: float | None = None
-    l3_to_l2_tokens_per_ms: float | None = None
+    l3_read_tokens_per_ms: float | None = None
     rank_reports: list[RankCapacityReport] = Field(default_factory=list)
 
 
@@ -585,7 +600,11 @@ class AnalyticalSummary(_Record):
     device_ms: float = 0.0
     restore_ms: float = 0.0
     restore_exposed_ms: float = Field(
-        default=0.0, description="L2→L1 逐层回载未被计算掩盖、拉长 GPU 步长的时间（ms）"
+        default=0.0,
+        description=(
+            "回载到 L1 未被计算掩盖、拉长 GPU 步长的时间（ms）：三层结构为 L2→L1 逐层流水的暴露部分，"
+            "两层结构为本步等待 L3→L1 读取完成的时间"
+        ),
     )
     communication_ms: float = 0.0
     communication_bytes: float = 0.0

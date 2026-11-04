@@ -534,7 +534,7 @@ describe("App", () => {
     expect(summary).toHaveTextContent("TP 同步 1.00 ms");
     expect(summary).toHaveTextContent("EP dispatch 0.40 ms / combine 0.60 ms");
     expect(summary).toHaveTextContent("GPU 计时 5.00 ms");
-    expect(summary).toHaveTextContent("KV 传输 1.00 ms（L2→L1 回载暴露 0.25 ms）");
+    expect(summary).toHaveTextContent("KV 传输 1.00 ms（回载到 L1 暴露 0.25 ms）");
     expect(summary).toHaveTextContent("逻辑流量");
   });
 

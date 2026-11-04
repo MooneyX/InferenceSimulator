@@ -118,6 +118,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
     (showValidation ? validationErrors : []).map(({ field, message }) => [field, message]),
   );
   const needsTpCommunication = tpSize > 1;
+  const hasL2 = (config.inference.storage.l2_available_gb ?? 0) > 0;
+  const twoTier = !hasL2 && (config.shared_l3?.available_gb ?? 0) > 0;
   const needsEpCommunication = moeLayerCount(model) > 0 && epSize > 1;
   const runUnavailable = (
     tpSize !== hardware.gpu_count ||
@@ -485,7 +487,8 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
             <p className="section-kicker">Engine</p>
             <h2 id="engine-heading">引擎配置</h2>
           </div>
-          <p>{(config.shared_l2_enabled ?? true) ? "每实例独占 L1 · 全局共享 L2/L3" : "每实例独占 L1/L2 · 全场共享 L3"}
+          <p>{twoTier ? "每实例独占 L1 · 全场共享 L3（两层，无 L2）"
+            : (config.shared_l2_enabled ?? true) ? "每实例独占 L1 · 全局共享 L2/L3" : "每实例独占 L1/L2 · 全场共享 L3"}
             {(config.routing_policy ?? "least_load") === "least_load"
               ? " · 每轮最低负载优先，不绑定会话" : " · 新会话轮询，同会话固定实例"}</p>
         </div>
@@ -504,7 +507,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
           <div className="form-field">
             <label htmlFor="shared-l2-enabled">
               <input id="shared-l2-enabled" name="shared_l2_enabled" type="checkbox"
-                checked={config.shared_l2_enabled ?? true}
+                checked={config.shared_l2_enabled ?? true} disabled={!hasL2}
                 onChange={(event) => setConfig({ ...config, shared_l2_enabled: event.currentTarget.checked })} />
               共享 L2
             </label>
@@ -550,7 +553,7 @@ export function SimulationForm({ onSubmit, onScanSubmit, disabled = false }: Sim
           <NumberField
             id="l3-prefetch-min-tokens"
             name="scheduler.l3_prefetch_min_tokens"
-            label="L3 异步预取最小长度（token，0 为不设阈值）"
+            label="L3 读取最小长度（token，0 为不设阈值）"
             value={config.scheduler.l3_prefetch_min_tokens}
             integer
             error={errorByField.get("scheduler.l3_prefetch_min_tokens")}

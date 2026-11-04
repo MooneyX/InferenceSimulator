@@ -118,7 +118,7 @@ def example_request() -> SimConfig:
             storage=StorageSpec(
                 l2_available_gb=0.000000512,
                 l2_to_l1_gb_s=0.001,
-                l3_to_l2_gb_s=0.002,
+                l3_read_gb_s=0.002,
                 l2_latency_ms=3,
                 l3_latency_ms=4,
             ),
@@ -424,6 +424,15 @@ def test_hy4_bf16_tp8_ep8_main_cache_and_weight_placement() -> None:
     storage = inference_config(request).storage.model_copy(update={"l2_available_gb": 10})
     tiered = resolve_config(update_inference(request, update={"storage": storage}))
     assert tiered.capacity.rank_reports[0].kv_bytes_per_token == 78 * (512 + 64) * 2 + 78 * 132
+    two_tier = resolve_config(
+        update_inference(
+            request,
+            l3_gb=10,
+            update={"storage": storage.model_copy(update={"l2_available_gb": 0})},
+        )
+    )
+    assert two_tier.l2_capacity_tokens == 0 and two_tier.l3_capacity_tokens > 0
+    assert two_tier.capacity.kv_bytes_per_token == tiered.capacity.kv_bytes_per_token
     runtime = prepare_runtime(update_inference(request, update={"storage": storage}))
     assert runtime.perf_model.kv_bytes_per_token == tiered.capacity.kv_bytes_per_token
     assert tiered.capacity.weights_resident_bytes == capacity.weights_resident_bytes
@@ -1310,7 +1319,7 @@ def test_resolve_three_tiers_and_bandwidth_rounds_only_whole_pages() -> None:
         resolved.l3_capacity_tokens,
     ) == (7771 * 4, 8, 4)
     assert report.l2_to_l1_tokens_per_ms == pytest.approx(1000 / 64)
-    assert report.l3_to_l2_tokens_per_ms == pytest.approx(2000 / 64)
+    assert report.l3_read_tokens_per_ms == pytest.approx(2000 / 64)
     runtime = prepare_runtime(example_request())
     assert runtime.resolution == resolved
     assert runtime.perf_model.kv_bytes_per_token == 64
@@ -1394,7 +1403,7 @@ def test_qwen3_8b_single_b300_capacity_example() -> None:
                     update={
                         "l2_available_gb": 0,
                         "l2_to_l1_gb_s": None,
-                        "l3_to_l2_gb_s": None,
+                        "l3_read_gb_s": None,
                     }
                 ),
             },
@@ -1974,14 +1983,14 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     page_bytes = runtime.engine.page_size * resolved.capacity.kv_bytes_per_token
     l2_service = inference_config(request).storage.l2_latency_ms + page_bytes / 1000
     l3_service = inference_config(request).storage.l3_latency_ms + page_bytes / 2000
-    l2_link, l3_link = runtime.transfers.l2_to_l1, runtime.transfers.l3_to_l2
+    l2_link, l3_link = runtime.transfers.l2_to_l1, runtime.transfers.l3_read
     assert l2_link is not None and l3_link is not None
     assert sum(runtime.transfers.layer_page_bytes) == page_bytes
     assert l2_link.latency_ms + page_bytes / l2_link.bytes_per_ms == pytest.approx(l2_service)
     assert l3_link.latency_ms + page_bytes / l3_link.bytes_per_ms == pytest.approx(l3_service)
     # 组件场景去掉 L3 波动，按固定延迟与带宽核对两跳计时。
     runtime = replace(
-        runtime, transfers=replace(runtime.transfers, l3_to_l2=replace(l3_link, fluctuation=None))
+        runtime, transfers=replace(runtime.transfers, l3_read=replace(l3_link, fluctuation=None))
     )
     assert l2_service == pytest.approx(
         storage.l2_latency_ms
@@ -1989,7 +1998,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     )
     assert l3_service == pytest.approx(
         storage.l3_latency_ms
-        + runtime.engine.page_size / cast(float, resolved.capacity.l3_to_l2_tokens_per_ms)
+        + runtime.engine.page_size / cast(float, resolved.capacity.l3_read_tokens_per_ms)
     )
     engine = Engine(runtime)
     cache = engine._prefix_cache

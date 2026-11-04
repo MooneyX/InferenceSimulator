@@ -458,7 +458,7 @@ class TestEndToEnd:
             perf_model=PerfModelConfig(
                 kv_bytes_per_token=16,
                 l2_to_l1_bandwidth_bytes_per_ms=64,
-                l3_to_l2_bandwidth_bytes_per_ms=32,
+                l3_read_bandwidth_bytes_per_ms=32,
             ),
         )
         result = simulate(cfg)

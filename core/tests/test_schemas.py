@@ -104,8 +104,8 @@ def resolved_config(
             if l2_bytes
             else None
         ),
-        l3_to_l2_gb_s=(
-            (perf_model.l3_to_l2_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
+        l3_read_gb_s=(
+            (perf_model.l3_read_bandwidth_bytes_per_ms or 1_000_000) / 1_000_000
             if l3_bytes
             else None
         ),
@@ -142,10 +142,10 @@ def runtime_config(
         else None
     )
     l3 = (
-        KvSourceSpec(perf.l3_to_l2_bandwidth_bytes_per_ms, perf.l3_latency_ms)
+        KvSourceSpec(perf.l3_read_bandwidth_bytes_per_ms, perf.l3_latency_ms)
         if engine.l3_capacity_tokens
         and perf.kv_bytes_per_token
-        and perf.l3_to_l2_bandwidth_bytes_per_ms
+        and perf.l3_read_bandwidth_bytes_per_ms
         else None
     )
     layers = analytical.plan.num_layers
@@ -701,7 +701,6 @@ class TestConfigValidation:
             {"l2_capacity_tokens": -64},
             {"l2_capacity_tokens": 1},
             {"l3_capacity_tokens": 1},
-            {"l3_capacity_tokens": 64},
             {"l3_prefetch_min_tokens": -1},
         ],
     )
@@ -710,6 +709,10 @@ class TestConfigValidation:
         payload.update(overrides)
         with pytest.raises(ValidationError):
             EngineConfig.model_validate(payload)
+
+    def test_l3_without_l2_is_two_tier(self) -> None:
+        engine = EngineConfig(max_running_requests=8, max_total_tokens=4096, l3_capacity_tokens=64)
+        assert (engine.l2_capacity_tokens, engine.l3_capacity_tokens) == (0, 64)
 
     def test_engine_defaults_and_page_capacity(self) -> None:
         from simcore.capacity import prepare_runtime
@@ -809,7 +812,7 @@ class TestConfigValidation:
         assert config.shared_l3 is not None and config.shared_l3.lookup_latency_ms == 0.0
         runtime = prepare_runtime(config)
         assert runtime.perf_model.kv_bytes_per_token == 64
-        assert runtime.transfers.l2_to_l1 is None and runtime.transfers.l3_to_l2 is None
+        assert runtime.transfers.l2_to_l1 is None and runtime.transfers.l3_read is None
 
     @pytest.mark.parametrize("explicit_zero", [False, True])
     def test_fixed_latency_defaults_and_explicit_zero(self, explicit_zero: bool) -> None:
@@ -830,7 +833,7 @@ class TestConfigValidation:
         payload["inference"]["storage"].update(
             l2_available_gb=0.001,
             l2_to_l1_gb_s=1,
-            l3_to_l2_gb_s=1,
+            l3_read_gb_s=1,
         )
         payload["shared_l3"]["available_gb"] = 0.001
         config = SimConfig.model_validate(payload)
@@ -844,9 +847,9 @@ class TestConfigValidation:
         ) == expected
         runtime = prepare_runtime(config)
         transfers = runtime.transfers
-        assert transfers.l2_to_l1 is not None and transfers.l3_to_l2 is not None
+        assert transfers.l2_to_l1 is not None and transfers.l3_read is not None
         assert transfers.l2_to_l1.latency_ms == expected[1]
-        assert transfers.l3_to_l2.latency_ms == expected[2]
+        assert transfers.l3_read.latency_ms == expected[2]
         assert runtime.perf_model.l3_lookup_latency_ms == expected[3]
         assert SimConfig.model_validate_json(config.model_dump_json()) == config
 
@@ -854,9 +857,9 @@ class TestConfigValidation:
         "field,invalid",
         [
             ("l2_to_l1_gb_s", 0),
-            ("l3_to_l2_gb_s", -1),
+            ("l3_read_gb_s", -1),
             ("l2_to_l1_gb_s", float("inf")),
-            ("l3_to_l2_gb_s", float("nan")),
+            ("l3_read_gb_s", float("nan")),
             ("l2_latency_ms", -1),
             ("l3_latency_ms", -1),
             ("l2_latency_ms", float("inf")),
@@ -878,7 +881,7 @@ class TestConfigValidation:
         "tier,missing",
         [
             ("l2", "L2.*L1"),
-            ("l3", "L3.*L2"),
+            ("l3", "L3 读取带宽"),
         ],
     )
     def test_enabled_tier_requires_transfer_bandwidth(self, tier: str, missing: str) -> None:
@@ -891,7 +894,7 @@ class TestConfigValidation:
         )
         if tier == "l3":
             payload["shared_l3"]["available_gb"] = 128 * 64 / 1_000_000_000
-            payload["inference"]["storage"]["l3_to_l2_gb_s"] = None
+            payload["inference"]["storage"]["l3_read_gb_s"] = None
         else:
             payload["inference"]["storage"]["l2_to_l1_gb_s"] = None
         with pytest.raises(ValueError, match=missing):
@@ -904,7 +907,7 @@ class TestConfigValidation:
         payload["inference"]["storage"].update(
             l2_available_gb=64 * 64 / 1_000_000_000,
             l2_to_l1_gb_s=0.000128,
-            l3_to_l2_gb_s=0.000064,
+            l3_read_gb_s=0.000064,
             l2_latency_ms=0.5,
             l3_latency_ms=1.5,
         )
@@ -916,17 +919,17 @@ class TestConfigValidation:
         assert runtime.engine.l3_capacity_tokens == 128
         transfers = runtime.transfers
         assert transfers.l2_to_l1 is not None and transfers.l2_to_l1.bytes_per_ms == 128
-        assert transfers.l3_to_l2 is not None and transfers.l3_to_l2.bytes_per_ms == 64
+        assert transfers.l3_read is not None and transfers.l3_read.bytes_per_ms == 64
         assert transfers.layer_page_bytes == (2048, 2048)
         payload["shared_l3"]["available_gb"] = 0
         payload["inference"]["storage"].update(
             l2_available_gb=0,
             l2_to_l1_gb_s=None,
-            l3_to_l2_gb_s=None,
+            l3_read_gb_s=None,
         )
         disabled = prepare_runtime(SimConfig.model_validate(payload))
         assert disabled.engine.l2_capacity_tokens == disabled.engine.l3_capacity_tokens == 0
-        assert disabled.transfers.l2_to_l1 is None and disabled.transfers.l3_to_l2 is None
+        assert disabled.transfers.l2_to_l1 is None and disabled.transfers.l3_read is None
 
     @pytest.mark.parametrize(
         "field",
@@ -1105,7 +1108,7 @@ class TestConfigValidation:
         payload["inference"]["storage"].update(
             l2_available_gb=64 * 64 / 1_000_000_000,
             l2_to_l1_gb_s=0.000128,
-            l3_to_l2_gb_s=0.000064,
+            l3_read_gb_s=0.000064,
             l2_latency_ms=0.5,
             l3_latency_ms=1.5,
         )
@@ -1121,7 +1124,7 @@ class TestConfigValidation:
         transfers = runtime.transfers
         # L2（DRAM）确定性计时；L3 带 SSD 式占位波动；种子取负载种子。
         assert transfers.l2_to_l1 == KvSourceSpec(128, 0.5)
-        assert transfers.l3_to_l2 == KvSourceSpec(64, 1.5, L3_FLUCTUATION)
+        assert transfers.l3_read == KvSourceSpec(64, 1.5, L3_FLUCTUATION)
         assert transfers.seed == config.workload.seed
         with pytest.raises(FrozenInstanceError):
             runtime.engine = runtime.engine  # type: ignore[misc]

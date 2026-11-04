@@ -74,11 +74,15 @@ class Coordinator:
         for time, kind, local_ref in self.engines[instance_id].drain_events():
             if kind is EventKind.L3_LOOKUP_DONE:
                 event = self._factory.l3_lookup_done(time, local_ref)
-            elif kind is EventKind.L3_L2_DONE:
+            elif kind is EventKind.L3_L2_DONE or kind is EventKind.L3_L1_DONE:
                 transfer_id = self._next_transfer_id
                 self._next_transfer_id += 1
                 self._transfer_owners[transfer_id] = (instance_id, local_ref)
-                event = self._factory.l3_l2_done(time, transfer_id)
+                event = (
+                    self._factory.l3_l2_done(time, transfer_id)
+                    if kind is EventKind.L3_L2_DONE
+                    else self._factory.l3_l1_done(time, transfer_id)
+                )
             else:
                 raise ValueError(f"未知的引擎事件类型: {kind}")
             heapq.heappush(self._heap, event)
@@ -115,7 +119,10 @@ class Coordinator:
                 self._report_progress()
             event = heapq.heappop(self._heap)
             now_ms = event.time
-            if event.kind is EventKind.STEP_DONE:  # 引擎步完成
+            if event.kind is EventKind.L3_L1_DONE:  # 两层结构 L3→L1 读取完成，只释放源页保护
+                instance_id, local_ref = self._transfer_owners.pop(event.ref)
+                self.engines[instance_id].on_direct_read_done(local_ref)
+            elif event.kind is EventKind.STEP_DONE:  # 引擎步完成
                 instance_id = event.ref
                 for request_id in self.engines[instance_id].finish_step(
                     now_ms

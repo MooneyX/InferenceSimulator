@@ -52,7 +52,7 @@ def payload() -> dict[str, Any]:
             "storage": {
                 "l2_available_gb": 0.000000512,
                 "l2_to_l1_gb_s": 0.001,
-                "l3_to_l2_gb_s": 0.002,
+                "l3_read_gb_s": 0.002,
             },
         },
     }

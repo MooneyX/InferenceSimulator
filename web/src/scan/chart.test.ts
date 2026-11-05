@@ -150,6 +150,10 @@ describe("scan projections", () => {
     expect(metricUnit("actual_prefix_hit_rate")).toBe("%");
     expect(metricUnit("l3_capacity_blocks")).toBe("页");
     expect(metricUnit("restore_bytes")).toBe("字节");
+    expect(["itl_p99", "tpot_p99", "l3_stall_max", "l3_stall_ms"].map(metricUnit))
+      .toEqual(["ms", "ms", "ms", "ms"]);
+    expect(metricUnit("l3_stall_fraction")).toBe("%");
+    expect(metricUnit("l3_read_steps")).toBe("次");
     expect(metricCharts(["throughput", "arrival_qps", "ttft_mean"], roles))
       .toEqual([["throughput", "arrival_qps", "ttft_mean"]]);
     const metrics = ["throughput", "arrival_qps", "ttft_mean"];

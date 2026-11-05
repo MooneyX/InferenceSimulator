@@ -83,13 +83,14 @@ export function metricsOf(data: ScanData[]): string[] {
 }
 
 export function metricUnit(metric: string): string {
-  if (["ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "makespan", "restore_time_ms"].includes(metric)) return "ms";
+  if (["ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "tpot_p99", "makespan", "restore_time_ms"].includes(metric)
+    || metric.startsWith("itl_") || (metric.startsWith("l3_stall_") && metric !== "l3_stall_fraction")) return "ms";
   if (["throughput", "arrival_qps"].includes(metric)) return "请求/秒";
-  if (metric.endsWith("_rate") || metric.endsWith("_ratio")) return "%";
+  if (metric.endsWith("_rate") || metric.endsWith("_ratio") || metric.endsWith("_fraction")) return "%";
   if (metric.endsWith("_tokens")) return "token";
   if (metric.endsWith("_blocks")) return "页";
   if (metric === "restore_bytes") return "字节";
-  if (["num_sessions", "promotions", "demotions"].includes(metric) || metric.endsWith("_evictions")) return "次";
+  if (["num_sessions", "promotions", "demotions", "l3_read_steps"].includes(metric) || metric.endsWith("_evictions")) return "次";
   return `${metric}（单位未知）`;
 }
 

@@ -888,6 +888,17 @@ class Metrics(_Record):
         ge=0,
         description="成功且输出超过 1 token 的请求逐项平均；无样本时为 None（ms）",
     )
+    tpot_p99: float | None = Field(
+        default=None, ge=0, description="逐请求 TPOT 的第 99 百分位；无样本时为 None（ms）"
+    )
+    itl_mean: float | None = Field(
+        default=None,
+        ge=0,
+        description="相邻输出 token 间隔（ITL）对全部 token 间隔的均值；无样本时为 None（ms）",
+    )
+    itl_p50: float | None = Field(default=None, ge=0, description="ITL 中位数（ms）")
+    itl_p99: float | None = Field(default=None, ge=0, description="ITL 第 99 百分位（ms）")
+    itl_max: float | None = Field(default=None, ge=0, description="ITL 最大值（ms）")
     throughput: float | None = Field(
         default=None,
         ge=0,
@@ -927,6 +938,27 @@ class Metrics(_Record):
     l3_hit_tokens: int = Field(default=0, ge=0)
     restore_bytes: int = Field(default=0, ge=0)
     restore_time_ms: float = Field(default=0.0, ge=0)
+    l3_read_steps: int = Field(
+        default=0, ge=0, description="两层结构中含 L3→L1 读取的 GPU 步数"
+    )
+    l3_stall_ms: float = Field(
+        default=0.0, ge=0, description="两层结构 L3 读取未被计算掩盖、拉长 GPU 步的时长之和（ms）"
+    )
+    l3_stall_p50: float | None = Field(
+        default=None, ge=0, description="含 L3 读取的步中停顿时长中位数；无读取步为 None（ms）"
+    )
+    l3_stall_p99: float | None = Field(
+        default=None, ge=0, description="含 L3 读取的步中停顿时长第 99 百分位（ms）"
+    )
+    l3_stall_max: float | None = Field(
+        default=None, ge=0, description="单步 L3 读取停顿最大值（ms）"
+    )
+    l3_stall_fraction: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="L3 读取停顿之和 / 全部 GPU 步长之和；未执行任何步时为 None",
+    )
     promotions: int = Field(default=0, ge=0)
     demotions: int = Field(default=0, ge=0)
     actual_prefill_tokens: int = Field(default=0, ge=0)

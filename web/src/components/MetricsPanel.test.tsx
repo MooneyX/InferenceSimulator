@@ -11,6 +11,11 @@ const metrics: Metrics = {
   ttft_p50: 10,
   ttft_p99: 98.765,
   tpot_mean: 2.5,
+  tpot_p99: 6.25,
+  itl_mean: 2.4,
+  itl_p50: 2,
+  itl_p99: 18.5,
+  itl_max: 61,
   throughput: 1234.567,
   makespan: 800.25,
   arrival_qps: 1200,
@@ -36,6 +41,8 @@ const metrics: Metrics = {
   l3_hit_tokens: 0,
   restore_bytes: 0,
   restore_time_ms: 0,
+  l3_read_steps: 0,
+  l3_stall_ms: 0,
   promotions: 0,
   demotions: 0,
   actual_prefill_tokens: 830,
@@ -87,6 +94,12 @@ describe("MetricsPanel", () => {
     expect(metricValue("TTFT P50")).toHaveTextContent("10 ms");
     expect(metricValue("TTFT P99")).toHaveTextContent("98.77 ms");
     expect(metricValue("TPOT 均值")).toHaveTextContent("2.5 ms");
+    expect(metricValue("TPOT P99")).toHaveTextContent("6.25 ms");
+    expect(metricValue("ITL 均值")).toHaveTextContent("2.4 ms");
+    expect(metricValue("ITL P50")).toHaveTextContent("2 ms");
+    expect(metricValue("ITL P99")).toHaveTextContent("18.5 ms");
+    expect(metricValue("ITL 最大值")).toHaveTextContent("61 ms");
+    expect(screen.queryByText("L3 停顿 P99")).not.toBeInTheDocument();
     expect(metricValue("实际请求 QPS")).toHaveTextContent("1,200 请求/秒");
     expect(metricValue("完成 QPS")).toHaveTextContent("1,234.57 请求/秒");
     expect(metricValue("新建会话数")).toHaveTextContent("3 次");
@@ -183,6 +196,24 @@ describe("MetricsPanel", () => {
     expect(metricValue("逐级降级")).toHaveTextContent("5 次");
     expect(metricValue("Restore 传输量")).toHaveTextContent("8,192 字节");
     expect(metricValue("Restore 耗时")).toHaveTextContent("15.5 ms");
+  });
+
+  it("shows two-tier L3 read stall distribution only when reads happened", () => {
+    render(<MetricsPanel wallClockMs={42.5} metrics={{
+      ...metrics,
+      l3_read_steps: 40,
+      l3_stall_ms: 120,
+      l3_stall_p50: 0.5,
+      l3_stall_p99: 35.25,
+      l3_stall_max: 68,
+      l3_stall_fraction: 0.075,
+    }} />);
+
+    expect(metricValue("L3 读取步数")).toHaveTextContent("40 次");
+    expect(metricValue("L3 停顿占比")).toHaveTextContent("7.5 %");
+    expect(metricValue("L3 停顿 P50")).toHaveTextContent("0.5 ms");
+    expect(metricValue("L3 停顿 P99")).toHaveTextContent("35.25 ms");
+    expect(metricValue("L3 停顿最大值")).toHaveTextContent("68 ms");
   });
 
   it("shows undefined instead of coercing nullable metrics to zero", () => {

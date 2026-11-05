@@ -178,6 +178,10 @@ def metric_inputs() -> dict[str, Any]:
         "latest_sent_arrival": None,
         "num_sent": 0,
         "replayed_prefill_tokens": 0,
+        "step_time_ms": 0.0,
+        "l3_stalls_ms": (),
+        "itl_values_ms": (),
+        "itl_counts": (),
     }
 
 

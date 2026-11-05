@@ -77,6 +77,16 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
           unit="ms"
           description="Decode 阶段平均每 token 耗时"
         />
+        <MetricCard label="TPOT P99" value={metrics.tpot_p99} unit="ms"
+          description="逐请求 TPOT 的第 99 百分位" />
+        <MetricCard label="ITL 均值" value={metrics.itl_mean} unit="ms"
+          description="相邻输出 token 间隔对全部间隔取平均，长输出请求权重更大" />
+        <MetricCard label="ITL P50" value={metrics.itl_p50} unit="ms"
+          description="相邻输出 token 间隔中位数" />
+        <MetricCard label="ITL P99" value={metrics.itl_p99} unit="ms"
+          description="相邻输出 token 间隔第 99 百分位，反映偶发卡顿" />
+        <MetricCard label="ITL 最大值" value={metrics.itl_max} unit="ms"
+          description="单个输出 token 间隔的最大值" />
         {targetQps != null && <MetricCard label="目标发送 QPS" value={targetQps} unit="请求/秒"
           description="开环泊松到达的期望请求速率" />}
         {targetSessionRate != null && <MetricCard label="新会话投放频率" value={targetSessionRate} unit="会话/秒"
@@ -125,6 +135,13 @@ export function MetricsPanel({ metrics, wallClockMs, targetQps, targetSessionRat
         <MetricCard label="逐级降级" value={metrics.demotions} unit="次" description="实际逐级下移的 KV 页次数" />
         <MetricCard label="Restore 传输量" value={metrics.restore_bytes} unit="字节" description="L2→L1 与 L3 读取（三层到 L2、两层直接到 L1）链路传输字节数之和" />
         <MetricCard label="Restore 耗时" value={metrics.restore_time_ms} unit="ms" description="恢复 KV 页的传输及固定延迟累计耗时" />
+        {metrics.l3_read_steps > 0 && <>
+        <MetricCard label="L3 读取步数" value={metrics.l3_read_steps} unit="次" description="两层结构中含 L3→L1 读取的 GPU 步数" />
+        <MetricCard label="L3 停顿占比" value={metrics.l3_stall_fraction} unit="%" description="L3 读取未被计算掩盖的时长 / 全部 GPU 步长" />
+        <MetricCard label="L3 停顿 P50" value={metrics.l3_stall_p50} unit="ms" description="含 L3 读取的步中，读取拉长步长的中位数" />
+        <MetricCard label="L3 停顿 P99" value={metrics.l3_stall_p99} unit="ms" description="含 L3 读取的步中，读取拉长步长的第 99 百分位" />
+        <MetricCard label="L3 停顿最大值" value={metrics.l3_stall_max} unit="ms" description="单步 L3 读取停顿最大值；同批请求均被拖慢" />
+        </>}
         <MetricCard label="L1 容量" value={metrics.l1_capacity_blocks} unit="页" description="max_total_tokens / page_size，实际 KV 页池容量" />
         <MetricCard label="L1 驻留" value={metrics.l1_resident_blocks} unit="页" description="仿真结束时 L1 的 KV 页占用" />
         <MetricCard label="L1 空闲" value={metrics.l1_free_blocks} unit="页" description="仿真结束时 L1 的空闲页数" />

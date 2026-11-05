@@ -860,6 +860,31 @@ export interface components {
              */
             tpot_mean?: number | null;
             /**
+             * Tpot P99
+             * @description 逐请求 TPOT 的第 99 百分位；无样本时为 None（ms）
+             */
+            tpot_p99?: number | null;
+            /**
+             * Itl Mean
+             * @description 相邻输出 token 间隔（ITL）对全部 token 间隔的均值；无样本时为 None（ms）
+             */
+            itl_mean?: number | null;
+            /**
+             * Itl P50
+             * @description ITL 中位数（ms）
+             */
+            itl_p50?: number | null;
+            /**
+             * Itl P99
+             * @description ITL 第 99 百分位（ms）
+             */
+            itl_p99?: number | null;
+            /**
+             * Itl Max
+             * @description ITL 最大值（ms）
+             */
+            itl_max?: number | null;
+            /**
              * Throughput
              * @description 请求数 / makespan（请求/秒）；makespan 为 0 时为 None
              */
@@ -975,6 +1000,38 @@ export interface components {
              * @default 0
              */
             restore_time_ms: number;
+            /**
+             * L3 Read Steps
+             * @description 两层结构中含 L3→L1 读取的 GPU 步数
+             * @default 0
+             */
+            l3_read_steps: number;
+            /**
+             * L3 Stall Ms
+             * @description 两层结构 L3 读取未被计算掩盖、拉长 GPU 步的时长之和（ms）
+             * @default 0
+             */
+            l3_stall_ms: number;
+            /**
+             * L3 Stall P50
+             * @description 含 L3 读取的步中停顿时长中位数；无读取步为 None（ms）
+             */
+            l3_stall_p50?: number | null;
+            /**
+             * L3 Stall P99
+             * @description 含 L3 读取的步中停顿时长第 99 百分位（ms）
+             */
+            l3_stall_p99?: number | null;
+            /**
+             * L3 Stall Max
+             * @description 单步 L3 读取停顿最大值（ms）
+             */
+            l3_stall_max?: number | null;
+            /**
+             * L3 Stall Fraction
+             * @description L3 读取停顿之和 / 全部 GPU 步长之和；未执行任何步时为 None
+             */
+            l3_stall_fraction?: number | null;
             /**
              * Promotions
              * @default 0

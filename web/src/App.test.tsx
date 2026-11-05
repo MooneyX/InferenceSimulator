@@ -59,6 +59,8 @@ const result: SimResult = {
     l3_hit_tokens: 0,
     restore_bytes: 0,
     restore_time_ms: 0,
+    l3_read_steps: 0,
+    l3_stall_ms: 0,
     promotions: 0,
     demotions: 0,
     actual_prefill_tokens: 16,

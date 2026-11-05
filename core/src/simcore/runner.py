@@ -3,10 +3,12 @@
 开环模式按独立泊松时钟投放请求；显式闭环模式只预先规划根到达。
 """
 
-from collections.abc import Callable
+import math
+from array import array
+from collections.abc import Callable, Iterable
 from dataclasses import fields
 from time import perf_counter
-from typing import cast
+from typing import Any, cast
 
 from simcore.capacity import prepare_runtime
 from simcore.client import Client
@@ -199,4 +201,18 @@ def _summarize(
         latest_sent_arrival=max(sent_arrivals, default=None),
         num_sent=len(sent_arrivals),
         replayed_prefill_tokens=sum(run.replayed_prefill_tokens for run in runs),
+        # 步长 = 计算耗时 + 未被掩盖的回载，两者已逐步累计在解析摘要中。
+        step_time_ms=math.fsum(
+            run.analysis.device_ms + run.analysis.restore_exposed_ms for run in runs
+        ),
+        l3_stalls_ms=_concat("d", (run.l3_stalls_ms for run in runs)),
+        itl_values_ms=_concat("d", (run.itl_values_ms for run in runs)),
+        itl_counts=_concat("q", (run.itl_counts for run in runs)),
     )
+
+
+def _concat(typecode: str, parts: Iterable[array[Any]]) -> array[Any]:  # 各实例逐步样本 → 合并数组
+    merged: array[Any] = array(typecode)
+    for part in parts:
+        merged.extend(part)  # 同类型数组整块复制，不逐元素装箱
+    return merged

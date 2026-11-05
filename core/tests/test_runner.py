@@ -340,7 +340,18 @@ class TestEndToEnd:
         assert m.ttft_p50 is not None and m.ttft_p99 is not None
         assert 0.0 < m.ttft_p50 <= m.ttft_p99
         assert m.tpot_mean is not None and m.tpot_mean > 0
+        assert m.tpot_p99 is not None and m.tpot_p99 > 0
         assert m.throughput is not None and m.throughput > 0
+
+    def test_itl_samples_cover_every_token_gap(self, result: SimResult) -> None:
+        """每请求 ITL 之和等于 finish − prefill_end，故 token 加权均值可由记录复算。"""
+        m = result.metrics
+        decode_ms = sum(r.finish - r.prefill_end for r in result.requests)
+        gaps = sum(r.output_len - 1 for r in result.requests)
+        assert m.itl_mean == pytest.approx(decode_ms / gaps)
+        assert m.itl_p50 is not None and m.itl_p99 is not None and m.itl_max is not None
+        assert 0 < m.itl_p50 <= m.itl_p99 <= m.itl_max
+        assert m.l3_read_steps == 0 and m.l3_stall_fraction == 0
 
     def test_prefix_metrics_are_weighted_and_capacity_conserved(self) -> None:
         config = resolved_config(

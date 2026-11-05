@@ -3,6 +3,8 @@
 occupy 和直接 withdraw/requeue 用于故障状态注入，不代表正常端到端流程。
 """
 
+import math
+from typing import Any
 from unittest.mock import call, patch
 
 import pytest
@@ -426,6 +428,48 @@ def test_failed_parent_skips_all_unsent_descendants_in_success_response() -> Non
     exclude = {"meta": {"wall_clock_ms"}}
     repeated = simulate(config)
     assert result.model_dump_json(exclude=exclude) == repeated.model_dump_json(exclude=exclude)
+
+
+@pytest.mark.parametrize("exclusive", [True, False])
+def test_itl_samples_conserve_decode_time_across_withdrawal_and_restore(exclusive: bool) -> None:
+    """KV 紧张触发回撤与恢复；ITL 样本数和间隔和须与每请求输出数及 decode 时长一一对应。"""
+    config = resolved_config(
+        num_instances=1,
+        workload=WorkloadConfig(
+            session_rate=200,
+            seed=5,
+            synthetic=SyntheticWorkloadConfig(
+                num_requests=40,
+                prompt_len=FixedLength(value=24),
+                turn_increment_len=FixedLength(value=4),
+                output_len=FixedLength(value=128),
+                session=SessionConfig(num_sessions=20),
+            ),
+        ),
+        engine=EngineConfig(
+            max_running_requests=16,
+            max_total_tokens=512,
+            page_size=4,
+            pd_mutually_exclusive=exclusive,
+        ),
+        perf_model=PERF,
+    )
+    captured: dict[str, Any] = {}
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return compute_metrics(*args, **kwargs)
+
+    with patch("simcore.runner.compute_metrics", side_effect=capture):
+        result = simulate(config)
+    assert not result.aborted_requests
+    assert any(record.retry_count for record in result.requests)  # 确实发生回撤
+    values, counts = captured["itl_values_ms"], captured["itl_counts"]
+    assert sum(counts) == sum(record.output_len - 1 for record in result.requests)
+    assert math.fsum(v * c for v, c in zip(values, counts, strict=True)) == pytest.approx(
+        math.fsum(record.finish - record.prefill_end for record in result.requests)
+    )
+    assert min(values) > 0
 
 
 def test_requeue_after_future_step_end_preserves_fcfs_of_midstep_arrival() -> None:

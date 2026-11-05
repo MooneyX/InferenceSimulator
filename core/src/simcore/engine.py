@@ -3,6 +3,7 @@
 事件堆、时钟推进与客户端回调由 ``Coordinator`` 独占。
 """
 
+from array import array
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -43,6 +44,9 @@ class EngineRun:
         sim_start: 首请求到达时刻（ms）；无请求时为 0。
         sim_end: 最晚请求完成或失败时刻（ms）；无请求时为 0。
         cache_snapshot: 仿真结束时的物理 L1 容量快照。
+        l3_stalls_ms: 两层结构每个含 L3→L1 读取的步中读取未被计算掩盖的时长（ms）。
+        itl_values_ms: ITL 样本组的间隔（ms），每组为同一步内上一 token 同时刻的请求。
+        itl_counts: 与 ``itl_values_ms`` 对应的组内样本数。
     """
 
     records: tuple[RequestRecord, ...]
@@ -63,6 +67,9 @@ class EngineRun:
     restore_bytes: int = 0
     restore_time_ms: float = 0.0
     analysis: AnalyticalSummary = field(default_factory=AnalyticalSummary)
+    l3_stalls_ms: array[float] = field(default_factory=lambda: array("d"))
+    itl_values_ms: array[float] = field(default_factory=lambda: array("d"))
+    itl_counts: array[int] = field(default_factory=lambda: array("q"))
 
 
 @dataclass(slots=True)
@@ -144,6 +151,16 @@ class Engine:
         self._l3_layerwise = transfers.l3_layerwise
         self._lookup_locks: dict[int, tuple[str, ...]] = {}
         self._direct_reads: dict[int, tuple[str, ...]] = {}
+        # 逐步采样：两层结构 L3 读取停顿、按（间隔, 请求数）分组的 ITL。
+        self._l3_stalls_ms: array[float] = array("d")
+        self._itl_values_ms: array[float] = array("d")
+        self._itl_counts: array[int] = array("q")
+        # 上一输出 token 时刻：Decode 步中全部运行请求同时出 token，故运行请求默认共享
+        # ``_cohort_token_ms``，仅本步新 Prefill（无 Decode 步）或回撤恢复者登记为例外，
+        # 每步开销与例外数而非批大小成正比。回撤等待中的请求另存，恢复时转回例外。
+        self._cohort_token_ms = 0.0
+        self._token_ms: dict[int, float] = {}
+        self._parked_token_ms: dict[int, float] = {}
 
     @property
     def has_work(self) -> bool:  # 等待队列或运行集 → 是否仍有可执行请求
@@ -438,6 +455,7 @@ class Engine:
         self._restore_time_ms += load_ms
         self._analysis.restore_ms += load_ms
         self._analysis.restore_exposed_ms += wait
+        self._l3_stalls_ms.append(wait)
         return wait + compute_ms
 
     def _pipelined_duration(
@@ -465,11 +483,13 @@ class Engine:
         duration = pipelined_finish_ms(now_ms, ready, layer_ms) - now_ms
         load_ms = ready[-1] - start
         self._restore_bytes += pages * self._page_bytes
+        exposed = duration - compute_ms
         if self._direct_l3:
             self._schedule_direct_read(chunk_ids, ready[-1])
+            self._l3_stalls_ms.append(exposed if exposed > 0 else 0.0)  # 去除浮点舍入负值
         self._restore_time_ms += load_ms
         self._analysis.restore_ms += load_ms
-        self._analysis.restore_exposed_ms += duration - compute_ms
+        self._analysis.restore_exposed_ms += exposed
         return duration
 
     def _abort(
@@ -492,6 +512,11 @@ class Engine:
             retry_count=self._retry_counts.get(request_id, 0),
         )
         self._recent_aborts.append(request_id)
+        self._token_ms.pop(request_id, None)
+        self._parked_token_ms.pop(request_id, None)
+
+    def _resume_token(self, request_id: int) -> None:  # 恢复请求 ID → 重新登记回撤前末 token 时刻
+        self._token_ms[request_id] = self._parked_token_ms.pop(request_id, self._cohort_token_ms)
 
     def drain_aborts(self) -> tuple[int, ...]:  # 最近失败记录 → 按 ID 排序的待通知请求元组并清空
         """供客户端标记后代 skipped；每个失败仅通知一次。"""
@@ -543,6 +568,7 @@ class Engine:
                 else:
                     self._retry_counts[key] = self._retry_counts.get(key, 0) + 1
                     withdrawn.append((key, generated))
+                    self._parked_token_ms[key] = self._token_ms.pop(key, self._cohort_token_ms)
                 needed -= cache.state(key).k % cache.page_size == 0
                 cache.withdraw(key)
                 del self._running[key]
@@ -623,14 +649,27 @@ class Engine:
             if withdrawn:
                 self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
+        # 本步 Decode 请求按上一 token 时刻分组：例外表此时恰为运行集中的例外，其余共享 cohort。
+        cohort_size = 0
+        token_groups: dict[float, int] | None = None
+        if decode_ids:
+            token_ms = self._token_ms
+            cohort_size = len(decode_ids) - len(token_ms)
+            if token_ms:
+                token_groups = {}
+                for last in token_ms.values():
+                    token_groups[last] = token_groups.get(last, 0) + 1
+                token_ms.clear()
         for item in selection.aborted:
             self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
         for item in selection.restored:
             self._running[item.request.request_id] = item.generated_tokens
+            self._resume_token(item.request.request_id)
         if selection.restore_only and not selection.admitted and not decode_ids:
             for item in selection.restore_only:
                 cache.admit(item.request.request_id)
                 self._running[item.request.request_id] = item.generated_tokens
+                self._resume_token(item.request.request_id)
             idle_layers = ((self._analytical.plan.num_layers, 0.0),)
             return self._load_duration(
                 selection.promote_ids, now_ms, 0.0, idle_layers
@@ -708,6 +747,7 @@ class Engine:
         for item in selection.restore_only:
             cache.admit(item.request.request_id)
             self._running[item.request.request_id] = item.generated_tokens
+            self._resume_token(item.request.request_id)
         finished: list[int] = []
         for key in decode_ids:
             previous = running[key].generated_tokens
@@ -715,6 +755,15 @@ class Engine:
             self._running[key] = previous + 1
             if self._running[key] == self._requests[key].output_len:
                 finished.append(key)
+        if decode_ids:
+            if cohort_size:
+                self._itl_values_ms.append(end - self._cohort_token_ms)
+                self._itl_counts.append(cohort_size)
+            if token_groups:
+                for last, count in token_groups.items():
+                    self._itl_values_ms.append(end - last)
+                    self._itl_counts.append(count)
+            self._cohort_token_ms = end  # 本步 Decode 与新 Prefill 请求的末 token 均在步末
         for candidate in selection.admitted:
             item = candidate.waiting
             key = item.request.request_id
@@ -724,10 +773,13 @@ class Engine:
                 self._replayed_tokens[key] = (
                     self._replayed_tokens.get(key, 0) + candidate.new_tokens
                 )
+                self._resume_token(key)
             else:
                 self._prefill_start[key] = now_ms
                 self._prefill_end[key] = end
                 self._running[key] = 1  # 首个输出在 Prefill 步完成时已生成
+                if not decode_ids:
+                    self._token_ms[key] = end
                 if self._requests[key].output_len == 1:
                     finished.append(key)
             if key not in self._admission_stats:
@@ -760,6 +812,7 @@ class Engine:
         self._pending_finished = tuple(finished)
         for key in finished:
             del self._running[key]
+            self._token_ms.pop(key, None)
             self._pending_done[key] = end  # KV 等 Done 事件结算时才释放
         for key, generated in withdrawn:
             self._prefix_scheduler.requeue(self._requests[key], end, generated)
@@ -842,4 +895,7 @@ class Engine:
             restore_bytes=self._restore_bytes,
             restore_time_ms=self._restore_time_ms,
             analysis=self._analysis,
+            l3_stalls_ms=self._l3_stalls_ms,
+            itl_values_ms=self._itl_values_ms,
+            itl_counts=self._itl_counts,
         )

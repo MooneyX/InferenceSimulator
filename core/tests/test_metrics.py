@@ -3,7 +3,7 @@
 import pytest
 
 from simcore.kv_cache import TierSnapshot
-from simcore.metrics import compute_metrics, percentile
+from simcore.metrics import compute_metrics, percentile, weighted_percentile
 from simcore.schemas import RequestRecord
 from test_schemas import metric_inputs
 
@@ -106,7 +106,60 @@ class TestTPOT:
 
     def test_all_single_token_gives_none(self) -> None:
         records = [rec(0, 0.0, 10.0, 10.0, 1), rec(1, 5.0, 12.0, 12.0, 1)]
-        assert compute_metrics(**metric_inputs(), records=records).tpot_mean is None
+        m = compute_metrics(**metric_inputs(), records=records)
+        assert m.tpot_mean is None and m.tpot_p99 is None
+
+    def test_p99_over_per_request_values(self) -> None:
+        records = [rec(i, 0.0, 10.0, 10.0 + t, 2) for i, t in enumerate([4.0, 1.0, 3.0, 2.0])]
+        assert compute_metrics(**metric_inputs(), records=records).tpot_p99 == pytest.approx(3.97)
+
+
+class TestITL:
+    def test_weighted_percentile_matches_expanded_samples(self) -> None:
+        groups = [(1.0, 3), (2.0, 1), (5.0, 2), (9.0, 1)]
+        expanded = [value for value, count in groups for _ in range(count)]
+        cumulative = [3, 4, 6, 7]
+        values = [value for value, _ in groups]
+        for q in (0.0, 0.1, 0.4, 0.5, 0.75, 0.99, 1.0):
+            assert weighted_percentile(values, cumulative, q) == pytest.approx(
+                percentile(expanded, q)
+            )
+
+    def test_itl_fields_weight_each_token_gap(self) -> None:
+        """组按 token 间隔加权，与输入顺序无关；单 token 卡顿直接体现在尾部。"""
+        inputs = metric_inputs() | {
+            "itl_values_ms": (60.0, 2.0, 3.0),
+            "itl_counts": (1, 90, 9),
+        }
+        m = compute_metrics(**inputs, records=[rec(0, 0.0, 10.0, 20.0, 2)])
+        assert m.itl_mean == pytest.approx((60 + 180 + 27) / 100)
+        assert m.itl_p50 == 2.0
+        assert m.itl_p99 == pytest.approx(3.0 + (60.0 - 3.0) * 0.01)  # h=98.01
+        assert m.itl_max == 60.0
+
+    def test_no_samples_gives_none(self) -> None:
+        m = compute_metrics(**metric_inputs(), records=[rec(0, 0.0, 10.0, 10.0, 1)])
+        assert (m.itl_mean, m.itl_p50, m.itl_p99, m.itl_max) == (None, None, None, None)
+
+
+class TestL3Stall:
+    def test_stall_distribution_and_fraction(self) -> None:
+        inputs = metric_inputs() | {"l3_stalls_ms": (4.0, 0.0, 1.0), "step_time_ms": 50.0}
+        m = compute_metrics(**inputs, records=[rec(0, 0.0, 10.0, 10.0, 1)])
+        assert (m.l3_read_steps, m.l3_stall_ms) == (3, 5.0)
+        assert (m.l3_stall_p50, m.l3_stall_max) == (1.0, 4.0)
+        assert m.l3_stall_p99 == pytest.approx(3.94)
+        assert m.l3_stall_fraction == pytest.approx(0.1)
+
+    def test_stall_reported_without_successful_requests(self) -> None:
+        inputs = metric_inputs() | {"l3_stalls_ms": (2.0,), "step_time_ms": 8.0}
+        m = compute_metrics(**inputs, records=[])
+        assert (m.l3_read_steps, m.l3_stall_max, m.l3_stall_fraction) == (1, 2.0, 0.25)
+
+    def test_no_steps_gives_undefined_fraction(self) -> None:
+        m = compute_metrics(**metric_inputs(), records=[])
+        assert (m.l3_read_steps, m.l3_stall_ms) == (0, 0.0)
+        assert m.l3_stall_p99 is None and m.l3_stall_fraction is None
 
 
 class TestThroughputAndMakespan:

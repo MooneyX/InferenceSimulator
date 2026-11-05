@@ -91,6 +91,7 @@ def test_layerwise_read_pipelines_with_compute_and_locks_until_last_layer() -> N
     assert c < 2
     assert duration == pytest.approx(4 + c)
     assert runner._analysis.restore_exposed_ms == pytest.approx(duration - 2 * c)
+    assert list(runner._l3_stalls_ms) == pytest.approx([duration - 2 * c])  # 逐步停顿
     assert runner._restore_bytes == 128
     (end, kind, read_id), = runner.drain_events()  # 全部层一次读取，末层读完才释放源页
     assert (end, kind) == (6, EventKind.L3_L1_DONE)
@@ -106,6 +107,7 @@ def test_blocking_read_waits_for_all_batches_before_compute() -> None:
     runner, shared, ids, duration = admit_two_hits(layerwise=False)
     # 一批 2 页：固定延迟 1 ms + 2 页 × 64 B ÷ 64 B/ms；本步计算等读取完成。
     assert runner._analysis.restore_exposed_ms == 3
+    assert list(runner._l3_stalls_ms) == [3]
     assert duration == 3 + runner._analysis.device_ms
     assert runner._restore_bytes == 128
     (end, kind, read_id), = runner.drain_events()
@@ -210,3 +212,29 @@ def test_two_tier_simulation_reuses_l3_without_l2(layerwise: bool) -> None:
     assert metrics.l2_hit_tokens == 0
     assert metrics.l3_hit_tokens > 0
     assert metrics.restore_bytes > 0
+    # 两层结构的暴露回载全部来自 L3→L1 读取，逐步停顿之和与之相等。
+    assert metrics.l3_read_steps > 0 and result.analysis is not None
+    assert metrics.l3_stall_ms == pytest.approx(result.analysis.restore_exposed_ms)
+    assert metrics.l3_stall_max is not None and metrics.l3_stall_p99 is not None
+    assert 0 <= metrics.l3_stall_p99 <= metrics.l3_stall_max
+    assert metrics.l3_stall_fraction is not None and 0 < metrics.l3_stall_fraction <= 1
+
+
+def test_three_tier_l2_restore_is_not_counted_as_l3_stall() -> None:
+    runtime = runtime_config(
+        EngineConfig(
+            max_running_requests=2, max_total_tokens=32, page_size=4, l2_capacity_tokens=32
+        ),
+        PerfModelConfig(kv_bytes_per_token=16, l2_to_l1_bandwidth_bytes_per_ms=64),
+    )
+    runner = Engine(runtime)
+    cache = runner._prefix_cache
+    ids = (encode(90, 0), encode(90, 1))
+    for chunk in ids:
+        cache.pools["L1"].insert(chunk)
+    cache.ensure_free(cache.capacity_pages)  # 命中页降至 L2
+    assert all(cache.pools["L2"].lookup(chunk) is not None for chunk in ids)
+    runner.submit(request(0, ids), 0)
+    assert runner.start_step(0, 0) is not None
+    assert runner._restore_bytes == 128 and runner._analysis.restore_exposed_ms > 0
+    assert len(runner._l3_stalls_ms) == 0

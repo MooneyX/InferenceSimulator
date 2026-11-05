@@ -110,10 +110,16 @@ export const initialHardware: InferenceConfig["hardware"] = {
   effective_hbm_gb_s: 1000, effective_interconnect_gb_s: 600,
   collective_latency_ms: 0.01, ep_communication_latency_ms: 0.02, kernel_overhead_ms: 0.005,
 };
+export type L3Fluctuation = NonNullable<InferenceConfig["storage"]["l3_fluctuation"]>;
+export const initialL3Fluctuation: L3Fluctuation = {
+  degraded_fraction: 0.02, mean_degraded_ms: 50, degraded_duration_cv: 1,
+  degraded_bandwidth_factor: 0.3, degraded_extra_latency_ms: 1, jitter_cv: 0.02,
+};
 export const initialStorage: InferenceConfig["storage"] = {
   l2_available_gb: 2048,
   l2_to_l1_gb_s: 256, l3_read_gb_s: 50,
   l2_latency_ms: 0.01, l3_latency_ms: 0.1,
+  l3_fluctuation: initialL3Fluctuation,
 };
 export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {
   available_gb: 100_000, lookup_latency_ms: 0.1,

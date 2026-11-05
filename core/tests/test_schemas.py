@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Literal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from simcore.kv_source import L3_FLUCTUATION, KvSourceSpec
+from simcore.kv_source import KvSourceSpec
 from simcore.perf_model import build_layer_plan
 from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferSpec
 from simcore.schemas import (
@@ -19,6 +19,7 @@ from simcore.schemas import (
     IHCSpec,
     InferenceConfig,
     InstanceResult,
+    L3Fluctuation,
     LayerSegment,
     LengthDist,
     LognormalLength,
@@ -872,6 +873,33 @@ class TestConfigValidation:
         with pytest.raises(ValidationError, match=field):
             SimConfig.model_validate(payload)
 
+    @pytest.mark.parametrize(
+        "field,invalid",
+        [
+            ("degraded_fraction", -0.1),
+            ("degraded_fraction", 1),
+            ("mean_degraded_ms", 0),
+            ("degraded_duration_cv", -1),
+            ("degraded_bandwidth_factor", 0),
+            ("degraded_bandwidth_factor", 1.1),
+            ("degraded_extra_latency_ms", -1),
+            ("jitter_cv", float("inf")),
+        ],
+    )
+    def test_invalid_l3_fluctuation_fields_rejected(self, field: str, invalid: float) -> None:
+        with pytest.raises(ValidationError, match=field):
+            L3Fluctuation.model_validate({field: invalid})
+
+    def test_l3_fluctuation_boundaries_accepted(self) -> None:
+        values = {
+            "degraded_fraction": 0,
+            "degraded_duration_cv": 0,
+            "degraded_bandwidth_factor": 1,
+            "degraded_extra_latency_ms": 0,
+            "jitter_cv": 0,
+        }
+        assert L3Fluctuation.model_validate(values).model_dump(include=set(values)) == values
+
     @pytest.mark.parametrize("invalid", [-1, float("inf"), float("nan")])
     def test_invalid_shared_lookup_latency_rejected(self, invalid: float) -> None:
         with pytest.raises(ValidationError, match="lookup_latency_ms"):
@@ -1122,15 +1150,23 @@ class TestConfigValidation:
         )
         assert runtime.perf_model.kv_bytes_per_token == 64
         transfers = runtime.transfers
-        # L2（DRAM）确定性计时；L3 带 SSD 式占位波动；种子取负载种子。
+        # L2（DRAM）确定性计时；L3 带配置的 SSD 式波动；种子取负载种子。
         assert transfers.l2_to_l1 == KvSourceSpec(128, 0.5)
-        assert transfers.l3_read == KvSourceSpec(64, 1.5, L3_FLUCTUATION)
+        assert transfers.l3_read == KvSourceSpec(64, 1.5, L3Fluctuation())
         assert transfers.seed == config.workload.seed
         with pytest.raises(FrozenInstanceError):
             runtime.engine = runtime.engine  # type: ignore[misc]
         with pytest.raises(FrozenInstanceError):
             transfers.l2_to_l1.bytes_per_ms = 0  # type: ignore[misc]
         assert config.model_dump() == original
+        # 降速占比与抖动均为 0 时 L3 按确定性计时，其余降速参数不影响。
+        payload["inference"]["storage"]["l3_fluctuation"] = {
+            "degraded_fraction": 0,
+            "jitter_cv": 0,
+            "degraded_bandwidth_factor": 0.1,
+        }
+        still = prepare_runtime(SimConfig.model_validate(payload)).transfers
+        assert still.l3_read == KvSourceSpec(64, 1.5)
 
     def test_roundtrip_is_lossless(self) -> None:
         cfg = make_config()

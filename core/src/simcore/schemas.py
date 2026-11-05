@@ -29,6 +29,7 @@ __all__ = [
     "InferenceConfig",
     "InferenceRequest",
     "InstanceResult",
+    "L3Fluctuation",
     "LengthDist",
     "LognormalLength",
     "Metrics",
@@ -461,6 +462,49 @@ class HardwareSpec(_Frozen):
     )
 
 
+class L3Fluctuation(_Frozen):
+    """L3 读取链路的 SSD 式波动：正常 ↔ 降速两状态切换，叠加每批读取的带宽抖动。
+
+    正常段时长服从指数分布，降速段时长服从对数正态分布（均值固定，变异系数控制长尾）。
+    ``degraded_fraction`` 与 ``jitter_cv`` 均为 0 时不波动，按固定延迟与带宽计时。
+    默认值为未经实测校准的占位参数。
+    """
+
+    degraded_fraction: float = Field(
+        default=0.02,
+        ge=0,
+        lt=1,
+        allow_inf_nan=False,
+        description="降速状态占总时间的稳态比例；0 表示从不降速，其余降速参数不生效",
+    )
+    mean_degraded_ms: float = Field(
+        default=50.0, gt=0, allow_inf_nan=False, description="每段降速的平均持续时间（ms）"
+    )
+    degraded_duration_cv: float = Field(
+        default=1.0,
+        ge=0,
+        allow_inf_nan=False,
+        description=(
+            "降速段时长的变异系数（对数正态，均值不变）；0 表示每段固定为均值，越大长尾越重"
+        ),
+    )
+    degraded_bandwidth_factor: float = Field(
+        default=0.3, gt=0, le=1, allow_inf_nan=False, description="降速状态下的带宽系数"
+    )
+    degraded_extra_latency_ms: float = Field(
+        default=1.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="降速状态下每批读取额外增加的固定延迟（ms）",
+    )
+    jitter_cv: float = Field(
+        default=0.02,
+        ge=0,
+        allow_inf_nan=False,
+        description="每批读取带宽系数的变异系数（对数正态，均值 1）；0 表示不抖动",
+    )
+
+
 class StorageSpec(_Frozen):
     """单实例 L2 预算及接入链路；GB 为十进制，L1 容量由单卡显存扣除权重得到。
 
@@ -490,10 +534,11 @@ class StorageSpec(_Frozen):
         allow_inf_nan=False,
         description=(
             "每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，"
-            "两层结构直接读到 L1；另计传输耗时及 SSD 式成段降速与单次抖动，"
+            "两层结构直接读到 L1；另计传输耗时及 l3_fluctuation 描述的波动，"
             "默认值未经实测校准，0 为理想基线"
         ),
     )
+    l3_fluctuation: L3Fluctuation = Field(default_factory=L3Fluctuation)
 
 
 class InferenceConfig(_Frozen):

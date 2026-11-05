@@ -570,6 +570,28 @@ describe("parameter JSON transfer", () => {
     expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
   });
 
+  it("round-trips L3 fluctuation, fills omitted fields and rejects out-of-range values", () => {
+    const config = createDefaultSimConfig();
+    config.inference.storage.l3_fluctuation = { degraded_fraction: 0, mean_degraded_ms: 20,
+      degraded_duration_cv: 0, degraded_bandwidth_factor: 1, degraded_extra_latency_ms: 0, jitter_cv: 0 };
+    expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
+    const partial = { ...config, inference: { ...config.inference,
+      storage: { ...config.inference.storage, l3_fluctuation: { degraded_duration_cv: 3 } } } };
+    expect(parseSimConfigJson(JSON.stringify(partial)).inference.storage.l3_fluctuation)
+      .toEqual({ ...initialStorage.l3_fluctuation, degraded_duration_cv: 3 });
+    for (const [patch, message] of [
+      [{ degraded_fraction: 1 }, "degraded_fraction"],
+      [{ degraded_bandwidth_factor: 1.5 }, "degraded_bandwidth_factor"],
+      [{ mean_degraded_ms: 0 }, "mean_degraded_ms"],
+      [{ jitter_cv: -1 }, "jitter_cv"],
+      [{ unknown: 1 }, "不支持的参数：storage.l3_fluctuation.unknown"],
+    ] as const) {
+      const draft = { ...config, inference: { ...config.inference,
+        storage: { ...config.inference.storage, l3_fluctuation: patch } } };
+      expect(() => parseSimConfigJson(JSON.stringify(draft))).toThrow(message);
+    }
+  });
+
   it("defaults an omitted shared lookup latency without enabling omitted storage", () => {
     const config = createDefaultSimConfig();
     expect(parseSimConfigJson(JSON.stringify({ ...config, shared_l3: { available_gb: 40_000 } })).shared_l3)

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { getPresets, resolveConfig, SimulationApiError } from "../api/client";
 import type { InferenceConfig, PresetCatalog, ResolutionReport } from "../api/types";
-import type { FormSimConfig } from "../config/simulation";
+import { initialL3Fluctuation, type FormSimConfig } from "../config/simulation";
 import { hardwarePresetFields } from "../config/presets";
 import { layerCount, layerSegment, moeLayerCount, type LayerSegment } from "../config/modelLayers";
 export { initialModel, initialHardware, initialStorage } from "../config/simulation";
@@ -73,6 +73,7 @@ function Input({ label, value, onChange, optional = false, disabled = false }: {
 
 export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Props) {
   const { model, hardware, storage, tp_size: tpSize, ep_size: epSize } = config.inference;
+  const fluctuation = storage.l3_fluctuation ?? initialL3Fluctuation;
   function updateInference(patch: Partial<FormSimConfig["inference"]>) {
     onInferenceChange({ ...config.inference, ...patch });
   }
@@ -441,9 +442,21 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         value={storage[field]}
         optional={field === "l2_to_l1_gb_s" || field === "l3_read_gb_s"}
         onChange={(value) => onStorageChange({ ...storage, [field]: value })} />)}
+      {([
+        ["degraded_fraction", "L3 降速时间占比（0 为不降速）"],
+        ["mean_degraded_ms", "L3 降速段平均时长（ms）"],
+        ["degraded_duration_cv", "L3 降速段时长变异系数（0 为无长尾）"],
+        ["degraded_bandwidth_factor", "L3 降速带宽系数（0–1）"],
+        ["degraded_extra_latency_ms", "L3 降速每批额外延迟（ms）"],
+        ["jitter_cv", "L3 单批带宽抖动变异系数（0 为不抖动）"],
+      ] as const).map(([field, label]) => <Input key={field} label={label}
+        value={fluctuation[field]}
+        onChange={(value) => onStorageChange({ ...storage,
+          l3_fluctuation: { ...fluctuation, [field]: value ?? NaN } })} />)}
     </div>
     <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
-    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。L3 读取另含 SSD 式成段降速与单次小幅抖动（占位参数，按负载随机种子复现）。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>L3 读取带宽为正常状态的标称值，另含 SSD 式波动（默认值为占位参数，按负载随机种子复现）：链路在正常与降速间交替，正常段时长服从指数分布，降速段时长服从对数正态分布，均值为降速段平均时长，变异系数越大长尾越重；降速时带宽乘降速系数、每批另加额外延迟；每批读取带宽另乘均值为 1 的对数正态抖动。降速时间占比与抖动变异系数均为 0 时不波动，可作对照基线。</p>
     <p>L2 容量为 0 且启用共享 L3 时为两层结构（L1+L3）：L1 淘汰直接写入 L3，L3 命中在准入时直接读入 L1，本步计算等读取完成；SGLang HiCache 默认三层，两层对应其 LMCache 接入方式。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、

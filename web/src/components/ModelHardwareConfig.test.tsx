@@ -70,6 +70,18 @@ describe("ModelHardwareConfig", () => {
     expect(screen.queryByRole("button", { name: "运行自动解析仿真" })).not.toBeInTheDocument();
   });
 
+  it("edits L3 fluctuation parameters inside storage", () => {
+    const onInferenceChange = vi.fn();
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    expect(screen.getByLabelText("L3 降速时间占比（0 为不降速）")).toHaveValue(0.02);
+    expect(screen.getByLabelText("L3 降速段时长变异系数（0 为无长尾）")).toHaveValue(1);
+    fireEvent.change(screen.getByLabelText("L3 降速段时长变异系数（0 为无长尾）"), { target: { value: "3" } });
+    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...createDefaultSimConfig().inference,
+      storage: { ...initialStorage, l3_fluctuation: { ...initialStorage.l3_fluctuation, degraded_duration_cv: 3 } } });
+    fireEvent.change(screen.getByLabelText("L3 单批带宽抖动变异系数（0 为不抖动）"), { target: { value: "" } });
+    expect(onInferenceChange.mock.lastCall![0].storage.l3_fluctuation.jitter_cv).toBeNaN();
+  });
+
   it("invalidates a capacity preview when the shared L3 budget changes", async () => {
     const config = createDefaultSimConfig();
     const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);

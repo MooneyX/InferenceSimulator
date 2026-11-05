@@ -62,6 +62,14 @@ PARAMETERS: dict[str, Parameter] = {
     "inference.storage.l3_read_gb_s": Parameter("L3 读取带宽 (GB/s)"),
     "inference.storage.l2_latency_ms": Parameter("L2 每层固定延迟 (ms)"),
     "inference.storage.l3_latency_ms": Parameter("L3 固定延迟 (ms)"),
+    "inference.storage.l3_fluctuation.degraded_fraction": Parameter("L3 降速时间占比"),
+    "inference.storage.l3_fluctuation.mean_degraded_ms": Parameter("L3 降速段平均时长 (ms)"),
+    "inference.storage.l3_fluctuation.degraded_duration_cv": Parameter("L3 降速段时长变异系数"),
+    "inference.storage.l3_fluctuation.degraded_bandwidth_factor": Parameter("L3 降速带宽系数"),
+    "inference.storage.l3_fluctuation.degraded_extra_latency_ms": Parameter(
+        "L3 降速额外延迟 (ms)"
+    ),
+    "inference.storage.l3_fluctuation.jitter_cv": Parameter("L3 单批带宽抖动变异系数"),
     "shared_l3.available_gb": Parameter("共享 L3 总容量 (TB)"),
     "shared_l3.lookup_latency_ms": Parameter("L3 查找延迟 (ms)"),
     "num_instances": Parameter("推理实例数量", "integer"),

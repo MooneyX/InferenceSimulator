@@ -1,5 +1,7 @@
 import type { InferenceConfig, SimConfig } from "../api/types";
-import { initialHardware, initialSharedL3, initialStorage, validateSimConfig } from "./simulation";
+import {
+  initialHardware, initialL3Fluctuation, initialSharedL3, initialStorage, validateSimConfig,
+} from "./simulation";
 
 function objectWithKeys(value: unknown, path: string, keys: readonly string[], defaults: Record<string, unknown> = {}): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -178,7 +180,11 @@ function validateInference(value: unknown): InferenceConfig {
   const storage = { l2_available_gb: 0, l2_latency_ms: initialStorage.l2_latency_ms,
     l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", [],
     ["l2_available_gb", "l2_to_l1_gb_s",
-      "l3_read_gb_s", "l2_latency_ms", "l3_latency_ms"]) } as Record<string, unknown>;
+      "l3_read_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_fluctuation"]) } as Record<string, unknown>;
+  const fluctuation = { ...initialL3Fluctuation,
+    ...configObject(storage.l3_fluctuation ?? {}, "storage.l3_fluctuation", [],
+      Object.keys(initialL3Fluctuation)) } as Record<string, unknown>;
+  storage.l3_fluctuation = fluctuation;
   root.model = model;
   root.hardware = hardware;
   root.storage = storage;
@@ -341,6 +347,18 @@ function validateInference(value: unknown): InferenceConfig {
   }
   for (const key of ["l2_to_l1_gb_s", "l3_read_gb_s"] as const) {
     configNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
+  }
+  for (const key of ["degraded_fraction", "degraded_duration_cv", "degraded_extra_latency_ms", "jitter_cv"]) {
+    configNumber(fluctuation, "storage.l3_fluctuation", key, 0);
+  }
+  for (const key of ["mean_degraded_ms", "degraded_bandwidth_factor"]) {
+    configNumber(fluctuation, "storage.l3_fluctuation", key, Number.MIN_VALUE);
+  }
+  if (Number(fluctuation.degraded_fraction) >= 1) {
+    throw new Error("storage.l3_fluctuation.degraded_fraction 必须小于 1");
+  }
+  if (Number(fluctuation.degraded_bandwidth_factor) > 1) {
+    throw new Error("storage.l3_fluctuation.degraded_bandwidth_factor 不能大于 1");
   }
 
   for (const field of ["tp_size", "ep_size"] as const) {

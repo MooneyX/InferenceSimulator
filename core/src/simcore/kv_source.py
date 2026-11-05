@@ -1,8 +1,9 @@
 """KV 传输来源：按提交顺序串行读取，返回各组数据到齐时刻。
 
 同一来源的读取先来先服务（与 SGLang HiCache 单个 prefetch IO 线程串行处理各操作一致），
-每组读取计一次固定延迟。可选的波动模型由“正常 ↔ 降速”两状态马尔可夫切换与单次读取
-带宽小幅抖动组成，按固定种子生成以保证同一配置结果可复现。
+每组读取计一次固定延迟。可选的 SSD 式波动由“正常 ↔ 降速”两状态交替与每批读取带宽小幅
+抖动组成：正常段时长服从指数分布，降速段时长服从对数正态分布（变异系数控制长尾）。
+按固定种子生成以保证同一配置结果可复现。
 """
 
 import math
@@ -10,10 +11,11 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from simcore.schemas import L3Fluctuation
+
 __all__ = [
-    "L3_FLUCTUATION",
+    "IDLE_RESTART_CYCLES",
     "STORAGE_BATCH_PAGES",
-    "Fluctuation",
     "KvSource",
     "KvSourceSpec",
 ]
@@ -21,34 +23,13 @@ __all__ = [
 # SGLang HiCache 每次存储读取的页数（mem_cache/hicache_storage.py: STORAGE_BATCH_SIZE = 128）。
 STORAGE_BATCH_PAGES = 128
 
-
-@dataclass(frozen=True, slots=True)
-class Fluctuation:
-    """两状态降速与单次抖动参数。
-
-    Attributes:
-        degraded_fraction: 降速状态占总时间的稳态比例，取值 (0, 1)。
-        mean_degraded_ms: 降速段平均持续时间（ms），各段时长服从指数分布。
-        degraded_bandwidth_factor: 降速状态下的带宽系数。
-        degraded_extra_latency_ms: 降速状态下发起读取的额外固定延迟（ms）。
-        jitter_cv: 单次读取带宽系数的变异系数（对数正态，均值 1）。
-    """
-
-    degraded_fraction: float
-    mean_degraded_ms: float
-    degraded_bandwidth_factor: float
-    degraded_extra_latency_ms: float
-    jitter_cv: float
+# 链路空档超过该数量的平均“正常 + 降速”周期时，直接按稳态重新抽取状态，不逐段推进。
+IDLE_RESTART_CYCLES = 1000
 
 
-# L3 占位参数：参考 SSD 后台 GC/写入干扰造成的成段慢读，数值未经实测校准。
-L3_FLUCTUATION = Fluctuation(
-    degraded_fraction=0.02,
-    mean_degraded_ms=50.0,
-    degraded_bandwidth_factor=0.3,
-    degraded_extra_latency_ms=1.0,
-    jitter_cv=0.02,
-)
+def _lognormal(mean: float, cv: float) -> tuple[float, float]:  # 均值与变异系数 → (mu, sigma)
+    variance = math.log1p(cv * cv)
+    return math.log(mean) - variance / 2, math.sqrt(variance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +38,7 @@ class KvSourceSpec:
 
     bytes_per_ms: float
     latency_ms: float
-    fluctuation: Fluctuation | None = None
+    fluctuation: L3Fluctuation | None = None
 
 
 class KvSource:
@@ -68,12 +49,16 @@ class KvSource:
         "_degraded",
         "_degraded_factor",
         "_degraded_latency_ms",
+        "_degraded_mean_ms",
+        "_degraded_mu",
+        "_degraded_sigma",
         "_fluctuating",
+        "_fraction",
         "_jitter_mu",
         "_jitter_sigma",
         "_latency_ms",
-        "_mean_degraded_ms",
-        "_mean_normal_ms",
+        "_normal_rate",
+        "_restart_gap_ms",
         "_rng",
         "_state_end",
         "free_ms",
@@ -84,24 +69,31 @@ class KvSource:
         self._latency_ms = spec.latency_ms
         self.free_ms = 0.0  # 链路空闲时刻
         self._rng = random.Random(seed)
-        self._fluctuating = spec.fluctuation is not None
+        fluctuation = spec.fluctuation
+        self._fluctuating = fluctuation is not None
         self._degraded = False
-        self._state_end = math.inf
-        self._mean_degraded_ms = self._mean_normal_ms = math.inf
+        self._state_end = math.inf  # 不降速时状态永不切换
+        self._fraction = self._normal_rate = self._degraded_mean_ms = 0.0
+        self._degraded_mu = self._degraded_sigma = 0.0
         self._degraded_factor = 1.0
         self._degraded_latency_ms = self._jitter_mu = self._jitter_sigma = 0.0
-        fluctuation = spec.fluctuation
-        if fluctuation is not None:
-            fraction = fluctuation.degraded_fraction
-            self._mean_degraded_ms = fluctuation.mean_degraded_ms
-            self._mean_normal_ms = fluctuation.mean_degraded_ms * (1 - fraction) / fraction
-            self._degraded_factor = fluctuation.degraded_bandwidth_factor
-            self._degraded_latency_ms = fluctuation.degraded_extra_latency_ms
-            variance = math.log1p(fluctuation.jitter_cv**2)
-            self._jitter_sigma = math.sqrt(variance)
-            self._jitter_mu = -variance / 2
-            self._degraded = self._rng.random() < fraction  # 自稳态分布开始
-            self._state_end = self._rng.expovariate(1 / self._mean_state_ms())
+        self._restart_gap_ms = math.inf
+        if fluctuation is None:
+            return
+        self._degraded_factor = fluctuation.degraded_bandwidth_factor
+        self._degraded_latency_ms = fluctuation.degraded_extra_latency_ms
+        self._jitter_mu, self._jitter_sigma = _lognormal(1.0, fluctuation.jitter_cv)
+        fraction = fluctuation.degraded_fraction
+        if fraction > 0:
+            mean = fluctuation.mean_degraded_ms
+            self._fraction = fraction
+            self._degraded_mean_ms = mean
+            self._normal_rate = fraction / (mean * (1 - fraction))  # 正常段平均时长的倒数
+            self._degraded_mu, self._degraded_sigma = _lognormal(
+                mean, fluctuation.degraded_duration_cv
+            )
+            self._restart_gap_ms = IDLE_RESTART_CYCLES * mean / fraction
+            self._restart(0.0)  # 自稳态开始
 
     def submit(
         self, start_ms: float, sizes: Sequence[float]
@@ -121,32 +113,50 @@ class KvSource:
         self.free_ms = now
         return ends
 
-    def _mean_state_ms(self) -> float:  # 当前状态 → 该状态段的平均时长（ms）
-        return self._mean_degraded_ms if self._degraded else self._mean_normal_ms
+    def _segment_ms(self) -> float:  # 刚进入的状态 → 该段时长（ms）
+        if not self._degraded:
+            return self._rng.expovariate(self._normal_rate)
+        if self._degraded_sigma:
+            return self._rng.lognormvariate(self._degraded_mu, self._degraded_sigma)
+        return self._degraded_mean_ms
 
-    def _advance(self, now: float, *, idle: bool = False) -> None:
+    def _restart(self, now: float) -> None:
+        """按稳态抽取 ``now`` 时刻的状态及其剩余时长。
+
+        处于降速的概率为时间占比；所处降速段按长度加权抽取（对数正态的长度加权分布为
+        mu 增加 sigma² 的对数正态），剩余时长为其均匀比例。正常段指数分布无记忆。
+        """
+        rng = self._rng
+        self._degraded = rng.random() < self._fraction
+        if self._degraded:
+            sigma = self._degraded_sigma
+            length = (
+                rng.lognormvariate(self._degraded_mu + sigma * sigma, sigma)
+                if sigma
+                else self._degraded_mean_ms
+            )
+            residual = rng.random() * length
+        else:
+            residual = rng.expovariate(self._normal_rate)
+        self._state_end = now + residual
+
+    def _advance(self, now: float, *, idle: bool = False) -> None:  # 推进状态至覆盖 now
         if now < self._state_end:
             return
-        if idle:
-            normal_rate = 1 / self._mean_normal_ms
-            degraded_rate = 1 / self._mean_degraded_ms
-            stationary = normal_rate / (normal_rate + degraded_rate)
-            elapsed = now - self._state_end
-            # 已知首次切换时刻；之后空档按两状态链的精确转移概率直接采样。
-            probability = stationary + (int(not self._degraded) - stationary) * math.exp(
-                -(normal_rate + degraded_rate) * elapsed
-            )
-            self._degraded = self._rng.random() < probability
-            self._state_end = now + self._rng.expovariate(1 / self._mean_state_ms())
-        else:
+        if idle and now - self._state_end > self._restart_gap_ms:
+            self._restart(now)  # 长空档后状态已与此前无关，直接取稳态
+            return
+        while now >= self._state_end:
             self._degraded = not self._degraded
-            self._state_end += self._rng.expovariate(1 / self._mean_state_ms())
+            self._state_end += self._segment_ms()
 
     def _read(self, now: float, size: float) -> float:  # 开始时刻与字节数 → 波动下的完成时刻
         self._advance(now, idle=True)
         now += self._latency_ms + (self._degraded_latency_ms if self._degraded else 0.0)
         self._advance(now, idle=True)
-        rate = self._bytes_per_ms * self._rng.lognormvariate(self._jitter_mu, self._jitter_sigma)
+        rate = self._bytes_per_ms
+        if self._jitter_sigma:
+            rate *= self._rng.lognormvariate(self._jitter_mu, self._jitter_sigma)
         remaining = size
         while True:  # 跨越状态切换时分段按各段带宽传输
             self._advance(now)

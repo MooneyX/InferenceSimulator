@@ -3,7 +3,7 @@
 from decimal import ROUND_FLOOR, Decimal
 from typing import cast
 
-from simcore.kv_source import L3_FLUCTUATION, KvSourceSpec
+from simcore.kv_source import KvSourceSpec
 from simcore.perf_model import LayerPlan, build_layer_plan
 from simcore.runtime import AnalyticalSpec, RuntimeConfig, TransferSpec
 from simcore.schemas import (
@@ -329,6 +329,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
     if not report.runnable:
         raise ValueError(report.reason)
     storage = inference.storage
+    fluctuation = storage.l3_fluctuation
     engine = EngineConfig(
         max_running_requests=scheduler.max_running_requests,
         max_prefill_tokens=scheduler.max_prefill_tokens,
@@ -364,11 +365,13 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             if perf.l2_to_l1_bandwidth_bytes_per_ms is not None
             else None
         ),
-        # L3 读取（三层结构到 L2、两层结构到 L1）按批进行，带 SSD 式成段降速与单次抖动
-        # （占位参数，未经实测校准）。
+        # L3 读取（三层结构到 L2、两层结构到 L1）按批进行，带 SSD 式成段降速与单次抖动；
+        # 降速占比与抖动均为 0 时按确定性计时。
         l3_read=(
             KvSourceSpec(
-                perf.l3_read_bandwidth_bytes_per_ms, storage.l3_latency_ms, L3_FLUCTUATION
+                perf.l3_read_bandwidth_bytes_per_ms,
+                storage.l3_latency_ms,
+                fluctuation if fluctuation.degraded_fraction or fluctuation.jitter_cv else None,
             )
             if perf.l3_read_bandwidth_bytes_per_ms is not None
             else None

@@ -72,6 +72,23 @@ def test_hardware_preset_scope_and_all_field_overrides(preset) -> None:
             assert result[key.split(".")[-1]] == (192_000_000_000 if key.endswith("memory_bytes_per_gpu") else value)
 
 
+def test_l3_fluctuation_fields_are_scannable() -> None:
+    base = SimConfig.model_validate(make_payload(num_requests=1))
+    overrides = {
+        "inference.storage.l3_fluctuation.degraded_fraction": 0,
+        "inference.storage.l3_fluctuation.mean_degraded_ms": 200,
+        "inference.storage.l3_fluctuation.degraded_duration_cv": 3,
+        "inference.storage.l3_fluctuation.degraded_bandwidth_factor": 0.1,
+        "inference.storage.l3_fluctuation.degraded_extra_latency_ms": 2,
+        "inference.storage.l3_fluctuation.jitter_cv": 0,
+    }
+    request = ScanRequest(base=base, axes=[{"key": key, "values": [value]} for key, value in overrides.items()])
+    fluctuation = build_point(request.base, overrides, None).inference.storage.l3_fluctuation
+    assert fluctuation.model_dump() == {key.split(".")[-1]: value for key, value in overrides.items()}
+    with pytest.raises(ValidationError):
+        build_point(base, {"inference.storage.l3_fluctuation.degraded_fraction": 1}, None)
+
+
 @pytest.mark.parametrize("bound", [True, False])
 @pytest.mark.parametrize(("name", "ep"), [(MODELS[0].name, 1), (MODELS[2].name, 8)])
 def test_parallelism_uses_selected_model(name: str, ep: int, bound: bool) -> None:

@@ -748,6 +748,52 @@ export interface components {
             request_progress?: components["schemas"]["RequestProgress"] | null;
         };
         /**
+         * L3Fluctuation
+         * @description L3 读取链路的 SSD 式波动：正常 ↔ 降速两状态切换，叠加每批读取的带宽抖动。
+         *
+         *     正常段时长服从指数分布，降速段时长服从对数正态分布（均值固定，变异系数控制长尾）。
+         *     ``degraded_fraction`` 与 ``jitter_cv`` 均为 0 时不波动，按固定延迟与带宽计时。
+         *     默认值为未经实测校准的占位参数。
+         */
+        L3Fluctuation: {
+            /**
+             * Degraded Fraction
+             * @description 降速状态占总时间的稳态比例；0 表示从不降速，其余降速参数不生效
+             * @default 0.02
+             */
+            degraded_fraction: number;
+            /**
+             * Mean Degraded Ms
+             * @description 每段降速的平均持续时间（ms）
+             * @default 50
+             */
+            mean_degraded_ms: number;
+            /**
+             * Degraded Duration Cv
+             * @description 降速段时长的变异系数（对数正态，均值不变）；0 表示每段固定为均值，越大长尾越重
+             * @default 1
+             */
+            degraded_duration_cv: number;
+            /**
+             * Degraded Bandwidth Factor
+             * @description 降速状态下的带宽系数
+             * @default 0.3
+             */
+            degraded_bandwidth_factor: number;
+            /**
+             * Degraded Extra Latency Ms
+             * @description 降速状态下每批读取额外增加的固定延迟（ms）
+             * @default 1
+             */
+            degraded_extra_latency_ms: number;
+            /**
+             * Jitter Cv
+             * @description 每批读取带宽系数的变异系数（对数正态，均值 1）；0 表示不抖动
+             * @default 0.02
+             */
+            jitter_cv: number;
+        };
+        /**
          * LayerSegment
          * @description 层序中连续 ``count`` 层的结构：注意力组、FFN 类型及 DSA 索引器是否完整计算。
          */
@@ -1675,10 +1721,11 @@ export interface components {
             l2_latency_ms: number;
             /**
              * L3 Latency Ms
-             * @description 每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，两层结构直接读到 L1；另计传输耗时及 SSD 式成段降速与单次抖动，默认值未经实测校准，0 为理想基线
+             * @description 每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，两层结构直接读到 L1；另计传输耗时及 l3_fluctuation 描述的波动，默认值未经实测校准，0 为理想基线
              * @default 0.1
              */
             l3_latency_ms: number;
+            l3_fluctuation?: components["schemas"]["L3Fluctuation"];
         };
         /**
          * SyntheticWorkloadConfig

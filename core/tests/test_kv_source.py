@@ -1,8 +1,16 @@
-"""KV 来源：先来先服务的确定性计时、两状态降速与单次抖动的可复现波动。"""
+"""KV 来源：先来先服务的确定性计时、两状态降速（长尾降速段）与单次抖动的可复现波动。"""
+
+import math
+from unittest.mock import patch
 
 import pytest
 
-from simcore.kv_source import L3_FLUCTUATION, Fluctuation, KvSource, KvSourceSpec
+from simcore.kv_source import KvSource, KvSourceSpec
+from simcore.schemas import L3Fluctuation
+
+
+def _fluctuation(**update: float) -> L3Fluctuation:
+    return L3Fluctuation().model_copy(update=update)
 
 
 def test_deterministic_source_reads_groups_serially_and_queues_later_submissions() -> None:
@@ -16,7 +24,7 @@ def test_deterministic_source_reads_groups_serially_and_queues_later_submissions
 
 
 def test_fluctuating_source_is_reproducible_per_seed() -> None:
-    spec = KvSourceSpec(bytes_per_ms=1000, latency_ms=0.1, fluctuation=L3_FLUCTUATION)
+    spec = KvSourceSpec(bytes_per_ms=1000, latency_ms=0.1, fluctuation=L3Fluctuation())
 
     def run(seed: str) -> list[float]:
         source = KvSource(spec, seed)
@@ -26,10 +34,31 @@ def test_fluctuating_source_is_reproducible_per_seed() -> None:
     assert run("0:0:L3") != run("0:1:L3")
 
 
-def test_fluctuation_never_beats_nominal_without_jitter_and_degrades_expected_share() -> None:
-    fluctuation = Fluctuation(
+def test_zero_fraction_and_jitter_match_deterministic_timing() -> None:
+    off = _fluctuation(degraded_fraction=0, jitter_cv=0)
+    fluctuating = KvSource(KvSourceSpec(4, 1, off), "s")
+    deterministic = KvSource(KvSourceSpec(4, 1), "s")
+    for start in (10, 12, 30, 1e9):
+        assert fluctuating.submit(start, [8, 4]) == deterministic.submit(start, [8, 4])
+
+
+def test_jitter_only_never_degrades_and_varies_around_nominal() -> None:
+    source = KvSource(KvSourceSpec(1000, 0, _fluctuation(degraded_fraction=0, jitter_cv=0.1)), "j")
+    durations = [source.submit(float(i), [100.0])[0] - i for i in range(20_000)]
+    assert not source._degraded
+    assert min(durations) < 0.1 < max(durations) < 0.2
+    # 带宽系数均值为 1，耗时均值略高于标称值（Jensen）。
+    assert sum(durations) / len(durations) == pytest.approx(0.1, rel=0.02)
+
+
+@pytest.mark.parametrize("duration_cv", [0.0, 1.0])
+def test_fluctuation_never_beats_nominal_without_jitter_and_degrades_expected_share(
+    duration_cv: float,
+) -> None:
+    fluctuation = _fluctuation(
         degraded_fraction=0.2,
         mean_degraded_ms=10,
+        degraded_duration_cv=duration_cv,
         degraded_bandwidth_factor=0.5,
         degraded_extra_latency_ms=0,
         jitter_cv=0,
@@ -42,14 +71,52 @@ def test_fluctuation_never_beats_nominal_without_jitter_and_degrades_expected_sh
         duration = end - start
         assert duration >= 0.001 * (1 - 1e-6)
         slow += duration > 0.0015
-    # 状态时长按指数分布切换，长期降速时间占比接近设定值。
+    # 降速段均值固定，长期降速时间占比接近设定值。
     assert slow / reads == pytest.approx(0.2, abs=0.03)
 
 
+def test_degraded_segments_follow_lognormal_with_configured_mean_and_tail() -> None:
+    def segments(cv: float, count: int) -> list[float]:
+        source = KvSource(
+            KvSourceSpec(1, 0, _fluctuation(mean_degraded_ms=50, degraded_duration_cv=cv)), "d"
+        )
+        source._degraded = True
+        return [source._segment_ms() for _ in range(count)]
+
+    assert set(segments(0, 10)) == {50}
+    samples = segments(3, 200_000)
+    assert sum(samples) / len(samples) == pytest.approx(50, rel=0.05)
+    # cv=3：中位数为均值 / sqrt(10)，约 1.1% 的段超过 10 倍均值。
+    assert sorted(samples)[len(samples) // 2] == pytest.approx(50 / math.sqrt(10), rel=0.03)
+    assert sum(sample > 500 for sample in samples) / len(samples) == pytest.approx(
+        0.0114, abs=0.002
+    )
+
+
+def test_stationary_restart_uses_time_share_and_length_biased_residual() -> None:
+    source = KvSource(
+        KvSourceSpec(
+            1, 0, _fluctuation(degraded_fraction=0.25, mean_degraded_ms=10, degraded_duration_cv=0)
+        ),
+        "r",
+    )
+    degraded: list[float] = []
+    normal: list[float] = []
+    for _ in range(100_000):
+        source._restart(0.0)
+        (degraded if source._degraded else normal).append(source._state_end)
+    assert len(degraded) / 100_000 == pytest.approx(0.25, abs=0.01)
+    # 固定 10 ms 降速段的剩余时长在 [0, 10) 均匀；正常段剩余时长均值为 30 ms。
+    assert max(degraded) < 10
+    assert sum(degraded) / len(degraded) == pytest.approx(5, rel=0.03)
+    assert sum(normal) / len(normal) == pytest.approx(30, rel=0.03)
+
+
 def test_read_crossing_state_switch_uses_each_segment_bandwidth() -> None:
-    fluctuation = Fluctuation(
+    fluctuation = _fluctuation(
         degraded_fraction=0.5,
         mean_degraded_ms=1e12,
+        degraded_duration_cv=0,
         degraded_bandwidth_factor=0.5,
         degraded_extra_latency_ms=2,
         jitter_cv=0,
@@ -63,29 +130,13 @@ def test_read_crossing_state_switch_uses_each_segment_bandwidth() -> None:
 
 
 @pytest.mark.parametrize("latency", [0, 1e12])
-def test_idle_gaps_and_latency_skip_unobserved_state_transitions(latency: float) -> None:
-    from unittest.mock import patch
-
-    source = KvSource(
-        KvSourceSpec(bytes_per_ms=1000, latency_ms=latency, fluctuation=L3_FLUCTUATION), "idle"
-    )
-    with patch.object(source._rng, "expovariate", wraps=source._rng.expovariate) as draws:
+def test_long_idle_gaps_restart_from_stationary_state(latency: float) -> None:
+    source = KvSource(KvSourceSpec(1000, latency, L3Fluctuation()), "idle")
+    with (
+        patch.object(source._rng, "expovariate", wraps=source._rng.expovariate) as normal,
+        patch.object(source._rng, "lognormvariate", wraps=source._rng.lognormvariate) as other,
+    ):
         (end,) = source.submit(1e12, [1])
     assert end >= 1e12 + latency
-    assert draws.call_count <= 3
-
-
-@pytest.mark.parametrize("degraded", [False, True])
-def test_idle_transition_probability_respects_known_first_switch(degraded: bool) -> None:
-    import math
-    from unittest.mock import patch
-
-    fluctuation = Fluctuation(0.25, 10, 0.5, 0, 0)
-    source = KvSource(KvSourceSpec(1000, 0, fluctuation), "transition")
-    probability = 0.25 + (int(not degraded) - 0.25) * math.exp(-(1 / 30 + 1 / 10) * 5)
-    for sample, expected in ((probability - 0.01, True), (probability + 0.01, False)):
-        source._degraded, source._state_end = degraded, 10
-        with patch.object(source._rng, "random", return_value=sample):
-            source._advance(15, idle=True)
-        assert source._degraded is expected
-        assert source._state_end > 15
+    # 只做常数次稳态重抽与少量逐段推进，不随空档长度增长。
+    assert normal.call_count + other.call_count <= 8

@@ -819,7 +819,7 @@
           "restore_exposed_ms": {
             "type": "number",
             "title": "Restore Exposed Ms",
-            "description": "回载到 L1 未被计算掩盖、拉长 GPU 步长的时间（ms）：三层结构为 L2→L1 逐层流水的暴露部分，两层结构为本步等待 L3→L1 读取完成的时间",
+            "description": "回载到 L1 未被计算掩盖、拉长 GPU 步长的时间（ms）：L2→L1 回载及两层结构逐层读取为逐层流水的暴露部分，两层结构整批读取为本步等待 L3→L1 读取完成的时间",
             "default": 0.0
           },
           "communication_ms": {
@@ -3753,11 +3753,17 @@
             "type": "number",
             "minimum": 0.0,
             "title": "L3 Latency Ms",
-            "description": "每批（至多 128 页）KV 从共享存储（L3）读取的固定延迟（ms），三层结构读到 L2，两层结构直接读到 L1；另计传输耗时及 l3_fluctuation 描述的波动，默认值未经实测校准，0 为理想基线",
+            "description": "每次 KV 从共享存储（L3）读取的固定延迟（ms）：三层结构读到 L2、每批至多 128 页；两层结构直接读到 L1，逐层读取时每层一次、整批读取时每批至多 128 页；另计传输耗时及 l3_fluctuation 描述的波动，默认值未经实测校准，0 为理想基线",
             "default": 0.1
           },
           "l3_fluctuation": {
             "$ref": "#/components/schemas/L3Fluctuation"
+          },
+          "l3_layerwise_load": {
+            "type": "boolean",
+            "title": "L3 Layerwise Load",
+            "description": "两层结构中 L3→L1 读取是否与计算逐层流水：开启时每层读取本批全部命中页，第 i 层计算只等本层 KV 到齐（对应 SGLang Direct L3 linker，如 Mooncake 后端）；关闭时每批至多 128 页、本步计算等全部读完（对应 SGLang LMCache 接入）；三层结构不受影响",
+            "default": true
           }
         },
         "additionalProperties": false,

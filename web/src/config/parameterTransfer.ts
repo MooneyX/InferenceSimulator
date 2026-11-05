@@ -178,9 +178,10 @@ function validateInference(value: unknown): InferenceConfig {
     "effective_interconnect_gb_s", "collective_latency_ms", "ep_communication_latency_ms",
     "kernel_overhead_ms"]) } as Record<string, unknown>;
   const storage = { l2_available_gb: 0, l2_latency_ms: initialStorage.l2_latency_ms,
-    l3_latency_ms: initialStorage.l3_latency_ms, ...configObject(root.storage, "storage", [],
+    l3_latency_ms: initialStorage.l3_latency_ms, l3_layerwise_load: initialStorage.l3_layerwise_load,
+    ...configObject(root.storage, "storage", [],
     ["l2_available_gb", "l2_to_l1_gb_s",
-      "l3_read_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_fluctuation"]) } as Record<string, unknown>;
+      "l3_read_gb_s", "l2_latency_ms", "l3_latency_ms", "l3_fluctuation", "l3_layerwise_load"]) } as Record<string, unknown>;
   const fluctuation = { ...initialL3Fluctuation,
     ...configObject(storage.l3_fluctuation ?? {}, "storage.l3_fluctuation", [],
       Object.keys(initialL3Fluctuation)) } as Record<string, unknown>;
@@ -348,6 +349,7 @@ function validateInference(value: unknown): InferenceConfig {
   for (const key of ["l2_to_l1_gb_s", "l3_read_gb_s"] as const) {
     configNumber(storage, "storage", key, Number.MIN_VALUE, false, true);
   }
+  configBoolean(storage, "storage", "l3_layerwise_load");
   for (const key of ["degraded_fraction", "degraded_duration_cv", "degraded_extra_latency_ms", "jitter_cv"]) {
     configNumber(fluctuation, "storage.l3_fluctuation", key, 0);
   }

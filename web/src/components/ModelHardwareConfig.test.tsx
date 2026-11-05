@@ -82,6 +82,16 @@ describe("ModelHardwareConfig", () => {
     expect(onInferenceChange.mock.lastCall![0].storage.l3_fluctuation.jitter_cv).toBeNaN();
   });
 
+  it("toggles two-tier layerwise L3 loading, enabled by default", () => {
+    const onInferenceChange = vi.fn();
+    render(<ModelHardwareConfig config={createDefaultSimConfig()} onInferenceChange={onInferenceChange} disabled={false} />);
+    const toggle = screen.getByLabelText("两层结构 L3 读取与计算逐层流水（关闭后整批读完再计算）");
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(onInferenceChange).toHaveBeenLastCalledWith({ ...createDefaultSimConfig().inference,
+      storage: { ...initialStorage, l3_layerwise_load: false } });
+  });
+
   it("invalidates a capacity preview when the shared L3 budget changes", async () => {
     const config = createDefaultSimConfig();
     const { rerender } = render(<ModelHardwareConfig config={config} onInferenceChange={vi.fn()} disabled={false} />);

@@ -28,6 +28,7 @@ class TransferSpec:
     l3_read: KvSourceSpec | None = None  # 三层结构读到 L2，两层结构直接读到 L1
     layer_page_bytes: tuple[float, ...] = ()  # 整组每页 KV 在各层的字节数，合计为每页字节数
     seed: int = 0  # 来源波动种子，按实例与来源再派生
+    l3_layerwise: bool = True  # 两层结构 L3→L1 逐层读取并与计算流水；否则整批读完再计算
 
 
 @dataclass(frozen=True, slots=True)

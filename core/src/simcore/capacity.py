@@ -381,6 +381,7 @@ def prepare_runtime(config: SimConfig) -> RuntimeConfig:
             for size in _layer_kv_bytes(plan, inference.tp_size, _hierarchical(config))
         ),
         seed=config.workload.seed,
+        l3_layerwise=storage.l3_layerwise_load,
     )
     analytical = AnalyticalSpec(plan, inference.hardware, inference.tp_size, inference.ep_size)
     return RuntimeConfig(engine, perf, transfers, analytical, report)

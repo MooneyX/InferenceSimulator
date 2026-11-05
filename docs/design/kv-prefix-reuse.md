@@ -12,7 +12,7 @@
 
 `inference.page_size=B` 同时规定完整页身份与分配粒度。物理配置按单卡显存 `inference.hardware.memory_bytes_per_gpu`、L2 预算和 `shared_l3.available_gb` 解析每层容量；单卡显存扣除每卡全部模型权重后用于 L1 KV，不扣额外运行时空间，至少容纳一页，运行时的 `max_total_tokens`、`l2_capacity_tokens` 和 `l3_capacity_tokens` 均按完整页向下取整。页字节成本是单个 TP 组保存一份逻辑页的字节数，共享 L3 不乘实例数量。启用 L2 要求 L2→L1 带宽，启用 L3 要求 `inference.storage.l3_read_gb_s`。
 
-L2 容量为 0 且启用 L3 时为两层结构（L1+L3），不另设开关（`TieredKVCache.direct_l3`）：L1 淘汰页直接写入 L3，L3 命中页在准入时直接读入 L1，`shared_l2_enabled` 不起作用。SGLang HiCache 默认三层，L3 读出数据先落主机内存池；两层结构对应其 LMCache 接入路径（commit `2b36c718`，`mem_cache/storage/lmcache/lmcache_unified_radix_cache.py`），是本项目按该路径建立的仿真模式，不是 HiCache 默认行为。
+L2 容量为 0 且启用 L3 时为两层结构（L1+L3），不另设开关（`TieredKVCache.direct_l3`）：L1 淘汰页直接写入 L3，L3 命中页在准入时直接读入 L1，`shared_l2_enabled` 不起作用。SGLang HiCache 默认三层，L3 读出数据先落主机内存池；SGLang（commit `2b36c718`）中显存直连外部存储有两条路径：Direct L3 linker（`--enable-unified-cache-external-linker`，`mem_cache/unified_cache/unified_cache_linker.py`）逐层读取并与前向流水，LMCache 接入（`mem_cache/storage/lmcache/lmcache_unified_radix_cache.py`）整批读完再计算。`storage.l3_layerwise_load`（默认开启）选择前者，关闭时选择后者；两层结构是本项目按这两条路径建立的仿真模式，不是 HiCache 默认行为。
 
 `F` 是 `B` 的整数倍，`0≤F≤K`；`[F,K)` 是请求私有 KV，页数为 `ceil(K/B)-F/B`，只占 L1。每池满足 `free+resident=capacity`，`active+evictable=resident`。驻留包含完整页、L1 私有页及实际在途目的占位；目的占位尚不可命中。未来生成估算只进入调度预算，`reserved_future_blocks` 为零。
 
@@ -35,9 +35,9 @@ L2 容量为 0 且启用 L3 时为两层结构（L1+L3），不另设开关（`T
 ### 两层结构的查找、保护与直接读取
 
 - **到达只查找**：本地连续前缀不足时仍发起一次有延迟的 L3 查询；查询完成后不搬数据。连续 L3 命中 token 数严格大于 `l3_prefetch_min_tokens` 时，对命中的 L3 页加查找保护（L3 引用），请求随即就绪；否则不保护。
-- **准入时读取**：选批 `probe` 包含 L3（L1→L3 连续匹配，不再重新查询 L3）；L3 部分不超过阈值时自首个 L3 页起重算。L3 命中页与 L2 提升页一样计入 L1 预算，选批后同步复制到 L1；源 L3 页另加读取保护，至所在 128 页批次读完（`L3_L1_DONE` 事件）才释放。查找保护在准入或中止时释放。
-- **排队期间 L1 命中被淘汰**：这些页已写入 L3，准入时直接读回；不触发三层结构中“本地匹配变短则重新查询 L3”的机制。该处理与 SGLang LMCache 路径的细节可能不同（未核实）。
-- 阈值语义：两种结构中 `l3_prefetch_min_tokens` 均为“命中超过该值才从 L3 读，否则重算”；SGLang LMCache 路径未见对应阈值，属本项目设定。
+- **准入时读取**：选批 `probe` 包含 L3（L1→L3 连续匹配，不再重新查询 L3）；L3 部分不超过阈值时自首个 L3 页起重算。L3 命中页与 L2 提升页一样计入 L1 预算，选批后同步复制到 L1；源 L3 页另加读取保护，逐层读取时至末层读完、整批读取时至所在 128 页批次读完（`L3_L1_DONE` 事件）才释放。查找保护在准入或中止时释放。
+- **排队期间 L1 命中被淘汰**：这些页已写入 L3，准入时直接读回；不触发三层结构中“本地匹配变短则重新查询 L3”的机制。该处理与 SGLang 两层路径的细节可能不同（未核实）。
+- 阈值语义：两种结构中 `l3_prefetch_min_tokens` 均为“命中超过该值才从 L3 读，否则重算”；SGLang 两层路径未见对应阈值，属本项目设定。
 
 ## 发布、增长与释放
 

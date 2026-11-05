@@ -592,6 +592,18 @@ describe("parameter JSON transfer", () => {
     }
   });
 
+  it("round-trips the two-tier layerwise switch, defaults it on and rejects non-booleans", () => {
+    const config = createDefaultSimConfig();
+    config.inference.storage.l3_layerwise_load = false;
+    expect(parseSimConfigJson(serializeSimConfig(config))).toEqual(config);
+    const { l3_layerwise_load: _, ...omitted } = config.inference.storage;
+    expect(parseSimConfigJson(JSON.stringify({ ...config, inference: { ...config.inference, storage: omitted } }))
+      .inference.storage.l3_layerwise_load).toBe(true);
+    const draft = { ...config, inference: { ...config.inference,
+      storage: { ...config.inference.storage, l3_layerwise_load: "yes" } } };
+    expect(() => parseSimConfigJson(JSON.stringify(draft))).toThrow("storage.l3_layerwise_load 必须是布尔值");
+  });
+
   it("defaults an omitted shared lookup latency without enabling omitted storage", () => {
     const config = createDefaultSimConfig();
     expect(parseSimConfigJson(JSON.stringify({ ...config, shared_l3: { available_gb: 40_000 } })).shared_l3)

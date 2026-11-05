@@ -89,6 +89,14 @@ def test_l3_fluctuation_fields_are_scannable() -> None:
         build_point(base, {"inference.storage.l3_fluctuation.degraded_fraction": 1}, None)
 
 
+def test_l3_layerwise_load_is_scannable() -> None:
+    base = SimConfig.model_validate(make_payload(num_requests=1))
+    assert base.inference.storage.l3_layerwise_load
+    key = "inference.storage.l3_layerwise_load"
+    request = ScanRequest(base=base, axes=[{"key": key, "values": [False, True]}])
+    assert not build_point(request.base, {key: False}, None).inference.storage.l3_layerwise_load
+
+
 @pytest.mark.parametrize("bound", [True, False])
 @pytest.mark.parametrize(("name", "ep"), [(MODELS[0].name, 1), (MODELS[2].name, 8)])
 def test_parallelism_uses_selected_model(name: str, ep: int, bound: bool) -> None:

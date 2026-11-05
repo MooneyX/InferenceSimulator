@@ -1,5 +1,9 @@
 """两层结构（L2 关闭、L3 启用）：到达只查找并保护，准入时 L3 页直接读入 L1。"""
 
+from dataclasses import replace
+
+import pytest
+
 from simcore import simulate
 from simcore.engine import Engine
 from simcore.events import EventKind
@@ -22,7 +26,11 @@ def request(key: int, ids: tuple[str, ...]) -> InferenceRequest:
 
 
 def engine(
-    shared: CachePool | None = None, *, min_tokens: int = 0, l1_tokens: int = 32
+    shared: CachePool | None = None,
+    *,
+    min_tokens: int = 0,
+    l1_tokens: int = 32,
+    layerwise: bool = True,
 ) -> Engine:
     runtime = runtime_config(
         EngineConfig(
@@ -39,7 +47,27 @@ def engine(
             l3_lookup_latency_ms=2,
         ),
     )
-    return Engine(runtime, shared_l3=shared)
+    transfers = replace(runtime.transfers, l3_layerwise=layerwise)
+    return Engine(replace(runtime, transfers=transfers), shared_l3=shared)
+
+
+def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[str, ...], float]:
+    shared = CachePool("L3", 9, 16, 4)
+    ids = (encode(90, 0), encode(90, 1))
+    for chunk in ids:
+        shared.insert(chunk)
+    runner = engine(shared, layerwise=layerwise)
+    assert runner.submit(request(0, ids), 0)
+    assert runner.drain_events() == ((2, EventKind.L3_LOOKUP_DONE, 0),)
+    runner.on_l3_lookup(0, 2)
+    assert runner.drain_events() == ()  # 到达只查找，不搬数据
+    assert [shared.lookup(chunk).ref_count for chunk in ids] == [1, 1]
+    assert runner.can_step
+    started = runner.start_step(2, 0)
+    assert started is not None
+    duration, finished = started
+    assert finished == (0,)
+    return runner, shared, ids, duration
 
 
 def test_l1_eviction_writes_directly_to_l3_without_l2() -> None:
@@ -55,21 +83,27 @@ def test_l1_eviction_writes_directly_to_l3_without_l2() -> None:
     assert not TieredKVCache(16, 4, 8, 16).direct_l3
 
 
-def test_lookup_locks_hits_then_admission_reads_directly_into_l1() -> None:
-    shared = CachePool("L3", 9, 16, 4)
-    ids = (encode(90, 0), encode(90, 1))
-    for chunk in ids:
-        shared.insert(chunk)
-    runner = engine(shared)
-    assert runner.submit(request(0, ids), 0)
-    assert runner.drain_events() == ((2, EventKind.L3_LOOKUP_DONE, 0),)
-    runner.on_l3_lookup(0, 2)
-    assert runner.drain_events() == ()  # 到达只查找，不搬数据
+def test_layerwise_read_pipelines_with_compute_and_locks_until_last_layer() -> None:
+    runner, shared, ids, duration = admit_two_hits(layerwise=True)
+    # 2 层、每层读 2 页 × 32 B：每层固定延迟 1 ms + 64 B ÷ 64 B/ms，逐层到齐于 +2、+4 ms。
+    # 首层计算与第二层读取重叠：F_1 = 2 + c，F_2 = max(F_1, 4) + c。
+    c = runner._analysis.device_ms / 2
+    assert c < 2
+    assert duration == pytest.approx(4 + c)
+    assert runner._analysis.restore_exposed_ms == pytest.approx(duration - 2 * c)
+    assert runner._restore_bytes == 128
+    (end, kind, read_id), = runner.drain_events()  # 全部层一次读取，末层读完才释放源页
+    assert (end, kind) == (6, EventKind.L3_L1_DONE)
+    l1 = runner._prefix_cache.pools["L1"]
+    assert all(l1.lookup(chunk) is not None for chunk in ids)
+    assert not runner._lookup_locks
     assert [shared.lookup(chunk).ref_count for chunk in ids] == [1, 1]
-    assert runner.can_step
-    started = runner.start_step(2, 0)
-    assert started is not None
-    duration, finished = started
+    runner.on_direct_read_done(read_id)
+    assert [shared.lookup(chunk).ref_count for chunk in ids] == [0, 0]
+
+
+def test_blocking_read_waits_for_all_batches_before_compute() -> None:
+    runner, shared, ids, duration = admit_two_hits(layerwise=False)
     # 一批 2 页：固定延迟 1 ms + 2 页 × 64 B ÷ 64 B/ms；本步计算等读取完成。
     assert runner._analysis.restore_exposed_ms == 3
     assert duration == 3 + runner._analysis.device_ms
@@ -82,7 +116,6 @@ def test_lookup_locks_hits_then_admission_reads_directly_into_l1() -> None:
     assert [shared.lookup(chunk).ref_count for chunk in ids] == [1, 1]  # 读完前保护源页
     runner.on_direct_read_done(read_id)
     assert [shared.lookup(chunk).ref_count for chunk in ids] == [0, 0]
-    assert finished == (0,)
     runner.finish_step(2 + duration)
     runner.complete(2 + duration, 0)
     record, = runner.finalize().records
@@ -138,7 +171,8 @@ def test_pages_evicted_while_waiting_are_read_from_l3_without_new_lookup() -> No
     assert runner._restore_bytes == 128
 
 
-def test_two_tier_simulation_reuses_l3_without_l2() -> None:
+@pytest.mark.parametrize("layerwise", [True, False])
+def test_two_tier_simulation_reuses_l3_without_l2(layerwise: bool) -> None:
     config = resolved_config(
         num_instances=1,
         workload=WorkloadConfig(
@@ -164,6 +198,10 @@ def test_two_tier_simulation_reuses_l3_without_l2() -> None:
             l3_read_bandwidth_bytes_per_ms=64,
             l3_lookup_latency_ms=2,
         ),
+    )
+    storage = config.inference.storage.model_copy(update={"l3_layerwise_load": layerwise})
+    config = config.model_copy(
+        update={"inference": config.inference.model_copy(update={"storage": storage})}
     )
     assert config.inference.storage.l2_available_gb == 0
     result = simulate(config)

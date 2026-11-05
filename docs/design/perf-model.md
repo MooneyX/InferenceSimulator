@@ -17,7 +17,7 @@
 L2→L1 回载与 L3 读取都通过通用 KV 来源计时：每个引擎为每条链路持有一个来源，按提交顺序先来先服务串行读取，每组读取计一次固定延迟，返回各组到齐的绝对时刻，并记录链路空闲时刻 `free_ms`。DRAM 与 SSD 式存储不分类型实现，只以参数区分：
 
 - **L2→L1（本地 DRAM）**：确定性，`l2_latency_ms` + 字节 / `l2_to_l1_gb_s`。
-- **L3 读取**（三层结构读到 L2，两层结构直接读到 L1）：`l3_latency_ms` + 字节 / `l3_read_gb_s`，并叠加 `storage.l3_fluctuation` 配置的 SSD 式波动。`l3_read_gb_s` 是正常状态的标称带宽，不做均值补偿，波动使平均带宽低于该值。
+- **L3 读取**（三层结构读到 L2，两层结构直接读到 L1）：`l3_latency_ms` + 字节 / `l3_read_gb_s`，并叠加 `storage.l3_fluctuation` 配置的 SSD 式波动；三层结构及两层结构整批读取每批至多 128 页计一次，两层结构逐层读取每层计一次。`l3_read_gb_s` 是正常状态的标称带宽，不做均值补偿，波动使平均带宽低于该值。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
@@ -65,7 +65,21 @@ restore_exposed_ms += step_ms - sum(c_i)
 
 ## 两层结构 L3→L1 直接读取
 
-L2 容量为 0 且启用 L3 时（行为见 [kv-prefix-reuse.md](kv-prefix-reuse.md)），选批后本批唯一 L3 命中页自步起点按前缀顺序每 128 页一批提交 L3 来源。每批包含全部层，首层计算也须等末批到齐，因此不与计算逐层流水：
+L2 容量为 0 且启用 L3 时（行为见 [kv-prefix-reuse.md](kv-prefix-reuse.md)），选批后本批唯一 L3 命中页自步起点读入 L1。`storage.l3_layerwise_load` 选择读取方式，默认逐层流水；三层结构不受该开关影响。
+
+**逐层读取（默认）**：参照 SGLang（commit `2b36c718`）Direct L3 linker（`--enable-unified-cache-external-linker`）：调度器生成 prefill 批时 `ready_to_load_host_cache` 调用 `start_layer_wise_loading`，把本批全部待读页合并为一个任务交给后台读取线程；Mooncake 后端（`storage/mooncake_store/mooncake_direct_linker.py` 的 `load_layer_wise`）每层一次范围读取覆盖本批全部页，读完即 `layer_done_counter.complete(layer)`，前向第 i 层注意力只 `wait_until(i)`；前向结束后 `finish_external_linker_loads` 确认全部层到齐。仿真直接复用 L2→L1 的逐层流水计时，只把来源换为 L3：
+
+```text
+R_1..R_L = L3 来源.submit(步起点, [p*b_1, ..., p*b_L])  # 每层一次 l3_latency_ms，带波动
+F_0 = 步起点; F_i = max(F_{i-1}, R_i) + c_i
+step_ms = F_L - 步起点
+restore_time_ms += R_L - 读取开始
+restore_exposed_ms += step_ms - sum(c_i)
+```
+
+本步全部层读完（`R_L`）时产生一个 `L3_L1_DONE` 事件释放源页保护，对应 Mooncake 读完全部层才 `batch_get_session_end`。简化：不按 `STORAGE_BATCH_PAGES` 分批；不模拟 UMBP 后端按 `UMBP_LAYER_GROUP`（默认 8 层）合并读取及按 `UMBP_RANGES_PER_CALL` 拆分请求；读取自步起点开始，不模拟在生成批次时提前发起；每层一次固定延迟会随层数累加，读取量小、层数多时步长可能长于整批读取，小块读取的设备效率下降未建模。
+
+**整批读取（`l3_layerwise_load=false`）**：按前缀顺序每 128 页一批提交 L3 来源。每批包含全部层，首层计算也须等末批到齐，因此不与计算逐层流水：
 
 ```text
 E_1..E_n = L3 来源.submit(步起点, [每批页数 × 每页字节])  # 每批一次 l3_latency_ms，带波动
@@ -74,7 +88,7 @@ restore_time_ms += E_n - 读取开始
 restore_exposed_ms += E_n - 步起点
 ```
 
-对应 SGLang LMCache 接入（commit `2b36c718`）`_start_external_load` 准入时分配 GPU 页并 `submit_load`、`prepare_load_on_stream` 让前向计算流等待读取完成。读取慢会拉长整步，同批 Decode 一并变慢；只有恢复准入的步步长为全部读取时间。每批完成时产生 `L3_L1_DONE` 事件，仅释放源 L3 页保护，不唤醒调度。L1 淘汰写入 L3 仍同步且不计写回耗时，SSD 读写不争用同一链路，结果偏乐观。
+对应 SGLang LMCache 接入（commit `2b36c718`）`_start_external_load` 准入时分配 GPU 页并 `submit_load`、`prepare_load_on_stream` 让前向计算流等待读取完成。读取慢会拉长整步，同批 Decode 一并变慢（两种读取方式相同）；只有恢复准入的步步长为全部读取时间。每批完成时产生 `L3_L1_DONE` 事件，仅释放源 L3 页保护，不唤醒调度。两种方式下 L1 淘汰写入 L3 均同步且不计写回耗时（SGLang 两条路径均由后台线程异步写回），SSD 读写不争用同一链路，结果偏乐观。
 
 `restore_bytes` 累计已完成的 L3 读取页与 L2→L1 提升页字节；`restore_time_ms` 与 `analysis.restore_ms` 为各链路的服务时长之和，不等于 makespan 增量。`analysis.device_ms` 只计 `step_cost` 计算时长，步长中被回载拉长的部分单列为 `analysis.restore_exposed_ms`，两者之和为 GPU 步长总和。低层关闭时新增成本全为零。此模型不代表真实设备并行或已校准耗时。
 

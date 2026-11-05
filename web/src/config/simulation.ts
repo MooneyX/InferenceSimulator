@@ -120,6 +120,7 @@ export const initialStorage: InferenceConfig["storage"] = {
   l2_to_l1_gb_s: 256, l3_read_gb_s: 50,
   l2_latency_ms: 0.01, l3_latency_ms: 0.1,
   l3_fluctuation: initialL3Fluctuation,
+  l3_layerwise_load: true,
 };
 export const initialSharedL3: NonNullable<SimConfig["shared_l3"]> = {
   available_gb: 100_000, lookup_latency_ms: 0.1,

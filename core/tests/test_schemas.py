@@ -949,6 +949,9 @@ class TestConfigValidation:
         assert transfers.l2_to_l1 is not None and transfers.l2_to_l1.bytes_per_ms == 128
         assert transfers.l3_read is not None and transfers.l3_read.bytes_per_ms == 64
         assert transfers.layer_page_bytes == (2048, 2048)
+        assert config.inference.storage.l3_layerwise_load and transfers.l3_layerwise
+        payload["inference"]["storage"]["l3_layerwise_load"] = False
+        assert not prepare_runtime(SimConfig.model_validate(payload)).transfers.l3_layerwise
         payload["shared_l3"]["available_gb"] = 0
         payload["inference"]["storage"].update(
             l2_available_gb=0,

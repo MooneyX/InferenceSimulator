@@ -70,6 +70,7 @@ PARAMETERS: dict[str, Parameter] = {
         "L3 降速额外延迟 (ms)"
     ),
     "inference.storage.l3_fluctuation.jitter_cv": Parameter("L3 单批带宽抖动变异系数"),
+    "inference.storage.l3_layerwise_load": Parameter("两层结构 L3 逐层流水读取", "boolean"),
     "shared_l3.available_gb": Parameter("共享 L3 总容量 (TB)"),
     "shared_l3.lookup_latency_ms": Parameter("L3 查找延迟 (ms)"),
     "num_instances": Parameter("推理实例数量", "integer"),

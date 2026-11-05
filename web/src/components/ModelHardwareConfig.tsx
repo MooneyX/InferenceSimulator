@@ -453,11 +453,19 @@ export function ModelHardwareConfig({ config, onInferenceChange, disabled }: Pro
         value={fluctuation[field]}
         onChange={(value) => onStorageChange({ ...storage,
           l3_fluctuation: { ...fluctuation, [field]: value ?? NaN } })} />)}
+      <div className="form-field">
+        <label htmlFor="l3-layerwise-load">
+          <input id="l3-layerwise-load" name="inference.storage.l3_layerwise_load" type="checkbox"
+            checked={storage.l3_layerwise_load ?? true}
+            onChange={(event) => onStorageChange({ ...storage, l3_layerwise_load: event.currentTarget.checked })} />
+          两层结构 L3 读取与计算逐层流水（关闭后整批读完再计算）
+        </label>
+      </div>
     </div>
     <p>单卡显存容量默认采用所选 GPU 的显存规格，可手动调整；扣除每卡模型权重后全部用于 L1 KV，不额外扣除运行时空间。</p>
-    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）每批最多 128 页、固定延迟默认 0.1 ms/批，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
+    <p>性能模型的单算子开销默认 0.005 ms/建模计算阶段；L2（本地 DRAM）→ L1 按层序逐层回载，固定延迟默认 0.01 ms/层；L3（低延迟共享存储）固定延迟默认 0.1 ms/次，三层结构及两层结构整批读取时每次最多 128 页，两层结构逐层读取时每层一次，另计数据传输耗时。均为未经实测校准的试算假设，可按部署调整，设为 0 可对照理想基线。</p>
     <p>L3 读取带宽为正常状态的标称值，另含 SSD 式波动（默认值为占位参数，按负载随机种子复现）：链路在正常与降速间交替，正常段时长服从指数分布，降速段时长服从对数正态分布，均值为降速段平均时长，变异系数越大长尾越重；降速时带宽乘降速系数、每批另加额外延迟；每批读取带宽另乘均值为 1 的对数正态抖动。降速时间占比与抖动变异系数均为 0 时不波动，可作对照基线。</p>
-    <p>L2 容量为 0 且启用共享 L3 时为两层结构（L1+L3）：L1 淘汰直接写入 L3，L3 命中在准入时直接读入 L1，本步计算等读取完成；SGLang HiCache 默认三层，两层对应其 LMCache 接入方式。</p>
+    <p>L2 容量为 0 且启用共享 L3 时为两层结构（L1+L3）：L1 淘汰直接写入 L3，L3 命中在准入时直接读入 L1。默认逐层读取，第 i 层计算只等本层 KV 到齐（对应 SGLang Direct L3 linker，如 Mooncake 后端）；关闭逐层流水后整批读完再计算（对应其 LMCache 接入）。SGLang HiCache 默认三层。</p>
     {selectedHardware && <p>单卡标称规格：{selectedHardware.memory_bytes_per_gpu / 1e9} GB 显存、
       {selectedHardware.peak_fp16_tflops.toLocaleString()} TFLOPS 稠密 BF16/FP16 算力、
       {selectedHardware.peak_hbm_gb_s.toLocaleString()} GB/s HBM 带宽、

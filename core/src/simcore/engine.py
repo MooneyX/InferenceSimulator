@@ -141,6 +141,7 @@ class Engine:
         self._next_transfer_id = 0
         # 两层结构：到达查找命中的 L3 页保护至准入或中止；准入读取的页保护至该批读完。
         self._direct_l3 = self._prefix_cache.direct_l3
+        self._l3_layerwise = transfers.l3_layerwise
         self._lookup_locks: dict[int, tuple[str, ...]] = {}
         self._direct_reads: dict[int, tuple[str, ...]] = {}
 
@@ -400,14 +401,22 @@ class Engine:
         compute_ms: float,
         layer_ms: tuple[tuple[int, float], ...],
     ) -> float:  # 本步提升页、步起点、计算总耗时与逐层耗时 → 含回载的步长
-        if self._direct_l3 and chunk_ids:
+        if self._direct_l3 and not self._l3_layerwise and chunk_ids:
             return self._direct_read_duration(chunk_ids, now_ms, compute_ms)
-        return self._pipelined_duration(len(chunk_ids), now_ms, compute_ms, layer_ms)
+        return self._pipelined_duration(chunk_ids, now_ms, compute_ms, layer_ms)
+
+    def _schedule_direct_read(
+        self, chunk_ids: tuple[str, ...], end_ms: float
+    ) -> None:  # 两层结构一次读取的 L3 页与完成时刻 → 登记读完时释放源页保护的事件
+        read_id = self._next_transfer_id
+        self._next_transfer_id += 1
+        self._direct_reads[read_id] = chunk_ids
+        self._scheduled_events.append((end_ms, EventKind.L3_L1_DONE, read_id))
 
     def _direct_read_duration(
         self, chunk_ids: tuple[str, ...], now_ms: float, compute_ms: float
     ) -> float:  # 本步 L3 命中页、步起点与计算总耗时 → 等读完再计算的步长
-        """两层结构自步起点每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源，本步计算等全部读完。
+        """两层结构整批读取：自步起点每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源，等全部读完。
 
         每批包含全部层，首层计算也须等末批到齐，故不与计算逐层流水；对应 SGLang LMCache
         接入 ``prepare_load_on_stream`` 让前向计算流等待读取完成。各批读完时释放源页保护。
@@ -422,10 +431,7 @@ class Engine:
         ]
         ends = source.submit(now_ms, [len(batch) * self._page_bytes for batch in batches])
         for batch, end in zip(batches, ends, strict=True):
-            read_id = self._next_transfer_id
-            self._next_transfer_id += 1
-            self._direct_reads[read_id] = batch
-            self._scheduled_events.append((end, EventKind.L3_L1_DONE, read_id))
+            self._schedule_direct_read(batch, end)
         wait = ends[-1] - now_ms
         load_ms = ends[-1] - start
         self._restore_bytes += len(chunk_ids) * self._page_bytes
@@ -436,19 +442,22 @@ class Engine:
 
     def _pipelined_duration(
         self,
-        pages: int,
+        chunk_ids: tuple[str, ...],
         now_ms: float,
         compute_ms: float,
         layer_ms: tuple[tuple[int, float], ...],
-    ) -> float:  # 回载页数、步起点、计算总耗时与逐层耗时 → 流水后的步长
-        """L2→L1 回载自步起点按层序逐层提交 L2 来源，与逐层计算流水；累计回载统计。
+    ) -> float:  # 本步提升页、步起点、计算总耗时与逐层耗时 → 流水后的步长
+        """本批提升页自步起点按层序逐层提交来源，与逐层计算流水；累计回载统计。
 
-        对应 SGLang ``HiCacheController.start_loading`` 整批合并后逐层拷贝、注意力层
+        三层结构来源为 L2，对应 SGLang ``HiCacheController.start_loading`` 整批合并后逐层拷贝；
+        两层结构来源为 L3，对应 Direct L3 linker ``start_layer_wise_loading`` 每层读取本批全部
+        页，源页保护至末层读完（Mooncake 读完全部层才结束读取会话）。注意力层均
         ``wait_until(layer_id)`` 只等本层到齐。
         """
+        pages = len(chunk_ids)
         if not pages:
             return compute_ms
-        source = self._l2_source
+        source = self._l3_source if self._direct_l3 else self._l2_source
         if source is None:
             raise ValueError("传输链路须配置有效带宽和 KV 字节数")
         start = max(now_ms, source.free_ms)
@@ -456,6 +465,8 @@ class Engine:
         duration = pipelined_finish_ms(now_ms, ready, layer_ms) - now_ms
         load_ms = ready[-1] - start
         self._restore_bytes += pages * self._page_bytes
+        if self._direct_l3:
+            self._schedule_direct_read(chunk_ids, ready[-1])
         self._restore_time_ms += load_ms
         self._analysis.restore_ms += load_ms
         self._analysis.restore_exposed_ms += duration - compute_ms

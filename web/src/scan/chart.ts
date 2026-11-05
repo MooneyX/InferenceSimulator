@@ -1,5 +1,6 @@
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
 import { hardwareLevelLabel, hardwarePresetFields, isPresetAxis } from "../config/presets";
+import { metricLabel, metricUnit } from "./metrics";
 
 export type Role = "x" | "color" | "shape" | "line";
 export type Roles = Record<Role, string>;
@@ -82,18 +83,6 @@ export function metricsOf(data: ScanData[]): string[] {
     Object.keys(point.metrics ?? {}).filter((key) => typeof point.metrics?.[key] === "number"))))].sort();
 }
 
-export function metricUnit(metric: string): string {
-  if (["ttft_mean", "ttft_p50", "ttft_p99", "tpot_mean", "tpot_p99", "makespan", "restore_time_ms"].includes(metric)
-    || metric.startsWith("itl_") || (metric.startsWith("l3_stall_") && metric !== "l3_stall_fraction")) return "ms";
-  if (["throughput", "arrival_qps"].includes(metric)) return "请求/秒";
-  if (metric.endsWith("_rate") || metric.endsWith("_ratio") || metric.endsWith("_fraction")) return "%";
-  if (metric.endsWith("_tokens")) return "token";
-  if (metric.endsWith("_blocks")) return "页";
-  if (metric === "restore_bytes") return "字节";
-  if (["num_sessions", "promotions", "demotions", "l3_read_steps"].includes(metric) || metric.endsWith("_evictions")) return "次";
-  return `${metric}（单位未知）`;
-}
-
 export type StyleChannel = "color" | "shape" | "line";
 export function metricChannel(roles: Roles, count: number): StyleChannel | null {
   if (count < 2) return null;
@@ -162,12 +151,12 @@ export function buildChart(data: ScanData[], roles: Roles, metrics: string | str
       const group = JSON.stringify([color, shape, line, hiddenValues, metric]);
       let item = seriesMap.get(group);
       if (!item) {
-        const name = [selectedMetrics.length > 1 && metric,
+        const name = [selectedMetrics.length > 1 && metricLabel(metric),
           roles.color && `${roles.color}=${label(color)}`,
           roles.shape && `${roles.shape}=${label(shape)}`,
           roles.line && `${roles.line}=${label(line)}`,
           ...hiddenValues.map(([key, value]) => `${key}=${label(value)}`)].filter(Boolean).join(" · ");
-        const tooltipValues = [selectedMetrics.length > 1 ? `${metric} (${metricUnit(metric)})` : "",
+        const tooltipValues = [selectedMetrics.length > 1 ? `${metricLabel(metric)} (${metricUnit(metric)})` : "",
           roles.color && color, roles.shape && shape, roles.line && line]
           .filter((value) => value !== "" && value != null).map(label);
         const style = slots[metric];

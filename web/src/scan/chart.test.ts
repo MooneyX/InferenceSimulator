@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { JobSummary } from "../api/types";
 import type { ScanData } from "./chart";
-import { availableKeys, buildChart, metricChannel, metricCharts, metricUnit } from "./chart";
+import { availableKeys, buildChart, metricChannel, metricCharts } from "./chart";
+import { filterMetricGroups, metricGroups, metricLabel, metricUnit } from "./metrics";
 import { renderReport } from "./report";
 import { resolveSelection } from "./selection";
 import { formatScanTooltip } from "./tooltip.js";
@@ -115,7 +116,8 @@ describe("scan projections", () => {
     expect(chart.deduplicated).toBe(1);
     expect(chart.series.map((series) => series.data)).toEqual([[2], [12]]);
     const { group, rows, setOption } = openReport(scans);
-    fireEvent.click(group("metric-options").getByRole("checkbox", { name: /ttft_mean/ }));
+    fireEvent.click(group("metric-options").getByRole("button", { name: /TTFT/ }));
+    fireEvent.click(group("metric-stats").getByRole("checkbox", { name: /均值/ }));
     expect(rows()).toHaveLength(2);
     expect(rows()[1]).toHaveTextContent("12");
     expect((setOption.mock.lastCall?.[0] as { series: { data: number[] }[] }).series
@@ -161,8 +163,8 @@ describe("scan projections", () => {
     expect(model.series.map((series) => series.yAxisIndex)).toEqual([0, 0, 1]);
     expect(model.series.map((series) => series.lineStyle.type)).toEqual(["solid", "dashed", "dotted"]);
     expect(model.series[2].data).toEqual([12, null]);
-    expect(model.series[1].name).toContain("arrival_qps");
-    expect(model.series[1].tooltipValues[0]).toBe("arrival_qps (请求/秒)");
+    expect(model.series[1].name).toContain("实际请求 QPS");
+    expect(model.series[1].tooltipValues[0]).toBe("实际请求 QPS (请求/秒)");
     expect(buildChart(scans, roles, "actual_prefix_hit_rate").series[0].data).toEqual([25, 50]);
     expect(resolveSelection(scans, roles, ["ttft_mean", "throughput"], {}, {}, false,
       [roles.x, roles.color]).visible[0].points).toHaveLength(2);
@@ -180,6 +182,46 @@ describe("scan projections", () => {
       metrics: { throughput: 3, arrival_qps: 4 } }] }], roles,
     ["throughput", "arrival_qps"], undefined, { throughput: 1, arrival_qps: 3 });
     expect(stable.series.map((series) => series.lineStyle.type)).toEqual(["dashed", [10, 4, 2, 4]]);
+  });
+
+  it("groups percentile metrics under one named entry and keeps unknown fields searchable", () => {
+    expect(["ttft_p99", "itl_max", "l3_stall_fraction", "throughput", "new_field"].map(metricLabel))
+      .toEqual(["TTFT P99", "ITL 最大值", "L3 停顿 占比", "完成 QPS", "new_field"]);
+    const groups = metricGroups(["ttft_mean", "ttft_p99", "l3_stall_ms", "l3_stall_fraction",
+      "throughput", "new_field"]);
+    expect(groups.map((group) => group.name)).toEqual(["延迟", "吞吐与负载", "L3 读取", "其他"]);
+    const ttft = groups[0].items[0];
+    expect(ttft).toMatchObject({ label: "TTFT", unit: "ms", multi: true });
+    expect(ttft.stats.map((stat) => stat.label)).toEqual(["均值", "P99"]);
+    expect(groups[2].items[0]).toMatchObject({ label: "L3 停顿", unit: "" });
+    expect(groups[3].items[0]).toMatchObject({ label: "new_field", multi: false });
+    const labels = (query: string) => filterMetricGroups(groups, query)
+      .flatMap((group) => group.items.map((item) => item.label));
+    expect(labels("ttft")).toEqual(["TTFT"]);
+    expect(labels("首 token")).toEqual(["TTFT"]);
+    expect(labels("吞吐")).toEqual(["完成 QPS"]);
+    expect(labels("P99")).toEqual(["TTFT"]);
+    expect(labels("l3_stall_ms")).toEqual(["L3 停顿"]);
+    expect(labels("new_")).toEqual(["new_field"]);
+  });
+
+  it("searches and groups metrics in the offline report", () => {
+    const scans: ScanData[] = [{ job, points: [{ ...point(1, 1, "search"), metrics: {
+      throughput: 2, ttft_mean: 10, ttft_p99: 20, restore_bytes: 2048,
+    } }] }];
+    const { group, setOption } = openReport(scans);
+    const search = document.getElementById("metric-search") as HTMLInputElement;
+    fireEvent.input(search, { target: { value: "p99" } });
+    expect(group("metric-options").queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.click(group("metric-options").getByRole("button", { name: /TTFT/ }));
+    expect(group("metric-stats").getAllByRole("checkbox").map((input) => input.parentElement?.textContent))
+      .toEqual(["均值ms", "P99ms"]);
+    fireEvent.click(group("metric-stats").getByRole("checkbox", { name: /P99/ }));
+    const option = setOption.mock.lastCall?.[0] as { series: { name: string }[] };
+    expect(option.series.some((series) => series.name.includes("TTFT P99"))).toBe(true);
+    fireEvent.input(search, { target: { value: "不存在" } });
+    expect(document.getElementById("metric-stats")).toHaveAttribute("hidden");
+    expect(document.getElementById("metric-options")).toHaveTextContent("没有匹配的指标");
   });
 
   it("embeds all scripts and data inside an offline HTML document", () => {
@@ -533,8 +575,12 @@ describe("scan projections", () => {
     } }] }];
     const { group, setOption, rows } = openReport(scans);
     const metrics = () => group("metric-options");
-    expect(metrics().getByRole("checkbox", { name: /throughput/ })).toBeDisabled();
-    fireEvent.click(metrics().getByRole("checkbox", { name: /ttft_mean/ }));
+    const ttftMean = () => group("metric-stats").getByRole("checkbox", { name: /均值/ });
+    expect(metrics().getByRole("checkbox", { name: /完成 QPS/ })).toBeDisabled();
+    fireEvent.click(metrics().getByRole("button", { name: /TTFT/ }));
+    expect(document.getElementById("metric-stats")).toHaveAttribute("aria-label", "TTFT 统计量");
+    fireEvent.click(ttftMean());
+    expect(metrics().getByRole("button", { name: /TTFT/ })).toHaveTextContent("已选 1");
     let option = setOption.mock.lastCall?.[0] as { yAxis: { name: string }[];
       series: { name: string; yAxisIndex: number; lineStyle: { type: string } }[] };
     expect(document.querySelectorAll(".chart")).toHaveLength(1);
@@ -542,12 +588,12 @@ describe("scan projections", () => {
     expect(option.series.map((series) => series.yAxisIndex)).toEqual([0, 1]);
     expect(option.series.map((series) => series.lineStyle.type)).toEqual(["solid", "dashed"]);
     expect(rows()).toHaveLength(2);
-    fireEvent.click(metrics().getByRole("checkbox", { name: /restore_bytes/ }));
+    fireEvent.click(metrics().getByRole("checkbox", { name: /Restore 传输量/ }));
     expect(document.querySelectorAll(".chart")).toHaveLength(3);
     expect(rows()).toHaveLength(3);
-    expect(rows()[2]).toHaveTextContent("restore_bytes (字节)");
+    expect(rows()[2]).toHaveTextContent("Restore 传输量 (字节)");
     expect(document.getElementById("metric-summary")).toHaveTextContent("已选 3 项");
-    fireEvent.click(metrics().getByRole("checkbox", { name: /ttft_mean/ }));
+    fireEvent.click(ttftMean());
     expect(document.querySelectorAll(".chart")).toHaveLength(1);
     option = setOption.mock.lastCall?.[0] as typeof option;
     expect(option.yAxis.map((axis) => axis.name)).toEqual(["请求/秒", "字节"]);
@@ -561,7 +607,7 @@ describe("scan projections", () => {
       metrics: { throughput: 3, arrival_qps: 4 } },
     ] }];
     const { group } = openReport(scans);
-    fireEvent.click(group("metric-options").getByRole("checkbox", { name: /arrival_qps/ }));
+    fireEvent.click(group("metric-options").getByRole("checkbox", { name: /实际请求 QPS/ }));
     expect(document.querySelectorAll(".chart")).toHaveLength(2);
     expect(document.getElementById("selection-notice")).not.toHaveTextContent("释放通道");
   });

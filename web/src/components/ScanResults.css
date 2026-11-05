@@ -288,19 +288,50 @@
   background: var(--surface2); color: var(--text); font-size: 0.8rem; cursor: pointer;
 }
 .scan-metric-picker[open] summary { border-color: var(--accent); }
-.scan-metric-options {
+.scan-metric-menu {
   position: absolute; z-index: 5; top: calc(100% + 4px); left: 0;
-  width: min(400px, calc(100vw - 56px)); max-height: 260px; overflow: auto;
+  width: min(400px, calc(100vw - 56px));
   padding: 6px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface2); box-shadow: 0 12px 30px rgba(0, 0, 0, .25);
 }
-.scan-view-controls .scan-metric-options label {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 6px 8px; font-size: 0.75rem; cursor: pointer; overflow-wrap: anywhere;
+.scan-metric-search {
+  width: 100%; min-height: 32px; margin-bottom: 6px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface); color: var(--text); font-size: 0.8rem;
 }
-.scan-metric-options label:hover { background: var(--surface); }
-.scan-metric-options input { accent-color: var(--accent); }
-.scan-metric-options small { margin-left: auto; white-space: nowrap; color: var(--text-dim); }
+.scan-metric-search:focus { border-color: var(--accent); outline: none; }
+.scan-metric-options { max-height: 300px; overflow: auto; }
+.scan-metric-group + .scan-metric-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.scan-metric-group-title {
+  padding: 4px 8px 2px; color: var(--text-dim); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.03em;
+}
+.scan-metric-empty { margin: 0; padding: 10px 8px; color: var(--text-dim); font-size: 0.75rem; }
+.scan-view-controls .scan-metric-options label,
+.scan-view-controls .scan-metric-stats label,
+.scan-view-controls .scan-metric-options .scan-metric-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;
+  padding: 6px 8px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-dim); font-size: 0.75rem; font-weight: 400; letter-spacing: normal;
+  text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.scan-metric-options label:hover, .scan-metric-stats label:hover,
+.scan-view-controls .scan-metric-options .scan-metric-item:hover:not(:disabled),
+.scan-view-controls .scan-metric-options .scan-metric-item.open { background: var(--surface); color: var(--text); }
+.scan-metric-options input, .scan-metric-stats input { margin: 0; accent-color: var(--accent); }
+.scan-metric-options small, .scan-metric-stats small { margin-left: auto; white-space: nowrap; color: var(--text-dim); }
+.scan-metric-count {
+  padding: 0 6px; border-radius: 8px; background: rgba(108, 99, 255, .2); color: var(--text);
+  font-size: 0.68rem; white-space: nowrap;
+}
+.scan-metric-arrow { color: var(--text-dim); }
+.scan-metric-stats {
+  position: absolute; left: calc(100% + 4px); width: 170px;
+  padding: 6px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface2); box-shadow: 0 12px 30px rgba(0, 0, 0, .25);
+}
+@media (max-width: 760px) {
+  .scan-metric-stats { position: static; width: auto; margin-top: 6px; box-shadow: none; }
+}
 .scan-chart-panel + .scan-chart-panel { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 14px; }
 .scan-chart-panel h3 { font-size: 0.85rem; margin: 10px 0 0; overflow-wrap: anywhere; }
 .scan-chart-panel > p { color: var(--text-dim); font-size: 0.75rem; line-height: 1.6; }

@@ -3,13 +3,15 @@ import reportRuntime from "./reportRuntime.js?raw";
 import tooltipSource from "./tooltip.js?raw";
 
 import type { ScanParameter } from "../api/types";
-import { availableKeys, metricUnit, metricsOf, type ScanData } from "./chart";
+import { availableKeys, metricsOf, type ScanData } from "./chart";
+import { metricGroups, metricLabel, metricUnit } from "./metrics";
 
 const safeScript = (value: string) => value.replace(/<\/script/gi, "<\\/script");
 const embeddedData = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c")
   .replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
 
 export function renderReport(data: ScanData[], parameters: ScanParameter[]): string {
+  const metrics = metricsOf(data);
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>参数组合扫描报告</title><style>
@@ -52,11 +54,25 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .metric-picker{position:relative;align-self:flex-start;min-width:180px}
 .metric-picker summary{padding:7px 10px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);
  color:var(--text);font-size:.8rem;cursor:pointer}.metric-picker[open] summary{border-color:var(--accent)}
-.metric-options{position:absolute;z-index:5;top:calc(100% + 4px);left:0;width:min(400px,calc(100vw - 56px));
- max-height:260px;overflow:auto;padding:6px;border:1px solid var(--border);border-radius:6px;
+.metric-menu{position:absolute;z-index:5;top:calc(100% + 4px);left:0;width:min(400px,calc(100vw - 56px));
+ padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);box-shadow:0 12px 30px rgba(0,0,0,.25)}
+#metric-search{width:100%;min-height:32px;margin-bottom:6px;padding:6px 10px;border:1px solid var(--border);border-radius:5px;
+ background:var(--surface);color:var(--text);font-size:.8rem}#metric-search:focus{border-color:var(--accent);outline:none}
+.metric-options{max-height:300px;overflow:auto}
+.metric-group+.metric-group{margin-top:4px;padding-top:4px;border-top:1px solid var(--border)}
+.metric-group-title{padding:4px 8px 2px;color:var(--text-dim);font-size:.68rem;font-weight:600;letter-spacing:.03em}
+.metric-empty{margin:0;padding:10px 8px}
+.controls .metric-options label,.controls .metric-stats label,.controls .metric-options .metric-item{display:flex;align-items:center;gap:8px;
+ width:100%;min-width:0;padding:6px 8px;border:0;border-radius:4px;background:transparent;color:var(--text-dim);
+ font-size:.75rem;font-weight:400;text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.metric-options label:hover,.metric-stats label:hover,.controls .metric-options .metric-item:hover:not(:disabled),
+.controls .metric-options .metric-item.open{background:var(--surface);color:var(--text)}
+.metric-options input,.metric-stats input{margin:0}
+.metric-options small,.metric-stats small{margin-left:auto;white-space:nowrap}
+.metric-count{padding:0 6px;border-radius:8px;background:rgba(108,99,255,.2);color:var(--text);font-size:.68rem;white-space:nowrap}
+.metric-stats{position:absolute;left:calc(100% + 4px);width:170px;padding:6px;border:1px solid var(--border);border-radius:6px;
  background:var(--surface2);box-shadow:0 12px 30px rgba(0,0,0,.25)}
-.controls .metric-options label{display:flex;min-width:0;padding:6px 8px;cursor:pointer;overflow-wrap:anywhere}
-.metric-options label:hover{background:var(--surface)}.metric-options small{margin-left:auto;white-space:nowrap}
+@media(max-width:760px){.metric-stats{position:static;width:auto;margin-top:6px;box-shadow:none}}
 .chart-panel+.chart-panel{margin-top:24px;padding-top:14px;border-top:1px solid var(--border)}
 .chart-panel h3{font-size:.85rem;overflow-wrap:anywhere}
 .chart{width:100%;min-height:320px;height:45vh;max-height:500px}
@@ -71,8 +87,10 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <div class="role-row"><label>颜色 <select id="role-color"></select></label><div id="values-color" class="role-values"></div></div>
 <div class="role-row"><label>节点形状 <select id="role-shape"></select></label><div id="values-shape" class="role-values"></div></div>
 <div class="role-row"><label>线样式 <select id="role-line"></select></label><div id="values-line" class="role-values"></div></div>
-<div class="controls"><details class="metric-picker"><summary id="metric-summary">纵轴指标 · 已选 1 项</summary>
-<div id="metric-options" class="metric-options" role="group" aria-label="纵轴指标"></div></details>
+<div class="controls"><details id="metric-picker" class="metric-picker"><summary id="metric-summary">纵轴指标 · 已选 1 项</summary>
+<div class="metric-menu"><input id="metric-search" type="search" aria-label="搜索纵轴指标" placeholder="搜索名称、缩写或字段">
+<div id="metric-options" class="metric-options" role="group" aria-label="纵轴指标"></div>
+<div id="metric-stats" class="metric-stats" role="group" hidden></div></div></details>
 <button id="reset-values" class="secondary-button" type="button">重置变化参数值</button></div>
 <div id="background"><div class="controls"><h3>背景参数</h3>
 <button id="reset-background" class="secondary-button" type="button">重新选择背景值</button></div>
@@ -83,8 +101,9 @@ th{position:sticky;top:0;background:var(--surface2)}td:last-child{max-width:400p
 <th>状态</th><th>错误</th><th>实际输入配置</th></tr></thead><tbody id="data-body"></tbody></table></div></section>
 <script>${safeScript(echartsSource)}</script>
 <script type="application/json" id="scan-data">${embeddedData({ data, parameters,
-      keys: availableKeys(data, parameters), units: Object.fromEntries(metricsOf(data).map((metric) =>
-        [metric, metricUnit(metric)])) })}</script>
+      keys: availableKeys(data, parameters), metricGroups: metricGroups(metrics),
+      units: Object.fromEntries(metrics.map((metric) => [metric, metricUnit(metric)])),
+      labels: Object.fromEntries(metrics.map((metric) => [metric, metricLabel(metric)])) })}</script>
 <script>${safeScript(tooltipSource.replace("export function formatScanTooltip", "function formatScanTooltip"))}
 ${safeScript(reportRuntime)}</script></body></html>`;
 }

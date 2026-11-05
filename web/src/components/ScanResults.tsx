@@ -6,8 +6,9 @@ import { DataZoomComponent, GridComponent, LegendComponent, ToolboxComponent, To
 
 import { getScanParameters, getScanPoints } from "../api/client";
 import type { JobSummary, ScanParameter, ScanPoint } from "../api/types";
-import { availableKeys, buildChart, metricCharts, metricUnit, metricsOf, palette, symbols, lineStyles, valueOf,
+import { availableKeys, buildChart, metricCharts, metricsOf, palette, symbols, lineStyles, valueOf,
   type Roles, type Role, type ScanData } from "../scan/chart";
+import { filterMetricGroups, metricGroups, metricLabel, metricUnit } from "../scan/metrics";
 import { resolveSelection, textOf, type BackgroundValues, type SelectedValues } from "../scan/selection";
 import { formatScanTooltip } from "../scan/tooltip.js";
 import { ParameterExport } from "./ParameterExport";
@@ -51,7 +52,7 @@ function Curve({ data, roles, metrics, complete, keys, styleSlots, summary }: { 
         nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
         axisLine: { lineStyle: { color: "#2e3347" } } },
       yAxis: units.map((unit, index) => ({ type: "value" as const,
-        name: metrics.length === 1 ? `${metrics[0]} (${unit})` : unit,
+        name: metrics.length === 1 ? `${metricLabel(metrics[0])} (${unit})` : unit,
         position: index === 0 ? "left" as const : "right" as const, scale: true,
         nameTextStyle: { color: "#9ca0b0" }, axisLabel: { color: "#9ca0b0" },
         splitLine: { show: index === 0, lineStyle: { color: "#2e3347" } } })), series: model.series,
@@ -60,8 +61,9 @@ function Curve({ data, roles, metrics, complete, keys, styleSlots, summary }: { 
   const used = data.reduce((sum, batch) => sum + batch.points.length, 0);
   const levels = (key: string) => new Set(model.entries.map(({ point }) => JSON.stringify(valueOf(point, key)))).size;
   return <section className="scan-chart-panel">
-    {metrics.length > 1 || !summary ? <h3>{metrics.join(" · ")}</h3> : null}
-    <div ref={host} className="scan-chart" role="img" aria-label={`${metrics.join("、")}参数扫描折线图`} />
+    {metrics.length > 1 || !summary ? <h3>{metrics.map(metricLabel).join(" · ")}</h3> : null}
+    <div ref={host} className="scan-chart" role="img"
+      aria-label={`${metrics.map(metricLabel).join("、")}参数扫描折线图`} />
     {summary && <p>{complete ? <>独立配置点 {model.entries.length}，相同输入去重 {model.deduplicated} / {used}。
       缺失点断线，不插值、不平均。</> : "背景参数尚未选齐，图表暂不显示。"}</p>}
     {summary && (levels(roles.color) > palette.length || levels(roles.shape) > symbols.length ||
@@ -85,6 +87,8 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const [roles, setRoles] = useState<Roles | null>(null);
   const [selectedMetrics, setSelectedMetrics] = useState(["throughput"]);
   const [styleSlots, setStyleSlots] = useState<Record<string, number>>({ throughput: 0 });
+  const [metricQuery, setMetricQuery] = useState("");
+  const [openMetric, setOpenMetric] = useState<{ id: string; top: number } | null>(null);
   const [background, setBackground] = useState<BackgroundValues>({});
   const [choosingBackground, setChoosingBackground] = useState(false);
   const [selectedValues, setSelectedValues] = useState<SelectedValues>({});
@@ -120,7 +124,11 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
   const data = useMemo(() => finished.filter((job) => points[job.id]).map((job) =>
     ({ job, points: points[job.id] })), [finished.map((job) => job.id).join(","), points]);
   const keys = useMemo(() => availableKeys(data, parameters), [data, parameters]);
-  const measures = metricsOf(data);
+  const measures = useMemo(() => metricsOf(data), [data]);
+  const measureGroups = useMemo(() => metricGroups(measures), [measures]);
+  const visibleMeasureGroups = filterMetricGroups(measureGroups, metricQuery);
+  const openMeasure = openMetric && measureGroups.flatMap((group) => group.items)
+    .find((item) => item.id === openMetric.id);
   const initialRoles: Roles = { x: keys[0] ?? "", color: keys[1] ?? "",
     shape: keys[2] ?? "", line: keys[3] ?? "" };
   const chosenRoles: Roles = { x: roles?.x && keys.includes(roles.x) ? roles.x : initialRoles.x,
@@ -216,15 +224,54 @@ export function ScanResults({ jobs }: { jobs: JobSummary[] }) {
           </div>
         </div>)}
       <div className="scan-view-controls">
-        <details className="scan-metric-picker">
+        <details className="scan-metric-picker"
+          onToggle={(event) => { if (!event.currentTarget.open) setOpenMetric(null); }}>
           <summary>纵轴指标 · 已选 {activeMetrics.length} 项</summary>
-          <div className="scan-metric-options" role="group" aria-label="纵轴指标">
-            {measures.map((key) => <label key={key}>
-              <input type="checkbox" checked={activeMetrics.includes(key)}
-                disabled={activeMetrics.length === 1 && activeMetrics.includes(key)}
-                onChange={(event) => toggleMetric(key, event.target.checked)} />
-              <span>{key}</span><small>{metricUnit(key)}</small>
-            </label>)}
+          <div className="scan-metric-menu">
+            <input className="scan-metric-search" type="search" aria-label="搜索纵轴指标"
+              placeholder="搜索名称、缩写或字段" value={metricQuery}
+              onChange={(event) => { setMetricQuery(event.target.value); setOpenMetric(null); }} />
+            <div className="scan-metric-options" role="group" aria-label="纵轴指标"
+              onScroll={() => setOpenMetric(null)}>
+              {!visibleMeasureGroups.length && <p className="scan-metric-empty">没有匹配的指标</p>}
+              {visibleMeasureGroups.map((group) => <div key={group.name} className="scan-metric-group">
+                <div className="scan-metric-group-title">{group.name}</div>
+                {group.items.map((item) => {
+                  if (!item.multi) {
+                    const key = item.stats[0].key;
+                    return <label key={item.id}>
+                      <input type="checkbox" checked={activeMetrics.includes(key)}
+                        disabled={activeMetrics.length === 1 && activeMetrics.includes(key)}
+                        onChange={(event) => toggleMetric(key, event.target.checked)} />
+                      <span>{item.label}</span><small>{item.unit}</small>
+                    </label>;
+                  }
+                  const count = item.stats.filter((stat) => activeMetrics.includes(stat.key)).length;
+                  const open = openMetric?.id === item.id;
+                  return <button key={item.id} type="button" aria-expanded={open}
+                    className={`scan-metric-item${open ? " open" : ""}`}
+                    onClick={(event) => {
+                      const row = event.currentTarget;
+                      const list = row.closest(".scan-metric-options") as HTMLElement;
+                      setOpenMetric(open ? null : { id: item.id, top: Math.max(0, row.offsetTop - list.scrollTop) });
+                    }}>
+                    <span>{item.label}</span>
+                    {count > 0 && <span className="scan-metric-count">已选 {count}</span>}
+                    <small>{item.unit}</small><span aria-hidden="true" className="scan-metric-arrow">›</span>
+                  </button>;
+                })}
+              </div>)}
+            </div>
+            {openMetric && openMeasure && <div className="scan-metric-stats" role="group"
+              aria-label={`${openMeasure.label} 统计量`} style={{ top: openMetric.top }}>
+              <div className="scan-metric-group-title">{openMeasure.label}</div>
+              {openMeasure.stats.map((stat) => <label key={stat.key}>
+                <input type="checkbox" checked={activeMetrics.includes(stat.key)}
+                  disabled={activeMetrics.length === 1 && activeMetrics.includes(stat.key)}
+                  onChange={(event) => toggleMetric(stat.key, event.target.checked)} />
+                <span>{stat.label}</span><small>{stat.unit}</small>
+              </label>)}
+            </div>}
           </div>
         </details>
         <button className="scan-secondary-button" type="button" onClick={() => setSelectedValues({})}>重置变化参数值</button>

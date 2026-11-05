@@ -218,24 +218,56 @@ describe("ScanResults", () => {
     fireEvent.click(screen.getByRole("button", { name: "全选" }));
     await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
     const picker = within(screen.getByRole("group", { name: "纵轴指标" }));
-    expect(picker.getByRole("checkbox", { name: /throughput/ })).toBeDisabled();
-    fireEvent.click(picker.getByRole("checkbox", { name: /ttft_mean/ }));
+    expect(picker.getByRole("checkbox", { name: /完成 QPS/ })).toBeDisabled();
+    expect(picker.getByText("延迟")).toBeInTheDocument();
+    fireEvent.click(picker.getByRole("button", { name: /TTFT/ }));
+    const stats = within(screen.getByRole("group", { name: "TTFT 统计量" }));
+    expect(stats.getAllByRole("checkbox")).toHaveLength(1);
+    fireEvent.click(stats.getByRole("checkbox", { name: /均值/ }));
+    expect(picker.getByRole("button", { name: /TTFT/ })).toHaveTextContent("已选 1");
     let option = setOption.mock.lastCall?.[0] as { yAxis: { name: string }[];
       series: { name: string; yAxisIndex: number; lineStyle: { type: string } }[] };
     expect(option.yAxis.map((axis) => axis.name)).toEqual(["请求/秒", "ms"]);
     expect(option.series.some((item) => item.lineStyle.type === "dashed")).toBe(true);
     expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(1);
-    fireEvent.click(picker.getByRole("checkbox", { name: /restore_bytes/ }));
+    fireEvent.click(picker.getByRole("checkbox", { name: /Restore 传输量/ }));
     expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(3);
+    expect(screen.getByRole("img", { name: "Restore 传输量参数扫描折线图" })).toBeInTheDocument();
     expect(screen.queryByText(/释放通道/)).not.toBeInTheDocument();
-    fireEvent.click(picker.getByRole("checkbox", { name: /restore_bytes/ }));
+    fireEvent.click(picker.getByRole("checkbox", { name: /Restore 传输量/ }));
     expect(screen.getAllByRole("img", { name: /参数扫描折线图/ })).toHaveLength(1);
     fireEvent.change(screen.getByRole("combobox", { name: /节点形状/ }),
       { target: { value: "" } });
     fireEvent.change(screen.getByRole("combobox", { name: /线样式/ }),
       { target: { value: "scheduler.pd_mutually_exclusive" } });
     option = setOption.mock.lastCall?.[0] as typeof option;
-    expect(option.series.some((item) => item.name.includes("ttft_mean"))).toBe(true);
+    expect(option.series.some((item) => item.name.includes("TTFT 均值"))).toBe(true);
+  });
+
+  it("filters metrics by Chinese name, abbreviation or field name", async () => {
+    vi.mocked(getScanPoints).mockResolvedValue([1, 2].map((x) => ({
+      ...point(x, x, x === 1, `search-${x}`),
+      metrics: { throughput: x, ttft_mean: x, ttft_p99: x, itl_p99: x, restore_bytes: x },
+    })));
+    render(<ScanResults jobs={[job("scan-a")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    await waitFor(() => expect(screen.getByText(/独立配置点 2/)).toBeInTheDocument());
+    const picker = within(screen.getByRole("group", { name: "纵轴指标" }));
+    const search = screen.getByRole("searchbox", { name: "搜索纵轴指标" });
+    fireEvent.change(search, { target: { value: "传输" } });
+    expect(picker.getByRole("checkbox", { name: /Restore 传输量/ })).toBeInTheDocument();
+    expect(picker.queryByRole("button", { name: /TTFT/ })).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "P99" } });
+    expect(picker.getAllByRole("button").map((item) => item.textContent?.replace("›", "")))
+      .toEqual(["TTFTms", "ITLms"]);
+    fireEvent.change(search, { target: { value: "ttft_p99" } });
+    fireEvent.click(picker.getByRole("button", { name: /TTFT/ }));
+    fireEvent.click(within(screen.getByRole("group", { name: "TTFT 统计量" }))
+      .getByRole("checkbox", { name: /P99/ }));
+    expect(screen.getByText("纵轴指标 · 已选 2 项")).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "不存在" } });
+    expect(picker.getByText("没有匹配的指标")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "TTFT 统计量" })).not.toBeInTheDocument();
   });
 
   it("uses the series color and shape in the live hover legend", async () => {

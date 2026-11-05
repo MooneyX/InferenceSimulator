@@ -8,8 +8,9 @@
   const symbols = ['circle', 'rect', 'triangle', 'diamond', 'pin', 'arrow', 'roundRect', 'emptyCircle'];
   const styles = ['solid', 'dashed', 'dotted', [10, 4, 2, 4]];
   const keys = report.keys;
-  const metrics = [...new Set(batches.flatMap(batch => batch.points.flatMap(point =>
-    Object.keys(point.metrics || {}).filter(key => typeof point.metrics[key] === 'number'))))].sort();
+  const metrics = Object.keys(report.units);
+  const metricItems = report.metricGroups.flatMap(group => group.items);
+  const metricLabel = key => report.labels[key] || key;
   const byId = id => document.getElementById(id);
   const label = key => parameters.find(item => item.key === key)?.label || key;
   const value = (point, key) => {
@@ -57,25 +58,104 @@
     input.value = keys[index] || '';
     input.addEventListener('change', () => { choosingBackground = false; redraw(true); });
   });
-  metrics.forEach(metric => {
+  let openMetric = null;
+  function toggleMetric(metric, checked) {
+    if (checked) {
+      const occupied = new Set(selectedMetrics.map(key => styleSlots[key]));
+      const previous = styleSlots[metric];
+      styleSlots[metric] = previous !== undefined && !occupied.has(previous) ? previous
+        : Array.from({ length: selectedMetrics.length + 1 }, (_, index) => index)
+          .find(index => !occupied.has(index));
+      selectedMetrics.push(metric);
+    } else selectedMetrics = selectedMetrics.filter(key => key !== metric);
+    redraw();
+  }
+  function metricCheck(key, text, unitText) {
     const item = document.createElement('label');
     const input = document.createElement('input');
-    input.type = 'checkbox'; input.checked = selectedMetrics.includes(metric);
-    input.addEventListener('change', () => {
-      if (input.checked) {
-        const occupied = new Set(selectedMetrics.map(key => styleSlots[key]));
-        const previous = styleSlots[metric];
-        styleSlots[metric] = previous !== undefined && !occupied.has(previous) ? previous
-          : Array.from({ length: selectedMetrics.length + 1 }, (_, index) => index)
-            .find(index => !occupied.has(index));
-        selectedMetrics.push(metric);
-      } else selectedMetrics = selectedMetrics.filter(key => key !== metric);
-      redraw();
+    input.type = 'checkbox'; input.dataset.metric = key;
+    input.addEventListener('change', () => toggleMetric(key, input.checked));
+    const name = document.createElement('span'); name.textContent = text;
+    const unit = document.createElement('small'); unit.textContent = unitText;
+    item.append(input, name, unit);
+    return item;
+  }
+  function groupTitle(text) {
+    const title = document.createElement('div');
+    title.className = 'metric-group-title'; title.textContent = text;
+    return title;
+  }
+  function renderMetricStats(top) {
+    const host = byId('metric-stats');
+    const item = metricItems.find(entry => entry.id === openMetric);
+    host.replaceChildren();
+    host.hidden = !item;
+    if (item) {
+      host.setAttribute('aria-label', item.label + ' 统计量');
+      host.style.top = top + 'px';
+      host.append(groupTitle(item.label), ...item.stats.map(stat => metricCheck(stat.key, stat.label, stat.unit)));
+    }
+    syncMetricPicker();
+  }
+  function closeMetricStats() {
+    if (openMetric === null) return;
+    openMetric = null;
+    renderMetricStats(0);
+  }
+  function renderMetricOptions() {
+    const terms = byId('metric-search').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const host = byId('metric-options');
+    host.replaceChildren();
+    report.metricGroups.forEach(group => {
+      const items = group.items.filter(item => terms.every(term => item.search.includes(term)));
+      if (!items.length) return;
+      const box = document.createElement('div');
+      box.className = 'metric-group';
+      box.append(groupTitle(group.name));
+      items.forEach(item => {
+        if (!item.multi) { box.append(metricCheck(item.stats[0].key, item.label, item.unit)); return; }
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'metric-item'; button.dataset.id = item.id;
+        const name = document.createElement('span'); name.textContent = item.label;
+        const count = document.createElement('span'); count.className = 'metric-count';
+        const unit = document.createElement('small'); unit.textContent = item.unit;
+        const arrow = document.createElement('span'); arrow.setAttribute('aria-hidden', 'true'); arrow.textContent = '›';
+        button.append(name, count, unit, arrow);
+        button.addEventListener('click', () => {
+          openMetric = openMetric === item.id ? null : item.id;
+          renderMetricStats(Math.max(0, button.offsetTop - host.scrollTop));
+        });
+        box.append(button);
+      });
+      host.append(box);
     });
-    const unit = document.createElement('small'); unit.textContent = report.units[metric];
-    item.append(input, document.createTextNode(metric), unit);
-    byId('metric-options').append(item);
-  });
+    if (!host.children.length) {
+      const empty = document.createElement('p');
+      empty.className = 'metric-empty'; empty.textContent = '没有匹配的指标';
+      host.append(empty);
+    }
+    syncMetricPicker();
+  }
+  function syncMetricPicker() {
+    byId('metric-summary').textContent = '纵轴指标 · 已选 ' + selectedMetrics.length + ' 项';
+    byId('metric-picker').querySelectorAll('input[data-metric]').forEach(input => {
+      input.checked = selectedMetrics.includes(input.dataset.metric);
+      input.disabled = input.checked && selectedMetrics.length === 1;
+    });
+    byId('metric-options').querySelectorAll('.metric-item').forEach(button => {
+      const item = metricItems.find(entry => entry.id === button.dataset.id);
+      const count = item.stats.filter(stat => selectedMetrics.includes(stat.key)).length;
+      const badge = button.querySelector('.metric-count');
+      badge.textContent = count ? '已选 ' + count : '';
+      badge.hidden = !count;
+      button.classList.toggle('open', openMetric === item.id);
+      button.setAttribute('aria-expanded', String(openMetric === item.id));
+    });
+  }
+  byId('metric-search').addEventListener('input', () => { closeMetricStats(); renderMetricOptions(); });
+  byId('metric-options').addEventListener('scroll', closeMetricStats);
+  byId('metric-picker').addEventListener('toggle', () => { if (!byId('metric-picker').open) closeMetricStats(); });
+  renderMetricOptions();
   byId('reset-values').addEventListener('click', () => redraw(true));
   byId('reset-background').addEventListener('click', () => {
     backgroundValues = {};
@@ -98,11 +178,7 @@
     const used = Object.fromEntries(roles.map(role => [role, byId('role-' + role).value]));
     const roleKeys = roles.filter(role => used[role]).map(role => used[role]);
     const hidden = keys.filter(key => !roleKeys.includes(key));
-    byId('metric-summary').textContent = '纵轴指标 · 已选 ' + selectedMetrics.length + ' 项';
-    [...byId('metric-options').querySelectorAll('input')].forEach((input, index) => {
-      input.checked = selectedMetrics.includes(metrics[index]);
-      input.disabled = input.checked && selectedMetrics.length === 1;
-    });
+    syncMetricPicker();
     const activeRows = rows.filter(row => active.has(row.batch.job.id));
     const goodRows = activeRows.filter(row => row.point.status === 'completed'
       && selectedMetrics.some(metric => typeof row.point.metrics?.[metric] === 'number')
@@ -256,7 +332,7 @@
     viewGroups.forEach(items => {
       const panel = document.createElement('div'); panel.className = 'chart-panel';
       if (items.length > 1 || viewGroups.length > 1) {
-        const title = document.createElement('h3'); title.textContent = items.join(' · '); panel.append(title);
+        const title = document.createElement('h3'); title.textContent = items.map(metricLabel).join(' · '); panel.append(title);
       }
       const host = document.createElement('div'); host.className = 'chart'; panel.append(host);
       chartsHost.append(panel);
@@ -282,11 +358,11 @@
         items.forEach(metric => {
           const groupKey = JSON.stringify([color, shape, line, remainder, metric]);
           if (!groups.has(groupKey)) groups.set(groupKey, {
-            metric, name: [items.length > 1 && metric,
+            metric, name: [items.length > 1 && metricLabel(metric),
               ...roles.slice(1).filter(role => used[role]).map(role =>
                 label(used[role]) + '=' + textOf(value(point, used[role]))),
               ...remainder.map(([key, v]) => label(key) + '=' + textOf(v))].filter(Boolean).join(' · '),
-            tooltipValues: [items.length > 1 ? metric + ' (' + report.units[metric] + ')' : '',
+            tooltipValues: [items.length > 1 ? metricLabel(metric) + ' (' + report.units[metric] + ')' : '',
               used.color && color, used.shape && shape, used.line && line]
               .filter(v => v !== '' && v != null).map(textOf),
             ci: channel === 'color' ? assigned[metric] : Math.max(0, colors.findIndex(v => tokenOf(v) === tokenOf(color))),
@@ -325,7 +401,7 @@
           nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
           axisLine: { lineStyle: { color: '#2e3347' } } },
         yAxis: units.map((unit, index) => ({ type: 'value',
-          name: items.length === 1 ? items[0] + ' (' + unit + ')' : unit,
+          name: items.length === 1 ? metricLabel(items[0]) + ' (' + unit + ')' : unit,
           position: index === 0 ? 'left' : 'right', scale: true,
           nameTextStyle: { color: '#9ca0b0' }, axisLabel: { color: '#9ca0b0' },
           splitLine: { show: index === 0, lineStyle: { color: '#2e3347' } } })), series,
@@ -339,7 +415,7 @@
       return {
         scan: sources.map(id => id.slice(0, 8)).join(','), x: value(point, used.x),
         color: value(point, used.color), shape: value(point, used.shape),
-        line: value(point, used.line), metricName: metric + ' (' + report.units[metric] + ')',
+        line: value(point, used.line), metricName: metricLabel(metric) + ' (' + report.units[metric] + ')',
         metric: typeof measured === 'number' ? measured * (report.units[metric] === '%' ? 100 : 1) : null,
         status: (source || point).status, error: (source || point).error || '',
         config: JSON.stringify(point.config || point.values),

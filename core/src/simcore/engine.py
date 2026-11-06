@@ -74,7 +74,7 @@ class EngineRun:
 
 @dataclass(slots=True)
 class _TransferTask:
-    chunk_ids: tuple[str, ...]  # 同一批读取的 L3 页，按前缀顺序
+    chunk_ids: tuple[int, ...]  # 同一批读取的 L3 页，按前缀顺序
     waiting_requests: set[int]
     service_ms: float
     owns_transfer: bool = True
@@ -138,19 +138,19 @@ class Engine:
         self._lookup_waiting: set[int] = set()
         self._last_local_match: dict[int, int] = {}
         self._prefetch_waiting: dict[int, set[int]] = {}
-        self._prefetched_origins: dict[int, set[str]] = {}
+        self._prefetched_origins: dict[int, set[int]] = {}
         self._pending_requeue_prompt_tokens: int = 0
         self._pending_publish: tuple[int, ...] = ()
         self._pending_finished: tuple[int, ...] = ()
         self._scheduled_events: list[tuple[float, EventKind, int]] = []
         self._transfers: dict[int, _TransferTask] = {}  # 在途 L3→L2 预取
-        self._transfer_by_chunk: dict[str, int] = {}
+        self._transfer_by_chunk: dict[int, int] = {}
         self._next_transfer_id = 0
         # 两层结构：到达查找命中的 L3 页保护至准入或中止；准入读取的页保护至该批读完。
         self._direct_l3 = self._prefix_cache.direct_l3
         self._l3_layerwise = transfers.l3_layerwise
-        self._lookup_locks: dict[int, tuple[str, ...]] = {}
-        self._direct_reads: dict[int, tuple[str, ...]] = {}
+        self._lookup_locks: dict[int, tuple[int, ...]] = {}
+        self._direct_reads: dict[int, tuple[int, ...]] = {}
         # 逐步采样：两层结构 L3 读取停顿、按（间隔, 请求数）分组的 ITL。
         self._l3_stalls_ms: array[float] = array("d")
         self._itl_values_ms: array[float] = array("d")
@@ -195,7 +195,7 @@ class Engine:
 
     def _add_transfer(
         self,
-        chunk_ids: tuple[str, ...],
+        chunk_ids: tuple[int, ...],
         request_id: int,
         end_ms: float,
         service_ms: float,
@@ -212,7 +212,7 @@ class Engine:
         return transfer_id
 
     def _start_prefetch(
-        self, request_id: int, remote: list[str], now_ms: float
+        self, request_id: int, remote: list[int], now_ms: float
     ) -> set[int]:  # 请求 ID、连续 L3 命中页与时刻 → 需等待的预取任务 ID
         """已在途的页直接等待；其余页按前缀顺序每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源。
 
@@ -221,8 +221,8 @@ class Engine:
         """
         target = self._prefix_cache.pools["L2"]
         pending: set[int] = set()
-        external: dict[float, list[str]] = {}  # 共享 L2 中其他实例已发起的预取，按完成时刻归并
-        owned: list[str] = []
+        external: dict[float, list[int]] = {}  # 共享 L2 中其他实例已发起的预取，按完成时刻归并
+        owned: list[int] = []
         for chunk_id in remote:
             existing = self._transfer_by_chunk.get(chunk_id)
             if existing is not None:  # 同页已在本实例预取中
@@ -308,7 +308,7 @@ class Engine:
         )
 
     def _accept_prefill_probe(
-        self, item: WaitingRequest, sources: tuple[tuple[str, str], ...], now_ms: float
+        self, item: WaitingRequest, sources: tuple[tuple[int, str], ...], now_ms: float
     ) -> bool: # 判断准入prefill计算时的本地匹配长度是否低于到达排队时的本地匹配长度, 若低于, 需要重新发起L3查询和预取, 并继续排队
         request = item.request
         request_id = request.request_id
@@ -396,7 +396,7 @@ class Engine:
     def _page_bytes(self) -> int:  # 页大小与每 token KV 字节 → 每页传输字节数
         return self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
 
-    def _promote(self, chunk_ids: tuple[str, ...], new_pages: int) -> None:
+    def _promote(self, chunk_ids: tuple[int, ...], new_pages: int) -> None:
         """选批后立即把低层命中页提升到 L1；传输耗时由本步步长计入。
 
         三层结构的来源为 L2；两层结构的来源为 L3，源页保护至所在批次读完。
@@ -413,7 +413,7 @@ class Engine:
 
     def _load_duration(
         self,
-        chunk_ids: tuple[str, ...],
+        chunk_ids: tuple[int, ...],
         now_ms: float,
         compute_ms: float,
         layer_ms: tuple[tuple[int, float], ...],
@@ -423,7 +423,7 @@ class Engine:
         return self._pipelined_duration(chunk_ids, now_ms, compute_ms, layer_ms)
 
     def _schedule_direct_read(
-        self, chunk_ids: tuple[str, ...], end_ms: float
+        self, chunk_ids: tuple[int, ...], end_ms: float
     ) -> None:  # 两层结构一次读取的 L3 页与完成时刻 → 登记读完时释放源页保护的事件
         read_id = self._next_transfer_id
         self._next_transfer_id += 1
@@ -431,7 +431,7 @@ class Engine:
         self._scheduled_events.append((end_ms, EventKind.L3_L1_DONE, read_id))
 
     def _direct_read_duration(
-        self, chunk_ids: tuple[str, ...], now_ms: float, compute_ms: float
+        self, chunk_ids: tuple[int, ...], now_ms: float, compute_ms: float
     ) -> float:  # 本步 L3 命中页、步起点与计算总耗时 → 等读完再计算的步长
         """两层结构整批读取：自步起点每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源，等全部读完。
 
@@ -460,7 +460,7 @@ class Engine:
 
     def _pipelined_duration(
         self,
-        chunk_ids: tuple[str, ...],
+        chunk_ids: tuple[int, ...],
         now_ms: float,
         compute_ms: float,
         layer_ms: tuple[tuple[int, float], ...],

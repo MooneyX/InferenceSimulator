@@ -6,7 +6,7 @@ import random
 from collections import Counter
 from typing import Literal, cast
 
-from simcore.prefix_hash import logical_chunk_id, stable_derive
+from simcore.prefix_hash import chunk_base, prefix_tree_order, stable_derive
 from simcore.schemas import (
     ClientWakeup,
     EngineConfig,
@@ -61,7 +61,6 @@ class Client:
             if trace_plan is not None:
                 raise ValueError("合成仿真不能提供 trace_plan 请求计划")
             self._synthetic_cfg = cast(SyntheticWorkloadConfig, workload.synthetic)
-            self._finished: dict[int, tuple[InferenceRequest, int]] = {}
             if self.arrival_mode == "closed_loop":
                 self._plan = build_synthetic_closed_loop_plan(workload, self.engine)
             else:
@@ -106,6 +105,18 @@ class Client:
         if source.block_size != self.engine.page_size:
             raise ValueError("trace 块大小必须与引擎 page_size 一致")
         self._trace_turns = {item.request_id: item for item in source.requests}
+        self._tail_owner = len(source.sessions)
+        by_session: dict[int, list[tuple[int, ...]]] = {}
+        for item in source.requests:
+            by_session.setdefault(item.session_id, []).append(item.hash_ids)
+        # 会话内块按前缀树重编号以保持输入连续；只存块→ID 映射，发送时再组装，
+        # 使各请求共享同一批 int 对象，在途请求之外不额外持有逐块元组。
+        self._trace_chunk_ids: dict[int, dict[int, int]] = {}
+        for session_id, sequences in by_session.items():
+            base = chunk_base(session_id)
+            self._trace_chunk_ids[session_id] = {
+                block: base + offset for block, offset in prefix_tree_order(sequences).items()
+            }
         seen = Counter(
             (item.session_id, block) for item in source.requests for block in item.hash_ids
         )
@@ -234,8 +245,7 @@ class Client:
         turn = self._next_synthetic_turn(wakeup) if dynamic else self._plan.turns[wakeup.turn_id]
         if not dynamic and turn.session_id != wakeup.session_id:
             raise ValueError("客户端唤醒的 session_id 与轮次不一致")
-        head: tuple[str, ...] = ()
-        hashes: tuple[int, ...] = ()
+        chunk_ids: tuple[int, ...] = ()
         if self.workload_mode == "trace":
             if (
                 self.arrival_mode == "closed_loop"
@@ -243,26 +253,14 @@ class Client:
                 and turn.parent_request_id not in self._completed
             ):
                 raise ValueError("依赖的父请求尚未完成")
-            hashes = self._trace_turns[turn.request_id].hash_ids
+            mapping = self._trace_chunk_ids[turn.session_id]
+            chunk_ids = tuple(map(mapping.__getitem__, self._trace_turns[turn.request_id].hash_ids))
+            base = chunk_base(self._tail_owner + turn.request_id)  # 尾页与输出页为请求私有
         else:
-            inherited = turn.ideal_reuse_blocks
-            if inherited > (turn.prompt_len - 1) // self.engine.page_size:
-                raise ValueError("继承页超过子轮输入的完整前缀")
-            if turn.parent_request_id is not None:
-                parent = self._finished.get(turn.parent_request_id)
-                if parent is None or parent[1] // self.engine.page_size < inherited:
-                    raise ValueError("子轮次需要父请求完成后的完整块上下文")
-                head = tuple(
-                    logical_chunk_id(parent[0].request_id, index, parent[0].inherited_prefix_ids)
-                    for index in range(inherited)
-                )
-                if dynamic:
-                    del self._finished[turn.parent_request_id]
-            else:
-                if turn.root_arrival_time_ms != wakeup.send_time_ms:
-                    raise ValueError("根请求发送时间与计划不符")
-                if inherited:
-                    raise ValueError("根请求不能继承完整块")
+            if turn.parent_request_id is None and turn.root_arrival_time_ms != wakeup.send_time_ms:
+                raise ValueError("根请求发送时间与计划不符")
+            # 合成会话为单链且每轮只追加内容，第 i 页在整条会话中含义相同，父轮完整页自然命中。
+            base = chunk_base(turn.session_id)
         request = InferenceRequest(
             request_id=turn.request_id,
             session_id=turn.session_id,
@@ -270,9 +268,9 @@ class Client:
             prompt_len=turn.prompt_len,
             max_new_tokens=turn.max_new_tokens,
             output_len=turn.output_len,
-            inherited_prefix_ids=head,
+            chunk_base=base,
             ideal_reuse_blocks=turn.ideal_reuse_blocks,
-            trace_hash_ids=hashes,
+            chunk_ids=chunk_ids,
             is_trace=self.workload_mode == "trace",
         )
         self._sent.add(turn.request_id)
@@ -286,10 +284,6 @@ class Client:
             raise ValueError("完成了未发送或已完成的请求")
         del self._inflight[request_id]
         if self.workload_mode == "synthetic":
-            self._finished[request_id] = (
-                request,
-                request.prompt_len + request.output_len - 1,
-            )
             if self.arrival_mode == "open_loop":
                 heapq.heappush(self._ready, (now_ms, request.session_id, request_id))
         elif self.arrival_mode == "closed_loop":

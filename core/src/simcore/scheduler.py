@@ -43,7 +43,7 @@ class PrefillCandidate:
     reused_tokens: int
     new_tokens: int
     required_pages: int
-    hit_sources: tuple[tuple[str, str], ...] = ()
+    hit_sources: tuple[tuple[int, str], ...] = ()
 
     @property
     def context_after(self) -> int:  # 当前候选的目标长度 → Prefill 后上下文 token 数
@@ -59,7 +59,7 @@ class AdmissionBatch:
     aborted: tuple[WaitingRequest, ...]
     restore_only: tuple[WaitingRequest, ...] = ()
     # 回载按候选准入顺序、候选内部上下文顺序提交；块 ID 只作身份，不作排序键。
-    promote_ids: tuple[str, ...] = ()
+    promote_ids: tuple[int, ...] = ()
 
 
 class AdmissionScheduler:
@@ -150,7 +150,7 @@ class AdmissionScheduler:
         self,
         running: Mapping[int, RunningRequest],
         *,
-        accept_probe: Callable[[WaitingRequest, tuple[tuple[str, str], ...]], bool] | None = None,
+        accept_probe: Callable[[WaitingRequest, tuple[tuple[int, str], ...]], bool] | None = None,
     ) -> AdmissionBatch:  # 运行集与就绪条件 → 本步准入、恢复和失败批次
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
@@ -173,8 +173,8 @@ class AdmissionScheduler:
         restored: list[WaitingRequest] = []
         restore_only: list[WaitingRequest] = []
         # 列表保留提交顺序，集合只负责跨候选共享页去重和唯一页容量预算。
-        promotions: list[str] = []
-        promoted: set[str] = set()
+        promotions: list[int] = []
+        promoted: set[int] = set()
         aborted: list[WaitingRequest] = []
         current_offset = 0  # 本步新页、增长余量及页提升的容量预算（不预占）
         selected_future = 0  # 候选请求将来输出的预算，不预留物理页
@@ -309,8 +309,8 @@ class AdmissionScheduler:
         )
 
     def _direct_sources(
-        self, sources: tuple[tuple[str, str], ...]
-    ) -> tuple[tuple[str, str], ...]:  # 两层结构的连续命中 → 截掉不值得读取的 L3 部分后的命中
+        self, sources: tuple[tuple[int, str], ...]
+    ) -> tuple[tuple[int, str], ...]:  # 两层结构的连续命中 → 截掉不值得读取的 L3 部分后的命中
         """L3 命中不超过 ``l3_prefetch_min_tokens`` 时不读 L3，自首个 L3 页起重算。"""
         first = -1
         count = 0

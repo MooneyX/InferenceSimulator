@@ -1,33 +1,33 @@
-"""块身份直接编码的基础约定。"""
+"""块身份整数编码与 Trace 前缀树重编号。"""
 
-import pytest
+from itertools import pairwise
 
-from simcore.prefix_hash import encode, stable_derive
-
-
-def test_encode_uses_request_and_absolute_block_index() -> None:
-    assert encode(0, 0) == "chunk:0:0"
-    assert encode(12, 0) == "chunk:12:0"
-    assert encode(12, 3) == "chunk:12:3"
-    assert encode(123, 4) != encode(12, 34)
+from simcore.prefix_hash import CHUNK_OFFSET_BITS, chunk_base, prefix_tree_order, stable_derive
 
 
-def test_encode_is_independent_of_previous_blocks() -> None:
-    assert encode(7, 3) == encode(7, 3)
-    assert encode(7, 3) != encode(7, 2)
-    assert encode(7, 3) != encode(8, 3)
+def runs(ids: list[int]) -> int:
+    return 1 + sum(following != previous + 1 for previous, following in pairwise(ids))
 
 
-@pytest.mark.parametrize("request_id, block_index", [(-1, 0), (0, -1)])
-def test_encode_rejects_negative_values(request_id: int, block_index: int) -> None:
-    with pytest.raises(ValueError, match="非负整数"):
-        encode(request_id, block_index)
+def test_chunk_base_separates_owner_domains() -> None:
+    assert chunk_base(0) == 0
+    assert chunk_base(1) == 1 << CHUNK_OFFSET_BITS
+    assert chunk_base(3) + (1 << CHUNK_OFFSET_BITS) - 1 < chunk_base(4)
 
 
-@pytest.mark.parametrize("request_id, block_index", [(True, 0), (0, 1.5), ("1", 0)])
-def test_encode_rejects_non_integer_values(request_id: object, block_index: object) -> None:
-    with pytest.raises(TypeError, match="非负整数"):
-        encode(request_id, block_index)  # type: ignore[arg-type]
+def test_prefix_tree_order_numbers_heavy_branch_contiguously() -> None:
+    # 共享前缀 0-1 后分叉：主线 2-3-4 被三次输入经过，支线 9 仅一次。
+    sequences = [[0, 1], [0, 1, 9], [0, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3, 4]]
+    order = prefix_tree_order(sequences)
+    assert order == {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 9: 5}
+    assert [runs([order[block] for block in blocks]) for blocks in sequences] == [1, 2, 1, 1, 1]
+
+
+def test_prefix_tree_order_handles_multiple_roots_and_empty_inputs() -> None:
+    order = prefix_tree_order([[5, 6], [], [7], [5, 6, 8], [7, 1]])
+    assert sorted(order.values()) == list(range(5))
+    assert order[6] == order[5] + 1 and order[8] == order[6] + 1
+    assert order[1] == order[7] + 1
 
 
 def test_stable_derive_remains_domain_specific() -> None:

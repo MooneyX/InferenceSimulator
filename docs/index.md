@@ -10,7 +10,7 @@
 | [design/workload.md](design/workload.md) | 合成 session 计划、理想继承与客户端发送 |
 | [design/events.md](design/events.md) | 唯一 DES 时钟、协调器事件顺序和回调 |
 | [design/kernel.md](design/kernel.md) | F001 双 P/D 模式、一次性 Prefill、FCFS 预算与回撤 |
-| [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 合成负载完整块 ID 的编码与生成时机 |
+| [design/chunk-hash-encoding.md](design/chunk-hash-encoding.md) | 合成负载与 Trace 完整块 ID 的整数编码、Trace 重编号与生成时机 |
 | [design/kv-prefix-reuse.md](design/kv-prefix-reuse.md) | L1/L2/L3 唯一索引、连续命中、容量、迁移与 LRU |
 | [design/perf-model.md](design/perf-model.md) | 统一性能模型、逐阶段 Roofline 与异步 KV 恢复计时 |
 | [design/metrics.md](design/metrics.md) | 时延、吞吐、分层命中及容量迁移的计算口径 |

@@ -8,7 +8,7 @@ from simcore import simulate
 from simcore.engine import Engine
 from simcore.events import EventKind
 from simcore.kv_cache import CachePool, TieredKVCache
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -21,8 +21,8 @@ from simcore.schemas import (
 from test_schemas import resolved_config, runtime_config
 
 
-def request(key: int, ids: tuple[str, ...]) -> InferenceRequest:
-    return InferenceRequest(key, 0, None, len(ids) * 4 + 1, 1, 1, ids, len(ids))
+def request(key: int, ids: tuple[int, ...]) -> InferenceRequest:
+    return InferenceRequest(key, 0, None, len(ids) * 4 + 1, 1, 1, ids, len(ids), chunk_base(key))
 
 
 def engine(
@@ -51,9 +51,9 @@ def engine(
     return Engine(replace(runtime, transfers=transfers), shared_l3=shared)
 
 
-def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[str, ...], float]:
+def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[int, ...], float]:
     shared = CachePool("L3", 9, 16, 4)
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
     runner = engine(shared, layerwise=layerwise)
@@ -73,7 +73,7 @@ def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[str, ...],
 def test_l1_eviction_writes_directly_to_l3_without_l2() -> None:
     cache = TieredKVCache(16, 4, 0, 16)
     assert cache.direct_l3
-    ids = tuple(encode(90, i) for i in range(4))
+    ids = tuple(chunk_base(90) + i for i in range(4))
     for chunk in ids:
         cache.pools["L1"].insert(chunk)
     assert cache.ensure_free(1) == 1
@@ -126,7 +126,7 @@ def test_blocking_read_waits_for_all_batches_before_compute() -> None:
 
 def test_short_l3_hit_is_not_locked_and_recomputed() -> None:
     shared = CachePool("L3", 9, 16, 4)
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
     runner = engine(shared, min_tokens=8)
@@ -142,7 +142,7 @@ def test_short_l3_hit_is_not_locked_and_recomputed() -> None:
 
 def test_lookup_lock_protects_hits_from_other_instance_eviction() -> None:
     shared = CachePool("L3", 9, 2, 4)
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
     runner = engine(shared)
@@ -151,16 +151,16 @@ def test_lookup_lock_protects_hits_from_other_instance_eviction() -> None:
     runner.on_l3_lookup(0, 2)
     other = TieredKVCache(16, 4, 0, 8, shared_l3=shared, pool_id_base=2)
     for index in range(4):
-        other.pools["L1"].insert(encode(91, index))
+        other.pools["L1"].insert(chunk_base(91) + index)
     other.ensure_free(1)  # L1 淘汰页写 L3 失败时直接丢弃，不挤掉被保护的命中页
     assert all(shared.lookup(chunk) is not None for chunk in ids)
-    assert shared.lookup(encode(91, 0)) is None
+    assert shared.lookup(chunk_base(91)) is None
 
 
 def test_pages_evicted_while_waiting_are_read_from_l3_without_new_lookup() -> None:
     runner = engine(l1_tokens=16)
     cache = runner._prefix_cache
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         cache.pools["L1"].insert(chunk)
     runner.submit(request(0, ids), 0)
@@ -229,7 +229,7 @@ def test_three_tier_l2_restore_is_not_counted_as_l3_stall() -> None:
     )
     runner = Engine(runtime)
     cache = runner._prefix_cache
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         cache.pools["L1"].insert(chunk)
     cache.ensure_free(cache.capacity_pages)  # 命中页降至 L2

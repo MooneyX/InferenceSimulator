@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from simcore.engine import Engine
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.schemas import (
     EngineConfig,
     InferenceRequest,
@@ -24,9 +24,11 @@ def request(
     prompt: int,
     maximum: int = 1,
     output: int = 1,
-    inherited: tuple[str, ...] = (),
+    inherited: tuple[int, ...] = (),
 ) -> InferenceRequest:
-    return InferenceRequest(key, key, None, prompt, maximum, output, inherited, len(inherited))
+    return InferenceRequest(
+        key, key, None, prompt, maximum, output, inherited, len(inherited), chunk_base(key)
+    )
 
 
 def test_parent_output_full_page_reused_only_after_completion() -> None:
@@ -36,17 +38,17 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
     started = engine.start_step(0, 0)
     assert started is not None and started[1] == ()
     now = started[0]
-    assert engine._prefix_cache.page(encode(0, 0)) is None
+    assert engine._prefix_cache.page(chunk_base(0)) is None
     assert engine.finish_step(now) == ()
-    assert engine._prefix_cache.page(encode(0, 1)) is None
+    assert engine._prefix_cache.page(chunk_base(0) + 1) is None
     started = engine.start_step(now, 1)
     assert started is not None and started[1] == (0,)
     now += started[0]
     assert engine.finish_step(now) == (0,)
-    assert engine._prefix_cache.page(encode(0, 1)) is None
+    assert engine._prefix_cache.page(chunk_base(0) + 1) is None
     engine.complete(now, 0)
-    assert engine._prefix_cache.page(encode(0, 1)) is None  # K=P+O-1=3
-    child = request(1, 5, inherited=(encode(0, 0),))
+    assert engine._prefix_cache.page(chunk_base(0) + 1) is None  # K=P+O-1=3
+    child = request(1, 5, inherited=(chunk_base(0),))
     engine.submit(child, now)
     started = engine.start_step(now, 2)
     assert started is not None and started[1] == (1,)
@@ -59,7 +61,7 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
 def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> None:
     config = EngineConfig(max_running_requests=3, max_total_tokens=32, page_size=2)
     engine = Engine(runtime_config(config, PERF))
-    identity = (encode(99, 0),)
+    identity = (chunk_base(99),)
     engine.submit(request(0, 3, inherited=identity), 0)
     engine.submit(request(1, 3, inherited=identity), 0)
     started = engine.start_step(0, 0)
@@ -102,7 +104,7 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
     engine = Engine(runtime_config(config, PERF))
     parent = client.on_wakeup(client.initial_wakeups()[0])
     assert parent.output_len == root.output_len == output
-    assert parent.inherited_prefix_ids == ()
+    assert parent.chunk_ids == ()
     engine.submit(parent, 0)
     now = 0.0
     for produced in range(1, output + 1):
@@ -118,12 +120,13 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         assert state.f == (prompt // 4) * 4
         assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 32
         if produced < output:
-            assert engine._prefix_cache.page(encode(7, k // 4)) is None or state.f > k // 4 * 4
+            page = engine._prefix_cache.page(parent.chunk_base + k // 4)
+            assert page is None or state.f > k // 4 * 4
     engine.complete(now, 7)
     successor = client.on_wakeup(client.on_request_completed(7, now)[0])
-    assert successor.inherited_prefix_ids == tuple(encode(7, i) for i in range(blocks))
+    assert successor.chunk_ids == () and successor.chunk_base == parent.chunk_base
     for index in range(blocks):
-        page = engine._prefix_cache.page(encode(7, index))
+        page = engine._prefix_cache.page(parent.chunk_base + index)
         assert page is not None and page.ref_count == 0
 
 

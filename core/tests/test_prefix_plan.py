@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from simcore import simulate
-from simcore.prefix_hash import encode, stable_derive
+from simcore.prefix_hash import stable_derive
 from simcore.schemas import (
     EngineConfig,
     FixedLength,
@@ -150,8 +150,8 @@ def test_plan_reproduction_and_distinct_root_chunk_ids() -> None:
     assert plan == build_synthetic_closed_loop_plan(config(n=6, s=2), cache)
     client = planned_client(plan, cache)
     roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
-    assert all(request.inherited_prefix_ids == () for request in roots)
-    assert encode(roots[0].request_id, 0) != encode(roots[1].request_id, 0)
+    assert all(request.chunk_ids == () for request in roots)
+    assert roots[0].chunk_base != roots[1].chunk_base
     assert stable_derive(17, "length") != stable_derive(17, "root-arrival")
     with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
         plan.turns[roots[0].request_id] = plan.turns[roots[1].request_id]  # type: ignore[index]
@@ -167,14 +167,12 @@ def test_plan_does_not_pregenerate_output_chunk_ids() -> None:
     client = planned_client(plan, cache)
     request = client.on_wakeup(client.initial_wakeups()[0])
     assert request.output_len == client.plan.turns[request.request_id].output_len
-    assert request.inherited_prefix_ids == ()
+    assert request.chunk_ids == ()
     assert request.max_new_tokens == 8
     assert not hasattr(request, "input_chunk_ids")
     child_wakeup = client.on_request_completed(root_id, 10)[0]
     child = client.on_wakeup(child_wakeup)
-    assert child.inherited_prefix_ids == tuple(
-        encode(root_id, index) for index in range(child.ideal_reuse_blocks)
-    )
+    assert child.chunk_ids == () and child.chunk_base == request.chunk_base
 
 
 def test_distinct_roots_have_isolated_chunk_ids() -> None:
@@ -184,9 +182,9 @@ def test_distinct_roots_have_isolated_chunk_ids() -> None:
     roots = [client.on_wakeup(wakeup) for wakeup in client.initial_wakeups()]
     assert len(roots) == 2
     assert all(root.ideal_reuse_blocks == 0 for root in roots)
-    assert roots[0].inherited_prefix_ids == roots[1].inherited_prefix_ids == ()
-    assert {encode(roots[0].request_id, i) for i in range(2)}.isdisjoint(
-        encode(roots[1].request_id, i) for i in range(2)
+    assert roots[0].chunk_ids == roots[1].chunk_ids == ()
+    assert {roots[0].chunk_base + i for i in range(2)}.isdisjoint(
+        roots[1].chunk_base + i for i in range(2)
     )
 
 

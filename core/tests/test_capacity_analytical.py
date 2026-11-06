@@ -19,7 +19,7 @@ from simcore.perf_model import (
     pipelined_finish_ms,
 )
 from simcore.perf_model import step_cost as plan_step_cost
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.schemas import (
     AttentionGroup,
     AuxWeightDtype,
@@ -1889,8 +1889,8 @@ def test_moe_mixed_engine_step_charges_ep_once_and_advances_clock() -> None:
     # 组件测试只缩小运行容量；物理解析报告与原始配置保持不变。
     runtime = replace(runtime, engine=runtime.engine.model_copy(update={"max_total_tokens": 128}))
     engine = Engine(runtime)
-    request0 = InferenceRequest(0, 0, None, 4, 2, 2, (), 0)
-    request1 = InferenceRequest(1, 1, None, 4, 2, 2, (), 0)
+    request0 = InferenceRequest(0, 0, None, 4, 2, 2, (), 0, chunk_base(0))
+    request1 = InferenceRequest(1, 1, None, 4, 2, 2, (), 0, chunk_base(1))
     engine.submit(request0, 0)
     first = engine.start_step(0, 0)
     assert first is not None
@@ -2003,14 +2003,14 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     engine = Engine(runtime)
     cache = engine._prefix_cache
     for key in range(3):
-        parent = InferenceRequest(key, key, None, 4, 1, 1, (), 0)
+        parent = InferenceRequest(key, key, None, 4, 1, 1, (), 0, chunk_base(key))
         cache.pin(parent, ())
         cache.admit(key)
         cache.extend(key, 4)
         cache.publish(key)
         cache.finish(key)
     cache.ensure_free(2)
-    chunk_id = encode(0, 0)
+    chunk_id = chunk_base(0)
     page = cache.page(chunk_id)
     assert page is not None and page.tier == "L3"
     (transfer_id,) = engine._start_prefetch(99, [chunk_id], 10.0)

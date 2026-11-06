@@ -771,9 +771,9 @@ class InferenceRequest:
     prompt_len: int
     max_new_tokens: int
     output_len: int
-    inherited_prefix_ids: tuple[str, ...]
+    chunk_ids: tuple[int, ...]  # 显式给出的前缀完整页块 ID（Trace 输入页）
     ideal_reuse_blocks: int
-    trace_hash_ids: tuple[int, ...] = ()
+    chunk_base: int  # 未显式给出的第 i 页块 ID 为 chunk_base + i
     is_trace: bool = False
 
 

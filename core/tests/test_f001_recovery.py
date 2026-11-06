@@ -14,7 +14,7 @@ from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.kv_cache import TieredKVCache
 from simcore.metrics import compute_metrics
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.router import Router
 from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import (
@@ -36,7 +36,7 @@ PERF = PerfModelConfig()
 
 
 def request(key: int, *, prompt: int = 4, maximum: int = 3, output: int = 3) -> InferenceRequest:
-    return InferenceRequest(key, key, None, prompt, maximum, output, (), 0)
+    return InferenceRequest(key, key, None, prompt, maximum, output, (), 0, chunk_base(key))
 
 
 def occupy(cache: TieredKVCache, key: int, length: int) -> None:
@@ -84,12 +84,12 @@ def test_decode_drops_cached_page_when_lower_tier_is_protected_by_inflight_load(
         occupy(cache, key, 4)
         cache.finish(key)
     cache.ensure_free(1)
-    source = encode(99, 0)
+    source = chunk_base(99)
     cached = cache.page(source)
     assert cached is not None and cached.tier == "L2"
     cache.reserve_transfer(source, "L1", source="L2")
     now = start_step_end(engine, now, 1, (0,))
-    assert cache.page(encode(98, 0)) is None
+    assert cache.page(chunk_base(98)) is None
     assert not engine._aborted
     assert engine.finish_step(now) == (0,)
     engine.complete(now, 0)
@@ -151,8 +151,8 @@ def test_evictable_pages_are_removed_before_withdrawing_active_requests() -> Non
     assert engine.finish_step(now) == ()
     assert engine._prefix_cache.evictions == 1
     assert engine._retry_counts == {0: 1}
-    assert engine._prefix_cache.page("chunk:98:0") is None
-    assert engine._prefix_cache.page("chunk:0:0") is not None
+    assert engine._prefix_cache.page(chunk_base(98)) is None
+    assert engine._prefix_cache.page(chunk_base(0)) is not None
 
 
 def test_withdrawal_tie_breaks_by_smaller_request_id() -> None:

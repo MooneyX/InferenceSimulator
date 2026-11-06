@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from heapq import heapify, heappop, heappush
 
-from simcore.prefix_hash import logical_chunk_id
 from simcore.schemas import InferenceRequest
 
 __all__ = [
@@ -27,7 +26,7 @@ class CacheCapacityError(ValueError):
 
 @dataclass(slots=True)
 class CacheEntry:
-    chunk_id: str
+    chunk_id: int
     tier: str
     ref_count: int
     last_access_seq: int
@@ -70,22 +69,22 @@ class CachePool:
     pool_id: int
     capacity: int
     page_size: int
-    entries: dict[str, CacheEntry] = field(default_factory=dict, init=False)
+    entries: dict[int, CacheEntry] = field(default_factory=dict, init=False)
     resident: int = field(default=0, init=False)
     reserved: int = field(default=0, init=False)
-    evictable: set[tuple[int, str]] = field(default_factory=set, init=False)
+    evictable: set[tuple[int, int]] = field(default_factory=set, init=False)
     peak: int = field(default=0, init=False)
     evictions: int = field(default=0, init=False)
     access_seq: int = field(default=0, init=False)
     # LRU 堆在首次驱逐时才由 evictable 建立；此前只维护集合，大容量池常整场不驱逐。
     heap_active: bool = field(default=False, init=False)
-    heap: list[tuple[int, str]] = field(default_factory=list, init=False)
-    queued: set[tuple[int, str]] = field(default_factory=set, init=False)
+    heap: list[tuple[int, int]] = field(default_factory=list, init=False)
+    queued: set[tuple[int, int]] = field(default_factory=set, init=False)
     queued_since_check: int = field(default=0, init=False)
-    pending_pages: dict[str, int] = field(default_factory=dict, init=False)
-    incoming_ready_ms: dict[str, float] = field(default_factory=dict, init=False)
+    pending_pages: dict[int, int] = field(default_factory=dict, init=False)
+    incoming_ready_ms: dict[int, float] = field(default_factory=dict, init=False)
 
-    def lookup(self, chunk_id: str) -> CacheEntry | None:
+    def lookup(self, chunk_id: int) -> CacheEntry | None:
         return self.entries.get(chunk_id)
 
     def snapshot(self) -> TierSnapshot:
@@ -110,14 +109,14 @@ class CachePool:
         self.reserved -= count
         self.resident -= count
 
-    def reserve_page(self, chunk_id: str) -> None:
+    def reserve_page(self, chunk_id: int) -> None:
         if self.lookup(chunk_id) is not None:
             self.add_ref(chunk_id)
         elif chunk_id not in self.pending_pages:
             self.reserve(1)
         self.pending_pages[chunk_id] = self.pending_pages.get(chunk_id, 0) + 1
 
-    def finish_page(self, chunk_id: str) -> None:
+    def finish_page(self, chunk_id: int) -> None:
         remaining = self.pending_pages[chunk_id] - 1
         if remaining:
             self.pending_pages[chunk_id] = remaining
@@ -125,7 +124,7 @@ class CachePool:
             del self.pending_pages[chunk_id]
         self.drop_ref(chunk_id)
 
-    def store(self, chunk_id: str, ref_count: int = 0, *, occupied: bool = False) -> bool:
+    def store(self, chunk_id: int, ref_count: int = 0, *, occupied: bool = False) -> bool:
         """合并副本和引用；在途同 ID 只占一页，首次完成后仍保护其他传输。"""
         existing = self.lookup(chunk_id)
         if existing is not None:
@@ -144,7 +143,7 @@ class CachePool:
         self.insert(chunk_id, ref_count + pending, occupied=occupied)
         return True
 
-    def insert(self, chunk_id: str, ref_count: int = 0, *, occupied: bool = False) -> None:
+    def insert(self, chunk_id: int, ref_count: int = 0, *, occupied: bool = False) -> None:
         if chunk_id in self.entries:
             raise ValueError("完整页已存在，重复写入须使用 store 合并")
         if not occupied:
@@ -156,7 +155,7 @@ class CachePool:
         if not ref_count:
             self._queue(page)
 
-    def remove(self, chunk_id: str, *, evicted: bool = False) -> CacheEntry:
+    def remove(self, chunk_id: int, *, evicted: bool = False) -> CacheEntry:
         page = self.entries.pop(chunk_id)
         self.resident -= 1
         if not page.ref_count:
@@ -164,7 +163,7 @@ class CachePool:
         self.evictions += int(evicted)
         return page
 
-    def add_refs(self, chunk_id: str, count: int) -> None:
+    def add_refs(self, chunk_id: int, count: int) -> None:
         if not count:
             return
         page = self.entries[chunk_id]
@@ -172,18 +171,18 @@ class CachePool:
             self.evictable.remove((page.last_access_seq, chunk_id))
         page.ref_count += count
 
-    def add_ref(self, chunk_id: str, *, refresh: bool = False) -> None:
+    def add_ref(self, chunk_id: int, *, refresh: bool = False) -> None:
         self.add_refs(chunk_id, 1)
         if refresh:
             self.touch(chunk_id)
 
-    def drop_ref(self, chunk_id: str) -> None:
+    def drop_ref(self, chunk_id: int) -> None:
         page = self.entries[chunk_id]
         page.ref_count -= 1
         if not page.ref_count:
             self._queue(page)
 
-    def touch(self, chunk_id: str) -> None:
+    def touch(self, chunk_id: int) -> None:
         self.access_seq += 1
         page = self.entries[chunk_id]
         if not page.ref_count:
@@ -289,9 +288,9 @@ class TieredKVCache:
         self._requests: dict[int, InferenceRequest] = {}
         self._states: dict[int, KVRequestState] = {}
         self._pins: dict[int, tuple[InferenceRequest, int]] = {}
-        self._pin_sources: dict[int, dict[str, CachePool]] = {}
-        self._chunk_pins: dict[str, set[int]] = {}
-        self._transfers: dict[tuple[str, str], str] = {}
+        self._pin_sources: dict[int, dict[int, CachePool]] = {}
+        self._chunk_pins: dict[int, set[int]] = {}
+        self._transfers: dict[tuple[int, str], str] = {}
         self._private_pages = 0
         self.promotions = 0
         self.demotions = 0
@@ -338,14 +337,14 @@ class TieredKVCache:
             self._private_pages * self.page_size - private_tokens,
         )
 
-    def _source_pool(self, chunk_id: str, *, include_l3: bool = True) -> CachePool | None:
+    def _source_pool(self, chunk_id: int, *, include_l3: bool = True) -> CachePool | None:
         for tier in _TIER_ORDER if include_l3 else _TIER_ORDER[:2]:
             pool = self.pools[tier]
             if pool.lookup(chunk_id) is not None:
                 return pool
         return None
 
-    def page(self, chunk_id: str) -> CacheEntry | None:
+    def page(self, chunk_id: int) -> CacheEntry | None:
         pool = self._source_pool(chunk_id)
         return pool.lookup(chunk_id) if pool is not None else None
 
@@ -364,7 +363,7 @@ class TieredKVCache:
         restoring: bool = False,
         include_l3: bool = True,
         start_index: int = 0,
-    ) -> tuple[tuple[str, str], ...]:
+    ) -> tuple[tuple[int, str], ...]:
         """按页选择最近来源；首个所有可访问池均缺失的页结束连续匹配。"""
         if target_tokens < request.prompt_len:
             raise ValueError("重算目标不得小于原始 prompt")
@@ -373,7 +372,7 @@ class TieredKVCache:
             if restoring
             else (request.prompt_len - 1) // self.page_size
         )
-        sources: list[tuple[str, str]] = []
+        sources: list[tuple[int, str]] = []
         for index in range(start_index, limit):
             chunk_id = self._chunk_id(request, index)
             pool = self._source_pool(chunk_id, include_l3=include_l3)
@@ -382,7 +381,7 @@ class TieredKVCache:
             sources.append((chunk_id, pool.level))
         return tuple(sources)
 
-    def pin(self, request: InferenceRequest, sources: tuple[tuple[str, str], ...]) -> None:
+    def pin(self, request: InferenceRequest, sources: tuple[tuple[int, str], ...]) -> None:
         if request.request_id in self._pins or request.request_id in self._states:
             raise ValueError("请求已被保护或驻留")
         bindings = {chunk_id: self.pools[tier] for chunk_id, tier in sources}
@@ -512,7 +511,7 @@ class TieredKVCache:
             if not self._evict_one(tier):
                 raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
 
-    def _apply_move(self, chunk_id: str, source: str, destination: str | None) -> None:
+    def _apply_move(self, chunk_id: int, source: str, destination: str | None) -> None:
         old = self.pools[source]
         page = old.entries[chunk_id]
         upward = destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(
@@ -537,7 +536,7 @@ class TieredKVCache:
         else:
             self.demotions += 1
 
-    def reserve_transfer(self, chunk_id: str, destination: str, *, source: str) -> str:
+    def reserve_transfer(self, chunk_id: int, destination: str, *, source: str) -> str:
         source_pool = self.pools[source]
         page = source_pool.lookup(chunk_id)
         if page is None:
@@ -565,7 +564,7 @@ class TieredKVCache:
         self._transfers[chunk_id, destination] = source
         return source
 
-    def complete_transfer(self, chunk_id: str, destination: str) -> str:
+    def complete_transfer(self, chunk_id: int, destination: str) -> str:
         source = self._transfers[chunk_id, destination]
         old, target = self.pools[source], self.pools[destination]
         page = old.entries[chunk_id]
@@ -592,7 +591,6 @@ class TieredKVCache:
         return self.evictions - evictions_before
 
     @staticmethod
-    def _chunk_id(request: InferenceRequest, index: int) -> str:
-        if request.is_trace and index < len(request.trace_hash_ids):
-            return f"trace:{request.session_id}:{request.trace_hash_ids[index]}"
-        return logical_chunk_id(request.request_id, index, request.inherited_prefix_ids)
+    def _chunk_id(request: InferenceRequest, index: int) -> int:
+        ids = request.chunk_ids
+        return ids[index] if index < len(ids) else request.chunk_base + index

@@ -12,7 +12,7 @@ from simcore.engine import Engine
 from simcore.events import EventKind
 from simcore.kv_cache import CacheCapacityError, CacheEntry
 from simcore.perf_model import StepCost, step_cost
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.router import Router
 from simcore.schemas import (
     EngineConfig,
@@ -203,11 +203,12 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         client = Client(workload, config, trace_plan=source)
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
+    first, second = chunk_base(0), chunk_base(0) + 1  # 会话内 hash 20、10 按首现根顺序重编号
     seeds = (
-        InferenceRequest(90, 0, None, 4, 1, 1, (), 0, trace_hash_ids=(20,), is_trace=True),
-        InferenceRequest(91, 0, None, 4, 1, 1, (), 0, trace_hash_ids=(10,), is_trace=True),
-        InferenceRequest(92, 92, None, 64, 1, 1, (), 0),
-        InferenceRequest(93, 93, None, l2_pages * 4, 1, 1, (), 0),
+        InferenceRequest(90, 0, None, 4, 1, 1, (first,), 0, chunk_base(90), is_trace=True),
+        InferenceRequest(91, 0, None, 4, 1, 1, (second,), 0, chunk_base(91), is_trace=True),
+        InferenceRequest(92, 92, None, 64, 1, 1, (), 0, chunk_base(92)),
+        InferenceRequest(93, 93, None, l2_pages * 4, 1, 1, (), 0, chunk_base(93)),
     )
     for seed in seeds:
         cache.pin(seed, ())
@@ -216,7 +217,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         cache.publish(seed.request_id)
         cache.finish(seed.request_id)
     cache.ensure_free(4)
-    for chunk_id in ("trace:0:20", "trace:0:10"):
+    for chunk_id in (first, second):
         page = cache.page(chunk_id)
         assert page is not None and page.tier == "L3"
     order = Mock()
@@ -239,8 +240,8 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         else ["send", "send", "send", "lookup", "lookup"]
     )
     assert [call.args for call in reserves.call_args_list if call.args[1] == "L2"] == [
-        ("trace:0:20", "L2"),
-        ("trace:0:10", "L2"),
+        (first, "L2"),
+        (second, "L2"),
     ]
     records = {item.id: item for item in run.records}
     assert records[0].finish == records[1].arrival == records[2].arrival == send_ms
@@ -276,7 +277,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     )
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
-    parent = InferenceRequest(90, 90, None, 8, 1, 1, (), 0)
+    parent = InferenceRequest(90, 90, None, 8, 1, 1, (), 0, chunk_base(90))
     cache.pin(parent, ())
     cache.admit(90)
     cache.extend(90, 8)
@@ -290,15 +291,16 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         9,
         1,
         1,
-        (encode(90, 0), encode(90, 1)),
+        (chunk_base(90), chunk_base(90) + 1),
         2,
+        chunk_base=chunk_base(1),
     )
     assert engine.submit(child, 0)
     if with_ready_root:
-        root = InferenceRequest(2, 2, None, 1, 1, 1, (), 0)
+        root = InferenceRequest(2, 2, None, 1, 1, 1, (), 0, chunk_base(2))
         assert engine.submit(root, 0)
     assert not engine._lookup_waiting
-    filler = InferenceRequest(91, 91, None, 16, 1, 1, (), 0)
+    filler = InferenceRequest(91, 91, None, 16, 1, 1, (), 0, chunk_base(91))
     cache.pin(filler, ())
     cache.admit(91)
     cache.ensure_free(4)
@@ -306,7 +308,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     cache.publish(91)
     cache.finish(91)
     cache.ensure_free(4)
-    assert all(cache.page(chunk).tier == "L3" for chunk in child.inherited_prefix_ids)
+    assert all(cache.page(chunk).tier == "L3" for chunk in child.chunk_ids)
 
     assert engine.can_step
     assert engine._prefix_scheduler.ready_count == 1 + int(with_ready_root)
@@ -377,7 +379,7 @@ def test_lookup_burst_readiness_checks_do_not_scan_waiting_queue() -> None:
     waiting = TrackedWaitingQueue()
     scheduler._waiting = waiting
     for key in range(128):
-        assert engine.submit(InferenceRequest(key, key, None, 5, 1, 1, (), 0), 0)
+        assert engine.submit(InferenceRequest(key, key, None, 5, 1, 1, (), 0, chunk_base(key)), 0)
         assert scheduler.ready_count == 0 and not engine.can_step
     for count, (time, kind, key) in enumerate(engine.drain_events(), 1):
         assert kind is EventKind.L3_LOOKUP_DONE
@@ -396,12 +398,12 @@ def test_zero_ready_waiters_do_not_stop_decode_or_trigger_queue_scan() -> None:
     )
     perf = PerfModelConfig(l3_lookup_latency_ms=100)
     engine = Engine(runtime_config(config, perf))
-    assert engine.submit(InferenceRequest(0, 0, None, 1, 4, 4, (), 0), 0)
+    assert engine.submit(InferenceRequest(0, 0, None, 1, 4, 4, (), 0, chunk_base(0)), 0)
     started = engine.start_step(0, 0)
     assert started is not None
     now = started[0]
     assert not engine.finish_step(now)
-    assert engine.submit(InferenceRequest(1, 1, None, 5, 1, 1, (), 0), now)
+    assert engine.submit(InferenceRequest(1, 1, None, 5, 1, 1, (), 0, chunk_base(1)), now)
     scheduler = engine._prefix_scheduler
     waiting = TrackedWaitingQueue(scheduler._waiting)
     scheduler._waiting = waiting
@@ -432,11 +434,13 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
     )
     engine = Engine(runtime_config(config, perf))
     scheduler = engine._prefix_scheduler
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         engine._prefix_cache.pools["L3"].insert(chunk)
     for key, blocks in ((0, 1), (1, 2), (2, 1)):
-        item = InferenceRequest(key, 90, 90, blocks * 4 + 1, 1, 1, ids[:blocks], blocks)
+        item = InferenceRequest(
+            key, 90, 90, blocks * 4 + 1, 1, 1, ids[:blocks], blocks, chunk_base(key)
+        )
         assert engine.submit(item, 0)
     assert scheduler.ready_count == 0
     for time, kind, key in engine.drain_events():
@@ -458,7 +462,7 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
     assert engine.drain_events() == ()
     time += started[0]
     assert engine.finish_step(time) == (0, 1, 2)
-    assert engine.submit(InferenceRequest(3, 3, None, 1, 1, 1, (), 0), time)
+    assert engine.submit(InferenceRequest(3, 3, None, 1, 1, 1, (), 0, chunk_base(3)), time)
     assert scheduler.ready_count == 1 and engine.can_step
     for key in (0, 1, 2):
         engine.complete(time, key)
@@ -478,14 +482,14 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
     )
     engine = Engine(runtime_config(config, PerfModelConfig()))
     cache = engine._prefix_cache
-    inherited = (encode(90, 0),)
+    inherited = (chunk_base(90),)
     cache.pools["L1"].insert(inherited[0])
-    child = InferenceRequest(1, 90, 90, 5, 8, 8, inherited, 1)
+    child = InferenceRequest(1, 90, 90, 5, 8, 8, inherited, 1, chunk_base(1))
     assert engine.submit(child, 0)
     if restoring:
         waiting = engine._prefix_scheduler._waiting
         waiting[0] = replace(waiting[0], generated_tokens=4)
-        cache.pools["L1"].insert(encode(1, 1))
+        cache.pools["L1"].insert(chunk_base(1) + 1)
     if blocked == "lookup":
         engine._schedule_l3_lookup(1, 0)
     elif blocked == "prefetch":
@@ -536,12 +540,7 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
     )
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
-    hashes = (2, 10, 11)
-    ids = (
-        tuple(f"trace:0:{block}" for block in hashes)
-        if trace
-        else tuple(encode(90, block) for block in hashes)
-    )
+    ids = tuple(chunk_base(90) + block for block in (2, 10, 11))
     for chunk_id in ids:
         cache.pools[tier].insert(chunk_id)
     item = InferenceRequest(
@@ -551,9 +550,9 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
         prompt_len=13,
         max_new_tokens=1,
         output_len=1,
-        inherited_prefix_ids=() if trace else ids,
+        chunk_ids=ids,
         ideal_reuse_blocks=3,
-        trace_hash_ids=hashes if trace else (),
+        chunk_base=chunk_base(1),
         is_trace=trace,
     )
     assert engine.submit(item, 0)
@@ -605,10 +604,10 @@ def test_l3_prefetch_splits_storage_batches_and_waits_for_every_batch(
         l3_lookup_latency_ms=2,
     )
     engine = Engine(runtime_config(config, perf))
-    ids = tuple(encode(90, block) for block in range(3))
+    ids = tuple(chunk_base(90) + block for block in range(3))
     for chunk_id in ids:
         engine._prefix_cache.pools["L3"].insert(chunk_id)
-    item = InferenceRequest(1, 0, None, 13, 1, 1, ids, 3)
+    item = InferenceRequest(1, 0, None, 13, 1, 1, ids, 3, chunk_base(1))
     assert engine.submit(item, 0)
     [(now, _, key)] = engine.drain_events()
     engine.on_l3_lookup(key, now)
@@ -636,12 +635,12 @@ def test_l3_prefetch_stops_when_l2_reservation_evicts_a_later_source_page() -> N
     )
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
-    ids = (encode(90, 0), encode(90, 1))
+    ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         cache.pools["L3"].insert(chunk)
     for index in range(2):
-        cache.pools["L2"].insert(encode(99, index))
-    assert engine.submit(InferenceRequest(1, 0, None, 9, 1, 1, ids, 2), 0)
+        cache.pools["L2"].insert(chunk_base(99) + index)
+    assert engine.submit(InferenceRequest(1, 0, None, 9, 1, 1, ids, 2, chunk_base(1)), 0)
     [(now, kind, key)] = engine.drain_events()
     assert kind is EventKind.L3_LOOKUP_DONE
     engine.on_l3_lookup(key, now)
@@ -758,7 +757,7 @@ def test_full_l2_restore_is_one_load_only_step() -> None:
         l2_latency_ms=3,
     )
     engine = Engine(runtime_config(config, perf))
-    item = InferenceRequest(0, 0, None, 4, 2, 2, (), 0)
+    item = InferenceRequest(0, 0, None, 4, 2, 2, (), 0, chunk_base(0))
     engine.submit(item, 0)
     engine._prefix_scheduler.select_prefill({})
     cache = engine._prefix_cache
@@ -766,13 +765,13 @@ def test_full_l2_restore_is_one_load_only_step() -> None:
     cache.extend(0, 4)
     cache.publish(0)
     cache.withdraw(0)
-    filler = InferenceRequest(99, 99, None, 16, 1, 1, (), 0)
+    filler = InferenceRequest(99, 99, None, 16, 1, 1, (), 0, chunk_base(99))
     cache.pin(filler, ())
     cache.admit(99)
     cache.extend(99, 16)
     cache.publish(99)
     cache.finish(99)
-    cached = cache.page(encode(0, 0))
+    cached = cache.page(chunk_base(0))
     assert cached is not None and cached.tier == "L2"
     engine._prefix_scheduler.requeue(item, 1, generated_tokens=1)
     assert engine.start_step(1, 0) == (pytest.approx(8), ())
@@ -854,7 +853,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
 
         def submit(self, request: InferenceRequest, now_ms: float) -> bool:
             if request.request_id == 1:
-                self.observed_during_step = self._prefix_cache.page("chunk:0:0")
+                self.observed_during_step = self._prefix_cache.page(chunk_base(0))
             return super().submit(request, now_ms)
 
     from test_engine import duration
@@ -872,7 +871,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
     engine = ObservingEngine(runtime_config(config, PerfModelConfig()))
     run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
-    assert engine._prefix_cache.page("chunk:0:0") is not None
+    assert engine._prefix_cache.page(chunk_base(0)) is not None
     assert [item.prefill_start for item in run.records] == pytest.approx([0, end])
 
 

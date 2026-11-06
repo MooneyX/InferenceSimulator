@@ -2,28 +2,60 @@
 
 import hashlib
 import json
+from collections.abc import Sequence
+
+CHUNK_OFFSET_BITS = 32  # 块 ID = 归属域 << 32 | 域内偏移
 
 
-def encode(request_id: int, block_index: int) -> str:  # 请求 ID 与页序号 → 本请求的稳定块身份
-    """由请求 ID 和完整块的逻辑序号编码不依赖前驱的块身份。"""
-    if type(request_id) is not int or type(block_index) is not int:
-        raise TypeError("request_id 和 block_index 必须为非负整数")
-    if request_id < 0 or block_index < 0:
-        raise ValueError("request_id 和 block_index 必须为非负整数")
-    return f"chunk:{request_id}:{block_index}"
+def chunk_base(owner: int) -> int:  # 归属域编号 → 该域首个块 ID
+    """合成会话、Trace 会话与 Trace 请求尾页各占一个归属域，域内偏移连续。"""
+    return owner << CHUNK_OFFSET_BITS
 
 
-def logical_chunk_id(
-    request_id: int, block_index: int, inherited_prefix_ids: tuple[str, ...]
-) -> str:  # 请求、页序号及继承页 ID → 对应逻辑页身份
-    """按逻辑页位置从不可变继承前缀或请求 ID 推导页身份。"""
-    if type(request_id) is not int or type(block_index) is not int:
-        raise TypeError("request_id 和 block_index 必须为非负整数")
-    if request_id < 0 or block_index < 0:
-        raise ValueError("request_id 和 block_index 必须为非负整数")
-    if block_index < len(inherited_prefix_ids):
-        return inherited_prefix_ids[block_index]  # 沿用父页身份才能命中缓存
-    return encode(request_id, block_index)  # 新页归当前请求
+def prefix_tree_order(sequences: Sequence[Sequence[int]]) -> dict[int, int]:
+    """同一会话的块序列 → 前缀树重子优先先序编号，使多数输入的块 ID 连续。
+
+    块 ID 已按 (位置, 前驱) 唯一，会话内所有输入构成一棵前缀树；某块首次出现后其后续块
+    必然也是首次出现，故二分定位新块起点即可。重子按经过该节点的输入数选择。
+    """
+    parent: dict[int, int | None] = {}
+    ends: dict[int, int] = {}
+    for blocks in sequences:
+        if not blocks:
+            continue
+        low, high = 0, len(blocks)
+        while low < high:
+            middle = (low + high) // 2
+            if blocks[middle] in parent:
+                low = middle + 1
+            else:
+                high = middle
+        previous = blocks[low - 1] if low else None
+        for block in blocks[low:]:
+            parent[block] = previous
+            previous = block
+        ends[blocks[-1]] = ends.get(blocks[-1], 0) + 1
+    weight = dict.fromkeys(parent, 0)
+    children: dict[int | None, list[int]] = {}
+    for block, count in ends.items():
+        weight[block] = count
+    for block in reversed(parent):  # 子节点总在父节点之后创建
+        above = parent[block]
+        if above is not None:
+            weight[above] += weight[block]
+    for block, above in parent.items():
+        children.setdefault(above, []).append(block)
+    order: dict[int, int] = {}
+    stack = list(reversed(children.get(None, ())))
+    while stack:
+        block = stack.pop()
+        order[block] = len(order)
+        below = children.get(block)
+        if below:
+            heavy = max(below, key=weight.__getitem__)
+            stack.extend(item for item in reversed(below) if item != heavy)
+            stack.append(heavy)
+    return order
 
 
 def stable_derive(seed: int, domain: str) -> int:  # 随机种子与用途域 → 稳定独立的 64 位种子

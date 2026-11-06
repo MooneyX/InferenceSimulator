@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from simcore.kv_cache import TieredKVCache
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
@@ -55,9 +55,11 @@ def request(
     prompt: int = 64,
     maximum: int = 1,
     output: int = 1,
-    inherited: tuple[str, ...] = (),
+    inherited: tuple[int, ...] = (),
 ) -> InferenceRequest:
-    return InferenceRequest(key, 0, None, prompt, maximum, output, inherited, len(inherited))
+    return InferenceRequest(
+        key, 0, None, prompt, maximum, output, inherited, len(inherited), chunk_base(key)
+    )
 
 
 def hold(cache: TieredKVCache, item: InferenceRequest, length: int | None = None) -> None:
@@ -136,7 +138,7 @@ def test_repeated_budget_rejection_preserves_cache_until_capacity_is_released() 
     cache.finish(0)
     active = request(9)
     hold(cache, active)
-    shared = encode(0, 0)
+    shared = chunk_base(0)
     pool = cache.pools["L1"]
     before = (cache.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
     candidate = request(1, prompt=65, maximum=80, inherited=(shared,))
@@ -173,7 +175,7 @@ def test_budget_rejection_never_pins_candidate(budget: str, capacity: int) -> No
     scheduler, cache = make(capacity=capacity, page_size=4, max_prefill=4)
     active = request(0, prompt=4)
     hold(cache, active)
-    shared = encode(90, 0)
+    shared = chunk_base(90)
     cache.pools["L1"].insert(shared)
     if budget == "compute":
         scheduler.enqueue(request(1, prompt=4), 0)
@@ -194,7 +196,7 @@ def test_budget_rejection_never_pins_candidate(budget: str, capacity: int) -> No
 
 def test_duplicate_l1_sources_only_reduce_available_capacity_once() -> None:
     scheduler, cache = make(capacity=192)
-    shared = encode(90, 0)
+    shared = chunk_base(90)
     cache.pools["L1"].insert(shared)
     candidate = request(1, prompt=129, inherited=(shared, shared))
     scheduler.enqueue(candidate, 0)
@@ -216,7 +218,7 @@ def test_capacity_forecast_only_deducts_newly_protected_l1_pages() -> None:
     scheduler = AdmissionScheduler(config, cache)
     active = request(0, prompt=4)
     hold(cache, active)
-    active_id, cold, remote = encode(0, 0), encode(90, 0), encode(91, 0)
+    active_id, cold, remote = chunk_base(0), chunk_base(90), chunk_base(91)
     cache.pools["L1"].insert(cold)
     cache.pools["L2"].insert(remote)
     scheduler.enqueue(request(1, prompt=13, inherited=(active_id, cold, remote)), 1)
@@ -238,11 +240,11 @@ def test_shared_hits_only_pin_one_physical_page() -> None:
     hold(cache, parent)
     cache.finish(0)
     for key in (1, 2):
-        scheduler.enqueue(request(key, prompt=65, maximum=1, inherited=(encode(0, 0),)), 1)
+        scheduler.enqueue(request(key, prompt=65, maximum=1, inherited=(chunk_base(0),)), 1)
     batch = scheduler.select_prefill({})
     assert len(batch.admitted) == 2
     assert [item.reused_tokens for item in batch.admitted] == [64, 64]
-    page = cache.page(encode(0, 0))
+    page = cache.page(chunk_base(0))
     assert page is not None and page.ref_count == 2
     assert cache.available_tokens == 320 and cache.resident_pages == 1
 
@@ -309,7 +311,7 @@ def test_infeasible_restore_with_pinned_hit_does_not_stall_empty_pool() -> None:
     batch = scheduler.select_prefill({})
     assert [entry.request.request_id for entry in batch.aborted] == [0]
     assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [1]
-    page = cache.page(encode(0, 0))
+    page = cache.page(chunk_base(0))
     assert page is not None and page.ref_count == 0
     assert cache.free_pages + cache.resident_pages == cache.capacity_pages
 
@@ -611,7 +613,7 @@ def test_admission_stops_at_first_l3_only_page(
         l3_capacity_tokens=8,
     )
     cache = TieredKVCache(32, 4, 8, 8)
-    ids = tuple(encode(0, index) for index in range(4))
+    ids = tuple(chunk_base(0) + index for index in range(4))
     tiers = ("L1", "L2", "L3", "L1") if remote_index == 2 else ("L3", "L1", "L2", "L1")
     for chunk_id, tier in zip(ids, tiers, strict=True):
         cache.pools[tier].insert(chunk_id)
@@ -658,7 +660,7 @@ def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
     assert 0 not in cache._pins and 2 not in cache._pins
     assert cache.available_tokens == (12 if restores else 16)
     for index in range(2):
-        page = cache.page(encode(0, index))
+        page = cache.page(chunk_base(0) + index)
         assert page is not None and page.ref_count == int(restores)
     cache.ensure_free(batch.admitted[0].required_pages)
 
@@ -700,7 +702,7 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
     cache.withdraw(0)
     if mode == "l2":
         for index in range(2):
-            chunk_id = encode(0, index)
+            chunk_id = chunk_base(0) + index
             cache.reserve_transfer(chunk_id, "L2", source="L1")
             cache.complete_transfer(chunk_id, "L2")
     scheduler = AdmissionScheduler(config, cache)
@@ -716,7 +718,7 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
     assert scheduler.head_request_id == (None if mode == "l1" else 0)
     assert 0 not in cache._pins
     for index in range(2):
-        page = cache.page(encode(0, index))
+        page = cache.page(chunk_base(0) + index)
         assert page is not None and page.ref_count == int(mode == "l1")
 
 
@@ -774,7 +776,7 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     filler = request(99, prompt=28)
     hold(cache, filler)
     cache.finish(99)
-    shared = encode(0, 0)
+    shared = chunk_base(0)
     initial_page = cache.page(shared)
     assert initial_page is not None and initial_page.tier == "L2"
     scheduler = AdmissionScheduler(config, cache)
@@ -811,11 +813,12 @@ def test_promotions_follow_context_and_candidate_order_with_shared_restore(trace
     )
     cache = TieredKVCache(64, 4, 64)
     scheduler = AdmissionScheduler(config, cache)
-    hashes = (2, 10, 11, 3, 1)
     ids = (
-        tuple(f"trace:0:{block}" for block in hashes)
-        if trace
-        else (encode(90, 2), encode(7, 10), encode(90, 11), encode(3, 0), encode(1, 0))
+        chunk_base(90) + 2,
+        chunk_base(7) + 10,
+        chunk_base(90) + 11,
+        chunk_base(3),
+        chunk_base(1),
     )
     cache.pools["L1"].insert(ids[0])
     for chunk_id in ids[1:]:
@@ -835,9 +838,9 @@ def test_promotions_follow_context_and_candidate_order_with_shared_restore(trace
             prompt_len=prompt,
             max_new_tokens=1,
             output_len=1,
-            inherited_prefix_ids=() if trace else tuple(ids[i] for i in positions),
+            chunk_ids=tuple(ids[i] for i in positions),
             ideal_reuse_blocks=len(positions),
-            trace_hash_ids=tuple(hashes[i] for i in positions) if trace else (),
+            chunk_base=chunk_base(key),
             is_trace=trace,
         )
         scheduler.enqueue(item, arrival, generated_tokens=generated)
@@ -862,7 +865,7 @@ def test_rejected_candidate_does_not_contribute_promotions() -> None:
     )
     cache = TieredKVCache(64, 4, 16)
     scheduler = AdmissionScheduler(config, cache)
-    first, rejected = encode(9, 10), encode(1, 2)
+    first, rejected = chunk_base(9) + 10, chunk_base(1) + 2
     cache.pools["L2"].insert(first)
     cache.pools["L2"].insert(rejected)
     scheduler.enqueue(request(9, prompt=5, inherited=(first,)), 0)
@@ -879,13 +882,13 @@ def test_rejected_candidate_does_not_contribute_promotions() -> None:
 
 def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
     scheduler, cache = make(capacity=512, page_size=4)
-    shared = encode(90, 0)
+    shared = chunk_base(90)
     cache.pools["L1"].insert(shared)
     for key in (1, 2):
         scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 0)
-    checked: dict[int, tuple[tuple[str, str], ...]] = {}
+    checked: dict[int, tuple[tuple[int, str], ...]] = {}
 
-    def accept(item: WaitingRequest, sources: tuple[tuple[str, str], ...]) -> bool:
+    def accept(item: WaitingRequest, sources: tuple[tuple[int, str], ...]) -> bool:
         assert item.request.request_id not in cache._pins
         checked[item.request.request_id] = sources
         return item.request.request_id == 2
@@ -916,7 +919,7 @@ def test_tiered_budget_rejection_does_not_pin_or_skip_head() -> None:
     cache.finish(0)
     filler = request(99, prompt=8)
     hold(cache, filler)
-    shared = encode(0, 0)
+    shared = chunk_base(0)
     pool = cache.pools["L2"]
     before = (pool.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
     counters = (cache.promotions, cache.demotions)

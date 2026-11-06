@@ -6,7 +6,7 @@
 
 每个 Engine 独占一个 `TieredKVCache` 请求管理器及其 L1/L2 池。`runner` 每场新建一个共享 L3 池，并注入所有 Engine；L3 容量为零表示关闭，不跨仿真共享。请求管理器保存请求、已建立 KV 长度 `K`、已发布连续前沿 `F`、私有页及候选引用的实际来源池。资源池不理解 Prefill/Decode；链路排队与完成事件由 Engine 和 Coordinator 推进。
 
-同一 `chunk_id` 可在不同池内拥有副本。`CacheEntry.tier/pool_id` 仅标记该池内副本的位置，不表示全系统唯一驻留位置。当前本地 L1/L2 采用迁移而非长期备份；在途回载与本地重算相遇时允许暂时拥有两个本地副本，后续迁移合并容量和引用。L3 与本地副本独立。合成块 ID 编码见 [chunk-hash-encoding.md](chunk-hash-encoding.md)。
+同一 `chunk_id` 可在不同池内拥有副本。`CacheEntry.tier/pool_id` 仅标记该池内副本的位置，不表示全系统唯一驻留位置。当前本地 L1/L2 采用迁移而非长期备份；在途回载与本地重算相遇时允许暂时拥有两个本地副本，后续迁移合并容量和引用。L3 与本地副本独立。块 ID 编码见 [chunk-hash-encoding.md](chunk-hash-encoding.md)。
 
 ## 容量与状态
 

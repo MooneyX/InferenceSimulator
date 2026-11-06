@@ -1,7 +1,7 @@
 """F001 准入接入：同批不可互见、预算受阻和空池失败。"""
 
 from simcore.kv_cache import TieredKVCache
-from simcore.prefix_hash import encode
+from simcore.prefix_hash import chunk_base
 from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
 
@@ -13,14 +13,16 @@ def setup(capacity: int = 80) -> tuple[AdmissionScheduler, TieredKVCache]:
 
 
 def request(
-    key: int, *, prompt: int = 5, maximum: int = 1, inherited: tuple[str, ...] = ()
+    key: int, *, prompt: int = 5, maximum: int = 1, inherited: tuple[int, ...] = ()
 ) -> InferenceRequest:
-    return InferenceRequest(key, key, None, prompt, maximum, 1, inherited, len(inherited))
+    return InferenceRequest(
+        key, key, None, prompt, maximum, 1, inherited, len(inherited), chunk_base(key)
+    )
 
 
 def test_same_batch_new_pages_not_visible_until_publication() -> None:
     scheduler, cache = setup()
-    inherited = (encode(0, 0),)
+    inherited = (chunk_base(0),)
     scheduler.enqueue(request(1, inherited=inherited), 0)
     scheduler.enqueue(request(2, inherited=inherited), 0)
     batch = scheduler.select_prefill({})

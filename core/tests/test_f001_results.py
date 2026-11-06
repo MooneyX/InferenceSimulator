@@ -10,6 +10,7 @@ from simcore.engine import Engine
 from simcore.kv_cache import L1Snapshot
 from simcore.metrics import compute_metrics
 from simcore.perf_model import StepCost
+from simcore.prefix_hash import chunk_base
 from simcore.schemas import (
     AbortedRequest,
     EngineConfig,
@@ -199,7 +200,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     cfg = EngineConfig(max_running_requests=1, max_total_tokens=12, page_size=4)
     perf = PerfModelConfig()
     engine = Engine(runtime_config(cfg, perf))
-    req = InferenceRequest(0, 0, None, 3, 3, 3, (), 0)
+    req = InferenceRequest(0, 0, None, 3, 3, 3, (), 0, chunk_base(0))
     engine.submit(req, 0)
     now = start_step_end(engine, 0, 0)
     assert engine.finish_step(now) == ()
@@ -213,7 +214,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     now = start_step_end(engine, now, 2)
     assert engine.finish_step(now) == ()
     assert engine._replayed_tokens[0] == 4
-    holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0)
+    holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0, chunk_base(99))
     engine._prefix_cache.pin(holder, ())
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)

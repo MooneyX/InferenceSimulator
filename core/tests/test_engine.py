@@ -7,6 +7,7 @@ import pytest
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
 from simcore.perf_model import DecodeWork, PrefillWork, StepCost, StepWorkload, step_cost
+from simcore.prefix_hash import chunk_base
 from simcore.router import Router
 from simcore.schemas import (
     Arrival,
@@ -97,7 +98,7 @@ def interval(r: RequestRecord) -> tuple[float, float, float, float]:
 class TestImmediateEngine:
     def test_submit_step_and_complete_updates_record(self) -> None:
         config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
-        request = InferenceRequest(7, 7, None, 5, 1, 1, (), 0)
+        request = InferenceRequest(7, 7, None, 5, 1, 1, (), 0, chunk_base(7))
         engine = Engine(runtime_config(config, PerfModelConfig()))
         assert not engine.has_work
         assert not hasattr(engine, "_heap")
@@ -106,7 +107,7 @@ class TestImmediateEngine:
         assert engine.has_work
         end = start_step_end(engine, 3.0, 0, (7,))
         assert not engine.has_work
-        assert engine._prefix_cache.page("chunk:7:0") is None
+        assert engine._prefix_cache.page(chunk_base(7)) is None
         assert engine.finish_step(end) == (7,)
         engine.complete(end, 7)
         assert interval(engine.finalize().records[0]) == (3.0, 3.0, end, end)
@@ -116,7 +117,7 @@ class TestImmediateEngine:
         self, maximum: int
     ) -> None:
         config = EngineConfig(max_running_requests=1, max_total_tokens=100, page_size=1)
-        request = InferenceRequest(7, 7, None, 5, maximum, 3, (), 0)
+        request = InferenceRequest(7, 7, None, 5, maximum, 3, (), 0, chunk_base(7))
         engine = Engine(runtime_config(config, PerfModelConfig()))
         engine.submit(request, 3.0)
         prefill_end = start_step_end(engine, 3.0, 0)

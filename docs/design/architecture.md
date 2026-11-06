@@ -16,7 +16,7 @@ web/      前端：React + TypeScript + Vite + ECharts
 
 ```
 schemas      Pydantic 配置/结果与不可变内部消息（无依赖）
-prefix_hash  完整块 ID 直接编码与独立随机流种子派生（无内部模块依赖）
+prefix_hash  完整块 ID 整数编码、Trace 前缀树重编号与独立随机流种子派生（无内部模块依赖）
 workload     build_synthetic_closed_loop_plan 规划合成闭环长度、拓扑和理想复用；sample_length 采样（依赖 schemas、prefix_hash）
 client       Client：_prepare_workload 统一负载准备，on_wakeup 统一请求构造与投放（依赖 schemas、workload、prefix_hash）
 perf_model   唯一性能模型：层序结构 LayerPlan、不可变工作量与 StepCost、逐层 Roofline、TP/EP 通信及逐层流水纯函数（依赖 schemas）

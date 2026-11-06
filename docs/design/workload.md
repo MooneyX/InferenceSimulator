@@ -37,10 +37,10 @@ K_i = min(floor((P_parent+O_parent-1)/B), floor((P_i-1)/B))
 constructed_ideal_prefix_hit_rate = B*sum(K_i)/sum(P_i)
 ```
 
-子轮新增长度至少 1 token，父轮输出为 0 时 `K_i=0`，该子轮不会实际发送。该比率是生成计划的结果，不再作为配置目标或量化分配值；理想继承只约束块身份，**不代表物理缓存已命中**。跨 session 公共前缀不支持：根请求不继承块，不同根请求生成不同的新块 ID；只有同 session 父子轮次可继承完整块。配置不提供跨 session 共享字段，额外字段无论取值均由 schema 拒绝。
+子轮新增长度至少 1 token，父轮输出为 0 时 `K_i=0`，该子轮不会实际发送。该比率是生成计划的结果，不再作为配置目标或量化分配值；理想继承只约束块身份，**不代表物理缓存已命中**。跨 session 公共前缀不支持：根请求不继承块，不同会话的块 ID 位于不相交的会话域；只有同 session 父子轮次可继承完整块。配置不提供跨 session 共享字段，额外字段无论取值均由 schema 拒绝。
 
 ## 客户端的发送契约
 
-单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，协调器统一将初始投放和完成回调产生的子轮唤醒安排为 `ClientSend(时间戳, 请求 ID)`。所有投放均调用 `on_wakeup()`，客户端内部按模式读取计划，或在合成开环发送时选择会话并动态采样请求内容；预排时间和请求 ID 不会提前构造完整请求。该方法仅返回 `InferenceRequest`，实际输出目标 `output_len` 与生成上限一起绑定到不可变请求。合成模式仅在发送时构造 `InferenceRequest`：根据完成父轮保存的请求身份和已建立长度，按需推导前 `ideal_reuse_blocks` 个**完整**页 ID 并传递为 `inherited_prefix_ids`；其余页 ID 由引擎按当前请求 ID 与页序号生成，不发送整条 `input_chunk_ids`。请求携带 `max_new_tokens` 与 `output_len`，不携带未来到达时间。
+单个 `Client` 不读取缓存或引擎的 waiting/running 状态。`workload_mode` 区分合成/Trace，`arrival_mode` 区分开环/闭环，初始化后不切换；不使用策略子类。`initial_wakeups()` 返回初始投放，协调器统一将初始投放和完成回调产生的子轮唤醒安排为 `ClientSend(时间戳, 请求 ID)`。所有投放均调用 `on_wakeup()`，客户端内部按模式读取计划，或在合成开环发送时选择会话并动态采样请求内容；预排时间和请求 ID 不会提前构造完整请求。该方法仅返回 `InferenceRequest`，实际输出目标 `output_len` 与生成上限一起绑定到不可变请求。合成模式仅在发送时构造 `InferenceRequest`：同一会话所有轮次共用会话域 `chunk_base`，第 `i` 页 ID 为 `chunk_base + i`，父子轮前 `ideal_reuse_blocks` 个**完整**页因此自然同 ID，无需传递继承前缀或保存父轮身份。Trace 模式在准备计划时把每个会话的 `hash_ids` 按前缀树重子优先重编号，请求携带整段输入页 `chunk_ids` 及请求私有尾页域。编码规则见 [chunk-hash-encoding.md](chunk-hash-encoding.md)。请求携带 `max_new_tokens` 与 `output_len`，不携带未来到达时间。
 
 `on_request_completed(request_id, now_ms)` 统一结算在途请求，成功完成意味着生成数恰好为发送请求的 `output_len`。合成模式保存父轮请求身份与已建立长度 `prompt_len+output_len-1`，Trace 只保存完成 ID，不重构原始块身份。闭环返回子轮 `now_ms+think_time_ms` 的唤醒；合成开环只把会话放入待续堆，Trace 开环不改变固定时间线，两者均返回空元组。`on_request_aborted` 在闭环递归返回未发送后代的 `SkippedRequest`，开环返回空元组且不取消后续投放。客户端不预存未来完整请求、不调用真实 `sleep()`、不自行维护事件堆；协调器不按具体客户端类分派。

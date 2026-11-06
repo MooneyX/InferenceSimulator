@@ -14,8 +14,9 @@ from simcore.capacity import prepare_runtime
 from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine, EngineRun
-from simcore.kv_cache import CachePool, L1Snapshot, TierSnapshot
+from simcore.kv_cache import CachePool, L1Snapshot, TierSnapshot, l2_snapshot
 from simcore.metrics import compute_metrics
+from simcore.radix_cache import RadixTree
 from simcore.router import Router
 from simcore.schemas import (
     AbortedRequest,
@@ -51,18 +52,13 @@ def simulate(
     engine_config = runtime.engine
     started_at = perf_counter()
     client = Client(config.workload, engine_config, trace_plan=trace_plan)
-    shared_l3 = CachePool(
-        "L3",
-        config.num_instances * 2,
-        engine_config.l3_capacity_tokens // engine_config.page_size,
+    shared_l3 = CachePool(engine_config.l3_capacity_tokens // engine_config.page_size)
+    # 共享 L2：全场一棵前缀树，每个实例把整块 L2 视为自己的 L2 并在同一棵树中维护 HBM 副本。
+    shared_l2 = RadixTree(
         engine_config.page_size,
-    )
-    shared_l2 = CachePool(
-        "L2",
-        config.num_instances * 2 + 1,
         (engine_config.l2_capacity_tokens // engine_config.page_size) * config.num_instances,
-        engine_config.page_size,
-    ) if config.shared_l2_enabled else None
+        shared_l3,
+    ) if config.shared_l2_enabled and engine_config.l2_capacity_tokens else None
     runs = Coordinator(
         tuple(
             Engine(runtime, shared_l3=shared_l3, shared_l2=shared_l2, instance_id=index)
@@ -139,7 +135,7 @@ def simulate(
         ),
         metrics=_summarize(
             runs, plan, config, shared_l3.snapshot(),
-            shared_l2.snapshot() if shared_l2 is not None else None,
+            l2_snapshot(shared_l2) if shared_l2 is not None else TierSnapshot(0, 0, 0, 0, 0, 0, 0),
         ),
         instances=instances,
         requests=records,

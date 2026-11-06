@@ -6,10 +6,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from simcore.kv_cache import TieredKVCache
+from simcore.kv_cache import PrefixMatch, TieredKVCache
 from simcore.prefix_hash import chunk_base
 from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
 from simcore.schemas import EngineConfig, InferenceRequest
+from test_radix_cache import held as page
+from test_radix_cache import seed, sources
+from test_radix_cache import tier as cached_tier
 
 
 class TrackedWaitingQueue(deque[WaitingRequest]):
@@ -139,34 +142,26 @@ def test_repeated_budget_rejection_preserves_cache_until_capacity_is_released() 
     active = request(9)
     hold(cache, active)
     shared = chunk_base(0)
-    pool = cache.pools["L1"]
-    before = (cache.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
+    before = (cache.snapshot(), cache.tree.nodes)
     candidate = request(1, prompt=65, maximum=80, inherited=(shared,))
     scheduler.enqueue(candidate, 1)
     accept = Mock(return_value=True)
     with (
         patch.object(cache, "probe", wraps=cache.probe) as probes,
         patch.object(cache, "pin", wraps=cache.pin) as pins,
-        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
     ):
         for _ in range(3):
             batch = scheduler.select_prefill({9: RunningRequest(active, 1)}, accept_probe=accept)
             assert not batch.admitted and scheduler.num_waiting == scheduler.ready_count == 1
-            assert (
-                cache.snapshot(),
-                pool.entries[shared].last_access_seq,
-                tuple(pool.heap),
-            ) == before
-            assert not cache._pins and not cache._pin_sources and not cache._chunk_pins
+            assert (cache.snapshot(), cache.tree.nodes) == before
+            assert not cache._pins
         assert probes.call_count == accept.call_count == 3
         pins.assert_not_called()
-        cancellations.assert_not_called()
         cache.finish(9)
         batch = scheduler.select_prefill({}, accept_probe=accept)
         assert [item.waiting.request.request_id for item in batch.admitted] == [1]
-        pins.assert_called_once_with(candidate, batch.admitted[0].hit_sources)
-        cancellations.assert_not_called()
-    assert pool.entries[shared].ref_count == 1
+        pins.assert_called_once_with(candidate, batch.admitted[0].match)
+    assert page(cache, shared).ref_count == 1
     assert scheduler.num_waiting == scheduler.ready_count == 0
 
 
@@ -176,51 +171,33 @@ def test_budget_rejection_never_pins_candidate(budget: str, capacity: int) -> No
     active = request(0, prompt=4)
     hold(cache, active)
     shared = chunk_base(90)
-    cache.pools["L1"].insert(shared)
+    seed(cache, (shared,))
     if budget == "compute":
         scheduler.enqueue(request(1, prompt=4), 0)
     scheduler.enqueue(request(2, prompt=5, inherited=(shared,)), 1)
-    with (
-        patch.object(cache, "pin", wraps=cache.pin) as pins,
-        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
-    ):
+    with patch.object(cache, "pin", wraps=cache.pin) as pins:
         batch = scheduler.select_prefill({0: RunningRequest(active, 1)})
     expected = [1] if budget == "compute" else []
     assert [item.waiting.request.request_id for item in batch.admitted] == expected
     assert [call.args[0].request_id for call in pins.call_args_list] == expected
-    cancellations.assert_not_called()
     assert scheduler.head_request_id == 2 and scheduler.num_waiting == 1
-    assert 2 not in cache._pins and shared not in cache._chunk_pins
-    assert cache.pools["L1"].entries[shared].ref_count == 0
-
-
-def test_duplicate_l1_sources_only_reduce_available_capacity_once() -> None:
-    scheduler, cache = make(capacity=192)
-    shared = chunk_base(90)
-    cache.pools["L1"].insert(shared)
-    candidate = request(1, prompt=129, inherited=(shared, shared))
-    scheduler.enqueue(candidate, 0)
-
-    batch = scheduler.select_prefill({})
-
-    assert [item.waiting.request.request_id for item in batch.admitted] == [1]
-    assert batch.admitted[0].reused_tokens == 128
-    assert batch.admitted[0].hit_sources == ((shared, "L1"), (shared, "L1"))
-    assert cache.pools["L1"].entries[shared].ref_count == 1
-    assert cache.available_tokens == 128
+    assert 2 not in cache._pins
+    assert page(cache, shared).ref_count == 0
 
 
 def test_capacity_forecast_only_deducts_newly_protected_l1_pages() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=24, page_size=4, l2_capacity_tokens=4
+        max_running_requests=2, max_total_tokens=24, page_size=4, l2_capacity_tokens=12
     )
-    cache = TieredKVCache(24, 4, 4)
+    cache = TieredKVCache(24, 4, 12)
     scheduler = AdmissionScheduler(config, cache)
     active = request(0, prompt=4)
     hold(cache, active)
     active_id, cold, remote = chunk_base(0), chunk_base(90), chunk_base(91)
-    cache.pools["L1"].insert(cold)
-    cache.pools["L2"].insert(remote)
+    seed(cache, (active_id, cold), key=50)
+    seed(cache, (active_id, cold, remote), key=51)
+    assert cache.ensure_free(cache.free_pages + 1) == 1  # 只淘汰叶子 remote，保留其 L2 副本
+    assert cached_tier(cache, remote) == "L2"
     scheduler.enqueue(request(1, prompt=13, inherited=(active_id, cold, remote)), 1)
     before = cache.available_tokens
 
@@ -229,9 +206,9 @@ def test_capacity_forecast_only_deducts_newly_protected_l1_pages() -> None:
     assert [item.waiting.request.request_id for item in batch.admitted] == [1]
     assert batch.promote_ids == (remote,)
     assert cache.available_tokens == before - 4 == 16
-    assert cache.pools["L1"].entries[active_id].ref_count == 2
-    assert cache.pools["L1"].entries[cold].ref_count == 1
-    assert cache.pools["L2"].entries[remote].ref_count == 1
+    assert page(cache, active_id).ref_count == 2
+    assert page(cache, cold).ref_count == 1
+    assert page(cache, remote).ref_count == 1
 
 
 def test_shared_hits_only_pin_one_physical_page() -> None:
@@ -244,8 +221,7 @@ def test_shared_hits_only_pin_one_physical_page() -> None:
     batch = scheduler.select_prefill({})
     assert len(batch.admitted) == 2
     assert [item.reused_tokens for item in batch.admitted] == [64, 64]
-    page = cache.page(chunk_base(0))
-    assert page is not None and page.ref_count == 2
+    assert page(cache, chunk_base(0)).ref_count == 2
     assert cache.available_tokens == 320 and cache.resident_pages == 1
 
 
@@ -311,8 +287,7 @@ def test_infeasible_restore_with_pinned_hit_does_not_stall_empty_pool() -> None:
     batch = scheduler.select_prefill({})
     assert [entry.request.request_id for entry in batch.aborted] == [0]
     assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [1]
-    page = cache.page(chunk_base(0))
-    assert page is not None and page.ref_count == 0
+    assert page(cache, chunk_base(0)).ref_count == 0
     assert cache.free_pages + cache.resident_pages == cache.capacity_pages
 
 
@@ -585,8 +560,11 @@ def test_selection_error_restores_unselected_prefix_and_preserves_tail(failure_p
     scheduler._waiting = waiting
     error = RuntimeError("selection failed")
     accept_probe = Mock(side_effect=[True, error if failure_point == "accept_probe" else True])
+    empty = PrefixMatch(cache.tree.root, 0, 0)
     with (
-        patch.object(cache, "probe", side_effect=[(), error if failure_point == "probe" else ()]),
+        patch.object(
+            cache, "probe", side_effect=[empty, error if failure_point == "probe" else empty]
+        ),
         pytest.raises(RuntimeError, match="selection failed"),
     ):
         scheduler.select_prefill({}, accept_probe=accept_probe)
@@ -614,9 +592,13 @@ def test_admission_stops_at_first_l3_only_page(
     )
     cache = TieredKVCache(32, 4, 8, 8)
     ids = tuple(chunk_base(0) + index for index in range(4))
-    tiers = ("L1", "L2", "L3", "L1") if remote_index == 2 else ("L3", "L1", "L2", "L1")
-    for chunk_id, tier in zip(ids, tiers, strict=True):
-        cache.pools[tier].insert(chunk_id)
+    tiers: tuple[str, ...] = ()
+    if remote_index == 2:  # HBM、L2 后接仅在 L3 的页
+        seed(cache, ids[:1], key=50)
+        seed(cache, ids[:2], key=51)
+        assert cache.ensure_free(cache.free_pages + 1) == 1
+        tiers = ("L1", "L2")
+    cache.l3.insert(ids[remote_index])
     scheduler = AdmissionScheduler(config, cache)
     item = request(1, prompt=17, maximum=2, output=2, inherited=ids)
     scheduler.enqueue(item, 0, generated_tokens=int(restoring))
@@ -625,17 +607,16 @@ def test_admission_stops_at_first_l3_only_page(
 
     assert len(batch.admitted) == 1
     candidate = batch.admitted[0]
-    assert candidate.hit_sources == tuple(
-        zip(ids[:remote_index], tiers[:remote_index], strict=True)
-    )
+    assert candidate.match is not None
+    assert sources(item, candidate.match) == tuple(zip(ids, tiers, strict=False))
     assert candidate.reused_tokens == remote_index * 4
     assert candidate.new_tokens == 17 - remote_index * 4
     assert candidate.required_pages == 5 - remote_index
     assert batch.promote_ids == ((ids[1],) if remote_index == 2 else ())
     assert not batch.restored and not batch.restore_only and not batch.aborted
-    for index, (chunk_id, tier) in enumerate(zip(ids, tiers, strict=True)):
-        page = cache.pools[tier].lookup(chunk_id)
-        assert page is not None and page.ref_count == int(index < remote_index)
+    for index in range(remote_index):
+        assert page(cache, ids[index]).ref_count == 1
+    assert cache.l3.entries[ids[remote_index]].ref_count == 0
 
 
 @pytest.mark.parametrize("capacity, restores", [(16, False), (20, True)])
@@ -660,8 +641,7 @@ def test_full_l1_restore_preserves_selected_capacity_and_queue_order(
     assert 0 not in cache._pins and 2 not in cache._pins
     assert cache.available_tokens == (12 if restores else 16)
     for index in range(2):
-        page = cache.page(chunk_base(0) + index)
-        assert page is not None and page.ref_count == int(restores)
+        assert page(cache, chunk_base(0) + index).ref_count == int(restores)
     cache.ensure_free(batch.admitted[0].required_pages)
 
     if not restores:
@@ -701,10 +681,8 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
     hold(cache, item)
     cache.withdraw(0)
     if mode == "l2":
-        for index in range(2):
-            chunk_id = chunk_base(0) + index
-            cache.reserve_transfer(chunk_id, "L2", source="L1")
-            cache.complete_transfer(chunk_id, "L2")
+        cache.ensure_free(cache.capacity_pages)  # write-through 副本留在 L2
+        assert cached_tier(cache, chunk_base(0)) == "L2"
     scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1), 1)
     scheduler.requeue(item, 2, generated_tokens=2 if mode == "recompute" else 1)
@@ -718,8 +696,7 @@ def test_unified_admission_exempts_only_direct_restore_from_future_budget(mode: 
     assert scheduler.head_request_id == (None if mode == "l1" else 0)
     assert 0 not in cache._pins
     for index in range(2):
-        page = cache.page(chunk_base(0) + index)
-        assert page is not None and page.ref_count == int(mode == "l1")
+        assert page(cache, chunk_base(0) + index).ref_count == int(mode == "l1")
 
 
 def test_direct_restore_does_not_add_growth_reservation_to_full_l1() -> None:
@@ -777,30 +754,27 @@ def test_shared_l2_hit_reserves_one_unique_promotion_for_two_candidates() -> Non
     hold(cache, filler)
     cache.finish(99)
     shared = chunk_base(0)
-    initial_page = cache.page(shared)
-    assert initial_page is not None and initial_page.tier == "L2"
+    assert cached_tier(cache, shared) == "L2"
     scheduler = AdmissionScheduler(config, cache)
     for key in (1, 2):
         scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 1)
     batch = scheduler.select_prefill({})
     assert [item.waiting.request.request_id for item in batch.admitted] == [1, 2]
-    assert [item.hit_sources for item in batch.admitted] == [((shared, "L2"),)] * 2
+    assert [
+        sources(item.waiting.request, item.match) for item in batch.admitted if item.match
+    ] == [((shared, "L2"),)] * 2
     assert batch.promote_ids == (shared,)
-    pinned_page = cache.page(shared)
-    assert pinned_page is not None and pinned_page.ref_count == 2 and pinned_page.tier == "L2"
+    assert page(cache, shared).ref_count == 2 and cached_tier(cache, shared) == "L2"
     assert cache.promotions == 0
-    assert cache.reserve_transfer(shared, "L1", source="L2") == "L2"
-    in_flight = cache.page(shared)
-    assert in_flight is not None and in_flight.tier == "L2" and in_flight.ref_count == 3
-    assert cache.complete_transfer(shared, "L1") == "L2"
-    cache.ensure_free(sum(item.required_pages for item in batch.admitted))
+    cache.ensure_free(len(batch.promote_ids) + sum(item.required_pages for item in batch.admitted))
+    assert cache.promote() == 1
     for item in batch.admitted:
         key = item.waiting.request.request_id
         cache.admit(key)
         cache.extend(key, item.context_after)
         cache.publish(key)
-    promoted_page = cache.page(shared)
-    assert promoted_page is not None and promoted_page.tier == "L1" and promoted_page.ref_count == 2
+    promoted = page(cache, shared)
+    assert promoted.tier == "L1" and promoted.ref_count == 2 and promoted.l2
     assert cache.promotions == 1
     for key in (1, 2):
         cache.finish(key)
@@ -820,9 +794,12 @@ def test_promotions_follow_context_and_candidate_order_with_shared_restore(trace
         chunk_base(3),
         chunk_base(1),
     )
-    cache.pools["L1"].insert(ids[0])
-    for chunk_id in ids[1:]:
-        cache.pools["L2"].insert(chunk_id)
+    # 树形：ids[0] → ids[1] → {ids[2] → ids[4], ids[3]}；只有 ids[0] 留在 HBM，其余仅在 L2。
+    seed(cache, ids[:1], key=50)
+    seed(cache, (ids[0], ids[1], ids[2], ids[4]), key=51)
+    seed(cache, (ids[0], ids[1], ids[3]), key=52)
+    assert cache.ensure_free(cache.free_pages + 4) == 4
+    assert [cached_tier(cache, item) for item in ids] == ["L1", "L2", "L2", "L2", "L2"]
     # 到达顺序与请求 ID、块 ID 排序均不同；中间穿插全命中的恢复候选。
     for arrival, (key, positions, prompt, generated) in enumerate(
         (
@@ -850,8 +827,8 @@ def test_promotions_follow_context_and_candidate_order_with_shared_restore(trace
     assert [candidate.waiting.request.request_id for candidate in batch.admitted] == [9, 2]
     assert [item.request.request_id for item in batch.restore_only] == [1]
     assert batch.promote_ids == (ids[1], ids[2], ids[3], ids[4])
-    assert cache.pools["L1"].entries[ids[0]].ref_count == 3
-    assert cache.pools["L2"].entries[ids[1]].ref_count == 3
+    assert page(cache, ids[0]).ref_count == 3
+    assert page(cache, ids[1]).ref_count == 3
     assert len(batch.promote_ids) == 4  # 共享页只消耗一份回载容量。
 
 
@@ -866,8 +843,9 @@ def test_rejected_candidate_does_not_contribute_promotions() -> None:
     cache = TieredKVCache(64, 4, 16)
     scheduler = AdmissionScheduler(config, cache)
     first, rejected = chunk_base(9) + 10, chunk_base(1) + 2
-    cache.pools["L2"].insert(first)
-    cache.pools["L2"].insert(rejected)
+    seed(cache, (first,), key=50)
+    seed(cache, (rejected,), key=51)
+    cache.ensure_free(cache.capacity_pages)
     scheduler.enqueue(request(9, prompt=5, inherited=(first,)), 0)
     scheduler.enqueue(request(1, prompt=5, inherited=(rejected,)), 1)
 
@@ -877,20 +855,20 @@ def test_rejected_candidate_does_not_contribute_promotions() -> None:
     assert batch.promote_ids == (first,)
     assert scheduler.head_request_id == 1
     assert 1 not in cache._pins
-    assert cache.pools["L2"].entries[rejected].ref_count == 0
+    assert cached_tier(cache, rejected) == "L2" and page(cache, rejected).ref_count == 0
 
 
 def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
     scheduler, cache = make(capacity=512, page_size=4)
     shared = chunk_base(90)
-    cache.pools["L1"].insert(shared)
+    seed(cache, (shared,))
     for key in (1, 2):
         scheduler.enqueue(request(key, prompt=5, inherited=(shared,)), 0)
-    checked: dict[int, tuple[tuple[int, str], ...]] = {}
+    checked: dict[int, PrefixMatch] = {}
 
-    def accept(item: WaitingRequest, sources: tuple[tuple[int, str], ...]) -> bool:
+    def accept(item: WaitingRequest, match: PrefixMatch) -> bool:
         assert item.request.request_id not in cache._pins
-        checked[item.request.request_id] = sources
+        checked[item.request.request_id] = match
         return item.request.request_id == 2
 
     with (
@@ -900,10 +878,10 @@ def test_probe_rejection_precedes_pin_and_reuses_accepted_sources() -> None:
         batch = scheduler.select_prefill({}, accept_probe=accept)
     assert probes.call_count == 2
     assert pins.call_count == 1 and pins.call_args.args[0].request_id == 2
-    assert batch.admitted[0].hit_sources is checked[2]
+    assert batch.admitted[0].match is checked[2]
     assert pins.call_args.args[1] is checked[2]
     assert scheduler.head_request_id == 1 and 1 not in cache._pins
-    assert cache.pools["L1"].entries[shared].ref_count == 1
+    assert page(cache, shared).ref_count == 1
 
 
 def test_tiered_budget_rejection_does_not_pin_or_skip_head() -> None:
@@ -920,22 +898,18 @@ def test_tiered_budget_rejection_does_not_pin_or_skip_head() -> None:
     filler = request(99, prompt=8)
     hold(cache, filler)
     shared = chunk_base(0)
-    pool = cache.pools["L2"]
-    before = (pool.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap))
+    assert cached_tier(cache, shared) == "L2"
+    before = (cache.tier_snapshot("L2"), cache.snapshot(), cache.tree.nodes)
     counters = (cache.promotions, cache.demotions)
     scheduler = AdmissionScheduler(config, cache)
     scheduler.enqueue(request(1, prompt=5, inherited=(shared,)), 1)
     scheduler.enqueue(request(2, prompt=1), 1)
-    with (
-        patch.object(cache, "pin", wraps=cache.pin) as pins,
-        patch.object(cache, "cancel_pin", wraps=cache.cancel_pin) as cancellations,
-    ):
+    with patch.object(cache, "pin", wraps=cache.pin) as pins:
         batch = scheduler.select_prefill({99: RunningRequest(filler, 1)})
     pins.assert_not_called()
-    cancellations.assert_not_called()
     assert not batch.admitted and not batch.promote_ids
     assert scheduler.head_request_id == 1 and scheduler.num_waiting == 2
-    assert (pool.snapshot(), pool.entries[shared].last_access_seq, tuple(pool.heap)) == before
-    assert pool.entries[shared].ref_count == 0
+    assert (cache.tier_snapshot("L2"), cache.snapshot(), cache.tree.nodes) == before
+    assert page(cache, shared).ref_count == 0
     assert (cache.promotions, cache.demotions) == counters
     assert cache.tier_snapshot("L2").resident_blocks == 1

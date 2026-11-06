@@ -8,8 +8,9 @@ from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.kv_cache import CacheCapacityError, CachePool, TieredKVCache
+from simcore.kv_cache import CachePool, TieredKVCache
 from simcore.prefix_hash import chunk_base
+from simcore.radix_cache import RadixTree
 from simcore.router import Router
 from simcore.schemas import (
     EngineConfig,
@@ -27,6 +28,7 @@ from simcore.schemas import (
     WorkloadConfig,
     WorkloadPlan,
 )
+from test_radix_cache import PageView, assert_tree, find_node, page, run_prefill
 from test_schemas import resolved_config, runtime_config
 
 
@@ -35,171 +37,102 @@ def request(key: int, ids: tuple[int, ...] = ()) -> InferenceRequest:
 
 
 def managers(capacity: int = 4) -> tuple[CachePool, TieredKVCache, TieredKVCache]:
-    shared = CachePool("L3", 4, capacity, 4)
+    shared = CachePool(capacity)
     return (
         shared,
         TieredKVCache(16, 4, 8, shared_l3=shared),
-        TieredKVCache(
-            16,
-            4,
-            8,
-            shared_l3=shared,
-            pool_id_base=2,
-        ),
+        TieredKVCache(16, 4, 8, shared_l3=shared, instance_id=1),
     )
 
 
-def test_local_matching_uses_both_pools_then_continues_through_shared_l3() -> None:
+def test_local_matching_uses_tree_then_continues_through_shared_l3() -> None:
     shared, first, second = managers()
     ids = tuple(chunk_base(90) + i for i in range(5))
-    first.pools["L2"].insert(ids[0])
-    first.pools["L1"].insert(ids[1])
-    shared.insert(ids[2])
-    first.pools["L1"].insert(ids[3])
+    run_prefill(first, InferenceRequest(9, 0, None, 9, 1, 1, ids[:2], 2, chunk_base(9)))
+    first.finish(9)
+    for item in ids[2:4]:
+        shared.insert(item)
     req = request(0, ids)
-    assert first.probe(req, req.prompt_len, include_l3=False) == tuple(
-        zip(ids[:2], ("L2", "L1"), strict=True)
-    )
-    assert first.probe(req, req.prompt_len, start_index=2) == tuple(
-        zip(ids[2:4], ("L3", "L1"), strict=True)
-    )
-    assert second.probe(req, req.prompt_len) == ()
-    assert first.pools["L1"] is not second.pools["L1"]
-    assert first.pools["L2"] is not second.pools["L2"]
-    assert first.pools["L3"] is second.pools["L3"] is shared
-    assert len({pool.pool_id for pool in (*first.pools.values(), *second.pools.values())}) == 5
+    local = first.probe(req, req.prompt_len, include_l3=False)
+    assert (local.l1_pages, local.local_pages, local.lower) == (2, 2, ())
+    match = first.probe(req, req.prompt_len)
+    assert match.lower == tuple((item, "L3") for item in ids[2:4])
+    assert second.probe(req, req.prompt_len).pages == 0
+    assert first.tree is not second.tree and first.hbm is not second.hbm
+    assert first.l3 is second.l3 is shared
 
 
 def test_two_readers_have_independent_destinations_and_preserve_shared_source() -> None:
     shared, first, second = managers(1)
     chunk = chunk_base(90)
     shared.insert(chunk)
+    item = request(0, (chunk,))
     for cache in (first, second):
-        item = request(0, (chunk,))
-        cache.pin(item, cache.probe(item, item.prompt_len))
-        assert cache._chunk_pins == {chunk: {0}}
-        assert cache.reserve_transfer(chunk, "L2", source="L3") == "L3"
-        assert cache.pools["L2"].lookup(chunk) is None
-        assert cache.pools["L2"].reserved == 1
-    assert shared.lookup(chunk).ref_count == 4
-    first.complete_transfer(chunk, "L2")
-    assert shared.lookup(chunk).ref_count == 2
-    assert first.pools["L2"].lookup(chunk).ref_count == 1
-    assert second.pools["L2"].lookup(chunk) is None
-    first.reserve_transfer(chunk, "L1", source="L2")
-    first.complete_transfer(chunk, "L1")
-    first.admit(0)
-    assert first._chunk_pins == {}
-    assert second._chunk_pins == {chunk: {0}}
-    assert second._pin_sources == {0: {chunk: shared}}
-    first.withdraw(0)
-    second.complete_transfer(chunk, "L2")
-    second.cancel_pin(0)
-    assert second._chunk_pins == {}
-    assert shared.lookup(chunk).ref_count == 0
-    assert shared.resident == 1
-    assert shared.evictions == 0
-    assert first.pools["L1"].lookup(chunk) is not None
-    assert second.pools["L2"].lookup(chunk) is not None
+        assert cache.probe(item, item.prompt_len).l3_pages == 1
+        cache.reserve_prefetch(chunk)
+        assert cache.tier_snapshot("L2").resident_blocks == 1
+        assert find_node(cache.tree, chunk) is None
+    assert shared.entries[chunk].ref_count == 2
+    first.complete_prefetch(item, ((0, chunk),))
+    assert shared.entries[chunk].ref_count == 1
+    assert page(first, chunk) == PageView("L2", 0, True)
+    assert find_node(second.tree, chunk) is None
+    second.complete_prefetch(item, ((0, chunk),))
+    assert shared.entries[chunk].ref_count == 0
+    assert shared.resident == 1 and shared.evictions == 0
     shared.remove(chunk, evicted=True)
-    assert first.pools["L1"].lookup(chunk) is not None
-    assert second.pools["L2"].lookup(chunk) is not None
+    assert page(first, chunk) == page(second, chunk) == PageView("L2", 0, True)
 
 
-def test_shared_writes_deduplicate_without_removing_other_local_copies() -> None:
-    shared, first, second = managers(1)
+def test_shared_l3_writes_deduplicate_across_instances() -> None:
+    shared = CachePool(1)
+    caches = tuple(TieredKVCache(8, 4, 0, shared_l3=shared, instance_id=i) for i in range(2))
     chunk = chunk_base(90)
-    for cache in (first, second):
-        cache.pools["L1"].insert(chunk)
-        cache.reserve_transfer(chunk, "L3", source="L1")
-        cache.complete_transfer(chunk, "L3")
-    assert shared.resident == 1 and shared.reserved == 0
-    assert shared.lookup(chunk).ref_count == 0
-    first.reserve_transfer(chunk, "L2", source="L3")
-    first.complete_transfer(chunk, "L2")
-    second.pools["L2"].insert(chunk)
-    second.pools["L1"].insert(chunk_base(91))
-    second.pools["L1"].insert(chunk_base(92))
-    second.pools["L1"].insert(chunk_base(93))
-    second.pools["L1"].insert(chunk_base(94))
-    second.ensure_free(2)
-    assert first.pools["L2"].lookup(chunk) is not None
-    assert shared.resident == 1
+    for index, cache in enumerate(caches):
+        req = request(index, (chunk,))
+        cache.pin(req, cache.probe(req, req.prompt_len, include_l3=False))  # 各自重算同一页
+        cache.admit(index)
+        cache.extend(index, req.prompt_len)
+        cache.finish(index)
+        assert cache.ensure_free(2) == 1
+    assert shared.resident == 1 and shared.entries[chunk].ref_count == 0
+    assert all(cache.demotions == 1 for cache in caches)
 
 
 def test_protected_shared_source_cannot_be_evicted_by_another_instance() -> None:
-    shared, first, second = managers(1)
+    shared = CachePool(1)
+    reader = TieredKVCache(16, 4, 8, shared_l3=shared)
+    writer = TieredKVCache(8, 4, 0, shared_l3=shared, instance_id=1)
     chunk = chunk_base(90)
     shared.insert(chunk)
-    first.reserve_transfer(chunk, "L2", source="L3")
-    second.pools["L1"].insert(chunk_base(91))
-    before = tuple(pool.snapshot() for pool in second.pools.values())
-    with pytest.raises(CacheCapacityError):
-        second.reserve_transfer(chunk_base(91), "L3", source="L1")
-    assert tuple(pool.snapshot() for pool in second.pools.values()) == before
-    first.complete_transfer(chunk, "L2")
-    second.reserve_transfer(chunk_base(91), "L3", source="L1")
-    second.complete_transfer(chunk_base(91), "L3")
-    assert shared.lookup(chunk) is None
-    assert first.pools["L2"].lookup(chunk) is not None
+    reader.reserve_prefetch(chunk)
+    run_prefill(writer, request(1, (chunk_base(91),)))
+    writer.finish(1)
+    writer.ensure_free(2)
+    assert page(writer, chunk_base(91)) is None  # L3 已满且唯一页受保护：写入被丢弃
+    reader.complete_prefetch(request(0, (chunk,)), ((0, chunk),))
+    run_prefill(writer, request(2, (chunk_base(92),)))
+    writer.finish(2)
+    writer.ensure_free(2)
+    assert shared.lookup(chunk) is None and shared.lookup(chunk_base(92)) is not None
+    assert page(reader, chunk) == PageView("L2", 0, True)
 
 
-@pytest.mark.parametrize("first_finisher", [0, 1])
-def test_simultaneous_shared_writes_reserve_one_page(first_finisher: int) -> None:
-    shared, first, second = managers(1)
-    chunk = chunk_base(90)
-    for cache in (first, second):
-        cache.pools["L1"].insert(chunk)
-        cache.reserve_transfer(chunk, "L3", source="L1")
-    assert shared.resident == shared.reserved == 1
-    assert shared.lookup(chunk) is None
-    readers = (first, second)
-    readers[first_finisher].complete_transfer(chunk, "L3")
-    assert shared.resident == 1 and shared.reserved == 0
-    assert shared.lookup(chunk).ref_count == 1
-    other = readers[1 - first_finisher]
-    other.pools["L1"].insert(chunk_base(91))
-    with pytest.raises(CacheCapacityError):
-        other.reserve_transfer(chunk_base(91), "L3", source="L1")
-    other.complete_transfer(chunk, "L3")
-    assert shared.lookup(chunk).ref_count == 0
-    assert len(shared.evictable) == shared.resident == 1
-    assert shared.evictable == {(shared.lookup(chunk).last_access_seq, chunk)}
-    assert not shared.pending_pages
-
-
-def test_recomputed_l1_rebinds_old_pin_and_merges_inflight_l2_copy() -> None:
+def test_recomputed_page_merges_with_inflight_l2_prefetch() -> None:
     shared, cache, _ = managers()
     chunk = chunk_base(90)
     shared.insert(chunk)
-    waiting = request(0, (chunk,))
-    cache.pin(waiting, cache.probe(waiting, waiting.prompt_len))
-    cache.reserve_transfer(chunk, "L2", source="L3")
+    cache.reserve_prefetch(chunk)
     recompute = request(1, (chunk,))
-    cache.pin(recompute, ())
-    cache.admit(1)
-    cache.extend(1, 5)
-    cache.publish(1)
-    cache.admit(0)
-    cache.withdraw(0)
+    run_prefill(cache, recompute)
     cache.finish(1)
-    cache.complete_transfer(chunk, "L2")
-    cache.reserve_transfer(chunk, "L2", source="L1")
-    cache.complete_transfer(chunk, "L2")
-    assert cache.pools["L1"].lookup(chunk) is None
-    assert cache.pools["L2"].lookup(chunk).ref_count == 0
-    assert len(cache.pools["L2"].evictable) == len(cache.pools["L2"].entries)
-    assert cache.pools["L2"].evictable == {
-        (page.last_access_seq, page.chunk_id) for page in cache.pools["L2"].entries.values()
-    }
-    assert shared.lookup(chunk).ref_count == 0
-
-
-def test_pool_store_merges_existing_page_references() -> None:
-    pool = CachePool("L1", 0, 2, 4)
-    pool.insert(7, 1)
-    assert not pool.store(7, 1)
-    assert pool.resident == 1 and pool.entries[7].ref_count == 2
+    assert cache.tier_snapshot("L2").resident_blocks == 2  # write-through 副本与预取占位
+    cache.complete_prefetch(request(0, (chunk,)), ((0, chunk),))
+    snapshot = cache.tier_snapshot("L2")
+    assert snapshot.resident_blocks == 1 and snapshot.active_blocks == 1
+    assert page(cache, chunk) == PageView("L1", 0, True)
+    assert shared.entries[chunk].ref_count == 0
+    assert_tree(cache.tree, [cache.hbm])
 
 
 def settings(*, instances: int = 3, prompt: int = 4) -> SimConfig:
@@ -250,11 +183,9 @@ def test_shared_capacity_is_counted_once_even_without_successful_requests(prompt
 
 
 def test_engine_prefetches_a_page_written_by_another_instance() -> None:
-    shared, writer, _ = managers()
+    shared, _, _ = managers()
     chunk = chunk_base(90)
-    writer.pools["L1"].insert(chunk)
-    writer.reserve_transfer(chunk, "L3", source="L1")
-    writer.complete_transfer(chunk, "L3")
+    shared.insert(chunk)
     config = settings()
     engine = Engine(
         runtime_config(
@@ -282,72 +213,53 @@ def test_engine_prefetches_a_page_written_by_another_instance() -> None:
     events = engine.drain_events()
     assert len(events) == 1 and events[0][1] is EventKind.L3_L2_DONE
     engine.on_transfer_done(events[0][2], events[0][0])
-    assert engine._prefix_cache.pools["L2"].lookup(chunk) is not None
+    assert page(engine._prefix_cache, chunk) == PageView("L2", 0, True)
     assert shared.lookup(chunk) is not None
     assert engine._restore_bytes == 64
 
 
-@pytest.mark.parametrize("first_finisher", [0, 1])
-def test_shared_l2_readers_copy_and_release_only_their_own_refs(first_finisher: int) -> None:
-    shared = CachePool("L2", 4, 1, 4)
-    caches = tuple(TieredKVCache(16, 4, shared_l2=shared, pool_id_base=i * 2) for i in range(2))
+def test_shared_l2_readers_copy_and_release_only_their_own_locks() -> None:
+    l3 = CachePool(0)
+    tree = RadixTree(4, 1, l3)
+    caches = tuple(
+        TieredKVCache(16, 4, shared_l2=tree, shared_l3=l3, instance_id=i) for i in range(2)
+    )
     chunk = chunk_base(90)
-    shared.insert(chunk)
+    req = request(0, (chunk,))
+    run_prefill(caches[0], req)
+    caches[0].finish(0)
+    caches[0].ensure_free(4)
+    node = find_node(tree, chunk)
+    assert node is not None and node.l2 and node.hbm == 0
     for cache in caches:
-        req = request(0, (chunk,))
-        cache.pin(req, cache.probe(req, req.prompt_len))
-        cache.reserve_transfer(chunk, "L1", source="L2")
-    assert shared.lookup(chunk).ref_count == 4
-    first, second = caches[first_finisher], caches[1 - first_finisher]
-    first.complete_transfer(chunk, "L1")
-    first.admit(0)
-    first.withdraw(0)
-    assert shared.lookup(chunk).ref_count == 2
-    assert not first._evict_one("L2")
-    second.complete_transfer(chunk, "L1")
-    second.admit(0)
-    second.withdraw(0)
-    assert shared.lookup(chunk).ref_count == 0
-    assert shared.resident == shared.peak == 1
+        match = cache.probe(req, req.prompt_len)
+        assert (match.l1_pages, match.local_pages) == (0, 1)
+        cache.pin(req, match)
+        cache.ensure_free(1)
+        assert cache.promote() == 1
+    assert node.hbm == 2 and node.locks == 2
     for cache in caches:
-        assert cache.pools["L1"].lookup(chunk).ref_count == 0
-        assert not cache._transfers
-        assert not cache.pools["L1"].pending_pages
-        cache._evict_one("L1")
-    assert shared.resident == 1 and shared.evictions == 0
-
-
-def test_shared_l2_recompute_preserves_protected_copy_and_global_eviction() -> None:
-    l2, l3 = CachePool("L2", 4, 1, 4), CachePool("L3", 5, 2, 4)
-    writer = TieredKVCache(16, 4, shared_l2=l2, shared_l3=l3)
-    reader = TieredKVCache(16, 4, shared_l2=l2, shared_l3=l3, pool_id_base=2)
-    chunk = chunk_base(90)
-    l2.insert(chunk)
-    reader.reserve_transfer(chunk, "L1", source="L2")
-    req = request(1, (chunk,))
-    writer.pin(req, ())
-    writer.admit(1)
-    writer.extend(1, 5)
-    writer.publish(1)
-    writer.finish(1)
-    assert l2.lookup(chunk).ref_count == 1
-    reader.complete_transfer(chunk, "L1")
-    assert l2.lookup(chunk).ref_count == 0
-    assert writer._evict_one("L2")
-    assert l2.lookup(chunk) is None
-    assert l3.lookup(chunk) is not None
-    assert reader.pools["L1"].lookup(chunk) is not None
+        cache.admit(0)
+        cache.withdraw(0)
+    assert node.locks == 0 and tree.l2_evictable == 0
+    caches[0].ensure_free(4)
+    assert node.hbm == 1 and not tree.ensure_l2_free(caches[0].hbm, 1)
+    caches[1].ensure_free(4)
+    assert tree.l2_evictable == 1 and tree.ensure_l2_free(caches[1].hbm, 1)
+    assert find_node(tree, chunk) is None and tree.l2_evictions == 1
+    assert_tree(tree, [cache.hbm for cache in caches])
 
 
 @pytest.mark.parametrize("shared_enabled", [True, False])
-def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bool) -> None:
-    l2, l3 = CachePool("L2", 4, 4, 4), CachePool("L3", 5, 4, 4)
+def test_l3_prefetch_coalesces_only_for_same_destination_tree(shared_enabled: bool) -> None:
+    l3 = CachePool(4)
+    l2 = RadixTree(4, 4, l3)
     chunk = chunk_base(90)
     l3.insert(chunk)
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=16, l3_prefetch_min_tokens=0),
-        PerfModelConfig( kv_bytes_per_token=16,
+        PerfModelConfig(kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_read_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
@@ -371,12 +283,12 @@ def test_l3_prefetch_coalesces_only_for_same_destination_pool(shared_enabled: bo
     for i, engine in enumerate(engines):
         assert not engine._prefetch_waiting
         assert engine._prefetched_origins[i] == {chunk}
-        assert not engine._prefix_cache.pools["L2"].incoming_ready_ms
-        assert not engine._prefix_cache.pools["L2"].pending_pages
+        assert not engine._prefix_cache.l2_incoming_ms
+        assert engine._prefix_cache.tree.l2_reserved == 0
         assert engine.start_step(3, 0) is not None
         assert engine.drain_events() == ()
         assert engine._restore_bytes == (128 if i == 0 or not shared_enabled else 64)
-    assert l2.lookup(chunk) is not None if shared_enabled else l2.resident == 0
+    assert (find_node(l2, chunk) is not None) if shared_enabled else l2.l2_pages == 0
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -396,7 +308,7 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
-        PerfModelConfig( kv_bytes_per_token=16,
+        PerfModelConfig(kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_read_bandwidth_bytes_per_ms=64, l3_lookup_latency_ms=2),
     )
@@ -406,7 +318,8 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     ))
     workload = WorkloadConfig(mode="trace", arrival_mode="open_loop", session_rate=1,
                               trace=TraceWorkloadConfig())
-    l2, l3 = CachePool("L2", 4, 4, 4), CachePool("L3", 5, 2, 4)
+    l3 = CachePool(2)
+    l2 = RadixTree(4, 4, l3)
     l3.insert(chunk_base(0))  # 会话内唯一块 90 重编号为偏移 0
     engines = tuple(Engine(runtime, shared_l2=l2, shared_l3=l3, instance_id=i)
                     for i in range(2))
@@ -417,8 +330,9 @@ def test_coordinator_completes_shared_prefetch_before_all_reader_notifications()
     assert runs[0].records[0].prefill_start == runs[1].records[0].prefill_start
     assert sum(run.restore_bytes for run in runs) == 192
     assert sum(run.restore_time_ms for run in runs) == 3
-    assert not l2.pending_pages and not l2.incoming_ready_ms
-    assert l2.entries[chunk_base(0)].ref_count == l3.entries[chunk_base(0)].ref_count == 0
+    assert not l2.l2_incoming_ms and l2.l2_reserved == 0
+    node = find_node(l2, chunk_base(0))
+    assert node is not None and node.locks == l3.entries[chunk_base(0)].ref_count == 0
     assert all(not engine._transfers and not engine._prefetch_waiting for engine in engines)
 
 
@@ -439,7 +353,8 @@ def test_shared_prefetch_coalesces_across_storage_batches_and_waits_for_all_sour
     ))
     workload = WorkloadConfig(mode="trace", arrival_mode="open_loop", session_rate=1,
                               trace=TraceWorkloadConfig())
-    l2, l3 = CachePool("L2", 4, 130, 4), CachePool("L3", 5, 130, 4)
+    l3 = CachePool(130)
+    l2 = RadixTree(4, 130, l3)
     for index in range(130):
         l3.insert(chunk_base(0) + index)
     engines = tuple(Engine(runtime, shared_l2=l2, shared_l3=l3, instance_id=i)
@@ -464,23 +379,25 @@ def test_shared_prefetch_coalesces_across_storage_batches_and_waits_for_all_sour
             if call.args[0] is first_source] == [[128 * 64, 64]]
     assert [call.args[2] for call in loads.call_args_list
             if call.args[0] is second_source] == [[64]]
-    assert not l2.pending_pages and not l2.incoming_ready_ms
-    assert all(not engine._transfers and not engine._prefetch_waiting
-               and not engine._prefix_cache._transfers for engine in engines)
-    assert all(page.ref_count == 0 for pool in (l2, l3) for page in pool.entries.values())
+    assert not l2.l2_incoming_ms and l2.l2_reserved == 0
+    assert all(not engine._transfers and not engine._prefetch_waiting for engine in engines)
+    assert all(page.ref_count == 0 for page in l3.entries.values())
+    assert_tree(l2, [engine._prefix_cache.hbm for engine in engines])
+    assert all(engine._prefix_cache.active_pages == 0 for engine in engines)
 
 
 @pytest.mark.parametrize("owns_prefetch", [True, False])
-def test_l2_promotion_overlaps_same_page_prefetch_after_another_instance_demotes(
+def test_l2_promotion_overlaps_same_page_prefetch_after_another_instance_writes_it(
     owns_prefetch: bool,
 ) -> None:
-    l2, l3 = CachePool("L2", 4, 2, 4), CachePool("L3", 5, 2, 4)
+    l3 = CachePool(2)
+    l2 = RadixTree(4, 2, l3)
     chunk = chunk_base(90)
     l3.insert(chunk)
     runtime = runtime_config(
         EngineConfig(max_running_requests=2, max_total_tokens=16, page_size=4,
                      l2_capacity_tokens=8, l3_capacity_tokens=8, l3_prefetch_min_tokens=0),
-        PerfModelConfig( kv_bytes_per_token=16,
+        PerfModelConfig(kv_bytes_per_token=16,
                         l2_to_l1_bandwidth_bytes_per_ms=64,
                         l3_read_bandwidth_bytes_per_ms=32, l3_lookup_latency_ms=2),
     )
@@ -496,28 +413,27 @@ def test_l2_promotion_overlaps_same_page_prefetch_after_another_instance_demotes
         follower.drain_events()
         follower.on_l3_lookup(1, 2)
         prefetch_events.append((follower, follower.drain_events()[0]))
-    writer = TieredKVCache(4, 4, shared_l2=l2, shared_l3=l3, pool_id_base=6)
-    writer.pools["L1"].insert(chunk)
-    writer.ensure_free(1)
-    assert l2.lookup(chunk) is not None
+    writer = TieredKVCache(8, 4, shared_l2=l2, shared_l3=l3, instance_id=6)
+    run_prefill(writer, request(9, (chunk,)))
+    writer.finish(9)
+    assert page(writer, chunk) == PageView("L1", 0, True)  # write-through 到共享 L2
     engine.submit(request(2, (chunk,)), 2)
     assert engine.drain_events() == ()
     started = engine.start_step(2, 0)
     assert started is not None and started[1] == (2,)
     assert engine.drain_events() == ()
-    assert engine._prefix_cache.pools["L1"].lookup(chunk) is not None
+    assert page(engine._prefix_cache, chunk) == PageView("L1", 1, True)
     for target, (time, _, ref) in prefetch_events:
         target.on_transfer_done(ref, time)
     assert not engine._transfer_by_chunk
-    assert not engine._prefix_cache._transfers
-    assert not l2.pending_pages and not l2.incoming_ready_ms
+    assert not l2.l2_incoming_ms and l2.l2_reserved == 0
     assert l3.lookup(chunk).ref_count == 0
-    assert l2.lookup(chunk).ref_count == 0
     assert sum(item._restore_bytes for item in (owner, follower)) == 128
+    assert_tree(l2, [owner._prefix_cache.hbm, follower._prefix_cache.hbm, writer.hbm])
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_simulation_reuses_another_instances_evicted_l1_only_when_shared(
+def test_simulation_reuses_another_instances_kv_only_when_shared(
     enabled: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan = WorkloadPlan(

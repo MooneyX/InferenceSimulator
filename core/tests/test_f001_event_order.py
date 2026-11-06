@@ -10,7 +10,7 @@ from simcore.client import Client
 from simcore.coordinator import Coordinator
 from simcore.engine import Engine
 from simcore.events import EventKind
-from simcore.kv_cache import CacheCapacityError, CacheEntry
+from simcore.kv_cache import CacheCapacityError
 from simcore.perf_model import StepCost, step_cost
 from simcore.prefix_hash import chunk_base
 from simcore.router import Router
@@ -27,7 +27,14 @@ from simcore.schemas import (
 )
 from test_client import planned_client
 from test_f001_scheduler import TrackedWaitingQueue
+from test_radix_cache import PageView, no_hit, seed
+from test_radix_cache import page as cached_page
+from test_radix_cache import tier as cached_tier
 from test_schemas import resolved_config, runtime_config
+
+
+def transfer_ids(engine: Engine, transfer_id: int) -> tuple[int, ...]:
+    return tuple(page for _, page in engine._transfers[transfer_id].pages)
 
 
 def make_plan(*, ordinary_at: float = 8, think: float = 0) -> WorkloadPlan:
@@ -204,27 +211,13 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     first, second = chunk_base(0), chunk_base(0) + 1  # 会话内 hash 20、10 按首现根顺序重编号
-    seeds = (
-        InferenceRequest(90, 0, None, 4, 1, 1, (first,), 0, chunk_base(90), is_trace=True),
-        InferenceRequest(91, 0, None, 4, 1, 1, (second,), 0, chunk_base(91), is_trace=True),
-        InferenceRequest(92, 92, None, 64, 1, 1, (), 0, chunk_base(92)),
-        InferenceRequest(93, 93, None, l2_pages * 4, 1, 1, (), 0, chunk_base(93)),
-    )
-    for seed in seeds:
-        cache.pin(seed, ())
-        cache.admit(seed.request_id)
-        cache.extend(seed.request_id, seed.prompt_len)
-        cache.publish(seed.request_id)
-        cache.finish(seed.request_id)
-    cache.ensure_free(4)
     for chunk_id in (first, second):
-        page = cache.page(chunk_id)
-        assert page is not None and page.tier == "L3"
+        cache.l3.insert(chunk_id)
     order = Mock()
     with (
         patch.object(engine, "submit", wraps=engine.submit) as submissions,
         patch.object(engine, "on_l3_lookup", wraps=engine.on_l3_lookup) as lookups,
-        patch.object(cache, "reserve_transfer", wraps=cache.reserve_transfer) as reserves,
+        patch.object(cache, "reserve_prefetch", wraps=cache.reserve_prefetch) as reserves,
     ):
         order.attach_mock(submissions, "send")
         order.attach_mock(lookups, "lookup")
@@ -239,10 +232,7 @@ def test_immediate_child_and_normal_send_share_l3_prefetch_order(
         if lookup_ms == 0
         else ["send", "send", "send", "lookup", "lookup"]
     )
-    assert [call.args for call in reserves.call_args_list if call.args[1] == "L2"] == [
-        (first, "L2"),
-        (second, "L2"),
-    ]
+    assert [call.args for call in reserves.call_args_list] == [(first,), (second,)]
     records = {item.id: item for item in run.records}
     assert records[0].finish == records[1].arrival == records[2].arrival == send_ms
     assert records[1].l3_hit_tokens == 4
@@ -278,7 +268,7 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = InferenceRequest(90, 90, None, 8, 1, 1, (), 0, chunk_base(90))
-    cache.pin(parent, ())
+    cache.pin(parent, no_hit(cache))
     cache.admit(90)
     cache.extend(90, 8)
     cache.publish(90)
@@ -300,15 +290,16 @@ def test_queue_time_local_hit_loss_requeries_l3_and_skips_waiting_candidate(
         root = InferenceRequest(2, 2, None, 1, 1, 1, (), 0, chunk_base(2))
         assert engine.submit(root, 0)
     assert not engine._lookup_waiting
-    filler = InferenceRequest(91, 91, None, 16, 1, 1, (), 0, chunk_base(91))
-    cache.pin(filler, ())
+    # 填充请求先挤出父轮的 HBM 副本，再以 write-through 把仅余的 L2 副本挤到 L3。
+    filler = InferenceRequest(91, 91, None, 8, 1, 1, (), 0, chunk_base(91))
+    cache.pin(filler, no_hit(cache))
     cache.admit(91)
     cache.ensure_free(4)
-    cache.extend(91, 16)
+    cache.extend(91, 8)
     cache.publish(91)
     cache.finish(91)
     cache.ensure_free(4)
-    assert all(cache.page(chunk).tier == "L3" for chunk in child.chunk_ids)
+    assert all(cached_tier(cache, chunk) == "L3" for chunk in child.chunk_ids)
 
     assert engine.can_step
     assert engine._prefix_scheduler.ready_count == 1 + int(with_ready_root)
@@ -436,7 +427,7 @@ def test_shared_prefetch_only_readies_requests_with_all_dependencies_complete() 
     scheduler = engine._prefix_scheduler
     ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
-        engine._prefix_cache.pools["L3"].insert(chunk)
+        engine._prefix_cache.l3.insert(chunk)
     for key, blocks in ((0, 1), (1, 2), (2, 1)):
         item = InferenceRequest(
             key, 90, 90, blocks * 4 + 1, 1, 1, ids[:blocks], blocks, chunk_base(key)
@@ -483,13 +474,13 @@ def test_prefill_probes_each_ready_candidate_once(restoring: bool, blocked: str 
     engine = Engine(runtime_config(config, PerfModelConfig()))
     cache = engine._prefix_cache
     inherited = (chunk_base(90),)
-    cache.pools["L1"].insert(inherited[0])
+    seed(cache, inherited)
     child = InferenceRequest(1, 90, 90, 5, 8, 8, inherited, 1, chunk_base(1))
     assert engine.submit(child, 0)
     if restoring:
         waiting = engine._prefix_scheduler._waiting
         waiting[0] = replace(waiting[0], generated_tokens=4)
-        cache.pools["L1"].insert(chunk_base(1) + 1)
+        seed(cache, (inherited[0], chunk_base(1) + 1), key=10_001)
     if blocked == "lookup":
         engine._schedule_l3_lookup(1, 0)
     elif blocked == "prefetch":
@@ -541,8 +532,12 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     ids = tuple(chunk_base(90) + block for block in (2, 10, 11))
-    for chunk_id in ids:
-        cache.pools[tier].insert(chunk_id)
+    if tier == "L3":
+        for chunk_id in ids:
+            cache.l3.insert(chunk_id)
+    else:
+        seed(cache, ids)
+        cache.ensure_free(cache.capacity_pages)  # 只余 write-through 的 L2 副本
     item = InferenceRequest(
         request_id=1,
         session_id=0,
@@ -563,7 +558,7 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
         engine.on_l3_lookup(key, now)
         # 连续前缀按上下文顺序合为一批读取：1 ms 固定延迟 + 3 页 × 4 ms。
         [(now, _, key)] = engine.drain_events()
-        assert engine._transfers[key].chunk_ids == ids
+        assert transfer_ids(engine, key) == ids
         assert now == 15
         engine.on_transfer_done(key, now)
 
@@ -571,7 +566,7 @@ def test_prefetch_preserves_context_order_and_l2_load_is_one_pipelined_batch(
     started = engine.start_step(now, 0)
     assert started is not None
     assert engine.drain_events() == ()
-    assert all(cache.pools["L1"].lookup(chunk) is not None for chunk in ids)
+    assert all(cached_tier(cache, chunk) == "L1" for chunk in ids)
     assert not cache.evictable_pages
     end = now + started[0]
     assert engine.finish_step(end) == (1,)
@@ -606,7 +601,7 @@ def test_l3_prefetch_splits_storage_batches_and_waits_for_every_batch(
     engine = Engine(runtime_config(config, perf))
     ids = tuple(chunk_base(90) + block for block in range(3))
     for chunk_id in ids:
-        engine._prefix_cache.pools["L3"].insert(chunk_id)
+        engine._prefix_cache.l3.insert(chunk_id)
     item = InferenceRequest(1, 0, None, 13, 1, 1, ids, 3, chunk_base(1))
     assert engine.submit(item, 0)
     [(now, _, key)] = engine.drain_events()
@@ -614,8 +609,8 @@ def test_l3_prefetch_splits_storage_batches_and_waits_for_every_batch(
     # 每批一次固定延迟，按提交顺序串行：2 + 1 + 2 页 × 4 ms，再 + 1 + 1 页 × 4 ms。
     first, second = engine.drain_events()
     assert (first[0], second[0]) == (11, 16)
-    assert engine._transfers[first[2]].chunk_ids == ids[:2]
-    assert engine._transfers[second[2]].chunk_ids == ids[2:]
+    assert transfer_ids(engine, first[2]) == ids[:2]
+    assert transfer_ids(engine, second[2]) == ids[2:]
     engine.on_transfer_done(first[2], first[0])
     assert not engine.can_step
     engine.on_transfer_done(second[2], second[0])
@@ -636,22 +631,22 @@ def test_l3_prefetch_stops_when_l2_reservation_evicts_a_later_source_page() -> N
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     ids = (chunk_base(90), chunk_base(90) + 1)
+    for index in range(2):  # 两条无 HBM 副本的 L2 前缀
+        seed(cache, (chunk_base(99) + index,), key=50 + index)
+    cache.ensure_free(cache.capacity_pages)
     for chunk in ids:
-        cache.pools["L3"].insert(chunk)
-    for index in range(2):
-        cache.pools["L2"].insert(chunk_base(99) + index)
+        cache.l3.insert(chunk)
     assert engine.submit(InferenceRequest(1, 0, None, 9, 1, 1, ids, 2, chunk_base(1)), 0)
     [(now, kind, key)] = engine.drain_events()
     assert kind is EventKind.L3_LOOKUP_DONE
     engine.on_l3_lookup(key, now)
     [(now, kind, key)] = engine.drain_events()
     assert kind is EventKind.L3_L2_DONE
-    assert engine._transfers[key].chunk_ids == ids[:1]
-    assert cache.pools["L3"].lookup(ids[1]) is None
+    assert transfer_ids(engine, key) == ids[:1]
+    assert cache.l3.lookup(ids[1]) is None
     engine.on_transfer_done(key, now)
-    assert not cache.pools["L2"].pending_pages
-    assert not cache.pools["L2"].incoming_ready_ms
-    assert not cache._transfers and not engine._transfers and not engine._prefetch_waiting
+    assert cache.tree.l2_reserved == 0 and not cache.l2_incoming_ms
+    assert not engine._transfers and not engine._prefetch_waiting
     started = engine.start_step(now, 0)
     assert started is not None
     end = now + started[0]
@@ -660,9 +655,7 @@ def test_l3_prefetch_stops_when_l2_reservation_evicts_a_later_source_page() -> N
     result = engine.finalize()
     assert result.records[0].actual_hit_tokens == result.records[0].l3_hit_tokens == 4
     assert result.cache_snapshot.active_blocks == 0
-    assert all(
-        page.ref_count == 0 for pool in cache.pools.values() for page in pool.entries.values()
-    )
+    assert all(page.ref_count == 0 for page in cache.l3.entries.values())
 
 
 def test_l2_hit_child_prefill_starts_on_arrival_with_pipelined_load() -> None:
@@ -707,7 +700,7 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         max_running_requests=2,
         max_total_tokens=20,
         page_size=4,
-        l2_capacity_tokens=8,
+        l2_capacity_tokens=12,
         l3_capacity_tokens=64,
         l3_prefetch_min_tokens=0,
     )
@@ -719,13 +712,15 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
         l3_latency_ms=5,
         l3_lookup_latency_ms=3,
     )
+    # 父轮页在 HBM 淘汰后只余 L2 副本，被根 3 的 write-through 挤到 L3；根 4 超出 L2 容量不写入，
+    # 子轮到达时 L2 只有无 HBM 副本的根 3 前缀，可淘汰以容纳预取。
     plan = WorkloadPlan(
         turns={
             0: TurnPlan(0, 0, None, 0, None, 5, 1, 1, 0),
             1: TurnPlan(1, 0, 0, None, 70, 9, 1, 1, 1),
             2: TurnPlan(2, 2, None, 12, None, 12, 1, 1, 0),
             3: TurnPlan(3, 3, None, 26, None, 12, 1, 1, 0),
-            4: TurnPlan(4, 4, None, 40, None, 12, 1, 1, 0),
+            4: TurnPlan(4, 4, None, 40, None, 16, 1, 1, 0),
         },
         root_request_ids=(0, 2, 3, 4),
         children={0: (1,)},
@@ -733,7 +728,7 @@ def test_wait_complete_l3_query_prefetch_then_l2_load(prefetch_fails: bool) -> N
     engine = Engine(runtime_config(config, perf))
     if prefetch_fails:
         with patch.object(
-            engine._prefix_cache, "reserve_transfer", side_effect=CacheCapacityError()
+            engine._prefix_cache, "reserve_prefetch", side_effect=CacheCapacityError()
         ):
             run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     else:
@@ -766,12 +761,12 @@ def test_full_l2_restore_is_one_load_only_step() -> None:
     cache.publish(0)
     cache.withdraw(0)
     filler = InferenceRequest(99, 99, None, 16, 1, 1, (), 0, chunk_base(99))
-    cache.pin(filler, ())
+    cache.pin(filler, no_hit(cache))
     cache.admit(99)
     cache.extend(99, 16)
     cache.publish(99)
     cache.finish(99)
-    cached = cache.page(chunk_base(0))
+    cached = cached_page(cache, chunk_base(0))
     assert cached is not None and cached.tier == "L2"
     engine._prefix_scheduler.requeue(item, 1, generated_tokens=1)
     assert engine.start_step(1, 0) == (pytest.approx(8), ())
@@ -849,11 +844,11 @@ def test_full_l1_restore_cannot_exhaust_selected_l2_load_capacity() -> None:
 
 def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
     class ObservingEngine(Engine):
-        observed_during_step: CacheEntry | None = None
+        observed_during_step: PageView | None = None
 
         def submit(self, request: InferenceRequest, now_ms: float) -> bool:
             if request.request_id == 1:
-                self.observed_during_step = self._prefix_cache.page(chunk_base(0))
+                self.observed_during_step = cached_page(self._prefix_cache, chunk_base(0))
             return super().submit(request, now_ms)
 
     from test_engine import duration
@@ -871,7 +866,7 @@ def test_arrival_during_gpu_step_cannot_observe_future_published_page() -> None:
     engine = ObservingEngine(runtime_config(config, PerfModelConfig()))
     run = Coordinator((engine,), planned_client(plan, config), Router(1)).run()[0]
     assert engine.observed_during_step is None
-    assert engine._prefix_cache.page(chunk_base(0)) is not None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is not None
     assert [item.prefill_start for item in run.records] == pytest.approx([0, end])
 
 

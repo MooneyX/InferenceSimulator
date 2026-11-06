@@ -98,7 +98,8 @@ def test_waiting_load_removes_aborts_and_counts_original_prompt_on_requeue() -> 
     batch = scheduler.select_prefill({})
     assert [entry.request.request_id for entry in batch.aborted] == [0]
     assert scheduler.waiting_prompt_tokens == 0
-    cache.cancel_pin(1)
+    cache.admit(1)
+    cache.withdraw(1)
     scheduler.requeue(item, 1, generated_tokens=3)
     assert scheduler.waiting_prompt_tokens == 5
     assert scheduler.select_prefill({}).admitted[0].waiting.target_tokens == 7

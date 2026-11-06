@@ -1,6 +1,6 @@
 # 当前引擎与调度
 
-每个 Engine 独占请求 KV 管理器和 L1/L2 资源池，所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。实例选路由 `routing_policy` 控制：默认 `least_load` 每轮重新选择最低 token 负载实例，不保留强制亲和，不迁移已分配请求；`cache_affinity` 对合成与 Trace 统一按 `session_id` 绑定，新会话轮询分配，同会话的根请求、子轮和分支都留在首次分配的实例，过载也不改道。缓存亲和不查询实际缓存或比较前缀，不保证实际命中；它不是 SGLang 的 `cache_aware` 混合策略。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
+每个 Engine 独占请求 KV 管理器与本实例 HBM 账本；L1/L2 由前缀基数树管理（共享 L2 时全场一棵，否则每实例一棵），所有实例共享本场唯一 L3 资源池，使用 FCFS 连续调度、一次性 Prefill；多个同构实例在同一全局时钟上并行步进。实例选路由 `routing_policy` 控制：默认 `least_load` 每轮重新选择最低 token 负载实例，不保留强制亲和，不迁移已分配请求；`cache_affinity` 对合成与 Trace 统一按 `session_id` 绑定，新会话轮询分配，同会话的根请求、子轮和分支都留在首次分配的实例，过载也不改道。缓存亲和不查询实际缓存或比较前缀，不保证实际命中；它不是 SGLang 的 `cache_aware` 混合策略。低层容量默认为零，不支持 chunked prefill。全局事件顺序见 [events.md](events.md)，块身份及物理容量见 [chunk-hash-encoding.md](chunk-hash-encoding.md) 与 [kv-prefix-reuse.md](kv-prefix-reuse.md)。
 
 ## 最低负载路由
 
@@ -18,7 +18,7 @@
 
 ## 准入预算与回撤
 
-`FcfsAdmissionScheduler` 逐 FCFS 队头做跨层连续前缀 `probe` 和临时 `pin`；失败撤销引用，不越过队头。候选需要的实际新计算页 token 数 `I=ceil((目标长度-命中长度)/B)*B`，可用额度 `A=(L1.free+L1.evictable)*B`。选批即时预算包含候选的 `I+B`（每人一页安全余量）和本批**唯一低层命中页**提升所需 L1 空间；总预算再加候选剩余生成上限和运行请求按动态 `ratio` 折算的未来需求（均至多 4096 token）。低层来源页受 pin 保护不可用于降级。候选通过预算后仍用缓存 `plan` 预检全批提升与新计算所需容量；预检失败撤销当前 pin，不改变 LRU 和迁移计数。选批后 Engine 先用 `ensure_free` 为提升页与新计算页同步腾位，再对唯一提升页依次 `reserve_transfer` + `complete_transfer` 同步迁入 L1，回载耗时由本步逐层流水计入步长。运行请求数不得超过 `max_running_requests`。`max_prefill_tokens` 仅限制后续候选的新计算量，首个 Prefill 候选可超过该计算上限；提升页不算新计算 token。未来需求仍按可见生成上限、4096 token 封顶与 `ratio` 估算，不读取真实输出目标、不分配物理页。空闲且尚未选中候选时，若即时预算（含一页增长余量与提升空间）能容纳，则不因未来估算偏大永久拒绝；不可运行证明仅检查即时物理需求，不包含未来项，实际 Decode 耗尽仍按请求级失败处理。
+`AdmissionScheduler` 逐 FCFS 队头做跨层连续前缀 `probe`，预算通过后才 `pin`（沿命中路径加锁），预算失败不加锁、不越过队头；匹配本身按 SGLang 刷新路径 LRU 并可能切分节点。候选需要的实际新计算页 token 数 `I=ceil((目标长度-命中长度)/B)*B`，可用额度 `A=(L1.free+L1.evictable)*B`，扣除本候选新加锁的本实例驻留页。选批即时预算包含候选的 `I+B`（每人一页安全余量）和本批**唯一低层命中页**提升所需 L1 空间；总预算再加候选剩余生成上限和运行请求按动态 `ratio` 折算的未来需求（均至多 4096 token）。选批后 Engine 先用 `ensure_free` 为提升页与新计算页一次腾位（整节点淘汰 D-leaf），再 `promote` 把全部候选的低层命中复制进本实例 HBM，回载耗时由本步逐层流水计入步长。运行请求数不得超过 `max_running_requests`。`max_prefill_tokens` 仅限制后续候选的新计算量，首个 Prefill 候选可超过该计算上限；提升页不算新计算 token。未来需求仍按可见生成上限、4096 token 封顶与 `ratio` 估算，不读取真实输出目标、不分配物理页。空闲且尚未选中候选时，若即时预算（含一页增长余量与提升空间）能容纳，则不因未来估算偏大永久拒绝；不可运行证明仅检查即时物理需求，不包含未来项，实际 Decode 耗尽仍按请求级失败处理。
 
 `ratio` 初值 `0.7`，无回撤且执行 Decode 时逐步下降至 `0.098`；回撤后据剩余运行请求的生成进度重估，闲置时重置。执行前先按需驱逐无引用的旧页；Decode 缺页时按 `(已生成数升序, 原输入长降序, ID 升序)` 回撤，若仅余单请求仍无法推进则标记 `decode_kv_exhausted`。回撤释放私有 KV、保留已发布缓存和输出进度，重入队列后只重算到 `P+g-1`，不重采样。恢复全命中且无需跨层回载时，可在调度边界直接转为运行态；若需回载则在选批时提升并恢复准入，不采样新 token。混合步的 `restore_only` 请求 ID 只标记此类恢复准入，不新增计算或输出；只有恢复没有 Prefill/Decode 计算时，该步只占纯回载时长、不计 GPU 步数，就绪请求在后续 Decode 才继续生成。无计算工作时跳到下一查询、传输或客户端事件；请求级失败与跳过后代的对外结果见 [api.md](api.md)。
 

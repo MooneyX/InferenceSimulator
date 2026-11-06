@@ -1,9 +1,10 @@
-"""实例请求 KV 管理与可独占或共享的分层资源池。"""
+"""实例请求 KV 管理：L1/L2 前缀基数树与按页管理的共享 L3 池。"""
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from heapq import heapify, heappop, heappush
 
+from simcore.radix_cache import HbmPool, RadixNode, RadixTree, chunk_id
 from simcore.schemas import InferenceRequest
 
 __all__ = [
@@ -12,11 +13,12 @@ __all__ = [
     "CachePool",
     "KVRequestState",
     "L1Snapshot",
+    "PrefixMatch",
     "TierSnapshot",
     "TieredKVCache",
+    "l2_snapshot",
 ]
 
-_TIER_ORDER = ("L1", "L2", "L3")
 _HEAP_REBUILD_CHECK_INTERVAL = 4096
 
 
@@ -27,16 +29,14 @@ class CacheCapacityError(ValueError):
 @dataclass(slots=True)
 class CacheEntry:
     chunk_id: int
-    tier: str
     ref_count: int
     last_access_seq: int
-    pool_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class KVRequestState:
     k: int  # 请求已有 KV 的总长度，包含私有 KV，单位为 token
-    f: int  # 请求公布的 KV 长度，可以被其他请求复用，单位为 token
+    f: int  # 请求已发布到前缀树的 KV 长度，可以被其他请求复用，单位为 token
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,28 +61,36 @@ class TierSnapshot:
     evictions: int
 
 
+def l2_snapshot(tree: RadixTree) -> TierSnapshot:
+    """L2 驻留含在途预取占位；可淘汰页为无 HBM 副本且未加锁的 L2 页。"""
+    resident = tree.l2_pages + tree.l2_reserved
+    return TierSnapshot(
+        tree.l2_capacity,
+        resident,
+        resident - tree.l2_evictable,
+        tree.l2_evictable,
+        tree.l2_capacity - resident,
+        tree.l2_peak,
+        tree.l2_evictions,
+    )
+
+
 @dataclass(slots=True)
 class CachePool:
-    """一个物理资源池；完整页、容量占位与保护状态均归该池所有。"""
+    """按页管理的共享 L3：完整页索引、保护引用与稳定 LRU，同 ID 只存一份。"""
 
-    level: str
-    pool_id: int
     capacity: int
-    page_size: int
     entries: dict[int, CacheEntry] = field(default_factory=dict, init=False)
     resident: int = field(default=0, init=False)
-    reserved: int = field(default=0, init=False)
     evictable: set[tuple[int, int]] = field(default_factory=set, init=False)
     peak: int = field(default=0, init=False)
     evictions: int = field(default=0, init=False)
     access_seq: int = field(default=0, init=False)
-    # LRU 堆在首次驱逐时才由 evictable 建立；此前只维护集合，大容量池常整场不驱逐。
+    # LRU 堆在首次淘汰时才由 evictable 建立；此前只维护集合，大容量池常整场不淘汰。
     heap_active: bool = field(default=False, init=False)
     heap: list[tuple[int, int]] = field(default_factory=list, init=False)
     queued: set[tuple[int, int]] = field(default_factory=set, init=False)
     queued_since_check: int = field(default=0, init=False)
-    pending_pages: dict[int, int] = field(default_factory=dict, init=False)
-    incoming_ready_ms: dict[int, float] = field(default_factory=dict, init=False)
 
     def lookup(self, chunk_id: int) -> CacheEntry | None:
         return self.entries.get(chunk_id)
@@ -98,62 +106,17 @@ class CachePool:
             self.evictions,
         )
 
-    def reserve(self, count: int) -> None:
-        if count > self.capacity - self.resident:
-            raise CacheCapacityError(f"{self.level} 容量不足")
-        self.resident += count
-        self.reserved += count
-        self.peak = max(self.peak, self.resident)
-
-    def release_reservation(self, count: int) -> None:
-        self.reserved -= count
-        self.resident -= count
-
-    def reserve_page(self, chunk_id: int) -> None:
-        if self.lookup(chunk_id) is not None:
-            self.add_ref(chunk_id)
-        elif chunk_id not in self.pending_pages:
-            self.reserve(1)
-        self.pending_pages[chunk_id] = self.pending_pages.get(chunk_id, 0) + 1
-
-    def finish_page(self, chunk_id: int) -> None:
-        remaining = self.pending_pages[chunk_id] - 1
-        if remaining:
-            self.pending_pages[chunk_id] = remaining
-        else:
-            del self.pending_pages[chunk_id]
-        self.drop_ref(chunk_id)
-
-    def store(self, chunk_id: int, ref_count: int = 0, *, occupied: bool = False) -> bool:
-        """合并副本和引用；在途同 ID 只占一页，首次完成后仍保护其他传输。"""
-        existing = self.lookup(chunk_id)
-        if existing is not None:
-            if occupied:
-                self.resident -= 1
-            self.add_refs(chunk_id, ref_count)
-            self.touch(chunk_id)
-            return False
-        pending = self.pending_pages.get(chunk_id, 0)
-        if pending:
-            if occupied:
-                self.release_reservation(1)
-            else:
-                self.reserved -= 1
-                occupied = True
-        self.insert(chunk_id, ref_count + pending, occupied=occupied)
-        return True
-
-    def insert(self, chunk_id: int, ref_count: int = 0, *, occupied: bool = False) -> None:
+    def insert(self, chunk_id: int) -> None:
         if chunk_id in self.entries:
-            raise ValueError("完整页已存在，重复写入须使用 store 合并")
-        if not occupied:
-            self.reserve(1)
-            self.reserved -= 1
+            raise ValueError("完整页已存在")
+        if self.resident >= self.capacity:
+            raise CacheCapacityError("L3 容量不足")
+        self.resident += 1
+        self.peak = max(self.peak, self.resident)
         self.access_seq += 1
-        page = CacheEntry(chunk_id, self.level, ref_count, self.access_seq, pool_id=self.pool_id)
+        page = CacheEntry(chunk_id, 0, self.access_seq)
         self.entries[chunk_id] = page
-        if not ref_count:
-            self._queue(page)
+        self._queue(page)
 
     def remove(self, chunk_id: int, *, evicted: bool = False) -> CacheEntry:
         page = self.entries.pop(chunk_id)
@@ -163,18 +126,11 @@ class CachePool:
         self.evictions += int(evicted)
         return page
 
-    def add_refs(self, chunk_id: int, count: int) -> None:
-        if not count:
-            return
+    def add_ref(self, chunk_id: int) -> None:
         page = self.entries[chunk_id]
         if not page.ref_count:
             self.evictable.remove((page.last_access_seq, chunk_id))
-        page.ref_count += count
-
-    def add_ref(self, chunk_id: int, *, refresh: bool = False) -> None:
-        self.add_refs(chunk_id, 1)
-        if refresh:
-            self.touch(chunk_id)
+        page.ref_count += 1
 
     def drop_ref(self, chunk_id: int) -> None:
         page = self.entries[chunk_id]
@@ -215,7 +171,7 @@ class CachePool:
         self.queued = self.evictable.copy()
 
     def pop_lru(self) -> CacheEntry | None:
-        """弹出最老的可驱逐页，顺带清理堆顶过期条目。"""
+        """弹出最老的可淘汰页，顺带清理堆顶过期条目。"""
         if not self.heap_active:
             self.heap_active = True
             self._rebuild_heap()
@@ -228,8 +184,42 @@ class CachePool:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class PrefixMatch:
+    """连续前缀命中：本实例 HBM 页在前，其后依次为 L2 与 L3 页。
+
+    ``node`` 是本地（HBM+L2）连续前缀在前缀树中的终点；``lower`` 列出 HBM 之后各页的
+    ``(chunk_id, tier)``。
+    """
+
+    node: RadixNode
+    l1_pages: int
+    local_pages: int
+    lower: tuple[tuple[int, str], ...] = ()
+
+    @property
+    def pages(self) -> int:
+        return self.l1_pages + len(self.lower)
+
+    @property
+    def l3_pages(self) -> int:
+        return self.pages - self.local_pages
+
+    def without_l3(self) -> "PrefixMatch":
+        local = self.lower[: self.local_pages - self.l1_pages]
+        return PrefixMatch(self.node, self.l1_pages, self.local_pages, local)
+
+
+@dataclass(slots=True)
+class _Pin:
+    request: InferenceRequest
+    match: PrefixMatch
+    node: RadixNode  # 当前锁终点；两层结构插入 L3 命中页后后移
+    promoted: bool = False
+
+
 class TieredKVCache:
-    """按逻辑页组织请求；私有层迁移，共享层向上回载保留副本。"""
+    """单实例 KV 管理：请求私有页、L1/L2 前缀树中的本实例视图，以及共享 L3。"""
 
     def __init__(
         self,
@@ -239,8 +229,8 @@ class TieredKVCache:
         l3_capacity_tokens: int = 0,
         *,
         shared_l3: CachePool | None = None,
-        shared_l2: CachePool | None = None,
-        pool_id_base: int = 0,
+        shared_l2: RadixTree | None = None,
+        instance_id: int = 0,
     ) -> None:
         if page_size < 1 or max_total_tokens < page_size or max_total_tokens % page_size:
             raise ValueError("max_total_tokens 必须至少一页且是 page_size 的整数倍")
@@ -250,81 +240,67 @@ class TieredKVCache:
             or (l2_capacity_tokens % page_size or l3_capacity_tokens % page_size)
         ):
             raise ValueError("低层容量必须是 page_size 的非负整数倍")
-        l3 = (
-            shared_l3
-            if shared_l3 is not None
-            else CachePool(
-                "L3",
-                pool_id_base + 2,
-                l3_capacity_tokens // page_size,
-                page_size,
-            )
-        )
-        if l3.level != "L3" or l3.page_size != page_size:
-            raise ValueError("共享 L3 的层级和页大小必须与实例一致")
-        l2 = shared_l2 if shared_l2 is not None else CachePool(
-            "L2", pool_id_base + 1, l2_capacity_tokens // page_size, page_size
-        )
-        if l2.level != "L2" or l2.page_size != page_size:
-            raise ValueError("共享 L2 的层级和页大小必须与实例一致")
-        # L2 关闭而 L3 启用时为两层结构：L1 淘汰直接写入 L3，L3 命中页直接读入 L1。
-        self.direct_l3 = bool(l3.capacity) and not l2.capacity
-        self._shared_tiers: set[str] = {"L2", "L3"} if shared_l2 is not None else {"L3"}
+        l3 = shared_l3 if shared_l3 is not None else CachePool(l3_capacity_tokens // page_size)
+        if shared_l2 is not None:
+            if shared_l2.page_size != page_size or shared_l2.l3 is not l3:
+                raise ValueError("共享 L2 的页大小和 L3 必须与实例一致")
+            tree = shared_l2
+        else:
+            tree = RadixTree(page_size, l2_capacity_tokens // page_size, l3)
+        self.tree = tree
+        self.l3 = l3
         self.page_size = page_size
         self.capacity_pages = max_total_tokens // page_size
-        self.pools: dict[str, CachePool] = {
-            "L1": CachePool("L1", pool_id_base, self.capacity_pages, page_size),
-            "L2": l2,
-            "L3": l3,
-        }
-        # 淘汰页下沉到最近的已启用低层；两层结构中 L1 直接写入 L3。
-        self._lower_tier: dict[str, str | None] = {
-            tier: next(
-                (lower for lower in _TIER_ORDER[index + 1 :] if self.pools[lower].capacity),
-                None,
-            )
-            for index, tier in enumerate(_TIER_ORDER)
-        }
+        # L2 关闭而 L3 启用时为两层结构：L1 淘汰直接写入 L3，L3 命中页直接读入 L1。
+        self.direct_l3 = bool(l3.capacity) and not tree.l2_capacity
+        self.hbm = HbmPool(instance_id, self.capacity_pages)
         self._requests: dict[int, InferenceRequest] = {}
         self._states: dict[int, KVRequestState] = {}
-        self._pins: dict[int, tuple[InferenceRequest, int]] = {}
-        self._pin_sources: dict[int, dict[int, CachePool]] = {}
-        self._chunk_pins: dict[int, set[int]] = {}
-        self._transfers: dict[tuple[int, str], str] = {}
-        self._private_pages = 0
-        self.promotions = 0
-        self.demotions = 0
+        self._endpoints: dict[int, RadixNode] = {}
+        self._pins: dict[int, _Pin] = {}
 
     @property
     def resident_pages(self) -> int:
-        return self.pools["L1"].resident
+        return self.hbm.resident
 
     @property
     def free_pages(self) -> int:
-        return self.capacity_pages - self.resident_pages
+        return self.capacity_pages - self.hbm.resident
 
     @property
     def evictable_pages(self) -> int:
-        return len(self.pools["L1"].evictable)
+        return self.hbm.evictable
 
     @property
     def active_pages(self) -> int:
-        return self.resident_pages - self.evictable_pages
+        return self.hbm.resident - self.hbm.evictable
 
     @property
     def evictions(self) -> int:
-        return self.pools["L1"].evictions
+        return self.hbm.evictions
 
     @property
     def peak_resident_pages(self) -> int:
-        return self.pools["L1"].peak
+        return self.hbm.peak
 
-    def tier_snapshot(self, tier: str) -> TierSnapshot:
-        return self.pools[tier].snapshot()
+    @property
+    def promotions(self) -> int:
+        return self.hbm.promotions
+
+    @property
+    def demotions(self) -> int:
+        return self.hbm.demotions
 
     @property
     def available_tokens(self) -> int:
         return (self.free_pages + self.evictable_pages) * self.page_size
+
+    @property
+    def l2_incoming_ms(self) -> dict[int, float]:
+        return self.tree.l2_incoming_ms
+
+    def tier_snapshot(self, tier: str) -> TierSnapshot:
+        return l2_snapshot(self.tree) if tier == "L2" else self.l3.snapshot()
 
     def snapshot(self) -> L1Snapshot:
         private_tokens = sum(state.k - state.f for state in self._states.values())
@@ -334,19 +310,8 @@ class TieredKVCache:
             self.active_pages,
             self.evictable_pages,
             self.free_pages,
-            self._private_pages * self.page_size - private_tokens,
+            self.hbm.private_pages * self.page_size - private_tokens,
         )
-
-    def _source_pool(self, chunk_id: int, *, include_l3: bool = True) -> CachePool | None:
-        for tier in _TIER_ORDER if include_l3 else _TIER_ORDER[:2]:
-            pool = self.pools[tier]
-            if pool.lookup(chunk_id) is not None:
-                return pool
-        return None
-
-    def page(self, chunk_id: int) -> CacheEntry | None:
-        pool = self._source_pool(chunk_id)
-        return pool.lookup(chunk_id) if pool is not None else None
 
     def state(self, request_id: int) -> KVRequestState:
         return self._states[request_id]
@@ -362,9 +327,8 @@ class TieredKVCache:
         *,
         restoring: bool = False,
         include_l3: bool = True,
-        start_index: int = 0,
-    ) -> tuple[tuple[int, str], ...]:
-        """按页选择最近来源；首个所有可访问池均缺失的页结束连续匹配。"""
+    ) -> PrefixMatch:
+        """前缀树中的本地连续前缀，之后可接共享 L3 逐页连续命中；匹配刷新树中路径的 LRU。"""
         if target_tokens < request.prompt_len:
             raise ValueError("重算目标不得小于原始 prompt")
         limit = (
@@ -372,57 +336,74 @@ class TieredKVCache:
             if restoring
             else (request.prompt_len - 1) // self.page_size
         )
-        sources: list[tuple[int, str]] = []
-        for index in range(start_index, limit):
-            chunk_id = self._chunk_id(request, index)
-            pool = self._source_pool(chunk_id, include_l3=include_l3)
-            if pool is None:
-                break
-            sources.append((chunk_id, pool.level))
-        return tuple(sources)
+        node, l1_pages, local_pages = self.tree.match(self.hbm, request, limit)
+        lower = [(chunk_id(request, index), "L2") for index in range(l1_pages, local_pages)]
+        if include_l3 and self.l3.capacity:
+            entries = self.l3.entries
+            for index in range(local_pages, limit):
+                page = chunk_id(request, index)
+                if page not in entries:
+                    break
+                lower.append((page, "L3"))
+        return PrefixMatch(node, l1_pages, local_pages, tuple(lower))
 
-    def pin(self, request: InferenceRequest, sources: tuple[tuple[int, str], ...]) -> None:
+    def unprotected_pages(self, match: PrefixMatch) -> int:
+        """命中路径上本实例驻留但尚未加锁的页数；加锁后它们不再可淘汰。"""
+        return self.tree.unlocked_resident_pages(self.hbm, match.node)
+
+    def pin(self, request: InferenceRequest, match: PrefixMatch) -> None:
+        """沿命中路径加锁，并保护其后的 L3 命中页。"""
         if request.request_id in self._pins or request.request_id in self._states:
             raise ValueError("请求已被保护或驻留")
-        bindings = {chunk_id: self.pools[tier] for chunk_id, tier in sources}
-        for chunk_id, pool in bindings.items():
-            pool.add_ref(chunk_id)
-            self._chunk_pins.setdefault(chunk_id, set()).add(request.request_id)
-        self._pins[request.request_id] = (request, len(sources) * self.page_size)
-        self._pin_sources[request.request_id] = bindings
+        self.tree.lock(self.hbm, match.node)
+        for page, tier in match.lower[match.local_pages - match.l1_pages :]:
+            if tier == "L3":
+                self.l3.add_ref(page)
+        self._pins[request.request_id] = _Pin(request, match, match.node)
 
-    def cancel_pin(self, request_id: int) -> None:
-        self._pins.pop(request_id)
-        for chunk_id, pool in self._pin_sources.pop(request_id).items():
-            pool.drop_ref(chunk_id)
-            requests = self._chunk_pins[chunk_id]
-            requests.remove(request_id)
-            if not requests:
-                del self._chunk_pins[chunk_id]
+    def promote(self) -> int:
+        """把全部已保护候选的低层命中复制到本实例 HBM；调用方已腾出容量。
+
+        L2 命中沿加锁路径复制并保留 L2 副本；两层结构的 L3 命中页插入前缀树并后移锁终点。
+        同批候选共享的节点只复制一次。返回复制页数。
+        """
+        pages = 0
+        for pin in self._pins.values():
+            if pin.promoted:
+                continue
+            pin.promoted = True
+            match = pin.match
+            if match.local_pages > match.l1_pages:
+                pages += self.tree.promote_path(self.hbm, pin.node)
+            if match.l3_pages:
+                start, end = match.local_pages, match.pages
+                pin.node, duplicate = self.tree.attach(
+                    self.hbm, pin.request, start, end, pin.node
+                )
+                self.hbm.promotions += end - start - duplicate
+                pages += end - start - duplicate
+                for page, tier in match.lower[start - match.l1_pages :]:
+                    if tier == "L3":
+                        self.l3.touch(page)
+        return pages
 
     def admit(self, request_id: int) -> KVRequestState:
-        request, matched_tokens = self._pins[request_id]
-        bindings = self._pin_sources[request_id]
-        l1 = self.pools["L1"]
-        for chunk_id, pool in bindings.items():
-            if pool is not l1 and l1.lookup(chunk_id) is not None:  # 这一页同时出现在L1和L2
-                pool.drop_ref(chunk_id)  # L2中的页不再被引用
-                l1.add_ref(chunk_id)
-                bindings[chunk_id] = l1
-        if any(pool.level != "L1" for pool in bindings.values()):
+        """候选转为驻留请求：命中页须已全部在本实例 HBM，锁转由请求持有。"""
+        pin = self._pins[request_id]
+        if (pin.match.pages > pin.match.l1_pages and not pin.promoted) or not self.tree.resident(
+            self.hbm, pin.node
+        ):
             raise CacheCapacityError("低层命中页须先提升到 L1 才能接纳请求")
-        del self._pins[request_id], self._pin_sources[request_id]
-        for chunk_id in bindings:
-            self.pools["L1"].touch(chunk_id)  # 更新这一页的最近访问时间
-            requests = self._chunk_pins[chunk_id]
-            requests.remove(request_id)
-            if not requests:
-                del self._chunk_pins[chunk_id]
-        self._requests[request_id] = request
-        state = KVRequestState(matched_tokens, matched_tokens)
-        self._states[request_id] = (
-            state  # 这个请求正要开始prefill计算, 私有和发布的token数量都是一开始也有的可复用token
-        )
+        del self._pins[request_id]
+        match = pin.match
+        for page, tier in match.lower[match.local_pages - match.l1_pages :]:
+            if tier == "L3":
+                self.l3.drop_ref(page)
+        tokens = match.pages * self.page_size
+        self._requests[request_id] = pin.request
+        self._endpoints[request_id] = pin.node
+        state = KVRequestState(tokens, tokens)
+        self._states[request_id] = state
         return state
 
     def extend(self, request_id: int, target_tokens: int) -> int:
@@ -433,34 +414,29 @@ class TieredKVCache:
             state.k + self.page_size - 1
         ) // self.page_size
         self.ensure_free(new_pages)
-        self.pools["L1"].reserve(new_pages)
-        self.pools["L1"].reserved -= new_pages
-        self._private_pages += new_pages
+        self.hbm.grow(new_pages)
         self._states[request_id] = KVRequestState(target_tokens, state.f)
         return new_pages
 
     def publish(self, request_id: int) -> int:
+        """发布 ``[F, K)`` 内的完整私有页；已在本实例树中的重复页释放，返回释放页数。"""
         state = self.state(request_id)
         request = self._requests[request_id]
-        l1, l2 = self.pools["L1"], self.pools["L2"]
-        ids = tuple(
-            self._chunk_id(request, i)
-            for i in range(state.f // self.page_size, state.k // self.page_size)
+        start = state.f // self.page_size
+        end = state.k // self.page_size
+        self.hbm.private_pages -= max(end - start, 0)
+        endpoint, duplicate = self.tree.publish(
+            self.hbm,
+            request,
+            start,
+            end,
+            self._endpoints[request_id],
+            request.prompt_len // self.page_size,
         )
-        if "L2" not in self._shared_tiers and any(
-            (page := l2.lookup(chunk_id)) is not None and page.ref_count for chunk_id in ids
-        ):
-            raise CacheCapacityError("正在被保护的低层页不能被重算替换")
-        freed = 0
-        for chunk_id in ids:
-            self._private_pages -= 1
-            if "L2" not in self._shared_tiers and l2.lookup(chunk_id) is not None:
-                l2.remove(chunk_id, evicted=True)
-            freed += int(not l1.store(chunk_id, 1, occupied=True))
-        self._states[request_id] = KVRequestState(
-            state.k, state.k // self.page_size * self.page_size
-        )
-        return freed
+        self._endpoints[request_id] = endpoint
+        if end > start:
+            self._states[request_id] = KVRequestState(state.k, end * self.page_size)
+        return duplicate
 
     def publish_batch(self, request_ids: Sequence[int]) -> int:
         return sum(self.publish(request_id) for request_id in sorted(request_ids))
@@ -473,124 +449,41 @@ class TieredKVCache:
         self._release(request_id)
 
     def _release(self, request_id: int) -> None:
-        state = self.state(request_id)
-        request = self._requests.pop(request_id)
-        for index in range(state.f // self.page_size):
-            self.pools["L1"].drop_ref(self._chunk_id(request, index))
         count = self.private_page_count(request_id)
-        self._private_pages -= count
-        self.pools["L1"].resident -= count
-        del self._states[request_id]
+        del self._states[request_id], self._requests[request_id]
+        self.tree.unlock(self.hbm, self._endpoints.pop(request_id))
+        self.hbm.private_pages -= count
 
-    def _evict_one(self, tier: str) -> bool:
-        pool = self.pools[tier]
-        victim = pool.pop_lru()
-        if victim is None:
-            return False
-
-        destination = self._lower_tier[tier]
-        if destination is not None:
-            target = self.pools[destination]
-            duplicate = target.lookup(victim.chunk_id) is not None or (
-                victim.chunk_id in target.pending_pages
-            )
-            if (
-                not duplicate
-                and target.resident == target.capacity
-                and not self._evict_one(destination)
-            ):
-                destination = None
-        self._apply_move(victim.chunk_id, tier, destination)
-        return True
-
-    def _ensure_tier_free(self, tier: str, count: int) -> None:
-        pool = self.pools[tier]
-        if count > pool.capacity - pool.resident + len(pool.evictable):
-            raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
-        while pool.capacity - pool.resident < count:
-            if not self._evict_one(tier):
-                raise CacheCapacityError(f"{tier} 容量不足且没有可淘汰页")
-
-    def _apply_move(self, chunk_id: int, source: str, destination: str | None) -> None:
-        old = self.pools[source]
-        page = old.entries[chunk_id]
-        upward = destination is not None and _TIER_ORDER.index(destination) < _TIER_ORDER.index(
-            source
-        )
-        copy = upward and source in self._shared_tiers
-        if not copy:
-            old.remove(chunk_id, evicted=not upward)
-        if destination is None:
-            return
-        target = self.pools[destination]
-        target.store(chunk_id, 0 if copy else page.ref_count)
-        for request_id in self._chunk_pins.get(chunk_id, ()):
-            bindings = self._pin_sources[request_id]
-            if bindings[chunk_id] is old:
-                if copy:
-                    old.drop_ref(chunk_id)
-                    target.add_ref(chunk_id)
-                bindings[chunk_id] = target
-        if upward:
-            self.promotions += 1
-        else:
-            self.demotions += 1
-
-    def reserve_transfer(self, chunk_id: int, destination: str, *, source: str) -> str:
-        source_pool = self.pools[source]
-        page = source_pool.lookup(chunk_id)
-        if page is None:
-            raise ValueError("待传输页不存在")
-        if (chunk_id, destination) in self._transfers:
-            raise ValueError("同一页到该目的层已有在途传输")
-        if destination not in self.pools or not self.pools[destination].capacity:
-            raise ValueError("目的层不存在或未启用")
-        if source == destination:
-            raise ValueError("来源与目的层不能相同")
-        if _TIER_ORDER.index(destination) > _TIER_ORDER.index(source) and page.ref_count:
-            raise CacheCapacityError("有活动引用的页不能降级")
-        target = self.pools[destination]
-        duplicate = (
-            target.lookup(chunk_id) is not None or chunk_id in target.pending_pages
-        )  # 目的层级中是否已经有这一页或者已经有这一页的传输任务
-        source_pool.add_ref(chunk_id)
-        try:
-            if not duplicate:
-                self._ensure_tier_free(destination, 1)
-            target.reserve_page(chunk_id)
-        except Exception:
-            source_pool.drop_ref(chunk_id)
-            raise
-        self._transfers[chunk_id, destination] = source
-        return source
-
-    def complete_transfer(self, chunk_id: int, destination: str) -> str:
-        source = self._transfers[chunk_id, destination]
-        old, target = self.pools[source], self.pools[destination]
-        page = old.entries[chunk_id]
-        upward = _TIER_ORDER.index(destination) < _TIER_ORDER.index(source)
-        if not upward and page.ref_count > 1:
-            raise CacheCapacityError("在途降级页获得活动引用，须先释放活动引用")
-        if not upward:
-            old.drop_ref(chunk_id)
-        self._apply_move(chunk_id, source, destination)
-        if upward and source in self._shared_tiers:
-            old.drop_ref(chunk_id)
-            old.touch(chunk_id)
-        elif upward:
-            target.drop_ref(chunk_id)
-        target.finish_page(chunk_id)
-        del self._transfers[chunk_id, destination]
-        return source
-
-    def ensure_free(self, count: int) -> int:  # 确保剩余空闲页数不小于count, 返回因此驱逐的页数
-        if count <= self.free_pages:
+    def ensure_free(self, count: int) -> int:
+        """确保空闲页不少于 ``count``，按 LRU 整节点淘汰本实例 D-leaf；返回淘汰页数。"""
+        free = self.free_pages
+        if count <= free:
             return 0
-        evictions_before = self.evictions
-        self._ensure_tier_free("L1", count)
-        return self.evictions - evictions_before
+        if count > free + self.hbm.evictable:
+            raise CacheCapacityError("L1 容量不足且没有可淘汰页")
+        return self.tree.evict_hbm(self.hbm, count)
 
-    @staticmethod
-    def _chunk_id(request: InferenceRequest, index: int) -> int:
-        ids = request.chunk_ids
-        return ids[index] if index < len(ids) else request.chunk_base + index
+    def reserve_prefetch(self, page: int) -> None:
+        """为一页 L3→L2 预取保护 L3 来源并预留 L2 目的容量；腾挪 L2 写入 L3 时不会挤掉来源。"""
+        if self.l3.lookup(page) is None:
+            raise ValueError("待传输页不存在")
+        self.l3.add_ref(page)
+        if not self.tree.reserve_l2(self.hbm):
+            self.l3.drop_ref(page)
+            raise CacheCapacityError("L2 容量不足且没有可淘汰页")
+
+    def complete_prefetch(
+        self, request: InferenceRequest, pages: Sequence[tuple[int, int]]
+    ) -> None:
+        """预取完成：按请求页序号把连续段插入 L2，释放 L3 来源保护。"""
+        index = 0
+        while index < len(pages):
+            stop = index + 1
+            while stop < len(pages) and pages[stop][0] == pages[stop - 1][0] + 1:
+                stop += 1
+            self.tree.insert_l2(request, pages[index][0], pages[stop - 1][0] + 1)
+            index = stop
+        for _, page in pages:
+            self.l3.drop_ref(page)
+            self.l3.touch(page)
+        self.hbm.promotions += len(pages)

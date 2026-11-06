@@ -591,7 +591,7 @@ class SimConfig(_Frozen):
         strict=True,
         description=(
             "理想化全局共享 host 缓存：容量为每实例 L2 页容量乘实例数；"
-            "淘汰写入、复制回载，按每实例链路计时，不模拟全局带宽竞争"
+            "全场一棵前缀树，write-through 写入、复制回载，按每实例链路计时，不模拟全局带宽竞争"
         ),
     )
     shared_l3: SharedL3Config | None = None

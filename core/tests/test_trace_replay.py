@@ -383,7 +383,8 @@ def test_trace_replay_uses_resolved_capacity_and_timing_without_mutating_inputs(
         original.inference.hardware,
     )
     assert first.prefill_end - first.prefill_start == pytest.approx(expected.duration_ms)
-    assert analysis.device_ms == pytest.approx(
+    # 首轮发布即 write-through 到共享 L2；次轮若路由到另一实例，命中 L2 回载未被掩盖的部分计入步长。
+    assert analysis.device_ms + analysis.restore_exposed_ms == pytest.approx(
         sum(record.finish - record.prefill_start for record in result.requests)
     )
 

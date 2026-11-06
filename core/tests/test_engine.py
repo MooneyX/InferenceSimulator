@@ -25,6 +25,7 @@ from simcore.schemas import (
 from simcore.workload import build_synthetic_closed_loop_plan, request_output_limit
 from test_client import planned_client
 from test_f001_engine import start_step_end
+from test_radix_cache import page as cached_page
 from test_schemas import TOY_HARDWARE, TOY_PERFORMANCE, runtime_config
 
 DEFAULT_PERF = PerfModelConfig()
@@ -107,7 +108,7 @@ class TestImmediateEngine:
         assert engine.has_work
         end = start_step_end(engine, 3.0, 0, (7,))
         assert not engine.has_work
-        assert engine._prefix_cache.page(chunk_base(7)) is None
+        assert cached_page(engine._prefix_cache, chunk_base(7)) is None
         assert engine.finish_step(end) == (7,)
         engine.complete(end, 7)
         assert interval(engine.finalize().records[0]) == (3.0, 3.0, end, end)

@@ -39,6 +39,8 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
+from test_radix_cache import no_hit
+from test_radix_cache import page as cached_page
 
 
 def inference_config(config: SimConfig) -> InferenceConfig:
@@ -2002,25 +2004,29 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
     )
     engine = Engine(runtime)
     cache = engine._prefix_cache
-    for key in range(3):
+    for key in range(4):
         parent = InferenceRequest(key, key, None, 4, 1, 1, (), 0, chunk_base(key))
-        cache.pin(parent, ())
+        cache.pin(parent, no_hit(cache))
         cache.admit(key)
         cache.extend(key, 4)
         cache.publish(key)
         cache.finish(key)
-    cache.ensure_free(2)
+        if key == 2:
+            cache.ensure_free(3)  # 首页仅余 write-through 的 L2 副本，下一次写入把它挤到 L3
+    cache.ensure_free(3)  # L2 中的副本不再有 HBM 副本，预取可淘汰它腾出目的页
     chunk_id = chunk_base(0)
-    page = cache.page(chunk_id)
+    page = cached_page(cache, chunk_id)
     assert page is not None and page.tier == "L3"
-    (transfer_id,) = engine._start_prefetch(99, [chunk_id], 10.0)
+    child = InferenceRequest(99, 0, None, 5, 1, 1, (chunk_id,), 1, chunk_base(99))
+    engine._requests[99] = child
+    (transfer_id,) = engine._start_prefetch(99, [(0, chunk_id)], 10.0)
     [(end, event_kind, event_id)] = engine.drain_events()
     assert (event_kind, event_id) == (EventKind.L3_L2_DONE, transfer_id)
     assert end - 10.0 == pytest.approx(l3_service)
-    page = cache.page(chunk_id)
+    page = cached_page(cache, chunk_id)
     assert page is not None and page.tier == "L3"
     engine.on_transfer_done(transfer_id, end)
-    page = cache.page(chunk_id)
+    page = cached_page(cache, chunk_id)
     assert page is not None and page.tier == "L2"
     run = engine.finalize()
     assert run.restore_time_ms == pytest.approx(l3_service)
@@ -2031,7 +2037,7 @@ def test_engine_config_derived_links_match_physical_two_hop_transfer(tp_size: in
         value == 0 for name, value in run.analysis.model_dump().items() if name != "restore_ms"
     )
     assert run.num_engine_steps == 0
-    assert not engine._transfers and not cache._transfers
+    assert not engine._transfers and not cache.l2_incoming_ms
     assert config.model_dump() == original_data
 
 

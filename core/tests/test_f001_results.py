@@ -31,6 +31,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_f001_engine import start_step_end
+from test_radix_cache import no_hit
 from test_schemas import metric_inputs, resolved_config, runtime_config
 
 
@@ -215,7 +216,7 @@ def test_replay_tokens_from_request_that_later_aborts_remain_in_total() -> None:
     assert engine.finish_step(now) == ()
     assert engine._replayed_tokens[0] == 4
     holder = InferenceRequest(99, 0, None, 8, 1, 1, (), 0, chunk_base(99))
-    engine._prefix_cache.pin(holder, ())
+    engine._prefix_cache.pin(holder, no_hit(engine._prefix_cache))
     engine._prefix_cache.admit(99)
     engine._prefix_cache.extend(99, 8)
     assert engine.start_step(now, 3) == (0, ())

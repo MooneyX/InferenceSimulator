@@ -10,7 +10,14 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from simcore.events import EventKind
-from simcore.kv_cache import CacheCapacityError, CachePool, L1Snapshot, TieredKVCache, TierSnapshot
+from simcore.kv_cache import (
+    CacheCapacityError,
+    CachePool,
+    L1Snapshot,
+    PrefixMatch,
+    TieredKVCache,
+    TierSnapshot,
+)
 from simcore.kv_source import STORAGE_BATCH_PAGES, KvSource
 from simcore.perf_model import (
     DecodeWork,
@@ -19,8 +26,15 @@ from simcore.perf_model import (
     pipelined_finish_ms,
     step_cost,
 )
+from simcore.radix_cache import RadixTree, chunk_id
 from simcore.runtime import RuntimeConfig
-from simcore.scheduler import AdmissionBatch, AdmissionScheduler, RunningRequest, WaitingRequest
+from simcore.scheduler import (
+    AdmissionBatch,
+    AdmissionScheduler,
+    PrefillCandidate,
+    RunningRequest,
+    WaitingRequest,
+)
 from simcore.schemas import (
     AbortedRequest,
     AnalyticalSummary,
@@ -74,7 +88,8 @@ class EngineRun:
 
 @dataclass(slots=True)
 class _TransferTask:
-    chunk_ids: tuple[int, ...]  # 同一批读取的 L3 页，按前缀顺序
+    pages: tuple[tuple[int, int], ...]  # 同一批读取的 (请求页序号, L3 页 ID)，按前缀顺序
+    request: InferenceRequest  # 发起预取的请求，完成时按其路径插入 L2
     waiting_requests: set[int]
     service_ms: float
     owns_transfer: bool = True
@@ -85,7 +100,7 @@ class Engine:
 
     def __init__(
         self, runtime: RuntimeConfig, *, shared_l3: CachePool | None = None,
-        shared_l2: CachePool | None = None, instance_id: int = 0
+        shared_l2: RadixTree | None = None, instance_id: int = 0
     ) -> None:
         engine, perf = runtime.engine, runtime.perf_model
         transfers = runtime.transfers
@@ -111,7 +126,7 @@ class Engine:
             engine.l3_capacity_tokens,
             shared_l3=shared_l3,
             shared_l2=shared_l2,
-            pool_id_base=instance_id * 2,
+            instance_id=instance_id,
         )
         self._prefix_scheduler = AdmissionScheduler(engine, self._prefix_cache)
         self._admission_stats: dict[int, tuple[int, int]] = {}
@@ -195,53 +210,55 @@ class Engine:
 
     def _add_transfer(
         self,
-        chunk_ids: tuple[int, ...],
+        pages: tuple[tuple[int, int], ...],
         request_id: int,
         end_ms: float,
         service_ms: float,
         owns_transfer: bool,
-    ) -> int:  # 一批 L3 页、请求 ID、完成时刻、读取耗时与归属 → 预取任务 ID
+    ) -> int:  # 一批 (页序号, L3 页)、请求 ID、完成时刻、读取耗时与归属 → 预取任务 ID
         transfer_id = self._next_transfer_id
         self._next_transfer_id += 1
         self._transfers[transfer_id] = _TransferTask(
-            chunk_ids, {request_id}, service_ms, owns_transfer
+            pages, self._requests[request_id], {request_id}, service_ms, owns_transfer
         )
-        for chunk_id in chunk_ids:
-            self._transfer_by_chunk[chunk_id] = transfer_id
+        for _, page in pages:
+            self._transfer_by_chunk[page] = transfer_id
         self._scheduled_events.append((end_ms, EventKind.L3_L2_DONE, transfer_id))
         return transfer_id
 
     def _start_prefetch(
-        self, request_id: int, remote: list[int], now_ms: float
-    ) -> set[int]:  # 请求 ID、连续 L3 命中页与时刻 → 需等待的预取任务 ID
+        self, request_id: int, remote: list[tuple[int, int]], now_ms: float
+    ) -> set[int]:  # 请求 ID、连续 L3 命中 (页序号, 页 ID) 与时刻 → 需等待的预取任务 ID
         """已在途的页直接等待；其余页按前缀顺序每 ``STORAGE_BATCH_PAGES`` 页一批提交 L3 来源。
 
         对应 SGLang ``HiCacheController._page_transfer`` 每批一次存储读取；本页预留失败或
         未配置 L3 链路时停止，只预取此前的连续前缀。
         """
-        target = self._prefix_cache.pools["L2"]
+        cache = self._prefix_cache
+        incoming = cache.l2_incoming_ms
         pending: set[int] = set()
-        external: dict[float, list[int]] = {}  # 共享 L2 中其他实例已发起的预取，按完成时刻归并
-        owned: list[int] = []
-        for chunk_id in remote:
-            existing = self._transfer_by_chunk.get(chunk_id)
+        # 共享 L2 中其他实例已发起的预取，按完成时刻归并
+        external: dict[float, list[tuple[int, int]]] = {}
+        owned: list[tuple[int, int]] = []
+        for index, page in remote:
+            existing = self._transfer_by_chunk.get(page)
             if existing is not None:  # 同页已在本实例预取中
                 self._transfers[existing].waiting_requests.add(request_id)
                 pending.add(existing)
                 continue
-            end = target.incoming_ready_ms.get(chunk_id)
+            end = incoming.get(page)
             if end is not None:
-                external.setdefault(end, []).append(chunk_id)
+                external.setdefault(end, []).append((index, page))
                 continue
-            if self._l3_source is None or self._prefix_cache.pools["L3"].lookup(chunk_id) is None:
+            if self._l3_source is None or cache.l3.lookup(page) is None:
                 break
             try:
-                _ = self._prefix_cache.reserve_transfer(chunk_id, "L2", source="L3")
+                cache.reserve_prefetch(page)
             except CacheCapacityError:
                 break
-            owned.append(chunk_id)
-        for end, chunk_ids in external.items():
-            pending.add(self._add_transfer(tuple(chunk_ids), request_id, end, 0.0, False))
+            owned.append((index, page))
+        for end, pages in external.items():
+            pending.add(self._add_transfer(tuple(pages), request_id, end, 0.0, False))
         if owned and self._l3_source is not None:
             batches = [
                 tuple(owned[index : index + STORAGE_BATCH_PAGES])
@@ -252,8 +269,8 @@ class Engine:
                 now_ms, [len(batch) * self._page_bytes for batch in batches]
             )
             for batch, end in zip(batches, ends, strict=True):
-                for chunk_id in batch:
-                    target.incoming_ready_ms[chunk_id] = end
+                for _, page in batch:
+                    incoming[page] = end
                 pending.add(self._add_transfer(batch, request_id, end, end - start, True))
                 start = end
         return pending
@@ -293,10 +310,10 @@ class Engine:
             max_new_tokens=request.max_new_tokens,
         )
         if self._engine_config.l3_capacity_tokens:
-            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+            local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False).pages
             if not self._direct_l3:
-                self._last_local_match[key] = len(local)
-            if len(local) < (request.prompt_len - 1) // self._prefix_cache.page_size:
+                self._last_local_match[key] = local
+            if local < (request.prompt_len - 1) // self._prefix_cache.page_size:
                 self._schedule_l3_lookup(key, now_ms)
         return True
 
@@ -308,13 +325,13 @@ class Engine:
         )
 
     def _accept_prefill_probe(
-        self, item: WaitingRequest, sources: tuple[tuple[int, str], ...], now_ms: float
+        self, item: WaitingRequest, match: PrefixMatch, now_ms: float
     ) -> bool: # 判断准入prefill计算时的本地匹配长度是否低于到达排队时的本地匹配长度, 若低于, 需要重新发起L3查询和预取, 并继续排队
         request = item.request
         request_id = request.request_id
         if request_id in self._last_local_match:
             local_match = min(
-                len(sources), (request.prompt_len - 1) // self._prefix_cache.page_size
+                match.pages, (request.prompt_len - 1) // self._prefix_cache.page_size
             )
             if local_match < self._last_local_match[request_id]:
                 self._last_local_match[request_id] = local_match
@@ -327,25 +344,30 @@ class Engine:
     ) -> None:  # 请求 ID 与查询完成时刻 → 触发连续 L3 命中页预取或保护；无返回值
         """三层结构按命中预取到 L2；两层结构不搬数据，只保护命中页至准入时直接读入 L1。
 
-        两层结构对应 SGLang LMCache 接入（``LMCacheUnifiedRadixCache.prefetch_from_storage`` 只发起
-        查找，``check_prefetch_progress`` 记录命中并保留存储侧锁，``init_load_back`` 准入时
+        本地连续前缀之后的页逐页查询 L3，与 SGLang ``prefetch_from_storage`` 自本地匹配终点
+        查询存储一致。两层结构对应 SGLang LMCache 接入
+        （``LMCacheUnifiedRadixCache.prefetch_from_storage`` 只发起查找，
+        ``check_prefetch_progress`` 记录命中并保留存储侧锁，``init_load_back`` 准入时
         分配 GPU 页并读入）。
         """
         self._lookup_waiting.remove(request_id)
         request = self._requests[request_id]
-        local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
+        match = self._prefix_cache.probe(request, request.prompt_len)
         if not self._direct_l3:
-            self._last_local_match[request_id] = len(local)
-        sources = self._prefix_cache.probe(request, request.prompt_len, start_index=len(local))
-        remote = [chunk_id for chunk_id, tier in sources if tier == "L3"]
+            self._last_local_match[request_id] = match.local_pages
+        remote = [
+            (index, page)
+            for index, (page, tier) in enumerate(match.lower, start=match.l1_pages)
+            if tier == "L3"
+        ]
         if len(remote) * self._prefix_cache.page_size <= self._engine_config.l3_prefetch_min_tokens:
             self._prefix_scheduler.set_ready(request_id, True)
             return
         if self._direct_l3:
-            l3 = self._prefix_cache.pools["L3"]
-            for chunk_id in remote:
-                l3.add_ref(chunk_id)
-            self._lookup_locks[request_id] = tuple(remote)
+            l3 = self._prefix_cache.l3
+            for _, page in remote:
+                l3.add_ref(page)
+            self._lookup_locks[request_id] = tuple(page for _, page in remote)
             self._prefix_scheduler.set_ready(request_id, True)
             return
         pending = self._start_prefetch(request_id, remote, now_ms)
@@ -355,41 +377,44 @@ class Engine:
             self._prefix_scheduler.set_ready(request_id, True)
 
     def _release_lookup_lock(self, request_id: int) -> None:  # 请求 ID → 释放到达查找的 L3 保护
-        chunk_ids = self._lookup_locks.pop(request_id, None)
-        if chunk_ids is not None:
-            l3 = self._prefix_cache.pools["L3"]
-            for chunk_id in chunk_ids:
-                l3.drop_ref(chunk_id)
+        pages = self._lookup_locks.pop(request_id, None)
+        if pages is not None:
+            l3 = self._prefix_cache.l3
+            for page in pages:
+                l3.drop_ref(page)
 
     def on_direct_read_done(self, read_id: int) -> None:  # 两层结构读取批次 ID → 释放源页保护
-        l3 = self._prefix_cache.pools["L3"]
-        for chunk_id in self._direct_reads.pop(read_id):
-            l3.drop_ref(chunk_id)
+        l3 = self._prefix_cache.l3
+        for page in self._direct_reads.pop(read_id):
+            l3.drop_ref(page)
 
     def on_transfer_done(
         self, transfer_id: int, now_ms: float
     ) -> None:  # L3→L2 预取任务 ID 和时刻 → 结算预取并唤醒等待；无返回值
         task = self._transfers.pop(transfer_id)
-        for chunk_id in task.chunk_ids:
-            del self._transfer_by_chunk[chunk_id]
+        for _, page in task.pages:
+            del self._transfer_by_chunk[page]
         if task.owns_transfer:
-            incoming = self._prefix_cache.pools["L2"].incoming_ready_ms
-            for chunk_id in task.chunk_ids:
-                self._prefix_cache.complete_transfer(chunk_id, "L2")
-                del incoming[chunk_id]
-            self._restore_bytes += len(task.chunk_ids) * self._page_bytes
+            incoming = self._prefix_cache.l2_incoming_ms
+            self._prefix_cache.complete_prefetch(task.request, task.pages)
+            for _, page in task.pages:
+                del incoming[page]
+            self._restore_bytes += len(task.pages) * self._page_bytes
             self._restore_time_ms += task.service_ms
             self._analysis.restore_ms += task.service_ms
         for request_id in task.waiting_requests:
-            self._prefetched_origins.setdefault(request_id, set()).update(task.chunk_ids)
+            self._prefetched_origins.setdefault(request_id, set()).update(
+                page for _, page in task.pages
+            )
             remaining = self._prefetch_waiting.get(request_id)
             if remaining is not None:
                 remaining.discard(transfer_id)
                 if not remaining:
                     del self._prefetch_waiting[request_id]
                     request = self._requests[request_id]
-                    local = self._prefix_cache.probe(request, request.prompt_len, include_l3=False)
-                    self._last_local_match[request_id] = len(local)
+                    self._last_local_match[request_id] = self._prefix_cache.probe(
+                        request, request.prompt_len, include_l3=False
+                    ).pages
                     self._prefix_scheduler.set_ready(request_id, True)
 
     @property
@@ -397,19 +422,17 @@ class Engine:
         return self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
 
     def _promote(self, chunk_ids: tuple[int, ...], new_pages: int) -> None:
-        """选批后立即把低层命中页提升到 L1；传输耗时由本步步长计入。
+        """选批后立即把低层命中页复制到 L1；传输耗时由本步步长计入。
 
-        三层结构的来源为 L2；两层结构的来源为 L3，源页保护至所在批次读完。
+        三层结构的来源为 L2（保留 L2 副本）；两层结构的来源为 L3，源页保护至所在批次读完。
         """
         cache = self._prefix_cache
         _ = cache.ensure_free(len(chunk_ids) + new_pages)
-        source = "L3" if self._direct_l3 else "L2"
-        l3 = cache.pools["L3"]
-        for chunk_id in chunk_ids:
-            _ = cache.reserve_transfer(chunk_id, "L1", source=source)
-            _ = cache.complete_transfer(chunk_id, "L1")
-            if self._direct_l3:
-                l3.add_ref(chunk_id)
+        _ = cache.promote()
+        if self._direct_l3:
+            l3 = cache.l3
+            for page in chunk_ids:
+                l3.add_ref(page)
 
     def _load_duration(
         self,
@@ -784,26 +807,7 @@ class Engine:
                     finished.append(key)
             if key not in self._admission_stats:
                 self._admission_stats[key] = (candidate.reused_tokens, candidate.reused_tokens)
-                prefetched = self._prefetched_origins.get(key, set())
-                self._admission_tiers[key] = (
-                    sum(
-                        tier == "L1" and chunk_id not in prefetched
-                        for chunk_id, tier in candidate.hit_sources
-                    )
-                    * cache.page_size
-                    if candidate.hit_sources
-                    else candidate.reused_tokens,
-                    sum(
-                        tier == "L2" and chunk_id not in prefetched
-                        for chunk_id, tier in candidate.hit_sources
-                    )
-                    * cache.page_size,
-                    sum(
-                        tier == "L3" or chunk_id in prefetched
-                        for chunk_id, tier in candidate.hit_sources
-                    )
-                    * cache.page_size,
-                )
+                self._admission_tiers[key] = self._hit_tiers(item.request, candidate)
         # 新计算页尚未完成前只占私有容量，不向后来到达的请求发布。
         self._pending_publish = tuple(
             item.waiting.request.request_id for item in selection.admitted
@@ -824,6 +828,24 @@ class Engine:
             )
         self._num_steps += 1
         return duration, tuple(finished)
+
+    def _hit_tiers(
+        self, request: InferenceRequest, candidate: PrefillCandidate
+    ) -> tuple[int, int, int]:  # 请求与首次准入候选 → L1/L2/L3 命中 token 数
+        """按命中页来源归因；本请求预取自 L3 的页无论准入时位于哪层都计入 L3。"""
+        match = candidate.match
+        if match is None:
+            return candidate.reused_tokens, 0, 0
+        prefetched = self._prefetched_origins.get(request.request_id)
+        l1 = match.l1_pages
+        l2 = match.local_pages - match.l1_pages
+        if prefetched:
+            l1 -= sum(chunk_id(request, index) in prefetched for index in range(match.l1_pages))
+            l2 -= sum(
+                page in prefetched for page, tier in match.lower if tier == "L2"
+            )
+        size = self._prefix_cache.page_size
+        return l1 * size, l2 * size, (match.pages - l1 - l2) * size
 
     def complete(self, now_ms: float, request_id: int) -> None:  # Done 时刻与 ID → 结算
         """在 Done 事件时发布剩余完整页、释放 KV 并记录完成时间。"""

@@ -18,6 +18,8 @@ from simcore.schemas import (
     SyntheticWorkloadConfig,
     WorkloadConfig,
 )
+from test_radix_cache import PageView, page, seed
+from test_radix_cache import tier as cached_tier
 from test_schemas import resolved_config, runtime_config
 
 
@@ -52,7 +54,7 @@ def engine(
 
 
 def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[int, ...], float]:
-    shared = CachePool("L3", 9, 16, 4)
+    shared = CachePool(16)
     ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
@@ -73,13 +75,12 @@ def admit_two_hits(layerwise: bool) -> tuple[Engine, CachePool, tuple[int, ...],
 def test_l1_eviction_writes_directly_to_l3_without_l2() -> None:
     cache = TieredKVCache(16, 4, 0, 16)
     assert cache.direct_l3
-    ids = tuple(chunk_base(90) + i for i in range(4))
-    for chunk in ids:
-        cache.pools["L1"].insert(chunk)
-    assert cache.ensure_free(1) == 1
-    assert cache.pools["L3"].lookup(ids[0]) is not None
-    assert cache.pools["L2"].resident == 0
-    assert cache.demotions == 1
+    ids = tuple(chunk_base(90) + i for i in range(3))
+    seed(cache, ids)
+    assert cache.ensure_free(2) == 3  # 整节点淘汰
+    assert all(page(cache, chunk) == PageView("L3", 0, False) for chunk in ids)
+    assert cache.tier_snapshot("L2").resident_blocks == 0
+    assert cache.demotions == 3
     assert not TieredKVCache(16, 4, 8, 16).direct_l3
 
 
@@ -95,8 +96,7 @@ def test_layerwise_read_pipelines_with_compute_and_locks_until_last_layer() -> N
     assert runner._restore_bytes == 128
     (end, kind, read_id), = runner.drain_events()  # 全部层一次读取，末层读完才释放源页
     assert (end, kind) == (6, EventKind.L3_L1_DONE)
-    l1 = runner._prefix_cache.pools["L1"]
-    assert all(l1.lookup(chunk) is not None for chunk in ids)
+    assert all(cached_tier(runner._prefix_cache, chunk) == "L1" for chunk in ids)
     assert not runner._lookup_locks
     assert [shared.lookup(chunk).ref_count for chunk in ids] == [1, 1]
     runner.on_direct_read_done(read_id)
@@ -112,8 +112,7 @@ def test_blocking_read_waits_for_all_batches_before_compute() -> None:
     assert runner._restore_bytes == 128
     (end, kind, read_id), = runner.drain_events()
     assert (end, kind) == (5, EventKind.L3_L1_DONE)
-    l1 = runner._prefix_cache.pools["L1"]
-    assert all(l1.lookup(chunk) is not None for chunk in ids)
+    assert all(cached_tier(runner._prefix_cache, chunk) == "L1" for chunk in ids)
     assert not runner._lookup_locks
     assert [shared.lookup(chunk).ref_count for chunk in ids] == [1, 1]  # 读完前保护源页
     runner.on_direct_read_done(read_id)
@@ -125,7 +124,7 @@ def test_blocking_read_waits_for_all_batches_before_compute() -> None:
 
 
 def test_short_l3_hit_is_not_locked_and_recomputed() -> None:
-    shared = CachePool("L3", 9, 16, 4)
+    shared = CachePool(16)
     ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
@@ -141,7 +140,7 @@ def test_short_l3_hit_is_not_locked_and_recomputed() -> None:
 
 
 def test_lookup_lock_protects_hits_from_other_instance_eviction() -> None:
-    shared = CachePool("L3", 9, 2, 4)
+    shared = CachePool(2)
     ids = (chunk_base(90), chunk_base(90) + 1)
     for chunk in ids:
         shared.insert(chunk)
@@ -149,10 +148,9 @@ def test_lookup_lock_protects_hits_from_other_instance_eviction() -> None:
     runner.submit(request(0, ids), 0)
     runner.drain_events()
     runner.on_l3_lookup(0, 2)
-    other = TieredKVCache(16, 4, 0, 8, shared_l3=shared, pool_id_base=2)
-    for index in range(4):
-        other.pools["L1"].insert(chunk_base(91) + index)
-    other.ensure_free(1)  # L1 淘汰页写 L3 失败时直接丢弃，不挤掉被保护的命中页
+    other = TieredKVCache(16, 4, 0, 8, shared_l3=shared, instance_id=1)
+    seed(other, tuple(chunk_base(91) + index for index in range(3)))
+    other.ensure_free(4)  # L1 淘汰页写 L3 失败时直接丢弃，不挤掉被保护的命中页
     assert all(shared.lookup(chunk) is not None for chunk in ids)
     assert shared.lookup(chunk_base(91)) is None
 
@@ -161,12 +159,11 @@ def test_pages_evicted_while_waiting_are_read_from_l3_without_new_lookup() -> No
     runner = engine(l1_tokens=16)
     cache = runner._prefix_cache
     ids = (chunk_base(90), chunk_base(90) + 1)
-    for chunk in ids:
-        cache.pools["L1"].insert(chunk)
+    seed(cache, ids)
     runner.submit(request(0, ids), 0)
     assert runner.drain_events() == ()  # 本地命中完整，不查 L3
     cache.ensure_free(cache.capacity_pages)
-    assert all(cache.pools["L3"].lookup(chunk) is not None for chunk in ids)
+    assert all(page(cache, chunk) == PageView("L3", 0, False) for chunk in ids)
     assert runner.start_step(0, 0) is not None
     (_, kind, _), = runner.drain_events()
     assert kind is EventKind.L3_L1_DONE
@@ -230,10 +227,9 @@ def test_three_tier_l2_restore_is_not_counted_as_l3_stall() -> None:
     runner = Engine(runtime)
     cache = runner._prefix_cache
     ids = (chunk_base(90), chunk_base(90) + 1)
-    for chunk in ids:
-        cache.pools["L1"].insert(chunk)
-    cache.ensure_free(cache.capacity_pages)  # 命中页降至 L2
-    assert all(cache.pools["L2"].lookup(chunk) is not None for chunk in ids)
+    seed(cache, ids)
+    cache.ensure_free(cache.capacity_pages)  # write-through 的 L2 副本在 HBM 淘汰后保留
+    assert all(page(cache, chunk) == PageView("L2", 0, True) for chunk in ids)
     runner.submit(request(0, ids), 0)
     assert runner.start_step(0, 0) is not None
     assert runner._restore_bytes == 128 and runner._analysis.restore_exposed_ms > 0

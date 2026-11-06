@@ -1659,7 +1659,7 @@ export interface components {
             num_instances: number;
             /**
              * Shared L2 Enabled
-             * @description 理想化全局共享 host 缓存：容量为每实例 L2 页容量乘实例数；淘汰写入、复制回载，按每实例链路计时，不模拟全局带宽竞争
+             * @description 理想化全局共享 host 缓存：容量为每实例 L2 页容量乘实例数；全场一棵前缀树，write-through 写入、复制回载，按每实例链路计时，不模拟全局带宽竞争
              * @default true
              */
             shared_l2_enabled: boolean;

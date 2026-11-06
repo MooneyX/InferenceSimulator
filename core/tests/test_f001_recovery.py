@@ -30,6 +30,8 @@ from simcore.schemas import (
 )
 from test_client import planned_client
 from test_f001_engine import start_step_end
+from test_radix_cache import no_hit
+from test_radix_cache import page as cached_page
 from test_schemas import metric_inputs, resolved_config, runtime_config
 
 PERF = PerfModelConfig()
@@ -41,7 +43,7 @@ def request(key: int, *, prompt: int = 4, maximum: int = 3, output: int = 3) -> 
 
 def occupy(cache: TieredKVCache, key: int, length: int) -> None:
     holder = request(key, prompt=length)
-    cache.pin(holder, ())
+    cache.pin(holder, no_hit(cache))
     cache.admit(key)
     cache.extend(key, length)
     cache.publish(key)
@@ -67,35 +69,6 @@ def test_decode_evicts_cached_pages_before_considering_withdrawal() -> None:
     assert engine.finalize().aborted_requests == ()
 
 
-def test_decode_drops_cached_page_when_lower_tier_is_protected_by_inflight_load() -> None:
-    cfg = EngineConfig(
-        max_running_requests=2, max_total_tokens=12, page_size=4, l2_capacity_tokens=4
-    )
-    perf = PerfModelConfig(
-        kv_bytes_per_token=2,
-        l2_to_l1_bandwidth_bytes_per_ms=4,
-    )
-    engine = Engine(runtime_config(cfg, perf))
-    engine.submit(request(0, maximum=2, output=2), 0)
-    now = start_step_end(engine, 0, 0)
-    assert engine.finish_step(now) == ()
-    cache = engine._prefix_cache
-    for key in (99, 98):
-        occupy(cache, key, 4)
-        cache.finish(key)
-    cache.ensure_free(1)
-    source = chunk_base(99)
-    cached = cache.page(source)
-    assert cached is not None and cached.tier == "L2"
-    cache.reserve_transfer(source, "L1", source="L2")
-    now = start_step_end(engine, now, 1, (0,))
-    assert cache.page(chunk_base(98)) is None
-    assert not engine._aborted
-    assert engine.finish_step(now) == (0,)
-    engine.complete(now, 0)
-    assert cache.complete_transfer(source, "L1") == "L2"
-
-
 def test_withdraws_deterministically_then_replays_without_sampling_again() -> None:
     cfg = EngineConfig(max_running_requests=3, max_total_tokens=32, page_size=4)
     engine = Engine(runtime_config(cfg, PERF))
@@ -111,7 +84,7 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
     assert engine.finish_step(now) == ()
     assert engine.load_tokens == active_tokens + 8
     assert engine._retry_counts == {1: 1}
-    assert engine._prefix_cache.evictions == 1
+    assert engine._prefix_cache.evictions == 2  # 回撤请求的 2 页前缀是一个叶子节点，整体淘汰
     assert engine._prefix_scheduler.advance_ratio({}) == 1.0
     assert engine._prefix_scheduler.num_waiting == 1
     assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 8
@@ -151,8 +124,8 @@ def test_evictable_pages_are_removed_before_withdrawing_active_requests() -> Non
     assert engine.finish_step(now) == ()
     assert engine._prefix_cache.evictions == 1
     assert engine._retry_counts == {0: 1}
-    assert engine._prefix_cache.page(chunk_base(98)) is None
-    assert engine._prefix_cache.page(chunk_base(0)) is not None
+    assert cached_page(engine._prefix_cache, chunk_base(98)) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is not None
 
 
 def test_withdrawal_tie_breaks_by_smaller_request_id() -> None:
@@ -177,7 +150,7 @@ def test_prepare_decode_skips_sorting_without_withdrawal(keys: tuple[int, ...]) 
     running: dict[int, RunningRequest] = {}
     for key in keys:
         item = request(key, prompt=4 + key)
-        cache.pin(item, ())
+        cache.pin(item, no_hit(cache))
         _ = cache.admit(key)
         _ = cache.extend(key, item.prompt_len)
         _ = cache.publish(key)
@@ -208,7 +181,7 @@ def test_prepare_decode_sorts_once_and_updates_needed_across_multiple_withdrawal
     running: dict[int, RunningRequest] = {}
     for key, prompt, generated in specs:
         item = request(key, prompt=prompt, maximum=5, output=5)
-        cache.pin(item, ())
+        cache.pin(item, no_hit(cache))
         _ = cache.admit(key)
         _ = cache.extend(key, prompt + generated - 1)
         _ = cache.publish(key)

@@ -21,9 +21,10 @@ workload     build_synthetic_closed_loop_plan 规划合成闭环长度、拓扑�
 client       Client：_prepare_workload 统一负载准备，on_wakeup 统一请求构造与投放（依赖 schemas、workload、prefix_hash）
 perf_model   唯一性能模型：层序结构 LayerPlan、不可变工作量与 StepCost、逐层 Roofline、TP/EP 通信及逐层流水纯函数（依赖 schemas）
 kv_source    KvSource：KV 传输来源的先来先服务链路占用与可复现的两状态降速/单次抖动（仅依赖标准库）
-kv_cache     CachePool：逐池页索引、容量、稳定 LRU；TieredKVCache：请求状态、连续匹配与跨池操作（依赖 schemas）
+radix_cache  RadixTree：L1/L2 前缀基数树（节点切分、路径锁、D-leaf/H-leaf 淘汰、write-through）与按实例 HbmPool 账本（依赖 schemas）
+kv_cache     CachePool：共享 L3 页索引与稳定 LRU；TieredKVCache：请求状态、前缀匹配、回载与预取的实例视图（依赖 radix_cache、schemas）
 scheduler    F001 FCFS 调度：按 KV 页状态和未来估算选择 batch（依赖 kv_cache、schemas）
-engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、kv_source、perf_model）
+engine       单个实例的已到达请求、GPU 步与异步页传输、独占 KV 生命周期与完成结果（依赖 scheduler、kv_cache、radix_cache、kv_source、perf_model）
 events       客户端发送、GPU 步完成、L3 查询与页传输完成、请求完成事件（仅依赖标准库）
 router       默认逐请求最低 token 负载优先，或新会话轮询、按 session_id 绑定的缓存亲和；接收不可变负载元组（依赖 schemas）
 coordinator  唯一 DES 时钟和事件队列；按实例 ID 将请求及完成交给对应 engine（依赖 client、engine、events、router）
@@ -74,8 +75,8 @@ runner       顶层仿真入口 simulate(config, trace_plan=None) -> SimResult�
 
 协作者注入：
 
-- `TieredKVCache`：由 `engine` 独占并注入 `FcfsAdmissionScheduler`，管理请求 `K/F`、私有页和候选引用；`probe` / `pin` / `cancel_pin` / `plan` 组织连续匹配与无副作用预算，`admit` / `extend` / `publish_batch` / `finish` / `withdraw` 管理请求生命周期。
-- `CachePool`：逐池拥有页索引、容量、LRU 和保护状态。每实例独占 L1/L2；`runner` 每场创建一个 L3 并以 `Engine(runtime, shared_l3=..., instance_id=...)` 注入所有实例，编号在本场唯一。共享 L3 是明确的可变协作者例外，不放进不可变 `RuntimeConfig`，不跨运行复用。上行传输由 `reserve_transfer` / `complete_transfer` 保护来源并完成目标占位（L3→L2 跨预取事件，L2→L1 在选批时同步完成）；L3 回载保留来源副本。共享池统计由 `runner` 只读取一次。
+- `TieredKVCache`：由 `engine` 独占并注入 `AdmissionScheduler`，管理请求 `K/F`、私有页、锁终点和候选保护；`probe` 返回 `PrefixMatch`（本地前缀终点节点与各层命中），`pin` 沿路径加锁，`promote` 把 L2/L3 命中复制进本实例 HBM，`admit` / `extend` / `publish_batch` / `finish` / `withdraw` 管理请求生命周期，`reserve_prefetch` / `complete_prefetch` 管理 L3→L2 预取。
+- `RadixTree`：L1/L2 前缀基数树。共享 L2 时 `runner` 每场创建一棵并以 `Engine(runtime, shared_l2=..., shared_l3=..., instance_id=...)` 注入所有实例，否则每个实例自建；每个实例的 HBM 账本 `HbmPool` 独立。`CachePool`：共享 L3 的页索引、容量、LRU 和保护引用，`runner` 每场创建一个并注入所有实例。共享树与共享 L3 是明确的可变协作者例外，不放进不可变 `RuntimeConfig`，不跨运行复用；共享层统计由 `runner` 只读取一次。
 
 调度事件仅用于推进仿真，不保存逐步诊断日志。`EngineRun` 只携带正常汇总使用的请求记录、分层快照与整体计数；`compute_metrics` 必须接收完整计划、三级快照和实际发送统计。
 

@@ -4,6 +4,8 @@ from simcore.kv_cache import TieredKVCache
 from simcore.prefix_hash import chunk_base
 from simcore.scheduler import AdmissionScheduler, RunningRequest
 from simcore.schemas import EngineConfig, InferenceRequest
+from test_radix_cache import no_hit
+from test_radix_cache import page as cached_page
 
 
 def setup(capacity: int = 80) -> tuple[AdmissionScheduler, TieredKVCache]:
@@ -33,10 +35,11 @@ def test_same_batch_new_pages_not_visible_until_publication() -> None:
     for item in batch.admitted:
         cache.admit(item.waiting.request.request_id)
         cache.extend(item.waiting.request.request_id, item.context_after)
-    assert cache.page(inherited[0]) is None
+    assert cached_page(cache, inherited[0]) is None
     assert sum(cache.private_page_count(key) for key in (1, 2)) == 4
     assert cache.publish_batch((2, 1)) == 1
-    assert cache.page(inherited[0]) is not None and cache.page(inherited[0]).ref_count == 2  # type: ignore[union-attr]
+    published = cached_page(cache, inherited[0])
+    assert published is not None and published.ref_count == 2
     cache.finish(1)
     cache.finish(2)
     scheduler.enqueue(request(3, inherited=inherited), 1)
@@ -47,7 +50,7 @@ def test_same_batch_new_pages_not_visible_until_publication() -> None:
 def test_budget_blocked_candidate_remains_waiting_while_running_decodes() -> None:
     scheduler, cache = setup(capacity=32)
     running = request(0, maximum=2)
-    cache.pin(running, ())
+    cache.pin(running, no_hit(cache))
     cache.admit(0)
     cache.extend(0, 5)
     cache.publish(0)

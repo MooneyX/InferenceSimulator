@@ -23,7 +23,8 @@ M1 内核、M2 服务/OpenAPI、M3 页面及 F001 两种 P/D 模式已接通；F
 ## 其余调度扩展（未实现）
 
 - **Chunked prefill**：长 prompt 跨步、active chunk 优先与逐 chunk 发布，需新增分块阶段及调度边界用例；目前一次 Prefill 算完整个剩余上下文。
-- **真实共享与 radix tree**：真实 token/内容身份、命名空间、跨独立请求共享及树节点分裂；现有按请求 ID 编码的新页不代表真实公共前缀。
+- **真实内容共享**：真实 token/内容身份、命名空间与跨独立请求（跨会话）共享。L1/L2 前缀基数树（节点切分、叶子 LRU、路径锁、write-through）已实现，见 [KV 设计](../design/kv-prefix-reuse.md)；节点 key 仍是按会话/请求编码的页 ID，不代表跨会话的真实公共前缀。
+- **HiCache 写策略**：`write_back`、`write_through_selective`（命中阈值）及 priority 淘汰尚未建模；当前固定为 SGLang 默认的 `write_through`。
 - **高级执行**：CPU/GPU overlap、speculative、SWA/Mamba、PD 拆分等均不作为当前可选配置；已实现的分层缓存见 [KV 设计](../design/kv-prefix-reuse.md)，解析耗时仍见 [F002 计划](perf-model.md)。
 
 新增功能时更新本表、依赖图及对应设计文档；已完成的实现以 `design/` 为准。

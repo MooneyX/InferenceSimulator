@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from simcore.kv_cache import TieredKVCache
+from simcore.kv_cache import PrefixMatch, TieredKVCache
 from simcore.schemas import EngineConfig, InferenceRequest
 
 __all__ = [
@@ -43,7 +43,7 @@ class PrefillCandidate:
     reused_tokens: int
     new_tokens: int
     required_pages: int
-    hit_sources: tuple[tuple[int, str], ...] = ()
+    match: PrefixMatch | None = None
 
     @property
     def context_after(self) -> int:  # 当前候选的目标长度 → Prefill 后上下文 token 数
@@ -150,7 +150,7 @@ class AdmissionScheduler:
         self,
         running: Mapping[int, RunningRequest],
         *,
-        accept_probe: Callable[[WaitingRequest, tuple[tuple[int, str], ...]], bool] | None = None,
+        accept_probe: Callable[[WaitingRequest, PrefixMatch], bool] | None = None,
     ) -> AdmissionBatch:  # 运行集与就绪条件 → 本步准入、恢复和失败批次
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
@@ -195,26 +195,20 @@ class AdmissionScheduler:
                     pending_item = None
                     continue
                 target = item.target_tokens
-                sources = cache.probe(
+                match = cache.probe(
                     request, target, restoring=item.restoring, include_l3=cache.direct_l3
                 )
                 if cache.direct_l3:
-                    sources = self._direct_sources(sources)
-                if accept_probe is not None and not accept_probe(item, sources):
+                    match = self._direct_sources(match)
+                if accept_probe is not None and not accept_probe(item, match):
                     self.set_ready(request.request_id, False)
                     skipped.append(item)
                     pending_item = None
                     continue
-                hit = len(sources) * block_size
+                hit = match.pages * block_size
                 new_tokens = target - hit
-                new_promotions = [
-                    chunk_id
-                    for chunk_id, tier in sources
-                    if tier != "L1" and chunk_id not in promoted
-                ]
-                direct_restore = (
-                    item.restoring and new_tokens == 0 and all(tier == "L1" for _, tier in sources)
-                )
+                new_promotions = [page for page, _ in match.lower if page not in promoted]
+                direct_restore = item.restoring and new_tokens == 0 and not match.lower
                 required_tokens = (
                     (new_tokens + block_size - 1) // block_size
                 ) * block_size  # 该请求重算KV所需的空间(单位为token)
@@ -237,13 +231,9 @@ class AdmissionScheduler:
                 # 和sglang中的处理一致
                 # 当前page和默认max_prefill_tokens设定下不可能恰好剩余1个token的预算,
                 # 但是后续cunked prefill可能出现这种情况
-                l1_entries = cache.pools["L1"].entries
-                newly_protected = {
-                    chunk_id
-                    for chunk_id, tier in sources
-                    if tier == "L1" and not l1_entries[chunk_id].ref_count
-                }
-                available_after_pin = cache.available_tokens - len(newly_protected) * block_size
+                available_after_pin = (
+                    cache.available_tokens - cache.unprotected_pages(match) * block_size
+                )
                 future_ok = (
                     direct_restore
                     or proposed_total <= available_after_pin
@@ -271,7 +261,7 @@ class AdmissionScheduler:
                         aborted.append(item)
                         continue
                     break
-                cache.pin(request, sources)
+                cache.pin(request, match)
                 if item.restoring and new_tokens == 0:
                     if direct_restore:
                         cache.admit(request.request_id)
@@ -283,7 +273,7 @@ class AdmissionScheduler:
                 else:  # 非回撤恢复请求, 即新到达的请求; 或者回撤恢复但是KV不全的请求
                     selected.append(
                         PrefillCandidate(
-                            item, hit, new_tokens, required_tokens // block_size, sources
+                            item, hit, new_tokens, required_tokens // block_size, match
                         )
                     )
                     selected_future += future
@@ -309,19 +299,13 @@ class AdmissionScheduler:
         )
 
     def _direct_sources(
-        self, sources: tuple[tuple[int, str], ...]
-    ) -> tuple[tuple[int, str], ...]:  # 两层结构的连续命中 → 截掉不值得读取的 L3 部分后的命中
+        self, match: PrefixMatch
+    ) -> PrefixMatch:  # 两层结构的连续命中 → 截掉不值得读取的 L3 部分后的命中
         """L3 命中不超过 ``l3_prefetch_min_tokens`` 时不读 L3，自首个 L3 页起重算。"""
-        first = -1
-        count = 0
-        for index, (_, tier) in enumerate(sources):
-            if tier == "L3":
-                count += 1
-                if first < 0:
-                    first = index
+        count = match.l3_pages
         if count and count * self._cache.page_size <= self._engine.l3_prefetch_min_tokens:
-            return sources[:first]
-        return sources
+            return match.without_l3()
+        return match
 
     def advance_ratio(
         self,

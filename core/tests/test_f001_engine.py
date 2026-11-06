@@ -24,6 +24,9 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
+from test_radix_cache import no_hit, seed
+from test_radix_cache import page as cached_page
+from test_radix_cache import tier as cached_tier
 from test_schemas import resolved_config, runtime_config
 
 PERF = PerfModelConfig()
@@ -72,7 +75,7 @@ def test_prefill_samples_first_token_but_does_not_create_its_kv() -> None:
     engine = make_engine(page_size=64, capacity=512)
     engine.submit(request(0, prompt=65, maximum=100, output=3), 0)
     prefill_end = start_step_end(engine, 0, 0)
-    assert engine._prefix_cache.page(chunk_base(0)) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is None
     assert engine.finish_step(prefill_end) == ()
     assert engine._running == {0: 1}
     assert engine._prefix_cache.resident_pages == 2
@@ -138,13 +141,13 @@ def test_decode_full_page_remains_private_until_request_completion() -> None:
     engine.submit(request(0, prompt=63), 0)
     now = start_step_end(engine, 0, 0)
     assert engine.finish_step(now) == ()
-    assert engine._prefix_cache.page(chunk_base(0)) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is None
     now = start_step_end(engine, now, 1, (0,))
     assert engine.finish_step(now) == (0,)
     assert engine._prefix_cache.state(0).k == 64
-    assert engine._prefix_cache.page(chunk_base(0)) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is None
     engine.complete(now, 0)
-    page = engine._prefix_cache.page(chunk_base(0))
+    page = cached_page(engine._prefix_cache, chunk_base(0))
     assert page is not None and page.ref_count == 0
     assert engine.finalize().cache_snapshot.resident_blocks == 1
 
@@ -191,10 +194,10 @@ def test_same_batch_duplicate_private_pages_deduplicate_after_execution() -> Non
     engine.submit(request(1, prompt=65, maximum=1, output=1, inherited=shared), 0)
     engine.submit(request(2, prompt=65, maximum=1, output=1, inherited=shared), 0)
     now = start_step_end(engine, 0, 0, (1, 2))
-    assert engine._prefix_cache.page(shared[0]) is None
+    assert cached_page(engine._prefix_cache, shared[0]) is None
     assert engine._prefix_cache.resident_pages == 4
     assert engine.finish_step(now) == (1, 2)
-    page = engine._prefix_cache.page(shared[0])
+    page = cached_page(engine._prefix_cache, shared[0])
     assert page is not None and page.ref_count == 2
     assert engine._prefix_cache.resident_pages == 3
     assert engine._prefix_cache.peak_resident_pages == 4
@@ -293,19 +296,19 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     parent = request(0, prompt=4)
-    cache.pin(parent, ())
+    cache.pin(parent, no_hit(cache))
     cache.admit(0)
     cache.extend(0, 4)
     cache.publish(0)
     cache.finish(0)
     filler = request(99, prompt=28)
-    cache.pin(filler, ())
+    cache.pin(filler, no_hit(cache))
     cache.admit(99)
     cache.extend(99, 28)
     cache.publish(99)
     cache.finish(99)
     shared = chunk_base(0)
-    demoted = cache.page(shared)
+    demoted = cached_page(cache, shared)
     assert demoted is not None and demoted.tier == "L2"
     for key in (1, 2):
         engine.submit(request(key, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
@@ -319,7 +322,7 @@ def test_shared_l2_promotion_is_charged_once_but_both_requests_get_l2_hits() -> 
     assert engine.load_tokens == 12
     assert engine.finish_step(now) == (1, 2)
     assert engine.num_steps == 1
-    promoted_page = cache.page(shared)
+    promoted_page = cached_page(cache, shared)
     assert promoted_page is not None and promoted_page.tier == "L1"
     assert promoted_page.ref_count == 2
     engine.complete(now, 1)
@@ -347,13 +350,13 @@ def test_l2_load_submits_each_layer_bytes_in_layer_order() -> None:
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 28)):
         seed = request(key, prompt=size)
-        cache.pin(seed, ())
+        cache.pin(seed, no_hit(cache))
         cache.admit(key)
         cache.extend(key, size)
         cache.publish(key)
         cache.finish(key)
     shared = chunk_base(0)
-    assert cache.page(shared).tier == "L2"
+    assert cached_tier(cache, shared) == "L2"
     engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     now = start_step_end(engine, 0, 0, (1,))
     layer = engine._analysis.device_ms / 2
@@ -410,7 +413,8 @@ def test_resolved_heterogeneous_layers_pipeline_compute_and_kv_in_order(
     assert runtime.transfers.layer_page_bytes == ((8, 4) if reverse else (4, 8))
     engine = Engine(runtime)
     shared = chunk_base(90)
-    engine._prefix_cache.pools["L2"].insert(shared)
+    seed(engine._prefix_cache, (shared,))
+    engine._prefix_cache.ensure_free(engine._prefix_cache.capacity_pages)  # 只余 L2 副本
     assert engine.submit(request(1, prompt=2, maximum=1, output=1, inherited=(shared,)), 7)
     end = start_step_end(engine, 7, 0, (1,))
     # A: 72 ms 权重阶段 + 16 ms 注意力；B: 96 + 32 ms；KV 分别需 80/160 ms。
@@ -428,7 +432,7 @@ def test_resolved_heterogeneous_layers_pipeline_compute_and_kv_in_order(
 
 def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
     config = EngineConfig(
-        max_running_requests=2, max_total_tokens=16, page_size=4, l2_capacity_tokens=8
+        max_running_requests=2, max_total_tokens=16, page_size=4, l2_capacity_tokens=24
     )
     perf = PerfModelConfig(
         kv_bytes_per_token=2,
@@ -438,21 +442,21 @@ def test_l2_batch_load_evicts_once_for_loads_and_prefill_pages() -> None:
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     for key in (0, 99, 100):
-        seed = request(key, prompt=8)
-        cache.pin(seed, ())
+        seed_request = request(key, prompt=8)
+        cache.pin(seed_request, no_hit(cache))
         cache.admit(key)
         cache.extend(key, 8)
         cache.publish(key)
         cache.finish(key)
     shared = (chunk_base(0), chunk_base(0) + 1)
-    assert all(cache.page(chunk_id).tier == "L2" for chunk_id in shared)
+    assert all(cached_tier(cache, chunk_id) == "L2" for chunk_id in shared)
     evictions_before = cache.evictions
     engine.submit(request(1, prompt=9, maximum=1, output=1, inherited=shared), 0)
     now = start_step_end(engine, 0, 0, (1,))
     assert engine.drain_events() == ()
-    assert cache.evictions == evictions_before + 3
-    assert cache.pools["L1"].reserved == 0
-    assert all(cache.page(chunk_id).tier == "L1" for chunk_id in shared)
+    # 2 页回载加 1 页新计算只腾挪一次；HBM 按整节点淘汰两条 2 页前缀。
+    assert cache.evictions == evictions_before + 4
+    assert all(cached_tier(cache, chunk_id) == "L1" for chunk_id in shared)
     assert cache.promotions == 2
     # 两页均分到两层：每层 3 + 2 页 × 2 ms / 2 层 = 5 ms。
     assert now == pytest.approx(uniform_pipeline(engine._analysis.device_ms, 5, 2))
@@ -482,12 +486,12 @@ def test_full_l2_hit_restore_is_transfer_only_and_does_not_resample_output() -> 
     del engine._running[0]
     engine._prefix_scheduler.requeue(item, prefill_end, generated_tokens=1)
     filler = request(99, prompt=16)
-    cache.pin(filler, ())
+    cache.pin(filler, no_hit(cache))
     cache.admit(99)
     cache.extend(99, 16)
     cache.publish(99)
     cache.finish(99)
-    demoted_page = cache.page(chunk_base(0))
+    demoted_page = cached_page(cache, chunk_base(0))
     assert demoted_page is not None and demoted_page.tier == "L2"
     # 无计算的纯回载步：两层各 4 ms 串行传输。
     assert engine.start_step(prefill_end, 1) == (pytest.approx(8), ())
@@ -539,12 +543,12 @@ def test_restore_load_pipelines_with_fused_decode_without_decoding_restored_requ
     del engine._running[0]
     engine._prefix_scheduler.requeue(item, prefill_end, generated_tokens=1)
     filler = request(99, prompt=24)
-    cache.pin(filler, ())
+    cache.pin(filler, no_hit(cache))
     cache.admit(99)
     cache.extend(99, 24)
     cache.publish(99)
     cache.finish(99)
-    demoted_page = cache.page(chunk_base(0))
+    demoted_page = cached_page(cache, chunk_base(0))
     assert demoted_page is not None and demoted_page.tier == "L2"
     device_before = engine._analysis.device_ms
     now = start_step_end(engine, prefill_end, 1, (1,))
@@ -584,17 +588,18 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     engine = Engine(runtime_config(config, perf))
     cache = engine._prefix_cache
     for key, size in ((0, 4), (99, 16), (98, 4)):
-        seed = request(key, prompt=size)
-        cache.pin(seed, ())
+        seed_request = request(key, prompt=size)
+        cache.pin(seed_request, no_hit(cache))
         cache.admit(key)
         cache.extend(key, size)
         cache.publish(key)
         cache.finish(key)
-    cache.ensure_free(1)
+    # 98 的 write-through 把仅余 L2 副本的首页挤到 L3；再淘汰 98 的 HBM 副本，使预取可腾出 L2。
+    cache.ensure_free(cache.free_pages + 1)
     shared = chunk_base(0)
-    demoted_page = cache.page(shared)
+    demoted_page = cached_page(cache, shared)
     assert demoted_page is not None and demoted_page.tier == "L3"
-    assert cache.free_pages == 1
+    assert cache.free_pages == 4
     engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
     lookup_events = engine.drain_events()
     assert lookup_events == ((0, EventKind.L3_LOOKUP_DONE, 1),)
@@ -617,57 +622,6 @@ def test_l3_prefill_hit_traverses_two_links_and_reports_original_source() -> Non
     assert run.promotions == 2
     assert run.l3_snapshot is not None
     assert run.l3_snapshot.free_blocks + run.l3_snapshot.resident_blocks == 2
-
-
-def test_prefill_recomputes_same_id_as_other_candidates_pinned_lower_page() -> None:
-    config = EngineConfig(
-        max_running_requests=2,
-        max_total_tokens=36,
-        page_size=4,
-        l2_capacity_tokens=8,
-    )
-    perf = PerfModelConfig(
-        kv_bytes_per_token=2,
-        l2_to_l1_bandwidth_bytes_per_ms=4,
-    )
-    engine = Engine(runtime_config(config, perf))
-    cache = engine._prefix_cache
-    for key, size in ((0, 4), (99, 36)):
-        seed = request(key, prompt=size)
-        cache.pin(seed, ())
-        cache.admit(key)
-        cache.extend(key, size)
-        cache.publish(key)
-        cache.finish(key)
-    shared = chunk_base(0)
-    demoted_page = cache.page(shared)
-    assert demoted_page is not None and demoted_page.tier == "L2"
-    engine.submit(request(1, prompt=5, maximum=1, output=1, inherited=(shared,)), 0)
-    engine.submit(
-        request(
-            2,
-            prompt=9,
-            maximum=1,
-            output=1,
-            inherited=(chunk_base(77), shared),
-        ),
-        0,
-    )
-    now = start_step_end(engine, 0, 0, (1, 2))
-    assert engine.drain_events() == ()
-    assert now == pytest.approx(uniform_pipeline(engine._analysis.device_ms, 1, 2))
-    assert engine.finish_step(now) == (1, 2)
-    published = cache.page(shared)
-    assert published is not None and published.tier == "L1"
-    assert published.ref_count == 2
-    assert cache.promotions == 1
-    engine.complete(now, 1)
-    engine.complete(now, 2)
-    assert cache.page(shared) is not None
-    assert [(r.l2_hit_tokens, r.replayed_prefill_tokens) for r in engine.finalize().records] == [
-        (4, 0),
-        (0, 0),
-    ]
 
 
 @pytest.mark.parametrize("exclusive", [True, False])

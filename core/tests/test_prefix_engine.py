@@ -14,6 +14,7 @@ from simcore.schemas import (
     WorkloadPlan,
 )
 from test_client import planned_client
+from test_radix_cache import page as cached_page
 from test_schemas import runtime_config
 
 PERF = PerfModelConfig()
@@ -38,16 +39,16 @@ def test_parent_output_full_page_reused_only_after_completion() -> None:
     started = engine.start_step(0, 0)
     assert started is not None and started[1] == ()
     now = started[0]
-    assert engine._prefix_cache.page(chunk_base(0)) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0)) is None
     assert engine.finish_step(now) == ()
-    assert engine._prefix_cache.page(chunk_base(0) + 1) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0) + 1) is None
     started = engine.start_step(now, 1)
     assert started is not None and started[1] == (0,)
     now += started[0]
     assert engine.finish_step(now) == (0,)
-    assert engine._prefix_cache.page(chunk_base(0) + 1) is None
+    assert cached_page(engine._prefix_cache, chunk_base(0) + 1) is None
     engine.complete(now, 0)
-    assert engine._prefix_cache.page(chunk_base(0) + 1) is None  # K=P+O-1=3
+    assert cached_page(engine._prefix_cache, chunk_base(0) + 1) is None  # K=P+O-1=3
     child = request(1, 5, inherited=(chunk_base(0),))
     engine.submit(child, now)
     started = engine.start_step(now, 2)
@@ -67,9 +68,9 @@ def test_same_batch_identical_inherited_pages_deduplicate_on_publication() -> No
     started = engine.start_step(0, 0)
     assert started is not None and started[1] == (0, 1)
     now = started[0]
-    assert engine._prefix_cache.page(identity[0]) is None
+    assert cached_page(engine._prefix_cache, identity[0]) is None
     assert engine.finish_step(now) == (0, 1)
-    page = engine._prefix_cache.page(identity[0])
+    page = cached_page(engine._prefix_cache, identity[0])
     assert page is not None and page.ref_count == 2
     assert engine._prefix_cache.peak_resident_pages == 4
     engine.complete(now, 0)
@@ -120,13 +121,13 @@ def test_completed_parent_publishes_only_established_kv(prompt: int, output: int
         assert state.f == (prompt // 4) * 4
         assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 32
         if produced < output:
-            page = engine._prefix_cache.page(parent.chunk_base + k // 4)
+            page = cached_page(engine._prefix_cache, parent.chunk_base + k // 4)
             assert page is None or state.f > k // 4 * 4
     engine.complete(now, 7)
     successor = client.on_wakeup(client.on_request_completed(7, now)[0])
     assert successor.chunk_ids == () and successor.chunk_base == parent.chunk_base
     for index in range(blocks):
-        page = engine._prefix_cache.page(parent.chunk_base + index)
+        page = cached_page(engine._prefix_cache, parent.chunk_base + index)
         assert page is not None and page.ref_count == 0
 
 

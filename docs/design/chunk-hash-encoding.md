@@ -29,7 +29,7 @@ chunk_id = (owner << 32) | offset        # prefix_hash.chunk_base(owner) + offse
 
 ## 数据契约
 
-`TurnPlan` 保存输入长度、未截短的采样输出长度、生成上限与理想继承块数；生成上限按输出长度向上取二次幂并以 `inference.max_output_tokens` 封顶。`InferenceRequest` 携带 `prompt_len`、`max_new_tokens`、`output_len`、`chunk_ids`、`chunk_base` 及请求身份，不携带整条 token 序列。调度器虽持有真实输出长度，当前仍只以生成上限与进度估算未来需求，不使用真实长度作调度依据。成功完成即达到 `output_len`；协调器结算引擎后只向客户端通知请求 ID 与完成时间，无须单独回传生成数。`TieredKVCache._chunk_id` 按上述规则 O(1) 取页 ID，不格式化字符串。
+`TurnPlan` 保存输入长度、未截短的采样输出长度、生成上限与理想继承块数；生成上限按输出长度向上取二次幂并以 `inference.max_output_tokens` 封顶。`InferenceRequest` 携带 `prompt_len`、`max_new_tokens`、`output_len`、`chunk_ids`、`chunk_base` 及请求身份，不携带整条 token 序列。调度器虽持有真实输出长度，当前仍只以生成上限与进度估算未来需求，不使用真实长度作调度依据。成功完成即达到 `output_len`；协调器结算引擎后只向客户端通知请求 ID 与完成时间，无须单独回传生成数。`radix_cache.chunk_id` 按上述规则 O(1) 取页 ID，不格式化字符串；前缀树节点保存连续 ID 段，同一前缀位置的 ID 相同即整条前缀相同。
 
 - 记 `P=prompt_len`、成功完成的实际生成数 `O=output_len`、`B=page_size`。首次 Prefill 只建立 `P` 个 KV token 并采样第一个输出；每次后续 Decode 才建立上一输出 token。完成时建立长度 **`K=P+O-1`**，完整可继承页数为 `floor(K/B)`；逻辑 KV 总占页数为 `ceil(K/B)`，不足一页的私有尾页只占一页并在完成时回收。子轮最多继承 `min(floor((P_parent+O_parent-1)/B), floor((P_child-1)/B))` 页。
 - 例如 `B=4, P=3, O=3`：Prefill 时尚无完整输入页；第一次 Decode 建立输出的第一个 token，形成序号 0 的完整页；第二次 Decode 后 `K=5`，剩余 1 token 是私有尾页。第三个（最后采样的）输出 token 不建立 KV。完成时才发布 Decode 形成的完整页，然后回收尾页。
@@ -38,8 +38,8 @@ chunk_id = (owner << 32) | offset        # prefix_hash.chunk_base(owner) + offse
 ## 生成与发布时机
 
 - `workload.build_synthetic_closed_loop_plan` 不预生成 ID；`Client.on_wakeup` 只为合成请求填入会话域 `chunk_base`，为 Trace 请求按会话映射组装 `chunk_ids` 并填入请求尾页域。
-- `TieredKVCache` 由引擎在 `finish_step`（GPU 步完成事件）按请求 ID 发布 Prefill 已计算完整页，步首不公开；Decode 中新填满的完整页保持私有，`RequestDone` 调用引擎 `complete` 后由缓存 `finish` 发布，回撤则丢弃未发布私有页。输入尾页可由后续已建立输出 token 补齐，但未建立的末次采样 token 不形成页。连续前缀命中只比较已发布的完整页 ID；新计算私有页按实际计算需求分配，异步恢复页另经传输占位和完成迁入。
+- `TieredKVCache` 由引擎在 `finish_step`（GPU 步完成事件）按请求 ID 发布 Prefill 已计算完整页，步首不公开；Decode 中新填满的完整页保持私有，`RequestDone` 调用引擎 `complete` 后由缓存 `finish` 发布，回撤则丢弃未发布私有页。输入尾页可由后续已建立输出 token 补齐，但未建立的末次采样 token 不形成页。连续前缀命中只比较已发布的完整页 ID；新计算私有页按实际计算需求分配，L3 预取页经 L2 占位、完成时插入前缀树。
 
 ## 与 SGLang 的差异
 
-SGLang 的前缀缓存按 token 内容在 radix tree 上匹配；本项目不模拟 token 内容，以上整数 ID 是仿真抽象，只决定“哪些页内容相同”。编号方式（连续与否）不改变命中关系，也不对应 SGLang 的任何内部数据结构。
+SGLang 的前缀缓存按 token 内容在 radix tree 上匹配；本项目同样用前缀基数树管理 L1/L2（见 [kv-prefix-reuse.md](kv-prefix-reuse.md)），但节点 key 是上述整数页 ID 而非 token，ID 只决定“哪些页内容相同”。编号方式（连续与否）不改变命中关系，只影响节点保存的连续 ID 段数。

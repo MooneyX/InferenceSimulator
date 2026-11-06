@@ -49,7 +49,7 @@ L2→L1 回载与 L3 读取都通过通用 KV 来源计时：每个引擎为每�
 
 ## L2→L1 逐层流水回载
 
-参照 SGLang HiCache（commit `2b36c718`）：调度器选批时即为 L2 命中页分配 L1 目标页，请求立即进入本步，不在调度层等待回载；`start_loading` 将整批回载合并，在独立拷贝流上逐层发出（`mem_cache/l2_transfer.py` 每层完成记录事件），前向第 i 层注意力只 `wait_until(i)`。仿真在选批后对本批唯一提升页依次 `reserve_transfer` + `complete_transfer`，同步完成页迁移，不产生传输事件；回载耗时只通过步长体现。令 `p` 为本批唯一提升页数，`b_i` 为整组每页 KV 在第 i 层的字节数（按层序，由各层注意力组的 KV 布局决定，合计为每页字节数），`c_i` 为 `StepCost.layer_ms` 给出的第 i 层计算耗时：
+参照 SGLang HiCache（commit `2b36c718`）：调度器选批时即为 L2 命中页分配 L1 目标页，请求立即进入本步，不在调度层等待回载；`start_loading` 将整批回载合并，在独立拷贝流上逐层发出（`mem_cache/l2_transfer.py` 每层完成记录事件），前向第 i 层注意力只 `wait_until(i)`。仿真在选批后对全部候选 `promote`，同步把唯一提升页复制进本实例 HBM（L2 副本保留），不产生传输事件；回载耗时只通过步长体现。令 `p` 为本批唯一提升页数，`b_i` 为整组每页 KV 在第 i 层的字节数（按层序，由各层注意力组的 KV 布局决定，合计为每页字节数），`c_i` 为 `StepCost.layer_ms` 给出的第 i 层计算耗时：
 
 ```text
 R_1..R_L = L2 来源.submit(步起点, [p*b_1, ..., p*b_L])  # 逐层串行，每层一次 l2_latency_ms

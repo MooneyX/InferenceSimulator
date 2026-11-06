@@ -41,3 +41,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.12"
 strict = true
 files = ["core/src", "core/tests", "core/benchmarks", "server/src", "server/tests"]
+
+[tool.basedpyright]
+include = ["core/src", "core/tests", "core/benchmarks", "server/src", "server/tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"

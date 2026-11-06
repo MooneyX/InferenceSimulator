@@ -2,14 +2,14 @@
 
 import asyncio
 import json
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from simcore import SimConfig, SimResult
-from simcore.schemas import RequestProgress, TracePlan
+from simcore.schemas import RequestProgress, TracePlan, TraceWorkloadConfig
 from simserver.jobs import JobManager
 from simserver.routes import ErrorResponse, FieldValidationResponse
 from simserver.sweep import PARAMETERS, ScanAxis, ScanRequest
@@ -75,7 +75,7 @@ def _plan(request: Request, config: SimConfig) -> TracePlan | None:
     if config.workload.mode != "trace":
         return None
     try:
-        plan_id = config.workload.trace.plan_id
+        plan_id = cast(TraceWorkloadConfig, config.workload.trace).plan_id
         if not plan_id:
             raise ValueError("Trace 仿真须提供回放计划")
         return request.app.state.trace_store.plan(plan_id)

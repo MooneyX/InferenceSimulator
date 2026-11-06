@@ -287,7 +287,7 @@ def step_cost(
     """每类同构层按真实单步工作量计一次单层成本，再按层数汇总；同步通信串行计入单层耗时。"""
     model = plan.model
     h = model.hidden_size
-    tokens = len(workload.decode)
+    tokens = len(workload.decode) # 记录本步生成的新token总数, decode每步只生成一个token
     pairs = 0.0
     kv_reads = 0
     for item in workload.prefill:
@@ -321,17 +321,17 @@ def step_cost(
         # 不生成具体路由：每 token 在无放回 Top-K 中命中某一目标 rank 的概率。
         experts_per_rank = model.num_experts // ep_size
         missed = 1.0  # 无放回选择均未命中某个远端 rank 的概率
-        for selected in range(model.experts_per_token):
+        for selected in range(model.experts_per_token): # 计算单个token不会选中任何远端专家, 不产生ep通信的概率
             missed *= (model.num_experts - experts_per_rank - selected) / (
                 model.num_experts - selected
             )
-        remote_selections = tokens * model.experts_per_token * (ep_size - 1) / (ep_size * ep_size)
+        remote_selections = tokens * model.experts_per_token * (ep_size - 1) / (ep_size * ep_size) # 单个token选中远端专家的期望次数
         if workload.prefill:
             remote_payloads = tokens * (ep_size - 1) / ep_size * (1 - missed)
         else:
             remote_payloads = remote_selections  # 纯 Decode 按远端专家选择次数估计逻辑 payload
         # BF16/FP16 向量与计算精度一致；每次远端选择另计 4B ID + 4B 权重/索引。
-        exchange_bytes = remote_payloads * h * 2 + remote_selections * 8
+        exchange_bytes = remote_payloads * h * 2 + remote_selections * 8 # hidden state向量 + 路由元数据
         exchange_ms = hardware.ep_communication_latency_ms + exchange_bytes / (
             hardware.effective_interconnect_gb_s * 1e6
         )

@@ -387,7 +387,7 @@ class TieredKVCache:
                         self.l3.touch(page)
         return pages
 
-    def admit(self, request_id: int) -> KVRequestState:
+    def admit(self, request_id: int) -> KVRequestState: # 请求准入, 开始prefill前所需的状态维护操作
         """候选转为驻留请求：命中页须已全部在本实例 HBM，锁转由请求持有。"""
         pin = self._pins[request_id]
         if (pin.match.pages > pin.match.l1_pages and not pin.promoted) or not self.tree.resident(

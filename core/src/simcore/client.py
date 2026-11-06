@@ -50,7 +50,7 @@ class Client:
         """统一准备四种负载的计划或动态生成状态；请求仍在发送时构造。"""
         self._workload_cfg = workload
         self._workload_mode = workload.mode
-        self._arrival_mode = workload.arrival_mode
+        self._arrival_mode: Literal["closed_loop", "open_loop"] = workload.arrival_mode
         if workload.mode == "trace":
             if trace_plan is None:
                 raise ValueError("Trace 仿真须提供 trace_plan 请求计划")
@@ -238,7 +238,7 @@ class Client:
         self._turns[key] = turn
         return turn
 
-    def on_wakeup(self, wakeup: ClientWakeup) -> InferenceRequest:
+    def on_wakeup(self, wakeup: ClientWakeup) -> InferenceRequest: # 根据wakeup中的会话id, 轮次id和发送时间, 构造请求内容并发送
         if wakeup.turn_id in self._sent:
             raise ValueError("轮次未就绪、重复发送或发送时间不符")
         dynamic = self._dynamic_requests

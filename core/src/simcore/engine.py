@@ -422,13 +422,15 @@ class Engine:
         return self._prefix_cache.page_size * (self._perf.kv_bytes_per_token or 0)
 
     def _promote(self, chunk_ids: tuple[int, ...], new_pages: int) -> None:
+        # 本次prefill要将L2中的chunk_ids传输到L1, 和GPU计算组成逐层流水线
+        # 后续prefill生成的KV长度未new_pages, 需要预留出来
         """选批后立即把低层命中页复制到 L1；传输耗时由本步步长计入。
 
         三层结构的来源为 L2（保留 L2 副本）；两层结构的来源为 L3，源页保护至所在批次读完。
         """
         cache = self._prefix_cache
         _ = cache.ensure_free(len(chunk_ids) + new_pages)
-        _ = cache.promote()
+        _ = cache.promote() # 处理时视为立即完成, 实际仿真时和计算流水线
         if self._direct_l3:
             l3 = cache.l3
             for page in chunk_ids:
@@ -502,7 +504,7 @@ class Engine:
         if source is None:
             raise ValueError("传输链路须配置有效带宽和 KV 字节数")
         start = max(now_ms, source.free_ms)
-        ready = source.submit(now_ms, [pages * size for size in self._layer_page_bytes])
+        ready = source.submit(now_ms, [pages * size for size in self._layer_page_bytes]) # 提交逐层的loadback任务, 返回逐层的完成时刻
         duration = pipelined_finish_ms(now_ms, ready, layer_ms) - now_ms
         load_ms = ready[-1] - start
         self._restore_bytes += pages * self._page_bytes
@@ -659,18 +661,18 @@ class Engine:
         }
         withdrawn: tuple[tuple[int, int], ...] = ()
         decode_new_pages = 0
-        if self._engine_config.pd_mutually_exclusive:
-            if not selection.admitted and not selection.restore_only and running:
-                running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms)
+        if self._engine_config.pd_mutually_exclusive: # PD互斥, 即不能在同一批GPU任务中处理
+            if not selection.admitted and not selection.restore_only and running: # 没有新准入的请求, 本批执行decode
+                running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms) # decode批前检查KV容量是否足够, 若不足需要回撤部分请求
                 if withdrawn:
-                    self._prefix_scheduler.advance_ratio(running, withdrew=True)
+                    _ = self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = (
                 () if selection.admitted or selection.restore_only else tuple(sorted(running))
             )
         else:
             running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms)
             if withdrawn:
-                self._prefix_scheduler.advance_ratio(running, withdrew=True)
+                _ = self._prefix_scheduler.advance_ratio(running, withdrew=True)
             decode_ids = tuple(sorted(running))
         # 本步 Decode 请求按上一 token 时刻分组：例外表此时恰为运行集中的例外，其余共享 cohort。
         cohort_size = 0
@@ -685,12 +687,12 @@ class Engine:
                 token_ms.clear()
         for item in selection.aborted:
             self._abort(item.request.request_id, now_ms, "input_exceeds_kv_capacity")
-        for item in selection.restored:
+        for item in selection.restored: # 记录回撤后的恢复请求的已生成token数量
             self._running[item.request.request_id] = item.generated_tokens
             self._resume_token(item.request.request_id)
-        if selection.restore_only and not selection.admitted and not decode_ids:
+        if selection.restore_only and not selection.admitted and not decode_ids: # 只有restore_only的请求, 所有KV已命中, 将位于L2的KV传输到L1即可
             for item in selection.restore_only:
-                cache.admit(item.request.request_id)
+                _ = cache.admit(item.request.request_id)
                 self._running[item.request.request_id] = item.generated_tokens
                 self._resume_token(item.request.request_id)
             idle_layers = ((self._analytical.plan.num_layers, 0.0),)
@@ -719,7 +721,7 @@ class Engine:
             for key, generated in withdrawn:
                 self._prefix_scheduler.requeue(self._requests[key], now_ms, generated)
             if not self.has_work and not self._pending_done:
-                self._prefix_scheduler.advance_ratio({}, idle=True)
+                _ = self._prefix_scheduler.advance_ratio({}, idle=True)
             if selection.aborted or selection.restored or withdrawn or self._recent_aborts:
                 return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
@@ -729,7 +731,7 @@ class Engine:
         allocated_pages = decode_new_pages + sum(
             candidate.required_pages for candidate in selection.admitted
         )
-        cache.ensure_free(allocated_pages)
+        _ = cache.ensure_free(allocated_pages)
         workload = StepWorkload(
             phase,
             prefill,

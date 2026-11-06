@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from itertools import product
 from multiprocessing.connection import Connection, wait
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -152,7 +153,7 @@ class Job:
 
 @dataclass
 class Slot:
-    process: mp.Process
+    process: BaseProcess
     pipe: Connection
     assignment: tuple[str, int, dict[str, Any]] | None = None
 
@@ -287,7 +288,7 @@ class JobManager:
         )
         process.start()
         child.close()
-        slot = Slot(process, parent)
+        slot = Slot(process, cast(Connection, parent))
         self._slots.append(slot)
         threading.Thread(
             target=self._watch, args=(slot,), daemon=True, name=f"simulation-worker-{process.pid}"

@@ -32,6 +32,11 @@ def pin_hit(cache: TieredKVCache, req: InferenceRequest) -> None:
     cache.pin(req, cache.probe(req, req.prompt_len))
 
 
+def activate_heap(pool: CachePool) -> None:
+    pool.heap_active = True
+    pool._rebuild_heap()
+
+
 def run_prefill(cache: TieredKVCache, req: InferenceRequest) -> None:
     pin_hit(cache, req)
     cache.admit(req.request_id)
@@ -232,6 +237,7 @@ def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
     cache = TieredKVCache(128, 64)
     run_prefill(cache, request(0, 64))
     cache.finish(0)
+    activate_heap(cache.pools["L1"])
     contender = request(1, 65, (encode(0, 0),))
     for _ in range(100):
         pin_hit(cache, contender)
@@ -248,10 +254,11 @@ def test_failed_pin_does_not_accumulate_duplicate_eviction_candidates() -> None:
 def test_periodic_heap_rebuild_discards_stale_entries(
     change: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", 514)
+    monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", 512)
     pool = CachePool("L1", 0, 3, 1)
     pool.insert("old")
     pool.insert("recent")
+    activate_heap(pool)
     for _ in range(511):
         pool.touch("recent")
     assert len(pool.heap) == 513
@@ -284,6 +291,7 @@ def test_heap_rebuild_uses_evictable_set_without_accessing_entries(
         pool.insert(f"active-{index}", ref_count=1)
     pool.insert("old")
     pool.insert("recent")
+    activate_heap(pool)
     for _ in range(512):
         pool.touch("recent")
     if protect_all:
@@ -318,11 +326,45 @@ def test_periodic_heap_check_bounds_stale_entries_without_eviction(
     monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", interval)
     pool = CachePool("L2", 0, 1, 1)
     pool.insert("page")
+    activate_heap(pool)
     for _ in range(10_000):
         pool.touch("page")
     assert len(pool.heap) <= len(pool.evictable) + 512 + interval
     assert pool.queued == set(pool.heap)
     assert pool.pop_lru() is pool.entries["page"]
+
+
+def test_heap_rebuild_waits_until_stale_entries_reach_evictable_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("simcore.kv_cache._HEAP_REBUILD_CHECK_INTERVAL", 1)
+    pool = CachePool("L3", 0, 1024, 1)
+    for index in range(1024):
+        pool.insert(f"page-{index}")
+    activate_heap(pool)
+    for index in range(1023):
+        pool.touch(f"page-{index}")
+    assert len(pool.heap) == 2047
+    pool.touch("page-1023")
+    assert len(pool.heap) == len(pool.evictable) == 1024
+    assert pool.pop_lru() is pool.entries["page-0"]
+
+
+def test_lru_heap_is_built_lazily_on_first_eviction() -> None:
+    pool = CachePool("L3", 0, 4, 1)
+    for chunk_id in ("a", "b", "c"):
+        pool.insert(chunk_id)
+    pool.touch("a")
+    pool.add_ref("b")
+    assert not pool.heap_active and pool.heap == [] and pool.queued == set()
+    assert len(pool.evictable) == 2
+    assert pool.pop_lru() is pool.entries["c"]
+    assert pool.heap_active
+    pool.remove("c", evicted=True)
+    pool.drop_ref("b")
+    assert pool.pop_lru() is pool.entries["b"]
+    pool.remove("b", evicted=True)
+    assert pool.pop_lru() is pool.entries["a"]
 
 
 @pytest.mark.parametrize("ref_count", [0, 2])
@@ -793,6 +835,7 @@ def test_transfer_failed_reservation_restores_source_reference(stale_entries: in
         cache.finish(request_id)
     source = encode(0, 0)
     source_pool = cache.pools["L2"]
+    activate_heap(source_pool)
     for _ in range(stale_entries):
         source_pool.touch(source)
     pinned = request(9, 2, (encode(1, 0),))

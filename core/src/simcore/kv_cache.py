@@ -77,6 +77,8 @@ class CachePool:
     peak: int = field(default=0, init=False)
     evictions: int = field(default=0, init=False)
     access_seq: int = field(default=0, init=False)
+    # LRU 堆在首次驱逐时才由 evictable 建立；此前只维护集合，大容量池常整场不驱逐。
+    heap_active: bool = field(default=False, init=False)
     heap: list[tuple[int, str]] = field(default_factory=list, init=False)
     queued: set[tuple[int, str]] = field(default_factory=set, init=False)
     queued_since_check: int = field(default=0, init=False)
@@ -193,7 +195,7 @@ class CachePool:
     def _queue(self, page: CacheEntry) -> None:
         key = (page.last_access_seq, page.chunk_id)
         self.evictable.add(key)
-        if key not in self.queued:
+        if self.heap_active and key not in self.queued:
             heappush(self.heap, key)
             self.queued.add(key)
             self.queued_since_check += 1
@@ -202,16 +204,22 @@ class CachePool:
                 self._maybe_rebuild_heap()
 
     def _maybe_rebuild_heap(self) -> None:
-        evictable_count = len(self.evictable)
-        stale = len(self.heap) - evictable_count
-        if stale < 512 or stale * 16 < evictable_count:
+        # 过期条目不少于有效条目时才重建，每条过期条目摊销约一次建堆成本，堆至多约为两倍大小。
+        stale = len(self.heap) - len(self.evictable)
+        if stale < 512 or stale < len(self.evictable):
             return
+        self._rebuild_heap()
+
+    def _rebuild_heap(self) -> None:
         self.heap = list(self.evictable)
         heapify(self.heap)
         self.queued = self.evictable.copy()
 
     def pop_lru(self) -> CacheEntry | None:
         """弹出最老的可驱逐页，顺带清理堆顶过期条目。"""
+        if not self.heap_active:
+            self.heap_active = True
+            self._rebuild_heap()
         while self.heap:
             seq, chunk_id = heappop(self.heap)
             self.queued.remove((seq, chunk_id))

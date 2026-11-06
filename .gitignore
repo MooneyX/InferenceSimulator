@@ -28,6 +28,23 @@ Thumbs.db
 
 # Local persistent simulation results
 /.simulation-cache/
+/web/.simulation-cache/
+
+# Local baseline snapshots for comparison
+/.layer-baseline/
+/.layer-baseline.zip
+
+# Local profiling artifacts
+/data/profiling-*
+
+# Local intermediate experiment scans
+/data/l2-4096-rate0018-l3-bandwidth-20261026/
+/data/l2-l3-page4096-think98-20261025/
+/data/l2-l3-scan-20261024/
+/data/l2-l3-think100-20261025/
+/data/l2-rate04-bandwidth-longsession-20261025/
+/data/l2-short-output-density-20261025/
+/data/pagesize-hy4-64k-20261025/
 
 # Local replay datasets (not distributed with the repository)
 /refs/cc-traces/

@@ -84,7 +84,8 @@ def test_output_length_does_not_affect_current_budget_or_batch(
     active = request(0, prompt=8, maximum=32, output=running_output)
     hold(cache, active)
     running = {0: RunningRequest(active, 1)}
-    assert scheduler.advance_ratio(running, withdrew=True) == pytest.approx(21 / 33)
+    scheduler.reestimate_ratio(running)
+    assert scheduler.ratio == pytest.approx(21 / 33)
     scheduler.enqueue(request(1, prompt=4, maximum=32, output=waiting_output), 1)
     scheduler.enqueue(request(2, prompt=4, maximum=8, output=2), 1)
     batch = scheduler.select_prefill(running)
@@ -317,7 +318,6 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
     accept_probe = Mock(return_value=True)
 
     with (
-        patch.object(cache, "state", wraps=cache.state) as states,
         patch.object(cache, "probe", wraps=cache.probe) as probes,
         patch.object(cache, "pin", wraps=cache.pin) as pins,
     ):
@@ -325,8 +325,6 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
             batch = scheduler.select_prefill(running, accept_probe=accept_probe)
             assert batch == AdmissionBatch((), (), ())
 
-    assert states.call_count == 3
-    states.assert_called_with(0)
     assert waiting.iterations == 0
     assert tuple(waiting) == expected_waiting
     assert scheduler._queued == expected_queued
@@ -341,16 +339,6 @@ def test_full_running_pool_does_not_iterate_waiting_queue(waiting_count: int) ->
         [1] if waiting_count else []
     )
     assert scheduler.num_waiting == max(waiting_count - 1, 0)
-
-
-@pytest.mark.parametrize("key, generated", [(1, 1), (0, 0), (0, 3)])
-def test_full_running_pool_still_validates_running_requests(key: int, generated: int) -> None:
-    scheduler, cache = make(max_running=1)
-    active = request(0, maximum=2)
-    hold(cache, active)
-
-    with pytest.raises(ValueError, match="运行请求身份或生成进度不合法"):
-        scheduler.select_prefill({key: RunningRequest(active, generated)})
 
 
 @pytest.mark.parametrize("maximum", [100, 65_536])
@@ -718,14 +706,20 @@ def test_ratio_decays_only_for_decode_reestimates_after_withdraw_and_resets_when
     scheduler, _ = make()
     active = request(0, maximum=200)
     state = {0: RunningRequest(active, 40)}
-    assert scheduler.advance_ratio(state) == 0.7
-    assert scheduler.advance_ratio(state, decoded=True) == pytest.approx(0.7 - (0.7 - 0.098) / 600)
-    assert scheduler.advance_ratio(state, decoded=True, withdrew=True) == pytest.approx(60 / 201)
+    assert scheduler.ratio == 0.7
+    scheduler.decay_ratio()
+    assert scheduler.ratio == pytest.approx(0.7 - (0.7 - 0.098) / 600)
+    scheduler.reestimate_ratio(state)
+    assert scheduler.ratio == pytest.approx(60 / 201)
     for _ in range(700):
-        ratio = scheduler.advance_ratio(state, decoded=True)
-    assert ratio == 0.098
-    assert scheduler.advance_ratio({0: RunningRequest(request(0), 1)}, withdrew=True) == 1.0
-    assert scheduler.advance_ratio({}, idle=True) == 0.7
+        scheduler.decay_ratio()
+    assert scheduler.ratio == 0.098
+    scheduler.reestimate_ratio({})  # 回撤后无剩余运行请求时保持不变
+    assert scheduler.ratio == 0.098
+    scheduler.reestimate_ratio({0: RunningRequest(request(0), 1)})
+    assert scheduler.ratio == 1.0
+    scheduler.reset_ratio()
+    assert scheduler.ratio == 0.7
 
 
 @pytest.mark.parametrize("exclusive", [True, False])

@@ -6,7 +6,7 @@
 from array import array
 from collections.abc import Iterator
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from simcore.events import EventKind
@@ -87,6 +87,31 @@ class EngineRun:
 
 
 @dataclass(slots=True)
+class _AnalysisTotals:
+    """逐步累加的解析统计，字段与 ``AnalyticalSummary`` 一致；结束时一次性转换，
+    避免每步经过 Pydantic 的属性赋值处理。"""
+
+    steps: int = 0
+    flops: float = 0.0
+    hbm_bytes: float = 0.0
+    compute_ms: float = 0.0
+    memory_ms: float = 0.0
+    device_ms: float = 0.0
+    restore_ms: float = 0.0
+    restore_exposed_ms: float = 0.0
+    communication_ms: float = 0.0
+    communication_bytes: float = 0.0
+    collectives: int = 0
+    tp_communication_ms: float = 0.0
+    tp_communication_bytes: float = 0.0
+    ep_dispatch_ms: float = 0.0
+    ep_combine_ms: float = 0.0
+    ep_dispatch_bytes: float = 0.0
+    ep_combine_bytes: float = 0.0
+    ep_exchanges: int = 0
+
+
+@dataclass(slots=True)
 class _TransferTask:
     pages: tuple[tuple[int, int], ...]  # 同一批读取的 (请求页序号, L3 页 ID)，按前缀顺序
     request: InferenceRequest  # 发起预取的请求，完成时按其路径插入 L2
@@ -116,7 +141,7 @@ class Engine:
         )
         self._layer_page_bytes = transfers.layer_page_bytes
         self._analytical = runtime.analytical
-        self._analysis = AnalyticalSummary()
+        self._analysis = _AnalysisTotals()
         self._engine_config = engine
         self._perf = perf
         self._prefix_cache = TieredKVCache(
@@ -633,7 +658,7 @@ class Engine:
                 self._release_lookup_lock(candidate.waiting.request.request_id)
             for item in selection.aborted:
                 self._release_lookup_lock(item.request.request_id)
-        return self._execute_step(now_ms, step_index, selection)
+        return self._execute_step(now_ms, step_index, selection, running)
 
     def finish_step(
         self, now_ms: float
@@ -652,27 +677,27 @@ class Engine:
         now_ms: float,
         step_index: int,
         selection: AdmissionBatch,
-    ) -> tuple[float, tuple[int, ...]]:  # 步时刻、序号和已选批次 → 耗时及完成请求 ID
-        """执行已就绪批次；前缀公开与完成通知统一延后至步末。"""
+        running: dict[int, RunningRequest],
+    ) -> tuple[float, tuple[int, ...]]:  # 步时刻、序号、已选批次及选批时运行集 → 耗时及完成请求 ID
+        """执行已就绪批次；前缀公开与完成通知统一延后至步末。
+
+        ``running`` 为选批前构建的运行集，选批与页提升不改变运行请求，直接复用。
+        """
         cache = self._prefix_cache
-        running = {
-            key: RunningRequest(self._requests[key], generated)
-            for key, generated in self._running.items()
-        }
         withdrawn: tuple[tuple[int, int], ...] = ()
         decode_new_pages = 0
         if self._engine_config.pd_mutually_exclusive: # PD互斥, 即不能在同一批GPU任务中处理
             if not selection.admitted and not selection.restore_only and running: # 没有新准入的请求, 本批执行decode
                 running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms) # decode批前检查KV容量是否足够, 若不足需要回撤部分请求
                 if withdrawn:
-                    _ = self._prefix_scheduler.advance_ratio(running, withdrew=True)
+                    self._prefix_scheduler.reestimate_ratio(running)
             decode_ids = (
                 () if selection.admitted or selection.restore_only else tuple(sorted(running))
             )
         else:
             running, withdrawn, decode_new_pages = self._prepare_decode(running, now_ms)
             if withdrawn:
-                _ = self._prefix_scheduler.advance_ratio(running, withdrew=True)
+                self._prefix_scheduler.reestimate_ratio(running)
             decode_ids = tuple(sorted(running))
         # 本步 Decode 请求按上一 token 时刻分组：例外表此时恰为运行集中的例外，其余共享 cohort。
         cohort_size = 0
@@ -721,7 +746,7 @@ class Engine:
             for key, generated in withdrawn:
                 self._prefix_scheduler.requeue(self._requests[key], now_ms, generated)
             if not self.has_work and not self._pending_done:
-                _ = self._prefix_scheduler.advance_ratio({}, idle=True)
+                self._prefix_scheduler.reset_ratio()
             if selection.aborted or selection.restored or withdrawn or self._recent_aborts:
                 return 0.0, ()
             raise RuntimeError(f"step {step_index} @{now_ms}: 没有可执行的 Prefill/Decode")
@@ -750,22 +775,23 @@ class Engine:
         duration = self._load_duration(
             selection.promote_ids, now_ms, cost.duration_ms, cost.layer_ms
         )
-        self._analysis.steps += 1
-        self._analysis.flops += cost.flops
-        self._analysis.hbm_bytes += cost.hbm_bytes
-        self._analysis.compute_ms += cost.compute_ms
-        self._analysis.memory_ms += cost.memory_ms
-        self._analysis.device_ms += cost.duration_ms
-        self._analysis.communication_ms += cost.communication_ms
-        self._analysis.communication_bytes += cost.communication_bytes
-        self._analysis.collectives += cost.collectives
-        self._analysis.tp_communication_ms += cost.tp_communication_ms
-        self._analysis.tp_communication_bytes += cost.tp_communication_bytes
-        self._analysis.ep_dispatch_ms += cost.ep_dispatch_ms
-        self._analysis.ep_combine_ms += cost.ep_combine_ms
-        self._analysis.ep_dispatch_bytes += cost.ep_dispatch_bytes
-        self._analysis.ep_combine_bytes += cost.ep_combine_bytes
-        self._analysis.ep_exchanges += cost.ep_exchanges
+        analysis = self._analysis
+        analysis.steps += 1
+        analysis.flops += cost.flops
+        analysis.hbm_bytes += cost.hbm_bytes
+        analysis.compute_ms += cost.compute_ms
+        analysis.memory_ms += cost.memory_ms
+        analysis.device_ms += cost.duration_ms
+        analysis.communication_ms += cost.communication_ms
+        analysis.communication_bytes += cost.communication_bytes
+        analysis.collectives += cost.collectives
+        analysis.tp_communication_ms += cost.tp_communication_ms
+        analysis.tp_communication_bytes += cost.tp_communication_bytes
+        analysis.ep_dispatch_ms += cost.ep_dispatch_ms
+        analysis.ep_combine_ms += cost.ep_combine_ms
+        analysis.ep_dispatch_bytes += cost.ep_dispatch_bytes
+        analysis.ep_combine_bytes += cost.ep_combine_bytes
+        analysis.ep_exchanges += cost.ep_exchanges
         end = now_ms + duration
         for candidate in selection.admitted:
             cache.admit(candidate.waiting.request.request_id)
@@ -823,11 +849,8 @@ class Engine:
         for key, generated in withdrawn:
             self._prefix_scheduler.requeue(self._requests[key], end, generated)
             self._pending_requeue_prompt_tokens += self._requests[key].prompt_len
-        if not withdrawn:
-            _ = self._prefix_scheduler.advance_ratio(
-                {key: RunningRequest(self._requests[key], g) for key, g in self._running.items()},
-                decoded=bool(decode_ids),
-            )
+        if decode_ids and not withdrawn:
+            self._prefix_scheduler.decay_ratio()
         self._num_steps += 1
         return duration, tuple(finished)
 
@@ -858,7 +881,7 @@ class Engine:
         del self._pending_done[request_id]
         self._finish[request_id] = now_ms
         if not self.has_work and not self._pending_done:
-            _ = self._prefix_scheduler.advance_ratio({}, idle=True)
+            self._prefix_scheduler.reset_ratio()
 
     # ------------------------------------------------------------ 结算
 
@@ -918,7 +941,7 @@ class Engine:
             demotions=self._prefix_cache.demotions,
             restore_bytes=self._restore_bytes,
             restore_time_ms=self._restore_time_ms,
-            analysis=self._analysis,
+            analysis=AnalyticalSummary(**asdict(self._analysis)),
             l3_stalls_ms=self._l3_stalls_ms,
             itl_values_ms=self._itl_values_ms,
             itl_counts=self._itl_counts,

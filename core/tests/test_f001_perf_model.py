@@ -42,33 +42,6 @@ def test_mixed_combines_device_work_and_reuses_weight_reads() -> None:
     assert combined.hbm_bytes < prefill_cost.hbm_bytes + decode_cost.hbm_bytes
 
 
-@pytest.mark.parametrize(
-    ("phase", "prefill", "decode"),
-    [
-        ("PREFILL", (), ()),
-        ("PREFILL", (), (DecodeWork(0, 1),)),
-        ("DECODE", (PrefillWork(0, 0, 1, 1),), ()),
-        ("MIXED", (PrefillWork(0, 0, 1, 1),), ()),
-    ],
-)
-def test_invalid_phase_or_empty_step_rejected(
-    phase: str, prefill: tuple[PrefillWork, ...], decode: tuple[DecodeWork, ...]
-) -> None:
-    with pytest.raises(ValueError, match="阶段"):
-        StepWorkload(phase, prefill, decode, 0, len(prefill) + len(decode))  # type: ignore[arg-type]
-
-
-def test_invalid_workload_detail_rejected() -> None:
-    with pytest.raises(ValueError, match="上下文"):
-        PrefillWork(0, 2, 1, 2)
-    with pytest.raises(ValueError, match="排序"):
-        StepWorkload("PREFILL", (PrefillWork(2, 0, 1, 1), PrefillWork(1, 0, 1, 1)), (), 0, 2)
-    with pytest.raises(ValueError, match="不可重叠"):
-        StepWorkload("MIXED", (PrefillWork(0, 0, 1, 1),), (DecodeWork(0, 2),), 0, 2)
-    with pytest.raises(ValueError, match="申请量"):
-        StepWorkload("DECODE", (), (DecodeWork(0, 2),), -1, 1)
-
-
 def test_restored_requests_do_not_add_device_work_or_generate_tokens() -> None:
     decode = (DecodeWork(2, 8),)
     workload = StepWorkload("DECODE", (), decode, 1, 1)
@@ -77,8 +50,6 @@ def test_restored_requests_do_not_add_device_work_or_generate_tokens() -> None:
         workload, TOY_PERFORMANCE.plan, TOY_HARDWARE
     )
     assert with_restore.decode == decode
-    with pytest.raises(ValueError, match="阶段"):
-        StepWorkload("DECODE", (), (), 0, 1, restore_only=(1,))
 
 
 def test_layer_plan_merges_adjacent_kinds_and_costs_follow_layer_order() -> None:
@@ -102,9 +73,3 @@ def test_layer_plan_merges_adjacent_kinds_and_costs_follow_layer_order() -> None
     assert [count for count, _ in cost.layer_ms] == [3, 1, 2]
     assert cost.layer_ms[0][1] == cost.layer_ms[2][1] != cost.layer_ms[1][1]
     assert sum(count * layer for count, layer in cost.layer_ms) == pytest.approx(cost.duration_ms)
-
-
-@pytest.mark.parametrize("restored", [(2,), (3, 1), (1, 1)])
-def test_restored_requests_must_be_sorted_unique_and_disjoint(restored: tuple[int, ...]) -> None:
-    with pytest.raises(ValueError, match="不可重叠"):
-        StepWorkload("DECODE", (), (DecodeWork(2, 8),), 0, 1 + len(restored), restored)

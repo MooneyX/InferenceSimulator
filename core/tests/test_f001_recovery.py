@@ -85,7 +85,7 @@ def test_withdraws_deterministically_then_replays_without_sampling_again() -> No
     assert engine.load_tokens == active_tokens + 8
     assert engine._retry_counts == {1: 1}
     assert engine._prefix_cache.evictions == 2  # 回撤请求的 2 页前缀是一个叶子节点，整体淘汰
-    assert engine._prefix_scheduler.advance_ratio({}) == 1.0
+    assert engine._prefix_scheduler.ratio == 1.0
     assert engine._prefix_scheduler.num_waiting == 1
     assert engine._prefix_cache.free_pages + engine._prefix_cache.resident_pages == 8
     engine._prefix_cache.withdraw(99)

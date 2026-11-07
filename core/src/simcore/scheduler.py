@@ -155,13 +155,6 @@ class AdmissionScheduler:
         """按队列顺序选批；跳过等待预取的请求，预算失败则停止选批。"""
         cache = self._cache
         block_size = cache.page_size
-        for request_id, active in running.items():
-            if (
-                request_id != active.request.request_id
-                or not 1 <= active.generated_tokens <= active.request.max_new_tokens
-            ):
-                raise ValueError("运行请求身份或生成进度不合法")
-            _ = cache.state(request_id)  # 调用state函数, 尝试取出状态信息, 若没有则会报错
         active_count = len(running)
         if active_count >= self._engine.max_running_requests or not self._ready_count:
             return AdmissionBatch((), (), ())
@@ -307,22 +300,20 @@ class AdmissionScheduler:
             return match.without_l3()
         return match
 
-    def advance_ratio(
-        self,
-        running: Mapping[int, RunningRequest],
-        *,
-        decoded: bool = False,
-        withdrew: bool = False,
-        idle: bool = False,
-    ) -> float:  # 运行集和解码/回撤/空闲标志 → 更新后的未来输出预留比例
-        """每步完成后更新未来估算比例；纯 Prefill 不衰减。"""
-        if idle and not running:
-            self._ratio = 0.7
-        elif withdrew and running:
+    @property
+    def ratio(self) -> float:  # 当前未来输出预留比例
+        return self._ratio
+
+    def reset_ratio(self) -> None:  # 引擎闲置（无运行、等待请求）时恢复初值；无返回值
+        self._ratio = 0.7
+
+    def reestimate_ratio(
+        self, running: Mapping[int, RunningRequest]
+    ) -> None:  # 回撤后仍运行的请求 → 按其生成进度重估比例；运行集为空时不变
+        if running:
             generated = sum(item.generated_tokens for item in running.values())
             limits = sum(item.request.max_new_tokens for item in running.values())
-            # 根据回撤后仍运行请求的生成进度重新估计未来输出预留比例。
             self._ratio = min(1.0, (generated + 20 * len(running)) / (limits + 1))
-        elif decoded and not withdrew:
-            self._ratio = max(0.098, self._ratio - (0.7 - 0.098) / 600)  # 稳定解码时逐步放宽
-        return self._ratio
+
+    def decay_ratio(self) -> None:  # 无回撤的 Decode 步完成后逐步放宽；纯 Prefill 不调用
+        self._ratio = max(0.098, self._ratio - (0.7 - 0.098) / 600)

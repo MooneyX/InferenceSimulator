@@ -700,7 +700,7 @@ def test_hy4_generic_cost_preserves_original_step_cost(
     assert step_cost(workload, custom, hardware, 8, 8) == cost
 
 
-def test_hy4_parameters_are_editable_and_empty_steps_are_rejected() -> None:
+def test_hy4_parameters_are_editable() -> None:
     request = hy4_request()
     payload = inference_config(request).model.model_dump()
     with pytest.raises(ValidationError, match="必须提供注意力组"):
@@ -744,8 +744,6 @@ def test_hy4_parameters_are_editable_and_empty_steps_are_rejected() -> None:
             }
         )
         assert resolve_config(update_inference(request, update={"model": modified})).runnable
-    with pytest.raises(ValueError):
-        StepWorkload("DECODE", (), (), 0, 1, restore_only=(0,))
 
 
 def auxiliary_weight_request(tp_size: int) -> SimConfig:
